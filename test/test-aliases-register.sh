@@ -4,6 +4,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Initialize completion system
+autoload -Uz compinit && compinit -i
+
 # Setup fake harness
 TMP="$(mktemp -d)"
 trap "rm -rf $TMP" EXIT
