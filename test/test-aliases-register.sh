@@ -33,3 +33,19 @@ if ! (( $+_comps[fk] )); then
 fi
 
 echo "PASS: harness_register defines fk function + completion"
+
+# Test 2: harness_register overrides pre-existing alias
+alias fk='false'  # simulate an existing alias shadowing the prefix
+# re-run registration — must override the alias
+harness_register "$TMP/fake-harness"
+# Verify alias is gone
+if alias fk >/dev/null 2>&1; then
+  echo "FAIL: alias still present after harness_register"
+  exit 1
+fi
+# Verify function still defined
+if ! typeset -f fk >/dev/null; then
+  echo "FAIL: fk function missing after alias override"
+  exit 1
+fi
+echo "PASS: harness_register overrides pre-existing alias"

@@ -20,6 +20,9 @@ harness_register() {
   [[ -z "$HARNESS_PREFIX" ]] && { echo "harness_register: HARNESS_PREFIX required in $env_file" >&2; return 1; }
   [[ -z "$HARNESS_NAME" ]] && { echo "harness_register: HARNESS_NAME required in $env_file" >&2; return 1; }
 
+  # Remove any pre-existing alias that shadows the prefix (e.g., oh-my-zsh gd/gp aliases)
+  unalias "$HARNESS_PREFIX" 2>/dev/null || true
+
   # Define <prefix>() — delegates to generic runner with harness dir
   eval "${HARNESS_PREFIX}() { _harness_launcher_run '$dir' \"\$@\"; }"
   # Define _<prefix>_complete() — delegates to generic completion
