@@ -28,3 +28,5 @@ harness_register "$HOME/gameduo-platform-harness"
 ```
 
 This creates `kh`, `gd`, `gp` functions with tab completion.
+
+If `happy` is installed, the interactive launcher path (`kh`, `gd`, `gp` with no shortcut args) asks whether to route the session through Happy for mobile control. Shortcut invocations like `kh base` or `gd codex rich` continue to launch Claude directly with no extra prompt.

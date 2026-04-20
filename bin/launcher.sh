@@ -41,16 +41,21 @@ menu() {
   return 1
 }
 
+probe_provider_health() {
+  local provider_url="$1"
+  [[ -z "$provider_url" ]] && return 1
+  PROBE_PROVIDER_URL="$provider_url" \
+    node -e 'const baseUrl = process.env.PROBE_PROVIDER_URL; const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000); fetch(`${baseUrl}/health`, { signal: controller.signal }).then(response => { clearTimeout(timer); process.exit(response.ok ? 0 : 1); }).catch(() => { clearTimeout(timer); process.exit(1); });' >/dev/null 2>&1
+}
+
 detect_active_providers() {
   [[ -f "$HARNESS_DIR/config/.local/kiro-gateway.env" ]]  && source "$HARNESS_DIR/config/.local/kiro-gateway.env"
   [[ -f "$HARNESS_DIR/config/.local/codex-gateway.env" ]] && source "$HARNESS_DIR/config/.local/codex-gateway.env"
   local -a providers=("1. ☁️  Anthropic (direct)")
-  if [[ -n "${KIRO_GATEWAY_URL:-}" ]] && \
-     curl -s --max-time 2 -o /dev/null "${KIRO_GATEWAY_URL}/health" >/dev/null 2>&1; then
+  if probe_provider_health "${KIRO_GATEWAY_URL:-}"; then
     providers+=("2. 🔀 Kiro (via gateway)")
   fi
-  if [[ -n "${CODEX_GATEWAY_URL:-}" ]] && \
-     curl -s --max-time 2 -o /dev/null "${CODEX_GATEWAY_URL}/health" >/dev/null 2>&1; then
+  if probe_provider_health "${CODEX_GATEWAY_URL:-}"; then
     providers+=("3. ⚡ Codex (via gateway)")
   fi
   printf '%s\n' "${providers[@]}"
@@ -63,6 +68,10 @@ STEP=1
 PROVIDER_URL=""
 GATEWAY_API_KEY=""
 PROVIDER_NAME=""
+LAUNCH_EXECUTABLE="claude"
+HAPPY_RETURN_STEP=5
+HAS_HAPPY=false
+command -v happy >/dev/null 2>&1 && HAS_HAPPY=true
 
 active_providers=()
 while IFS= read -r line; do
@@ -189,7 +198,17 @@ while true; do
       if [ "$IS_CUSTOM" = true ]; then STEP=4; else STEP=2; fi
       continue
     }
-    case "$MENU_RESULT" in *Yes*) STEP=6 ;; *) break ;; esac
+    case "$MENU_RESULT" in
+      *Yes*) STEP=6 ;;
+      *)
+        if $HAS_HAPPY; then
+          HAPPY_RETURN_STEP=5
+          STEP=7
+        else
+          break
+        fi
+        ;;
+    esac
     ;;
 
   6)
@@ -198,8 +217,25 @@ while true; do
       "2. acceptEdits — Auto-approve edits / 편집만 자동 승인" \
       "3. dontAsk — Auto-approve most / 대부분 자동 승인" \
       "4. bypassPermissions — Skip all / 모든 확인 건너뛰기" || { STEP=5; continue; }
+    CLAUDE_ARGS="${CLAUDE_ARGS%% --permission-mode *}"
     PERM=$(echo "$MENU_RESULT" | sed 's/^[0-9]*\. //' | awk '{print $1}')
     [ "$PERM" != "default" ] && CLAUDE_ARGS="$CLAUDE_ARGS --permission-mode $PERM"
+    if $HAS_HAPPY; then
+      HAPPY_RETURN_STEP=6
+      STEP=7
+    else
+      break
+    fi
+    ;;
+
+  7)
+    menu "Use Happy mobile wrapper?" \
+      "1. No ← Recommended" \
+      "2. Yes" || { STEP=$HAPPY_RETURN_STEP; continue; }
+    case "$MENU_RESULT" in
+      2*) LAUNCH_EXECUTABLE="happy" ;;
+      *)  LAUNCH_EXECUTABLE="claude" ;;
+    esac
     break
     ;;
 
@@ -216,12 +252,15 @@ echo ""
 PROVIDER_LABEL=""
 [[ -n "$PROVIDER_URL" ]] && PROVIDER_LABEL="via $PROVIDER_URL · "
 if [[ -n "$EFFORT_ENV" ]]; then
-  echo "Starting: ${PROVIDER_LABEL}CLAUDE_CODE_EFFORT_LEVEL=$EFFORT_ENV claude $CLAUDE_ARGS"
+  echo "Starting: ${PROVIDER_LABEL}CLAUDE_CODE_EFFORT_LEVEL=$EFFORT_ENV $LAUNCH_EXECUTABLE $CLAUDE_ARGS"
 else
-  echo "Starting: ${PROVIDER_LABEL}claude $CLAUDE_ARGS"
+  echo "Starting: ${PROVIDER_LABEL}$LAUNCH_EXECUTABLE $CLAUDE_ARGS"
 fi
 echo ""
-command -v claude >/dev/null 2>&1 || { echo "Error: claude not found in PATH"; exit 1; }
+command -v "$LAUNCH_EXECUTABLE" >/dev/null 2>&1 || {
+  echo "Error: $LAUNCH_EXECUTABLE not found in PATH"
+  exit 1
+}
 
 if [[ -n "$PROVIDER_URL" ]]; then
   export ANTHROPIC_BASE_URL="$PROVIDER_URL"
@@ -238,4 +277,4 @@ if [[ -n "$PROVIDER_URL" ]]; then
   fi
 fi
 [[ -n "$EFFORT_ENV" ]] && export CLAUDE_CODE_EFFORT_LEVEL="$EFFORT_ENV"
-exec claude "${CLAUDE_ARGS_ARR[@]}"
+exec "$LAUNCH_EXECUTABLE" "${CLAUDE_ARGS_ARR[@]}"
