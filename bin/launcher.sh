@@ -45,7 +45,7 @@ probe_provider_health() {
   local provider_url="$1"
   [[ -z "$provider_url" ]] && return 1
   PROBE_PROVIDER_URL="$provider_url" \
-    node -e 'const baseUrl = process.env.PROBE_PROVIDER_URL; const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000); fetch(`${baseUrl}/health`, { signal: controller.signal }).then(response => { clearTimeout(timer); process.exit(response.ok ? 0 : 1); }).catch(() => { clearTimeout(timer); process.exit(1); });' >/dev/null 2>&1
+    node -e 'const baseUrl = process.env.PROBE_PROVIDER_URL; const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000); fetch(`${baseUrl}/health`, { signal: controller.signal }).then(() => { clearTimeout(timer); process.exit(0); }).catch(() => { clearTimeout(timer); process.exit(1); });' >/dev/null 2>&1
 }
 
 detect_active_providers() {
