@@ -90,11 +90,11 @@ _harness_launcher_run() {
         skip_tui=true; mode_applied=true; shift ;;
       rich)
         case "$provider_name" in
-          kiro)  claude_args+=(--model 'claude-opus-4-6') ;;
-          codex) claude_args+=(--model 'opus[1m]') ;;   # DRIFT FIX: was opus, now opus[1m]
-          *)     claude_args+=(--model 'opus[1m]') ;;
+          kiro)  claude_args+=(--model 'claude-opus-4-6'); env_effort=max ;;
+          codex) claude_args+=(--model 'opus[1m]'); env_effort=high ;;
+          *)     claude_args+=(--model 'opus[1m]'); env_effort=xhigh ;;
         esac
-        env_effort=max; skip_tui=true; mode_applied=true; shift ;;
+        skip_tui=true; mode_applied=true; shift ;;
       low|medium|high|xhigh|max)
         env_effort="$1"
         if ! $mode_applied; then

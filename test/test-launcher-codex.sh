@@ -5,7 +5,7 @@
 #   fast  → --model haiku --effort low
 #   base  → --model sonnet[1m] --effort high + ANTHROPIC_BASE_URL set
 #   plan  → --model opusplan[1m] --effort xhigh
-#   rich  → --model opus[1m] --effort max
+#   rich  → --model opus[1m] --effort high
 # Also verifies codex env exports: CODEX_OPUS_MODEL → ANTHROPIC_DEFAULT_OPUS_MODEL
 
 set -e
@@ -138,7 +138,7 @@ run_mode() {
 run_mode "fast" "haiku" "low"         || exit 1
 run_mode "base" "sonnet[1m]" "high"   || exit 1
 run_mode "plan" "opusplan[1m]" "xhigh" || exit 1
-run_mode "rich" "opus[1m]" "max"      || exit 1
+run_mode "rich" "opus[1m]" "high"     || exit 1
 
 # Verify CODEX env exports
 echo "Verifying codex env exports..."

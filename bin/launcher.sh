@@ -121,8 +121,8 @@ while true; do
   2)
     case "$PROVIDER_NAME" in
       kiro)  RICH_LABEL="4. 🧠 Rich — Opus 4.6, max effort (200K via gateway)" ;;
-      codex) RICH_LABEL="4. 🧠 Rich — Opus 4.6, max effort (1M via gateway)" ;;
-      *)     RICH_LABEL="4. 🧠 Rich — Opus 1M, max effort" ;;
+      codex) RICH_LABEL="4. 🧠 Rich — Opus 4.6, high effort (1M via gateway)" ;;
+      *)     RICH_LABEL="4. 🧠 Rich — Opus 1M, xhigh effort" ;;
     esac
     menu "Select mode" \
       "1. ⚡ Fast — Sonnet, low effort" \
@@ -152,11 +152,11 @@ while true; do
         STEP=5 ;;
       *Rich*)
         case "$PROVIDER_NAME" in
-          kiro)  CLAUDE_ARGS="--model claude-opus-4-6" ;;
-          codex) CLAUDE_ARGS="--model opus[1m]" ;;     # DRIFT FIX: opus → opus[1m]
-          *)     CLAUDE_ARGS="--model opus[1m]" ;;
+          kiro)  CLAUDE_ARGS="--model claude-opus-4-6"; EFFORT_ENV="max" ;;
+          codex) CLAUDE_ARGS="--model opus[1m]"; EFFORT_ENV="high" ;;
+          *)     CLAUDE_ARGS="--model opus[1m]"; EFFORT_ENV="xhigh" ;;
         esac
-        EFFORT_ENV="max"; STEP=5 ;;
+        STEP=5 ;;
       *Custom*) IS_CUSTOM=true; STEP=3 ;;
     esac
     ;;

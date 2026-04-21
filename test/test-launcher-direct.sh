@@ -5,7 +5,7 @@
 #   fast  → --model haiku --effort low
 #   base  → --model sonnet --effort high
 #   plan  → --model opusplan --effort high
-#   rich  → --model opus[1m] --effort max
+#   rich  → --model opus[1m] --effort xhigh
 
 set -e
 
@@ -95,6 +95,6 @@ run_mode() {
 run_mode "fast" "haiku" "low"       || exit 1
 run_mode "base" "sonnet" "high"     || exit 1
 run_mode "plan" "opusplan" "high"   || exit 1
-run_mode "rich" "opus[1m]" "max"    || exit 1
+run_mode "rich" "opus[1m]" "xhigh"  || exit 1
 
 echo "✓ All direct OAuth tests passed"

@@ -254,7 +254,7 @@ grep -q '^EXEC:happy --model opus\[1m\]' "$CODEX_HAPPY_STUB" || {
   echo 'FAIL: Codex Happy path should preserve selected model'
   exit 1
 }
-grep -q '^ARGS:.*--effort max' "$CODEX_HAPPY_STUB" || {
+grep -q '^ARGS:.*--effort high' "$CODEX_HAPPY_STUB" || {
   echo 'FAIL: Codex Happy path should preserve effort selection'
   exit 1
 }
