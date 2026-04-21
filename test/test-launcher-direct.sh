@@ -2,10 +2,10 @@
 # test-launcher-direct.sh — verify direct Anthropic OAuth mode-mapping (no gateway)
 # Modes: fast, base, plan, rich
 # Expected behavior:
-#   fast  → --model haiku + CLAUDE_CODE_EFFORT_LEVEL=low
-#   base  → --model sonnet + CLAUDE_CODE_EFFORT_LEVEL=high
-#   plan  → --model opusplan + CLAUDE_CODE_EFFORT_LEVEL=high
-#   rich  → --model opus[1m] + CLAUDE_CODE_EFFORT_LEVEL=max
+#   fast  → --model haiku --effort low
+#   base  → --model sonnet --effort high
+#   plan  → --model opusplan --effort high
+#   rich  → --model opus[1m] --effort max
 
 set -e
 
@@ -42,8 +42,13 @@ chmod +x "$CLAUDE_STUB"
 # Helper: extract --model value from args line
 extract_model() {
   local args="$1"
-  # Use sed to find --model and get the next word
   echo "$args" | sed -n 's/.*--model \([^ ]*\).*/\1/p'
+}
+
+# Helper: extract --effort value from args line
+extract_effort() {
+  local args="$1"
+  echo "$args" | sed -n 's/.*--effort \([^ ]*\).*/\1/p'
 }
 
 # Helper: run a mode and capture output
@@ -65,11 +70,10 @@ run_mode() {
   fi
 
   local args_line=$(grep "^ARGS:" "$stub_file" | head -1 | cut -d: -f2-)
-  local effort_line=$(grep "^EFFORT:" "$stub_file" | head -1 | cut -d: -f2-)
 
-  # Extract model and effort
+  # Extract model and effort from args
   local actual_model=$(extract_model "$args_line")
-  local actual_effort="$effort_line"
+  local actual_effort=$(extract_effort "$args_line")
 
   if [[ "$actual_model" != "$expected_model" ]]; then
     echo "FAIL: $mode — expected --model $expected_model, got '$actual_model'"
@@ -78,11 +82,12 @@ run_mode() {
   fi
 
   if [[ "$actual_effort" != "$expected_effort" ]]; then
-    echo "FAIL: $mode — expected EFFORT=$expected_effort, got '$actual_effort'"
+    echo "FAIL: $mode — expected --effort $expected_effort, got '$actual_effort'"
+    echo "  Full args: $args_line"
     return 1
   fi
 
-  echo "PASS: $mode → --model $expected_model + EFFORT=$expected_effort"
+  echo "PASS: $mode → --model $expected_model --effort $expected_effort"
   return 0
 }
 

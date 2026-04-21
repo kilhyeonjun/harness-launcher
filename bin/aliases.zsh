@@ -130,7 +130,7 @@ _harness_launcher_run() {
         [[ -n "${CODEX_HAIKU_MODEL:-}" ]]  && export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CODEX_HAIKU_MODEL"
       fi
     fi
-    [[ -n "$env_effort" ]] && export CLAUDE_CODE_EFFORT_LEVEL="$env_effort"
+    [[ -n "$env_effort" ]] && claude_args+=(--effort "$env_effort")
     exec claude "${claude_args[@]}"
   else
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" \

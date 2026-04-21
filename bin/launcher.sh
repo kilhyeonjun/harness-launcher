@@ -251,11 +251,7 @@ stty sane 2>/dev/null
 echo ""
 PROVIDER_LABEL=""
 [[ -n "$PROVIDER_URL" ]] && PROVIDER_LABEL="via $PROVIDER_URL · "
-if [[ -n "$EFFORT_ENV" ]]; then
-  echo "Starting: ${PROVIDER_LABEL}CLAUDE_CODE_EFFORT_LEVEL=$EFFORT_ENV $LAUNCH_EXECUTABLE $CLAUDE_ARGS"
-else
-  echo "Starting: ${PROVIDER_LABEL}$LAUNCH_EXECUTABLE $CLAUDE_ARGS"
-fi
+echo "Starting: ${PROVIDER_LABEL}$LAUNCH_EXECUTABLE $CLAUDE_ARGS"
 echo ""
 command -v "$LAUNCH_EXECUTABLE" >/dev/null 2>&1 || {
   echo "Error: $LAUNCH_EXECUTABLE not found in PATH"
@@ -276,5 +272,5 @@ if [[ -n "$PROVIDER_URL" ]]; then
     [[ -n "${CODEX_HAIKU_MODEL:-}" ]]  && export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CODEX_HAIKU_MODEL"
   fi
 fi
-[[ -n "$EFFORT_ENV" ]] && export CLAUDE_CODE_EFFORT_LEVEL="$EFFORT_ENV"
+[[ -n "$EFFORT_ENV" ]] && CLAUDE_ARGS_ARR+=(--effort "$EFFORT_ENV")
 exec "$LAUNCH_EXECUTABLE" "${CLAUDE_ARGS_ARR[@]}"

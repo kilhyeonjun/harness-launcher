@@ -26,7 +26,7 @@ write_claude_stub() {
 #!/usr/bin/env bash
 {
   echo "EXEC:claude $*"
-  echo "EFFORT:${CLAUDE_CODE_EFFORT_LEVEL:-}"
+  echo "ARGS:$*"
   echo "BASE_URL:${ANTHROPIC_BASE_URL:-}"
   echo "AUTH_TOKEN:${ANTHROPIC_AUTH_TOKEN:-}"
   echo "OPUS_MODEL:${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
@@ -115,7 +115,7 @@ write_happy_stub() {
 #!/usr/bin/env bash
 {
   echo "EXEC:happy $*"
-  echo "EFFORT:${CLAUDE_CODE_EFFORT_LEVEL:-}"
+  echo "ARGS:$*"
   echo "BASE_URL:${ANTHROPIC_BASE_URL:-}"
   echo "AUTH_TOKEN:${ANTHROPIC_AUTH_TOKEN:-}"
   echo "OPUS_MODEL:${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
@@ -238,7 +238,7 @@ grep -q '^AUTH_TOKEN:kiro-test-key$' "$KIRO_HAPPY_STUB" || {
   echo 'FAIL: Kiro Happy path should preserve gateway auth token'
   exit 1
 }
-grep -q '^EFFORT:high$' "$KIRO_HAPPY_STUB" || {
+grep -q '^ARGS:.*--effort high' "$KIRO_HAPPY_STUB" || {
   echo 'FAIL: Kiro Happy path should preserve effort selection'
   exit 1
 }
@@ -250,11 +250,11 @@ CODEX_HAPPY_STUB="$TEST_TEMP/codex-happy.stub"
 run_provider_fallback $'2\n1\n4\n2\n2\n' "$CODEX_HAPPY_OUT" "$CODEX_HAPPY_STUB" 0 1
 
 assert_stub_file_exists "$CODEX_HAPPY_STUB" 'codex happy path'
-grep -q '^EXEC:happy --model opus\[1m\]$' "$CODEX_HAPPY_STUB" || {
+grep -q '^EXEC:happy --model opus\[1m\]' "$CODEX_HAPPY_STUB" || {
   echo 'FAIL: Codex Happy path should preserve selected model'
   exit 1
 }
-grep -q '^EFFORT:max$' "$CODEX_HAPPY_STUB" || {
+grep -q '^ARGS:.*--effort max' "$CODEX_HAPPY_STUB" || {
   echo 'FAIL: Codex Happy path should preserve effort selection'
   exit 1
 }

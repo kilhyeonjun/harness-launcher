@@ -2,10 +2,10 @@
 # test-launcher-codex.sh — verify codex gateway mode-mapping
 # Modes: fast, base, plan, rich
 # Expected behavior (codex):
-#   fast  → --model haiku (same regardless)
-#   base  → --model sonnet[1m] + EFFORT=high + ANTHROPIC_BASE_URL set
-#   plan  → --model opusplan[1m] + EFFORT=xhigh
-#   rich  → --model opus[1m] + EFFORT=max
+#   fast  → --model haiku --effort low
+#   base  → --model sonnet[1m] --effort high + ANTHROPIC_BASE_URL set
+#   plan  → --model opusplan[1m] --effort xhigh
+#   rich  → --model opus[1m] --effort max
 # Also verifies codex env exports: CODEX_OPUS_MODEL → ANTHROPIC_DEFAULT_OPUS_MODEL
 
 set -e
@@ -83,6 +83,12 @@ extract_model() {
   echo "$args" | sed -n 's/.*--model \([^ ]*\).*/\1/p'
 }
 
+# Helper: extract --effort value
+extract_effort() {
+  local args="$1"
+  echo "$args" | sed -n 's/.*--effort \([^ ]*\).*/\1/p'
+}
+
 # Helper: run a mode and capture output
 run_mode() {
   local mode="$1" expected_model="$2" expected_effort="$3"
@@ -101,11 +107,10 @@ run_mode() {
   fi
 
   local args_line=$(grep "^ARGS:" "$stub_file" | head -1 | cut -d: -f2-)
-  local effort_line=$(grep "^EFFORT:" "$stub_file" | head -1 | cut -d: -f2-)
   local base_url_line=$(grep "^BASE_URL:" "$stub_file" | head -1 | cut -d: -f2-)
 
   local actual_model=$(extract_model "$args_line")
-  local actual_effort="$effort_line"
+  local actual_effort=$(extract_effort "$args_line")
   local actual_base_url="$base_url_line"
 
   if [[ "$actual_model" != "$expected_model" ]]; then
@@ -115,7 +120,8 @@ run_mode() {
   fi
 
   if [[ "$actual_effort" != "$expected_effort" ]]; then
-    echo "FAIL: codex $mode — expected EFFORT=$expected_effort, got '$actual_effort'"
+    echo "FAIL: codex $mode — expected --effort $expected_effort, got '$actual_effort'"
+    echo "  Full args: $args_line"
     return 1
   fi
 
@@ -124,7 +130,7 @@ run_mode() {
     return 1
   fi
 
-  echo "PASS: codex $mode → --model $expected_model + EFFORT=$expected_effort + BASE_URL set"
+  echo "PASS: codex $mode → --model $expected_model --effort $expected_effort + BASE_URL set"
   return 0
 }
 

@@ -2,10 +2,10 @@
 # test-launcher-kiro.sh — verify kiro gateway mode-mapping
 # Modes: fast, base, plan, rich
 # Expected behavior (kiro):
-#   fast  → --model haiku (same)
-#   base  → NO --model arg (kiro defaults to sonnet 200K)
-#   plan  → --model opusplan + EFFORT=high
-#   rich  → --model claude-opus-4-6 + EFFORT=max
+#   fast  → --model haiku --effort low
+#   base  → (no --model, defaults to sonnet 200K) --effort high
+#   plan  → --model opusplan --effort high
+#   rich  → --model claude-opus-4-6 --effort max
 # Also verifies kiro env exports
 
 set -e
@@ -77,6 +77,12 @@ extract_model() {
   echo "$args" | sed -n 's/.*--model \([^ ]*\).*/\1/p'
 }
 
+# Helper: extract --effort value
+extract_effort() {
+  local args="$1"
+  echo "$args" | sed -n 's/.*--effort \([^ ]*\).*/\1/p'
+}
+
 # Helper: run a mode and capture output
 run_mode() {
   local mode="$1" expected_model="$2" expect_model_arg="$3" expected_effort="$4"
@@ -95,11 +101,10 @@ run_mode() {
   fi
 
   local args_line=$(grep "^ARGS:" "$stub_file" | head -1 | cut -d: -f2-)
-  local effort_line=$(grep "^EFFORT:" "$stub_file" | head -1 | cut -d: -f2-)
   local base_url_line=$(grep "^BASE_URL:" "$stub_file" | head -1 | cut -d: -f2-)
 
   local actual_model=$(extract_model "$args_line")
-  local actual_effort="$effort_line"
+  local actual_effort=$(extract_effort "$args_line")
   local actual_base_url="$base_url_line"
 
   if [[ "$expect_model_arg" == "true" ]]; then
@@ -117,7 +122,8 @@ run_mode() {
   fi
 
   if [[ "$actual_effort" != "$expected_effort" ]]; then
-    echo "FAIL: kiro $mode — expected EFFORT=$expected_effort, got '$actual_effort'"
+    echo "FAIL: kiro $mode — expected --effort $expected_effort, got '$actual_effort'"
+    echo "  Full args: $args_line"
     return 1
   fi
 
@@ -127,9 +133,9 @@ run_mode() {
   fi
 
   if [[ "$expect_model_arg" == "true" ]]; then
-    echo "PASS: kiro $mode → --model $expected_model + EFFORT=$expected_effort"
+    echo "PASS: kiro $mode → --model $expected_model --effort $expected_effort"
   else
-    echo "PASS: kiro $mode → (no --model, defaults to sonnet) + EFFORT=$expected_effort"
+    echo "PASS: kiro $mode → (no --model, defaults to sonnet) --effort $expected_effort"
   fi
   return 0
 }
