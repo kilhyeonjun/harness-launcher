@@ -273,4 +273,5 @@ if [[ -n "$PROVIDER_URL" ]]; then
   fi
 fi
 [[ -n "$EFFORT_ENV" ]] && CLAUDE_ARGS_ARR+=(--effort "$EFFORT_ENV")
+CLAUDE_ARGS_ARR+=(--exclude-dynamic-system-prompt-sections)
 exec "$LAUNCH_EXECUTABLE" "${CLAUDE_ARGS_ARR[@]}"

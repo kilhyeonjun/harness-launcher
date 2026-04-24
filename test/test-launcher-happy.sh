@@ -79,6 +79,14 @@ assert_stub_file_exists() {
   fi
 }
 
+assert_flag_present() {
+  local stub_file="$1" label="$2" exec_line="$3"
+  if ! echo "$exec_line" | grep -q "\--exclude-dynamic-system-prompt-sections"; then
+    echo "FAIL: $label — expected --exclude-dynamic-system-prompt-sections flag in: $exec_line"
+    exit 1
+  fi
+}
+
 write_claude_stub
 write_node_stub
 mkdir -p "$TEST_HARNESS/config/.local"
@@ -99,10 +107,12 @@ NO_HAPPY_STUB="$TEST_TEMP/no-happy.stub"
 run_fallback $'1\n2\n2\n' "$NO_HAPPY_OUT" "$NO_HAPPY_STUB"
 
 assert_stub_file_exists "$NO_HAPPY_STUB" 'no happy fallback'
+exec_line=$(grep 'EXEC:claude' "$NO_HAPPY_STUB" | head -1 | cut -d: -f2-)
 grep -q 'EXEC:claude --model sonnet' "$NO_HAPPY_STUB" || {
   echo 'FAIL: expected fallback path to launch claude when happy is absent'
   exit 1
 }
+assert_flag_present "$NO_HAPPY_STUB" 'no happy fallback' "$exec_line"
 if grep -q 'Use Happy mobile wrapper\?' "$NO_HAPPY_OUT"; then
   echo 'FAIL: Happy prompt should stay hidden when happy is absent'
   exit 1
@@ -138,10 +148,12 @@ assert_stub_file_exists "$HAPPY_NO_STUB" 'happy installed fallback no'
   echo 'FAIL: expected Happy prompt once in fallback path when happy is installed'
   exit 1
 }
+exec_line=$(grep 'EXEC:claude' "$HAPPY_NO_STUB" | head -1 | cut -d: -f2-)
 grep -q 'EXEC:claude --model sonnet' "$HAPPY_NO_STUB" || {
   echo 'FAIL: choosing No should still launch claude'
   exit 1
 }
+assert_flag_present "$HAPPY_NO_STUB" 'happy installed fallback no' "$exec_line"
 
 echo 'PASS: fallback menu keeps claude when Happy is declined'
 
@@ -150,10 +162,12 @@ HAPPY_YES_STUB="$TEST_TEMP/happy-yes.stub"
 run_fallback $'1\n2\n2\n2\n' "$HAPPY_YES_OUT" "$HAPPY_YES_STUB"
 
 assert_stub_file_exists "$HAPPY_YES_STUB" 'happy installed fallback yes'
+exec_line=$(grep '^EXEC:happy' "$HAPPY_YES_STUB" | head -1 | cut -d: -f2-)
 grep -q 'EXEC:happy --model sonnet' "$HAPPY_YES_STUB" || {
   echo 'FAIL: choosing Yes should launch happy instead of claude'
   exit 1
 }
+assert_flag_present "$HAPPY_YES_STUB" 'happy installed fallback yes' "$exec_line"
 if grep -q 'EXEC:claude ' "$HAPPY_YES_STUB"; then
   echo 'FAIL: choosing Yes should not execute claude'
   exit 1
@@ -170,10 +184,12 @@ HAPPY_PERMISSION_YES_STUB="$TEST_TEMP/happy-permission-yes.stub"
 run_fallback $'1\n2\n1\n3\n2\n2\n' "$HAPPY_PERMISSION_YES_OUT" "$HAPPY_PERMISSION_YES_STUB"
 
 assert_stub_file_exists "$HAPPY_PERMISSION_YES_STUB" 'happy installed permission yes'
+exec_line=$(grep '^EXEC:happy' "$HAPPY_PERMISSION_YES_STUB" | head -1 | cut -d: -f2-)
 grep -q 'EXEC:happy --model sonnet --permission-mode dontAsk' "$HAPPY_PERMISSION_YES_STUB" || {
   echo 'FAIL: permission mode should be preserved when launching happy after Step 6'
   exit 1
 }
+assert_flag_present "$HAPPY_PERMISSION_YES_STUB" 'happy installed permission yes' "$exec_line"
 if grep -q 'EXEC:claude ' "$HAPPY_PERMISSION_YES_STUB"; then
   echo 'FAIL: permission preservation path should not execute claude when Happy is selected'
   exit 1
@@ -190,10 +206,12 @@ HAPPY_BACK_FROM_PERMISSION_STUB="$TEST_TEMP/happy-back-from-permission.stub"
 run_fallback $'1\n2\n1\n2\n9\n4\n2\n' "$HAPPY_BACK_FROM_PERMISSION_OUT" "$HAPPY_BACK_FROM_PERMISSION_STUB"
 
 assert_stub_file_exists "$HAPPY_BACK_FROM_PERMISSION_STUB" 'happy back from permission'
+exec_line=$(grep '^EXEC:happy' "$HAPPY_BACK_FROM_PERMISSION_STUB" | head -1 | cut -d: -f2-)
 grep -q 'EXEC:happy --model sonnet --permission-mode bypassPermissions' "$HAPPY_BACK_FROM_PERMISSION_STUB" || {
   echo 'FAIL: canceling Happy after Step 6 should return to Permission mode and allow changing it'
   exit 1
 }
+assert_flag_present "$HAPPY_BACK_FROM_PERMISSION_STUB" 'happy back from permission' "$exec_line"
 if grep -q 'dontAsk' "$HAPPY_BACK_FROM_PERMISSION_STUB"; then
   echo 'FAIL: returning to Permission mode should replace the prior permission selection, not accumulate it'
   exit 1
@@ -206,10 +224,12 @@ HAPPY_CONTINUE_YES_STUB="$TEST_TEMP/happy-continue-yes.stub"
 run_fallback $'2\n2\n2\n2\n' "$HAPPY_CONTINUE_YES_OUT" "$HAPPY_CONTINUE_YES_STUB"
 
 assert_stub_file_exists "$HAPPY_CONTINUE_YES_STUB" 'happy continue yes'
+exec_line=$(grep '^EXEC:happy' "$HAPPY_CONTINUE_YES_STUB" | head -1 | cut -d: -f2-)
 grep -q 'EXEC:happy --continue --model sonnet' "$HAPPY_CONTINUE_YES_STUB" || {
   echo 'FAIL: session flag should be preserved when Continue flows through Happy'
   exit 1
 }
+assert_flag_present "$HAPPY_CONTINUE_YES_STUB" 'happy continue yes' "$exec_line"
 
 echo 'PASS: session flag is preserved across Happy selection'
 
@@ -218,10 +238,12 @@ KIRO_HAPPY_STUB="$TEST_TEMP/kiro-happy.stub"
 run_provider_fallback $'2\n1\n2\n2\n2\n' "$KIRO_HAPPY_OUT" "$KIRO_HAPPY_STUB" 1 0
 
 assert_stub_file_exists "$KIRO_HAPPY_STUB" 'kiro happy path'
+exec_line=$(grep '^EXEC:happy' "$KIRO_HAPPY_STUB" | head -1 | cut -d: -f2-)
 grep -q '^EXEC:happy' "$KIRO_HAPPY_STUB" || {
   echo 'FAIL: Kiro Happy path should execute happy'
   exit 1
 }
+assert_flag_present "$KIRO_HAPPY_STUB" 'kiro happy path' "$exec_line"
 if grep -q '^EXEC:claude' "$KIRO_HAPPY_STUB"; then
   echo 'FAIL: Kiro Happy path should not execute claude'
   exit 1
@@ -250,10 +272,12 @@ CODEX_HAPPY_STUB="$TEST_TEMP/codex-happy.stub"
 run_provider_fallback $'2\n1\n4\n2\n2\n' "$CODEX_HAPPY_OUT" "$CODEX_HAPPY_STUB" 0 1
 
 assert_stub_file_exists "$CODEX_HAPPY_STUB" 'codex happy path'
+exec_line=$(grep '^EXEC:happy' "$CODEX_HAPPY_STUB" | head -1 | cut -d: -f2-)
 grep -q '^EXEC:happy --model opus\[1m\]' "$CODEX_HAPPY_STUB" || {
   echo 'FAIL: Codex Happy path should preserve selected model'
   exit 1
 }
+assert_flag_present "$CODEX_HAPPY_STUB" 'codex happy path' "$exec_line"
 grep -q '^ARGS:.*--effort high' "$CODEX_HAPPY_STUB" || {
   echo 'FAIL: Codex Happy path should preserve effort selection'
   exit 1
@@ -332,10 +356,12 @@ grep -q 'Use Happy mobile wrapper\?' "$TEST_TEMP/gum.log" || {
   echo 'FAIL: gum path should reach the Happy selection step'
   exit 1
 }
+exec_line=$(grep '^EXEC:happy' "$GUM_STUB" | head -1 | cut -d: -f2-)
 grep -q 'EXEC:happy --model sonnet' "$GUM_STUB" || {
   echo 'FAIL: gum path should launch happy when the stub chooses Yes'
   exit 1
 }
+assert_flag_present "$GUM_STUB" 'gum path' "$exec_line"
 if grep -q 'EXEC:claude ' "$GUM_STUB"; then
   echo 'FAIL: gum path should not execute claude when Happy is selected'
   exit 1

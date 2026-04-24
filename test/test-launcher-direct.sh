@@ -51,6 +51,16 @@ extract_effort() {
   echo "$args" | sed -n 's/.*--effort \([^ ]*\).*/\1/p'
 }
 
+# Helper: check if --exclude-dynamic-system-prompt-sections flag is present
+extract_has_flag() {
+  local args="$1"
+  if echo "$args" | grep -q "\--exclude-dynamic-system-prompt-sections"; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
 # Helper: run a mode and capture output
 run_mode() {
   local mode="$1" expected_model="$2" expected_effort="$3"
@@ -74,6 +84,7 @@ run_mode() {
   # Extract model and effort from args
   local actual_model=$(extract_model "$args_line")
   local actual_effort=$(extract_effort "$args_line")
+  local has_flag=$(extract_has_flag "$args_line")
 
   if [[ "$actual_model" != "$expected_model" ]]; then
     echo "FAIL: $mode — expected --model $expected_model, got '$actual_model'"
@@ -87,7 +98,13 @@ run_mode() {
     return 1
   fi
 
-  echo "PASS: $mode → --model $expected_model --effort $expected_effort"
+  if [[ "$has_flag" != "true" ]]; then
+    echo "FAIL: $mode — expected --exclude-dynamic-system-prompt-sections flag, not found"
+    echo "  Full args: $args_line"
+    return 1
+  fi
+
+  echo "PASS: $mode → --model $expected_model --effort $expected_effort + flag"
   return 0
 }
 

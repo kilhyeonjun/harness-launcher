@@ -89,6 +89,16 @@ extract_effort() {
   echo "$args" | sed -n 's/.*--effort \([^ ]*\).*/\1/p'
 }
 
+# Helper: check if --exclude-dynamic-system-prompt-sections flag is present
+extract_has_flag() {
+  local args="$1"
+  if echo "$args" | grep -q "\--exclude-dynamic-system-prompt-sections"; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
 # Helper: run a mode and capture output
 run_mode() {
   local mode="$1" expected_model="$2" expected_effort="$3"
@@ -112,6 +122,7 @@ run_mode() {
   local actual_model=$(extract_model "$args_line")
   local actual_effort=$(extract_effort "$args_line")
   local actual_base_url="$base_url_line"
+  local has_flag=$(extract_has_flag "$args_line")
 
   if [[ "$actual_model" != "$expected_model" ]]; then
     echo "FAIL: codex $mode — expected --model $expected_model, got '$actual_model'"
@@ -130,7 +141,13 @@ run_mode() {
     return 1
   fi
 
-  echo "PASS: codex $mode → --model $expected_model --effort $expected_effort + BASE_URL set"
+  if [[ "$has_flag" != "true" ]]; then
+    echo "FAIL: codex $mode — expected --exclude-dynamic-system-prompt-sections flag, not found"
+    echo "  Full args: $args_line"
+    return 1
+  fi
+
+  echo "PASS: codex $mode → --model $expected_model --effort $expected_effort + flag"
   return 0
 }
 
@@ -150,7 +167,7 @@ echo "Verifying codex env exports..."
 ) 2>/dev/null || true
 
 if [[ -f "$TEST_TEMP/output-env-check.txt" ]]; then
-  local opus_model=$(grep "^OPUS_MODEL:" "$TEST_TEMP/output-env-check.txt" | head -1 | cut -d: -f2-)
+  opus_model=$(grep "^OPUS_MODEL:" "$TEST_TEMP/output-env-check.txt" | head -1 | cut -d: -f2-)
   if [[ "$opus_model" == "gpt-5.4-xhigh" ]]; then
     echo "PASS: codex exports ANTHROPIC_DEFAULT_OPUS_MODEL from config"
   else

@@ -131,6 +131,7 @@ _harness_launcher_run() {
       fi
     fi
     [[ -n "$env_effort" ]] && claude_args+=(--effort "$env_effort")
+    claude_args+=(--exclude-dynamic-system-prompt-sections)
     exec claude "${claude_args[@]}"
   else
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" \
