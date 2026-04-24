@@ -248,11 +248,8 @@ read -ra CLAUDE_ARGS_ARR <<< "$CLAUDE_ARGS"
 
 stty sane 2>/dev/null
 
-echo ""
 PROVIDER_LABEL=""
 [[ -n "$PROVIDER_URL" ]] && PROVIDER_LABEL="via $PROVIDER_URL · "
-echo "Starting: ${PROVIDER_LABEL}$LAUNCH_EXECUTABLE $CLAUDE_ARGS"
-echo ""
 command -v "$LAUNCH_EXECUTABLE" >/dev/null 2>&1 || {
   echo "Error: $LAUNCH_EXECUTABLE not found in PATH"
   exit 1
@@ -274,4 +271,7 @@ if [[ -n "$PROVIDER_URL" ]]; then
 fi
 [[ -n "$EFFORT_ENV" ]] && CLAUDE_ARGS_ARR+=(--effort "$EFFORT_ENV")
 CLAUDE_ARGS_ARR+=(--exclude-dynamic-system-prompt-sections)
+echo ""
+echo "Starting: ${PROVIDER_LABEL}$LAUNCH_EXECUTABLE ${CLAUDE_ARGS_ARR[*]}"
+echo ""
 exec "$LAUNCH_EXECUTABLE" "${CLAUDE_ARGS_ARR[@]}"
