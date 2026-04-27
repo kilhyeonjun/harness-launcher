@@ -203,21 +203,23 @@ echo 'PASS: permission mode is preserved across Happy selection'
 
 HAPPY_BACK_FROM_PERMISSION_OUT="$TEST_TEMP/happy-back-from-permission.out"
 HAPPY_BACK_FROM_PERMISSION_STUB="$TEST_TEMP/happy-back-from-permission.stub"
-run_fallback $'1\n2\n1\n2\n9\n4\n2\n' "$HAPPY_BACK_FROM_PERMISSION_OUT" "$HAPPY_BACK_FROM_PERMISSION_STUB"
+# Path: New, Base, advanced=Yes, perm=acceptEdits, [chrome step]→cancel back to perm,
+#       perm=bypassPermissions, chrome=No, happy=Yes
+run_fallback $'1\n2\n1\n2\n9\n4\n1\n2\n' "$HAPPY_BACK_FROM_PERMISSION_OUT" "$HAPPY_BACK_FROM_PERMISSION_STUB"
 
 assert_stub_file_exists "$HAPPY_BACK_FROM_PERMISSION_STUB" 'happy back from permission'
 exec_line=$(grep '^EXEC:happy' "$HAPPY_BACK_FROM_PERMISSION_STUB" | head -1 | cut -d: -f2-)
 grep -q 'EXEC:happy --model sonnet --permission-mode bypassPermissions' "$HAPPY_BACK_FROM_PERMISSION_STUB" || {
-  echo 'FAIL: canceling Happy after Step 6 should return to Permission mode and allow changing it'
+  echo 'FAIL: canceling Chrome step after Step 6 should return to Permission mode and allow changing it'
   exit 1
 }
 assert_flag_present "$HAPPY_BACK_FROM_PERMISSION_STUB" 'happy back from permission' "$exec_line"
-if grep -q 'dontAsk' "$HAPPY_BACK_FROM_PERMISSION_STUB"; then
+if grep -q 'acceptEdits' "$HAPPY_BACK_FROM_PERMISSION_STUB"; then
   echo 'FAIL: returning to Permission mode should replace the prior permission selection, not accumulate it'
   exit 1
 fi
 
-echo 'PASS: Happy cancel returns to Permission mode when entered from Step 6'
+echo 'PASS: Chrome cancel returns to Permission mode when entered from Step 6'
 
 HAPPY_CONTINUE_YES_OUT="$TEST_TEMP/happy-continue-yes.out"
 HAPPY_CONTINUE_YES_STUB="$TEST_TEMP/happy-continue-yes.stub"

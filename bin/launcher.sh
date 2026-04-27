@@ -220,12 +220,7 @@ while true; do
     CLAUDE_ARGS="${CLAUDE_ARGS%% --permission-mode *}"
     PERM=$(echo "$MENU_RESULT" | sed 's/^[0-9]*\. //' | awk '{print $1}')
     [ "$PERM" != "default" ] && CLAUDE_ARGS="$CLAUDE_ARGS --permission-mode $PERM"
-    if $HAS_HAPPY; then
-      HAPPY_RETURN_STEP=6
-      STEP=7
-    else
-      break
-    fi
+    STEP=8
     ;;
 
   7)
@@ -237,6 +232,22 @@ while true; do
       *)  LAUNCH_EXECUTABLE="claude" ;;
     esac
     break
+    ;;
+
+  8)
+    menu "Chrome integration?" \
+      "1. No ← Recommended" \
+      "2. Yes (--chrome)" || { STEP=6; continue; }
+    CLAUDE_ARGS="${CLAUDE_ARGS//--chrome/}"
+    case "$MENU_RESULT" in
+      2*) CLAUDE_ARGS="$CLAUDE_ARGS --chrome" ;;
+    esac
+    if $HAS_HAPPY; then
+      HAPPY_RETURN_STEP=8
+      STEP=7
+    else
+      break
+    fi
     ;;
 
   esac

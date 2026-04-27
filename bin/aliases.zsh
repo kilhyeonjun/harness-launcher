@@ -110,6 +110,8 @@ _harness_launcher_run() {
       bypass)       claude_args+=(--permission-mode bypassPermissions); skip_tui=true; shift ;;
       acceptEdits)  claude_args+=(--permission-mode acceptEdits); skip_tui=true; shift ;;
       dontAsk)      claude_args+=(--permission-mode dontAsk); skip_tui=true; shift ;;
+      --chrome|--no-chrome)
+                    claude_args+=("$1"); skip_tui=true; shift ;;
       *)            claude_args+=("$1"); shift ;;
     esac
   done
@@ -157,6 +159,8 @@ _harness_launcher_complete() {
     'bypass:Skip all permission prompts'
     'acceptEdits:Auto-approve edits only'
     'dontAsk:Auto-approve most actions'
+    '--chrome:Enable Claude in Chrome integration'
+    '--no-chrome:Disable Claude in Chrome integration'
   )
   if [[ -z "$_kiro_url" && -f "$_kiro_env" ]]; then
     source "$_kiro_env"; _kiro_url="${KIRO_GATEWAY_URL:-}"
