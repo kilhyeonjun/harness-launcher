@@ -66,13 +66,18 @@ fi
 HTTP_URL="http://127.0.0.1:$HTTP_PORT"
 
 # Setup codex gateway env
-cat > "$TEST_HARNESS/config/.local/codex-gateway.env" <<EOF
+write_codex_env() {
+  local suffix="${1:-}"
+  cat > "$TEST_HARNESS/config/.local/codex-gateway.env" <<EOF
 CODEX_GATEWAY_URL="$HTTP_URL"
 CODEX_GATEWAY_API_KEY="test-key"
 CODEX_OPUS_MODEL="gpt-5.4-xhigh"
 CODEX_SONNET_MODEL="gpt-4-sonnet"
 CODEX_HAIKU_MODEL="gpt-4-haiku"
+CODEX_CONTEXT_SUFFIX="$suffix"
 EOF
+}
+write_codex_env ""
 
 # Setup stub claude
 CLAUDE_STUB="$TEST_TEMP/claude"
@@ -165,10 +170,20 @@ run_mode() {
 }
 
 # Run mode tests
-run_mode "fast" "haiku" "low"         || exit 1
-run_mode "base" "sonnet[1m]" "high"   || exit 1
-run_mode "plan" "opusplan[1m]" "xhigh" || exit 1
-run_mode "rich" "opus[1m]" "high"     || exit 1
+echo "Default suffix (empty) — should produce plain models"
+run_mode "fast" "haiku" "low"     || exit 1
+run_mode "base" "sonnet" "high"   || exit 1
+run_mode "plan" "opusplan" "xhigh" || exit 1
+run_mode "rich" "opus" "high"     || exit 1
+
+echo ""
+echo "Suffix \"[1m]\" — should produce [1m] models"
+write_codex_env "[1m]"
+run_mode "fast" "haiku" "low"           || exit 1
+run_mode "base" "sonnet[1m]" "high"     || exit 1
+run_mode "plan" "opusplan[1m]" "xhigh"  || exit 1
+run_mode "rich" "opus[1m]" "high"       || exit 1
+write_codex_env ""  # restore for env-export test below
 
 # Verify CODEX env exports
 echo "Verifying codex env exports..."
