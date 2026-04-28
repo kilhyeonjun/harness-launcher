@@ -1,12 +1,14 @@
 #!/usr/bin/env zsh
-# test-launcher-codex.sh — verify codex gateway mode-mapping
+# test-launcher-codex-gateway.sh — verify Claude Code via codex gateway mode-mapping
+# (Note: the bare `codex` alias is being repurposed to mean "Codex CLI native";
+# this test exercises the legacy gateway path under its disambiguated name.)
 # Modes: fast, base, plan, rich
-# Expected behavior (codex):
+# Expected behavior (codex-gateway):
 #   fast  → --model haiku --effort low
 #   base  → --model sonnet[1m] --effort high + ANTHROPIC_BASE_URL set
 #   plan  → --model opusplan[1m] --effort xhigh
 #   rich  → --model opus[1m] --effort high
-# Also verifies codex env exports: CODEX_OPUS_MODEL → ANTHROPIC_DEFAULT_OPUS_MODEL
+# Also verifies codex-gateway env exports: CODEX_OPUS_MODEL → ANTHROPIC_DEFAULT_OPUS_MODEL
 
 set -e
 
@@ -30,19 +32,30 @@ HARNESS_NAME="test harness"
 HARNESS_PREFIX="test"
 EOF
 
-# Start a minimal Python HTTP server for /health endpoint
-cd "$TEST_TEMP"
-python3 -m http.server 0 --bind 127.0.0.1 >/dev/null 2>&1 &
+# Start a minimal Python HTTP server for /health endpoint, on an ephemeral port
+HTTP_PORT_FILE="$TEST_TEMP/http.port"
+PORT_FILE="$HTTP_PORT_FILE" python3 -c '
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a): pass
+s = HTTPServer(("127.0.0.1", 0), H)
+with open(os.environ["PORT_FILE"], "w") as f:
+    f.write(str(s.server_port))
+s.serve_forever()
+' >/dev/null 2>&1 &
 HTTP_PID=$!
-sleep 0.8  # Give server time to start and bind
 
-# Find the port it bound to (try common ports)
+# Wait for the server to write its bound port
 HTTP_PORT=""
-for port in {8000..8020}; do
-  if curl -s --max-time 1 "http://127.0.0.1:$port/" >/dev/null 2>&1; then
-    HTTP_PORT="$port"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if [[ -s "$HTTP_PORT_FILE" ]]; then
+    HTTP_PORT="$(cat "$HTTP_PORT_FILE")"
     break
   fi
+  sleep 0.2
 done
 
 if [[ -z "$HTTP_PORT" ]]; then
@@ -108,7 +121,7 @@ run_mode() {
     export TEST_STUB_FILE="$stub_file"
     export PATH="$TEST_TEMP:$PATH"
     source "$LAUNCHER_DIR/bin/aliases.zsh"
-    _harness_launcher_run "$TEST_HARNESS" 'codex' "$mode"
+    _harness_launcher_run "$TEST_HARNESS" 'codex-gateway' "$mode"
   ) 2>/dev/null || true
 
   if [[ ! -f "$stub_file" ]]; then
@@ -163,7 +176,7 @@ echo "Verifying codex env exports..."
   export TEST_STUB_FILE="$TEST_TEMP/output-env-check.txt"
   export PATH="$TEST_TEMP:$PATH"
   source "$LAUNCHER_DIR/bin/aliases.zsh"
-  _harness_launcher_run "$TEST_HARNESS" 'codex' 'base'
+  _harness_launcher_run "$TEST_HARNESS" 'codex-gateway' 'base'
 ) 2>/dev/null || true
 
 if [[ -f "$TEST_TEMP/output-env-check.txt" ]]; then

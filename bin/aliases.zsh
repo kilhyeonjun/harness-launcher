@@ -55,7 +55,7 @@ _harness_launcher_run() {
       curl -s --max-time 2 -o /dev/null "${provider_url}/health" >/dev/null 2>&1 \
         || { echo "❌ kiro-gateway에 연결할 수 없습니다 ($provider_url)"; return 1; }
       skip_tui=true; shift ;;
-    codex)
+    codex|codex-gateway)
       provider_name="codex"
       local _env_file="$HARNESS_DIR/config/.local/codex-gateway.env"
       if [[ -f "$_env_file" ]]; then
@@ -169,6 +169,9 @@ _harness_launcher_complete() {
     source "$_codex_env"; _codex_url="${CODEX_GATEWAY_URL:-}"
   fi
   [[ -n "$_kiro_url" ]]  && shortcuts+=('kiro:Kiro via gateway')
-  [[ -n "$_codex_url" ]] && shortcuts+=('codex:Codex via gateway')
+  if [[ -n "$_codex_url" ]]; then
+    shortcuts+=('codex:Codex via gateway')
+    shortcuts+=('codex-gateway:Codex via gateway (alias of codex)')
+  fi
   _describe 'harness shortcuts' shortcuts
 }
