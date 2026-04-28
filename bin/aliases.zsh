@@ -55,7 +55,12 @@ _harness_launcher_run() {
       curl -s --max-time 2 -o /dev/null "${provider_url}/health" >/dev/null 2>&1 \
         || { echo "❌ kiro-gateway에 연결할 수 없습니다 ($provider_url)"; return 1; }
       skip_tui=true; shift ;;
-    codex|codex-gateway)
+    codex)
+      shift
+      _harness_launcher_run_codex_cli "$HARNESS_DIR" "$@"
+      return $?
+      ;;
+    codex-gateway)
       provider_name="codex"
       local _env_file="$HARNESS_DIR/config/.local/codex-gateway.env"
       if [[ -f "$_env_file" ]]; then
@@ -141,6 +146,48 @@ _harness_launcher_run() {
   fi
 }
 
+# _harness_launcher_run_codex_cli <harness-dir> [args...]
+#   Launches Codex CLI natively against a per-harness CODEX_HOME.
+#   Modes:    fast | base | plan | rich  → -p <profile>
+#   Sessions: resume → `codex resume`,  continue → `codex resume --last`,
+#             fork   → `codex fork`
+_harness_launcher_run_codex_cli() {
+  local HARNESS_DIR="$1"; shift
+  local profile=""
+  local subcmd=""
+  local -a codex_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      fast|base|plan|rich) profile="$1"; shift ;;
+      resume)              subcmd="resume"; shift ;;
+      continue)            subcmd="resume"; codex_args+=(--last); shift ;;
+      fork)                subcmd="fork"; shift ;;
+      *)                   codex_args+=("$1"); shift ;;
+    esac
+  done
+
+  [[ -z "$profile" ]] && profile="base"
+
+  local prepare="$_HARNESS_LAUNCHER_BIN/codex-home-prepare.sh"
+  if [[ -x "$prepare" ]]; then
+    "$prepare" "$HARNESS_DIR" || return $?
+  fi
+
+  export CODEX_HOME="$HARNESS_DIR/.harness/codex"
+
+  command -v codex >/dev/null 2>&1 || {
+    echo "❌ codex not found in PATH" >&2
+    return 1
+  }
+
+  if [[ -n "$subcmd" ]]; then
+    exec codex "$subcmd" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
+  else
+    exec codex --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
+  fi
+}
+
 # _harness_launcher_complete <harness-dir>
 _harness_launcher_complete() {
   local dir="$1"
@@ -161,6 +208,7 @@ _harness_launcher_complete() {
     'dontAsk:Auto-approve most actions'
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
+    'codex:Codex CLI native'
   )
   if [[ -z "$_kiro_url" && -f "$_kiro_env" ]]; then
     source "$_kiro_env"; _kiro_url="${KIRO_GATEWAY_URL:-}"
@@ -169,9 +217,6 @@ _harness_launcher_complete() {
     source "$_codex_env"; _codex_url="${CODEX_GATEWAY_URL:-}"
   fi
   [[ -n "$_kiro_url" ]]  && shortcuts+=('kiro:Kiro via gateway')
-  if [[ -n "$_codex_url" ]]; then
-    shortcuts+=('codex:Codex via gateway')
-    shortcuts+=('codex-gateway:Codex via gateway (alias of codex)')
-  fi
+  [[ -n "$_codex_url" ]] && shortcuts+=('codex-gateway:Claude Code via Codex gateway (legacy)')
   _describe 'harness shortcuts' shortcuts
 }
