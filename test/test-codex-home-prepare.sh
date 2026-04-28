@@ -181,4 +181,194 @@ if grep -q '^\[mcp_servers' "$config2"; then
 fi
 echo "PASS: works without .mcp.json (no mcp_servers section, profiles intact)"
 
+# Codex hooks infrastructure: config.toml must enable codex_hooks feature,
+# and hooks.json must reference Claude harness's core/hooks/*.sh by absolute path.
+# Source-of-truth: Claude harness owns hook scripts; Codex layer references them.
+TEST_HARNESS3="$TEST_TEMP/fake-harness-hooks"
+mkdir -p "$TEST_HARNESS3/core/hooks"
+echo "# rules" > "$TEST_HARNESS3/CLAUDE.md"
+# Stub hook scripts so the generator can verify they exist
+for h in session-start user-prompt-session-end-detect prompt-keyword-routing \
+         pre-bash-irreversible-guard pre-bash-gh-auth pre-bash-pr-gate pre-bash-worktree-gate \
+         pre-tool-budget-guard pre-edit-config-protection \
+         post-bash-audit post-bash-commit-detect session-end; do
+  : > "$TEST_HARNESS3/core/hooks/$h.sh"
+done
+"$PREPARE" "$TEST_HARNESS3"
+config3="$TEST_HARNESS3/.harness/codex/config.toml"
+hooks_json="$TEST_HARNESS3/.harness/codex/hooks.json"
+
+grep -q '^\[features\]' "$config3" || { echo "FAIL: [features] section missing"; exit 1; }
+grep -q '^codex_hooks = true' "$config3" || { echo "FAIL: codex_hooks feature flag missing"; exit 1; }
+echo "PASS: [features].codex_hooks enabled in config.toml"
+
+[[ -f "$hooks_json" ]] || { echo "FAIL: hooks.json not generated"; exit 1; }
+python3 -c "import json; json.load(open('$hooks_json'))" 2>/dev/null \
+  || { echo "FAIL: hooks.json is not valid JSON"; exit 1; }
+echo "PASS: hooks.json generated and valid JSON"
+
+# Verify each event has the expected hook entries
+python3 - "$hooks_json" "$TEST_HARNESS3" <<'PY' || exit 1
+import json, sys, os
+path, harness = sys.argv[1], sys.argv[2]
+with open(path) as f: data = json.load(f)
+hooks = data.get("hooks", {})
+expected = {
+    "SessionStart": ["session-start.sh"],
+    "UserPromptSubmit": ["user-prompt-session-end-detect.sh", "prompt-keyword-routing.sh"],
+    "PreToolUse": ["pre-bash-irreversible-guard.sh", "pre-bash-gh-auth.sh",
+                   "pre-bash-pr-gate.sh", "pre-bash-worktree-gate.sh",
+                   "pre-tool-budget-guard.sh", "pre-edit-config-protection.sh"],
+    "PostToolUse": ["post-bash-audit.sh", "post-bash-commit-detect.sh"],
+    "Stop": ["session-end.sh"],
+}
+for event, scripts in expected.items():
+    found = []
+    for entry in hooks.get(event, []):
+        for h in entry.get("hooks", []):
+            cmd = h.get("command", "")
+            for s in scripts:
+                if s in cmd:
+                    found.append(s)
+                    abs_expected = os.path.join(harness, "core/hooks", s)
+                    if abs_expected not in cmd:
+                        print(f"FAIL: {event} hook {s} should reference absolute path {abs_expected}, got: {cmd}")
+                        sys.exit(1)
+    missing = set(scripts) - set(found)
+    if missing:
+        print(f"FAIL: {event} missing hooks: {missing}")
+        sys.exit(1)
+print("OK")
+PY
+echo "PASS: hooks.json wires all expected hooks via absolute paths to core/hooks/"
+
+# Bash matcher should be present and gate Bash-only hooks
+python3 - "$hooks_json" <<'PY' || exit 1
+import json, sys
+data = json.load(open(sys.argv[1]))
+bash_only = ["pre-bash-irreversible-guard.sh", "pre-bash-gh-auth.sh",
+             "pre-bash-pr-gate.sh", "pre-bash-worktree-gate.sh",
+             "post-bash-audit.sh", "post-bash-commit-detect.sh"]
+for event in ("PreToolUse", "PostToolUse"):
+    for entry in data["hooks"].get(event, []):
+        cmds = " ".join(h.get("command","") for h in entry.get("hooks", []))
+        if any(b in cmds for b in bash_only):
+            m = entry.get("matcher", "")
+            if "Bash" not in m:
+                print(f"FAIL: {event} entry with bash-specific hook lacks Bash matcher: {entry}")
+                sys.exit(1)
+PY
+echo "PASS: Bash-specific hooks gated by Bash matcher"
+
+# Idempotent: re-running should not change hooks.json mtime
+mtime_h_before=$(stat -f %m "$hooks_json" 2>/dev/null || stat -c %Y "$hooks_json")
+sleep 1.1
+"$PREPARE" "$TEST_HARNESS3"
+mtime_h_after=$(stat -f %m "$hooks_json" 2>/dev/null || stat -c %Y "$hooks_json")
+[[ "$mtime_h_before" == "$mtime_h_after" ]] || {
+  echo "FAIL: hooks.json mtime changed on no-op re-run"; exit 1;
+}
+echo "PASS: hooks.json idempotent on no-op re-run"
+
+# Subagents: .claude/agents/*.md should be converted to $CODEX_HOME/agents/*.toml
+# with model mapping (haiku→gpt-5.4-mini, sonnet→gpt-5.5, opus→gpt-5.5+high effort)
+# and sandbox derived from tools/disallowedTools.
+TEST_HARNESS4="$TEST_TEMP/fake-harness-agents"
+mkdir -p "$TEST_HARNESS4/.claude/agents"
+echo "# rules" > "$TEST_HARNESS4/CLAUDE.md"
+cat > "$TEST_HARNESS4/.claude/agents/explorer.md" <<'EOF'
+---
+name: explorer
+model: haiku
+description: >
+  Fast codebase search and analysis. Read-only investigation.
+tools: Read, Glob, Grep
+disallowedTools: Write, Edit, Bash, Agent
+---
+
+## Role
+
+Quickly search and analyze codebases.
+EOF
+cat > "$TEST_HARNESS4/.claude/agents/reviewer.md" <<'EOF'
+---
+name: reviewer
+model: opus
+description: >
+  Code review specialist. Read-only review.
+tools: Read, Glob, Grep, Agent
+disallowedTools: Write, Edit, Bash
+---
+
+## Role
+
+Review changed code read-only.
+EOF
+cat > "$TEST_HARNESS4/.claude/agents/implementer.md" <<'EOF'
+---
+name: implementer
+model: sonnet
+description: >
+  TDD implementation specialist.
+tools: Read, Glob, Grep, Edit, Write, Bash, Agent
+---
+
+## Role
+
+Implement code changes with strict TDD.
+EOF
+# _index.md should be ignored
+echo "# index — not an agent" > "$TEST_HARNESS4/.claude/agents/_index.md"
+
+"$PREPARE" "$TEST_HARNESS4"
+agents_out="$TEST_HARNESS4/.harness/codex/agents"
+
+[[ -d "$agents_out" ]] || { echo "FAIL: agents output dir missing"; exit 1; }
+echo "PASS: agents output directory created"
+
+[[ -f "$agents_out/explorer.toml" ]] || { echo "FAIL: explorer.toml missing"; exit 1; }
+[[ -f "$agents_out/reviewer.toml" ]] || { echo "FAIL: reviewer.toml missing"; exit 1; }
+[[ -f "$agents_out/implementer.toml" ]] || { echo "FAIL: implementer.toml missing"; exit 1; }
+[[ -f "$agents_out/_index.toml" ]] && { echo "FAIL: _index.md should be skipped"; exit 1; }
+echo "PASS: 3 agents converted, _index.md skipped"
+
+# explorer: haiku → gpt-5.4-mini, read-only sandbox
+grep -q '^name = "explorer"' "$agents_out/explorer.toml" || { echo "FAIL: explorer name"; exit 1; }
+grep -q '^model = "gpt-5.4-mini"' "$agents_out/explorer.toml" || { echo "FAIL: explorer model"; exit 1; }
+grep -q '^sandbox_mode = "read-only"' "$agents_out/explorer.toml" || { echo "FAIL: explorer sandbox"; exit 1; }
+grep -q '^developer_instructions = """' "$agents_out/explorer.toml" || { echo "FAIL: explorer developer_instructions"; exit 1; }
+grep -q 'Quickly search and analyze' "$agents_out/explorer.toml" || { echo "FAIL: explorer body content"; exit 1; }
+echo "PASS: explorer (haiku) → gpt-5.4-mini + read-only"
+
+# reviewer: opus → gpt-5.5 + effort=high, read-only sandbox
+grep -q '^model = "gpt-5.5"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer model"; exit 1; }
+grep -q '^model_reasoning_effort = "high"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer effort"; exit 1; }
+grep -q '^sandbox_mode = "read-only"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer sandbox"; exit 1; }
+echo "PASS: reviewer (opus) → gpt-5.5 + effort=high + read-only"
+
+# implementer: sonnet → gpt-5.5 default effort, workspace-write sandbox
+grep -q '^model = "gpt-5.5"' "$agents_out/implementer.toml" || { echo "FAIL: implementer model"; exit 1; }
+if grep -q '^model_reasoning_effort' "$agents_out/implementer.toml"; then
+  echo "FAIL: implementer should not have explicit effort (sonnet uses default)"; exit 1
+fi
+grep -q '^sandbox_mode = "workspace-write"' "$agents_out/implementer.toml" || { echo "FAIL: implementer sandbox"; exit 1; }
+echo "PASS: implementer (sonnet) → gpt-5.5 + workspace-write"
+
+# Idempotent
+mtime_a_before=$(stat -f %m "$agents_out/explorer.toml" 2>/dev/null || stat -c %Y "$agents_out/explorer.toml")
+sleep 1.1
+"$PREPARE" "$TEST_HARNESS4"
+mtime_a_after=$(stat -f %m "$agents_out/explorer.toml" 2>/dev/null || stat -c %Y "$agents_out/explorer.toml")
+[[ "$mtime_a_before" == "$mtime_a_after" ]] || {
+  echo "FAIL: agents toml mtime changed on no-op re-run"; exit 1;
+}
+echo "PASS: agents idempotent on no-op re-run"
+
+# Removing source agent should drop the generated toml
+rm "$TEST_HARNESS4/.claude/agents/reviewer.md"
+"$PREPARE" "$TEST_HARNESS4"
+[[ ! -f "$agents_out/reviewer.toml" ]] || { echo "FAIL: stale reviewer.toml not removed"; exit 1; }
+[[ -f "$agents_out/explorer.toml" ]] || { echo "FAIL: explorer.toml should remain"; exit 1; }
+echo "PASS: removing source agent drops generated toml"
+
 echo "✓ All codex-home-prepare tests passed"

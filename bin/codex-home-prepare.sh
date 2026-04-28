@@ -72,6 +72,9 @@ cat > "$tmp_config" <<'TOML'
 model = "gpt-5.5"
 model_reasoning_effort = "medium"
 
+[features]
+codex_hooks = true
+
 [profiles.fast]
 model = "gpt-5.5"
 model_reasoning_effort = "low"
@@ -122,4 +125,210 @@ if [[ -f "$config_file" ]] && cmp -s "$tmp_config" "$config_file"; then
   rm -f "$tmp_config"
 else
   mv "$tmp_config" "$config_file"
+fi
+
+# 4. Generate hooks.json — Claude harness owns hook scripts as single source
+# of truth; Codex layer references them via absolute path so we never copy or
+# symlink shell logic across runtime boundaries.
+hooks_file="$CODEX_HOME/hooks.json"
+tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
+python3 - "$HARNESS_DIR" > "$tmp_hooks" <<'PY'
+import json, os, sys
+harness = sys.argv[1]
+hooks_dir = os.path.join(harness, "core", "hooks")
+
+def cmd(script, timeout=None):
+    path = os.path.join(hooks_dir, script)
+    entry = {"type": "command", "command": f'bash "{path}"'}
+    if timeout is not None:
+        entry["timeout"] = timeout
+    return entry
+
+def group(scripts, matcher=None, timeouts=None):
+    timeouts = timeouts or {}
+    entries = [{"hooks": [cmd(s, timeouts.get(s))]} for s in scripts]
+    if matcher:
+        for e in entries:
+            e["matcher"] = matcher
+    return entries
+
+# Only wire hooks whose source actually exists in the harness; this keeps the
+# config valid for harnesses that haven't ported every hook yet.
+def has(s):
+    return os.path.isfile(os.path.join(hooks_dir, s))
+
+config = {"hooks": {}}
+
+session_start = [s for s in ["session-start.sh"] if has(s)]
+if session_start:
+    config["hooks"]["SessionStart"] = group(session_start, timeouts={"session-start.sh": 10000})
+
+prompts = [s for s in ["user-prompt-session-end-detect.sh", "prompt-keyword-routing.sh"] if has(s)]
+if prompts:
+    config["hooks"]["UserPromptSubmit"] = group(prompts)
+
+pre_bash = [s for s in ["pre-bash-irreversible-guard.sh", "pre-bash-gh-auth.sh",
+                        "pre-bash-pr-gate.sh", "pre-bash-worktree-gate.sh"] if has(s)]
+pre_edit = [s for s in ["pre-tool-budget-guard.sh", "pre-edit-config-protection.sh"] if has(s)]
+pre_entries = []
+if pre_bash:
+    pre_entries.extend(group(pre_bash, matcher="Bash",
+                             timeouts={"pre-bash-irreversible-guard.sh": 2000}))
+if pre_edit:
+    pre_entries.extend(group(pre_edit, matcher="apply_patch|Edit|Write"))
+if pre_entries:
+    config["hooks"]["PreToolUse"] = pre_entries
+
+post_bash = [s for s in ["post-bash-audit.sh", "post-bash-commit-detect.sh"] if has(s)]
+if post_bash:
+    config["hooks"]["PostToolUse"] = group(post_bash, matcher="Bash")
+
+stop = [s for s in ["session-end.sh"] if has(s)]
+if stop:
+    config["hooks"]["Stop"] = group(stop)
+
+json.dump(config, sys.stdout, indent=2)
+sys.stdout.write("\n")
+PY
+
+if [[ -f "$hooks_file" ]] && cmp -s "$tmp_hooks" "$hooks_file"; then
+  rm -f "$tmp_hooks"
+else
+  mv "$tmp_hooks" "$hooks_file"
+fi
+
+# 5. Subagents: convert .claude/agents/*.md (Claude format) to
+# $CODEX_HOME/agents/*.toml (Codex format). Source-of-truth is the .md file;
+# .toml is regenerated each run. A managed marker tracks generated files so
+# removing a source .md drops its .toml on next run.
+agents_src="$HARNESS_DIR/.claude/agents"
+agents_out="$CODEX_HOME/agents"
+mkdir -p "$agents_out"
+agents_marker="$agents_out/.harness-managed"
+
+if [[ -d "$agents_src" ]]; then
+  python3 - "$agents_src" "$agents_out" "$agents_marker" <<'PY'
+import os, sys, glob
+
+src_dir, out_dir, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# Preserve mtime when nothing changed: read previous marker, regenerate
+# unconditionally, then drop only entries no longer present.
+prev = set()
+if os.path.exists(marker):
+    with open(marker, "r", encoding="utf-8") as f:
+        prev = {line.strip() for line in f if line.strip()}
+
+# Model mapping: Claude → Codex. Hardcoded canonical defaults;
+# matches harness gateway env (CODEX_HAIKU_MODEL=gpt-5.4-mini etc.).
+def map_model(claude_model):
+    m = (claude_model or "").strip().lower()
+    if m == "haiku":
+        return ("gpt-5.4-mini", None)
+    if m == "opus":
+        return ("gpt-5.5", "high")
+    # sonnet or unspecified → frontier default with no explicit effort
+    return ("gpt-5.5", None)
+
+# Sandbox: read-only if the agent denies Write/Edit/Bash or only allows
+# read-shaped tools. Otherwise workspace-write.
+def map_sandbox(tools, disallowed):
+    blocked = {t.strip() for t in (disallowed or "").split(",") if t.strip()}
+    allowed = {t.strip() for t in (tools or "").split(",") if t.strip()}
+    write_tools = {"Write", "Edit", "MultiEdit", "Bash"}
+    if blocked & write_tools:
+        return "read-only"
+    if allowed and not (allowed & write_tools):
+        return "read-only"
+    return "workspace-write"
+
+def parse_frontmatter(text):
+    if not text.startswith("---"):
+        return {}, text
+    end = text.find("\n---", 3)
+    if end < 0:
+        return {}, text
+    fm_block = text[3:end].lstrip("\n")
+    body = text[end+4:].lstrip("\n")
+    meta = {}
+    lines = fm_block.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip() or ":" not in line:
+            i += 1; continue
+        key, _, val = line.partition(":")
+        key = key.strip()
+        val = val.strip()
+        # Folded scalar: collect indented continuation lines, join with spaces
+        if val == ">":
+            buf = []
+            i += 1
+            while i < len(lines) and (lines[i].startswith(" ") or lines[i].startswith("\t") or not lines[i].strip()):
+                if lines[i].strip():
+                    buf.append(lines[i].strip())
+                i += 1
+            meta[key] = " ".join(buf)
+            continue
+        meta[key] = val
+        i += 1
+    return meta, body
+
+def toml_escape(s):
+    # Triple-quoted TOML string. Escape backslashes and triple quotes.
+    return s.replace("\\", "\\\\").replace('"""', '\\"""')
+
+generated = []
+for path in sorted(glob.glob(os.path.join(src_dir, "*.md"))):
+    name = os.path.basename(path)[:-3]
+    if name == "_index":
+        continue
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    meta, body = parse_frontmatter(text)
+    if not meta.get("name"):
+        continue
+    codex_model, effort = map_model(meta.get("model", ""))
+    sandbox = map_sandbox(meta.get("tools", ""), meta.get("disallowedTools", ""))
+    desc = meta.get("description", "").strip()
+
+    out_lines = []
+    out_lines.append(f'name = "{meta["name"]}"')
+    if desc:
+        # description is single-line in Codex agent TOML
+        out_lines.append(f'description = "{desc}"')
+    out_lines.append(f'model = "{codex_model}"')
+    if effort:
+        out_lines.append(f'model_reasoning_effort = "{effort}"')
+    out_lines.append(f'sandbox_mode = "{sandbox}"')
+    body_text = body.rstrip() + "\n"
+    out_lines.append('developer_instructions = """')
+    out_lines.append(toml_escape(body_text).rstrip("\n"))
+    out_lines.append('"""')
+
+    out_path = os.path.join(out_dir, f"{name}.toml")
+    new_content = "\n".join(out_lines) + "\n"
+    if os.path.exists(out_path):
+        with open(out_path, "r", encoding="utf-8") as f:
+            old = f.read()
+        if old == new_content:
+            generated.append(f"{name}.toml")
+            continue
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    generated.append(f"{name}.toml")
+
+# Drop stale entries whose source disappeared.
+stale = prev - set(generated)
+for entry in stale:
+    try:
+        os.remove(os.path.join(out_dir, entry))
+    except FileNotFoundError:
+        pass
+
+new_marker = "".join(g + "\n" for g in generated)
+if not os.path.exists(marker) or open(marker).read() != new_marker:
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(new_marker)
+PY
 fi
