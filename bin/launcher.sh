@@ -221,21 +221,21 @@ while true; do
       *Base*)
         case "$PROVIDER_NAME" in
           kiro)  ;;
-          codex) CLAUDE_ARGS="--model sonnet[1m]" ;;   # DRIFT FIX: added codex branch
+          codex) CLAUDE_ARGS="--model sonnet${CODEX_CONTEXT_SUFFIX:-}" ;;
           *)     CLAUDE_ARGS="--model sonnet" ;;
         esac
         EFFORT_ENV="high"; STEP=5 ;;
       *Plan*)
         case "$PROVIDER_NAME" in
           kiro)  CLAUDE_ARGS="--model opusplan"; EFFORT_ENV="high" ;;
-          codex) CLAUDE_ARGS="--model opusplan[1m]"; EFFORT_ENV="xhigh" ;;
+          codex) CLAUDE_ARGS="--model opusplan${CODEX_CONTEXT_SUFFIX:-}"; EFFORT_ENV="xhigh" ;;
           *)     CLAUDE_ARGS="--model opusplan"; EFFORT_ENV="high" ;;
         esac
         STEP=5 ;;
       *Rich*)
         case "$PROVIDER_NAME" in
           kiro)  CLAUDE_ARGS="--model claude-opus-4-6"; EFFORT_ENV="max" ;;
-          codex) CLAUDE_ARGS="--model opus[1m]"; EFFORT_ENV="high" ;;
+          codex) CLAUDE_ARGS="--model opus${CODEX_CONTEXT_SUFFIX:-}"; EFFORT_ENV="high" ;;
           *)     CLAUDE_ARGS="--model opus[1m]"; EFFORT_ENV="xhigh" ;;
         esac
         STEP=5 ;;
@@ -266,7 +266,7 @@ while true; do
     if [[ "$C_MODEL" == "opus-1m" ]]; then
       case "$PROVIDER_NAME" in
         kiro)  C_MODEL_ID="claude-opus-4-6" ;;
-        codex) C_MODEL_ID="opus[1m]" ;;       # DRIFT FIX: opus → opus[1m]
+        codex) C_MODEL_ID="opus${CODEX_CONTEXT_SUFFIX:-[1m]}" ;;
         *)     C_MODEL_ID="claude-opus-4-6[1m]" ;;
       esac
     fi

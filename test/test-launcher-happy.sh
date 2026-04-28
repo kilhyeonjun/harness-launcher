@@ -275,7 +275,7 @@ run_provider_fallback $'2\n1\n4\n2\n2\n' "$CODEX_HAPPY_OUT" "$CODEX_HAPPY_STUB" 
 
 assert_stub_file_exists "$CODEX_HAPPY_STUB" 'codex happy path'
 exec_line=$(grep '^EXEC:happy' "$CODEX_HAPPY_STUB" | head -1 | cut -d: -f2-)
-grep -q '^EXEC:happy --model opus\[1m\]' "$CODEX_HAPPY_STUB" || {
+grep -qE '^EXEC:happy --model opus( |$)' "$CODEX_HAPPY_STUB" || {
   echo 'FAIL: Codex Happy path should preserve selected model'
   exit 1
 }
