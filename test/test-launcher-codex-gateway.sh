@@ -190,27 +190,46 @@ run_mode "base" "sonnet[1m]" "high"     || exit 1
 run_mode "plan" "opusplan[1m]" "high"   || exit 1
 run_mode "rich" "opus[1m]" "high"       || exit 1
 
-# PCT override for codex+[1m]: real GPT-5.5/Codex limit is 400K, so PCT=35
-# (35% of fake 1M = 350K, fits inside actual 400K window).
+# PCT override for codex+[1m]: only when CODEX_*_MODEL contains "5.5"
+# (real GPT-5.5/Codex limit is 400K; 35% of fake 1M = 350K fits 400K).
 echo ""
-echo "PCT override for codex+[1m] (real 400K Codex limit)"
+echo "PCT override for codex+[1m] — current models are gpt-5.4-xhigh (NOT 5.5)"
 assert_pct() {
   local mode="$1" expected="$2"
   local got
   got=$(grep "^PCT:" "$TEST_TEMP/output-codex-$mode.txt" | head -1 | cut -d: -f2-)
   if [[ "$got" == "$expected" ]]; then
-    echo "PASS: codex $mode [1m] → CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=$expected"
+    echo "PASS: codex $mode → CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=$expected"
   else
-    echo "FAIL: codex $mode [1m] expected PCT=$expected, got '$got'"
+    echo "FAIL: codex $mode expected PCT=$expected, got '$got'"
     exit 1
   fi
 }
-# fast=haiku has no [1m] suffix even with codex, so PCT stays UNSET
+# fast=haiku has no [1m] suffix, PCT stays UNSET
 assert_pct "fast" "UNSET"
-# base/plan/rich get [1m] from CODEX_CONTEXT_SUFFIX → PCT=35 (codex + [1m] branch)
-assert_pct "base" "35"
-assert_pct "plan" "35"
+# base/plan/rich get [1m] but model is "gpt-5.4-xhigh" (not 5.5) → PCT=50, not 35
+assert_pct "base" "50"
+assert_pct "plan" "50"
+assert_pct "rich" "50"
+
+# Now retest with CODEX_OPUS_MODEL=gpt-5.5 → PCT should drop to 35
+echo ""
+echo "PCT override for codex+[1m]+5.5 (the actual GPT-5.5 case)"
+write_codex_env_5_5() {
+  cat > "$TEST_HARNESS/config/.local/codex-gateway.env" <<EOF
+CODEX_GATEWAY_URL="$HTTP_URL"
+CODEX_GATEWAY_API_KEY="test-key"
+CODEX_OPUS_MODEL="gpt-5.5"
+CODEX_SONNET_MODEL="gpt-5.5"
+CODEX_HAIKU_MODEL="gpt-5.4-mini"
+CODEX_CONTEXT_SUFFIX="[1m]"
+EOF
+}
+write_codex_env_5_5
+run_mode "rich" "opus[1m]" "high" || exit 1
 assert_pct "rich" "35"
+run_mode "base" "sonnet[1m]" "high" || exit 1
+assert_pct "base" "35"
 
 write_codex_env ""  # restore for env-export test below
 

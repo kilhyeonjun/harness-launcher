@@ -364,13 +364,15 @@ if [[ -n "$PROVIDER_URL" ]]; then
 fi
 [[ -n "$EFFORT_ENV" ]] && CLAUDE_ARGS_ARR+=(--effort "$EFFORT_ENV")
 CLAUDE_ARGS_ARR+=(--exclude-dynamic-system-prompt-sections)
-# Auto-compact PCT by detected context size + provider:
-#   [1m] + codex provider  → PCT=35 (real GPT-5.5/Codex limit is 400K)
-#   [1m] direct (Anthropic) → PCT=50 (true 1M context)
-#   200K (no [1m])         → no override, settings.json fallback applies
+# Auto-compact PCT by detected context size + provider + model:
+#   [1m] + codex + (opus|sonnet contains "5.5") → PCT=35 (real 400K Codex limit)
+#   [1m] otherwise (direct Anthropic, or codex with non-5.5 model) → PCT=50
+#   200K (no [1m])                          → settings.json fallback applies
 for _arg in "${CLAUDE_ARGS_ARR[@]}"; do
   if [[ "$_arg" == *"[1m]"* ]]; then
-    if [[ "$PROVIDER_NAME" == "codex" ]]; then
+    if [[ "$PROVIDER_NAME" == "codex" ]] && {
+         [[ "${CODEX_OPUS_MODEL:-}" == *"5.5"* ]] || [[ "${CODEX_SONNET_MODEL:-}" == *"5.5"* ]]
+       }; then
       export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=35
     else
       export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50

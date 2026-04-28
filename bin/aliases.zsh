@@ -139,14 +139,16 @@ _harness_launcher_run() {
     fi
     [[ -n "$env_effort" ]] && claude_args+=(--effort "$env_effort")
     claude_args+=(--exclude-dynamic-system-prompt-sections)
-    # Auto-compact PCT by detected context size + provider:
-    #   [1m] + codex provider  → PCT=35 (real GPT-5.5/Codex limit is 400K, not 1M;
-    #                                    35% of fake 1M = 350K, fits inside 400K)
-    #   [1m] direct (Anthropic) → PCT=50 (true 1M context)
-    #   200K (no [1m])         → no override, settings.json fallback (70) applies
+    # Auto-compact PCT by detected context size + provider + model:
+    #   [1m] + codex + (opus|sonnet contains "5.5") → PCT=35 (real GPT-5.5/Codex
+    #                  limit is 400K, not 1M; 35% of fake 1M = 350K fits 400K)
+    #   [1m] otherwise (direct Anthropic, or codex with non-5.5 model) → PCT=50
+    #   200K (no [1m])                          → settings.json fallback applies
     for _arg in "${claude_args[@]}"; do
       if [[ "$_arg" == *"[1m]"* ]]; then
-        if [[ "$provider_name" == "codex" ]]; then
+        if [[ "$provider_name" == "codex" ]] && {
+             [[ "${CODEX_OPUS_MODEL:-}" == *"5.5"* ]] || [[ "${CODEX_SONNET_MODEL:-}" == *"5.5"* ]]
+           }; then
           export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=35
         else
           export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
