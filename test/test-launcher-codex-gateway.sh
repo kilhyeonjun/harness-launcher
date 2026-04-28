@@ -3,11 +3,12 @@
 # (Note: the bare `codex` alias is being repurposed to mean "Codex CLI native";
 # this test exercises the legacy gateway path under its disambiguated name.)
 # Modes: fast, base, plan, rich
-# Expected behavior (codex-gateway):
+# Expected behavior (codex-gateway, default CODEX_CONTEXT_SUFFIX=""):
 #   fast  → --model haiku --effort low
-#   base  → --model sonnet[1m] --effort high + ANTHROPIC_BASE_URL set
-#   plan  → --model opusplan[1m] --effort xhigh
-#   rich  → --model opus[1m] --effort high
+#   base  → --model sonnet --effort high + ANTHROPIC_BASE_URL set
+#   plan  → --model opusplan --effort xhigh
+#   rich  → --model opus --effort high
+# With CODEX_CONTEXT_SUFFIX="[1m]" the base/plan/rich models gain [1m] suffix.
 # Also verifies codex-gateway env exports: CODEX_OPUS_MODEL → ANTHROPIC_DEFAULT_OPUS_MODEL
 
 set -e
@@ -121,6 +122,9 @@ extract_has_flag() {
 run_mode() {
   local mode="$1" expected_model="$2" expected_effort="$3"
   local stub_file="$TEST_TEMP/output-codex-$mode.txt"
+
+  # Clean up previous stub file to avoid appended output from prior runs
+  rm -f "$stub_file"
 
   (
     export TEST_STUB_FILE="$stub_file"

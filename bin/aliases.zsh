@@ -82,21 +82,21 @@ _harness_launcher_run() {
       base)
         case "$provider_name" in
           kiro)  ;; # default sonnet, 200K
-          codex) claude_args+=(--model 'sonnet[1m]') ;; # codex proxy supports 1M
+          codex) claude_args+=(--model "sonnet${CODEX_CONTEXT_SUFFIX:-}") ;; # codex proxy supports 1M
           *)     claude_args+=(--model sonnet) ;;       # direct OAuth: sonnet[1m] needs API plan
         esac
         env_effort=high; skip_tui=true; mode_applied=true; shift ;;
       plan)
         case "$provider_name" in
           kiro)  claude_args+=(--model opusplan); env_effort=high ;;
-          codex) claude_args+=(--model 'opusplan[1m]'); env_effort=xhigh ;;
+          codex) claude_args+=(--model "opusplan${CODEX_CONTEXT_SUFFIX:-}"); env_effort=xhigh ;;
           *)     claude_args+=(--model opusplan); env_effort=high ;;
         esac
         skip_tui=true; mode_applied=true; shift ;;
       rich)
         case "$provider_name" in
           kiro)  claude_args+=(--model 'claude-opus-4-6'); env_effort=max ;;
-          codex) claude_args+=(--model 'opus[1m]'); env_effort=high ;;
+          codex) claude_args+=(--model "opus${CODEX_CONTEXT_SUFFIX:-}"); env_effort=high ;;
           *)     claude_args+=(--model 'opus[1m]'); env_effort=xhigh ;;
         esac
         skip_tui=true; mode_applied=true; shift ;;
@@ -105,7 +105,7 @@ _harness_launcher_run() {
         if ! $mode_applied; then
           case "$provider_name" in
             kiro)  ;;
-            codex) claude_args+=(--model 'sonnet[1m]') ;;
+            codex) claude_args+=(--model "sonnet${CODEX_CONTEXT_SUFFIX:-}") ;;
             *)     claude_args+=(--model sonnet) ;;
           esac
         fi
