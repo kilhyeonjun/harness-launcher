@@ -91,6 +91,7 @@ cat > "$CLAUDE_STUB" <<'EOF'
   echo "OPUS_MODEL:${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
   echo "SONNET_MODEL:${ANTHROPIC_DEFAULT_SONNET_MODEL:-}"
   echo "HAIKU_MODEL:${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}"
+  echo "PCT:${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-UNSET}"
 } >> "$TEST_STUB_FILE"
 exit 0
 EOF
@@ -129,6 +130,7 @@ run_mode() {
   (
     export TEST_STUB_FILE="$stub_file"
     export PATH="$TEST_TEMP:$PATH"
+    unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
     source "$LAUNCHER_DIR/bin/aliases.zsh"
     _harness_launcher_run "$TEST_HARNESS" 'codex-gateway' "$mode"
   ) 2>/dev/null || true
@@ -187,6 +189,29 @@ run_mode "fast" "haiku" "low"           || exit 1
 run_mode "base" "sonnet[1m]" "high"     || exit 1
 run_mode "plan" "opusplan[1m]" "high"   || exit 1
 run_mode "rich" "opus[1m]" "high"       || exit 1
+
+# PCT override for codex+[1m]: real GPT-5.5/Codex limit is 400K, so PCT=35
+# (35% of fake 1M = 350K, fits inside actual 400K window).
+echo ""
+echo "PCT override for codex+[1m] (real 400K Codex limit)"
+assert_pct() {
+  local mode="$1" expected="$2"
+  local got
+  got=$(grep "^PCT:" "$TEST_TEMP/output-codex-$mode.txt" | head -1 | cut -d: -f2-)
+  if [[ "$got" == "$expected" ]]; then
+    echo "PASS: codex $mode [1m] → CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=$expected"
+  else
+    echo "FAIL: codex $mode [1m] expected PCT=$expected, got '$got'"
+    exit 1
+  fi
+}
+# fast=haiku has no [1m] suffix even with codex, so PCT stays UNSET
+assert_pct "fast" "UNSET"
+# base/plan/rich get [1m] from CODEX_CONTEXT_SUFFIX → PCT=35 (codex + [1m] branch)
+assert_pct "base" "35"
+assert_pct "plan" "35"
+assert_pct "rich" "35"
+
 write_codex_env ""  # restore for env-export test below
 
 # Verify CODEX env exports

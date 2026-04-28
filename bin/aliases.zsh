@@ -139,9 +139,20 @@ _harness_launcher_run() {
     fi
     [[ -n "$env_effort" ]] && claude_args+=(--effort "$env_effort")
     claude_args+=(--exclude-dynamic-system-prompt-sections)
-    # 1M context relaxes PCT threshold; 200K stays on settings.json fallback.
+    # Auto-compact PCT by detected context size + provider:
+    #   [1m] + codex provider  → PCT=35 (real GPT-5.5/Codex limit is 400K, not 1M;
+    #                                    35% of fake 1M = 350K, fits inside 400K)
+    #   [1m] direct (Anthropic) → PCT=50 (true 1M context)
+    #   200K (no [1m])         → no override, settings.json fallback (70) applies
     for _arg in "${claude_args[@]}"; do
-      [[ "$_arg" == *"[1m]"* ]] && export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 && break
+      if [[ "$_arg" == *"[1m]"* ]]; then
+        if [[ "$provider_name" == "codex" ]]; then
+          export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=35
+        else
+          export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
+        fi
+        break
+      fi
     done
     exec claude "${claude_args[@]}"
   else
