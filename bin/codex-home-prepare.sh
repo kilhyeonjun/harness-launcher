@@ -82,13 +82,13 @@ model_reasoning_effort = "medium"
 
 [profiles.plan]
 model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 approval_policy = "on-request"
 
 [profiles.rich]
 model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "high"
 
 TOML
 

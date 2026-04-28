@@ -6,7 +6,7 @@
 # Expected behavior (codex-gateway, default CODEX_CONTEXT_SUFFIX=""):
 #   fast  → --model haiku --effort low
 #   base  → --model sonnet --effort high + ANTHROPIC_BASE_URL set
-#   plan  → --model opusplan --effort xhigh
+#   plan  → --model opusplan --effort high
 #   rich  → --model opus --effort high
 # With CODEX_CONTEXT_SUFFIX="[1m]" the base/plan/rich models gain [1m] suffix.
 # Also verifies codex-gateway env exports: CODEX_OPUS_MODEL → ANTHROPIC_DEFAULT_OPUS_MODEL
@@ -177,15 +177,15 @@ run_mode() {
 echo "Default suffix (empty) — should produce plain models"
 run_mode "fast" "haiku" "low"     || exit 1
 run_mode "base" "sonnet" "high"   || exit 1
-run_mode "plan" "opusplan" "xhigh" || exit 1
-run_mode "rich" "opus" "high"     || exit 1
+run_mode "plan" "opusplan" "high"  || exit 1
+run_mode "rich" "opus" "high"      || exit 1
 
 echo ""
 echo "Suffix \"[1m]\" — should produce [1m] models"
 write_codex_env "[1m]"
 run_mode "fast" "haiku" "low"           || exit 1
 run_mode "base" "sonnet[1m]" "high"     || exit 1
-run_mode "plan" "opusplan[1m]" "xhigh"  || exit 1
+run_mode "plan" "opusplan[1m]" "high"   || exit 1
 run_mode "rich" "opus[1m]" "high"       || exit 1
 write_codex_env ""  # restore for env-export test below
 

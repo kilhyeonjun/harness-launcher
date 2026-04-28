@@ -112,8 +112,8 @@ if [[ "$RUNTIME" == "codex" ]]; then
   menu "Mode" \
     "1. ⚡ Fast — gpt-5.5, low effort" \
     "2. ⚖️  Base — gpt-5.5, medium effort" \
-    "3. 🗺️  Plan — gpt-5.5, xhigh + read-only sandbox" \
-    "4. 🧠 Rich — gpt-5.5, xhigh effort" || exit 0
+    "3. 🗺️  Plan — gpt-5.5, high + read-only sandbox" \
+    "4. 🧠 Rich — gpt-5.5, high effort" || exit 0
   case "$MENU_RESULT" in
     *Fast*) CODEX_PROFILE="fast" ;;
     *Plan*) CODEX_PROFILE="plan" ;;
@@ -228,7 +228,7 @@ while true; do
       *Plan*)
         case "$PROVIDER_NAME" in
           kiro)  CLAUDE_ARGS="--model opusplan"; EFFORT_ENV="high" ;;
-          codex) CLAUDE_ARGS="--model opusplan${CODEX_CONTEXT_SUFFIX:-}"; EFFORT_ENV="xhigh" ;;
+          codex) CLAUDE_ARGS="--model opusplan${CODEX_CONTEXT_SUFFIX:-}"; EFFORT_ENV="high" ;;
           *)     CLAUDE_ARGS="--model opusplan"; EFFORT_ENV="high" ;;
         esac
         STEP=5 ;;

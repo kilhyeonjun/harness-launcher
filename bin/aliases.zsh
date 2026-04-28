@@ -89,7 +89,7 @@ _harness_launcher_run() {
       plan)
         case "$provider_name" in
           kiro)  claude_args+=(--model opusplan); env_effort=high ;;
-          codex) claude_args+=(--model "opusplan${CODEX_CONTEXT_SUFFIX:-}"); env_effort=xhigh ;;
+          codex) claude_args+=(--model "opusplan${CODEX_CONTEXT_SUFFIX:-}"); env_effort=high ;;
           *)     claude_args+=(--model opusplan); env_effort=high ;;
         esac
         skip_tui=true; mode_applied=true; shift ;;
