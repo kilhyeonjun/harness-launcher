@@ -364,6 +364,10 @@ if [[ -n "$PROVIDER_URL" ]]; then
 fi
 [[ -n "$EFFORT_ENV" ]] && CLAUDE_ARGS_ARR+=(--effort "$EFFORT_ENV")
 CLAUDE_ARGS_ARR+=(--exclude-dynamic-system-prompt-sections)
+# 1M context relaxes PCT threshold; 200K stays on settings.json fallback.
+for _arg in "${CLAUDE_ARGS_ARR[@]}"; do
+  [[ "$_arg" == *"[1m]"* ]] && export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 && break
+done
 echo ""
 echo "Starting: ${PROVIDER_LABEL}$LAUNCH_EXECUTABLE ${CLAUDE_ARGS_ARR[*]}"
 echo ""

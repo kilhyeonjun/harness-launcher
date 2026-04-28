@@ -139,6 +139,10 @@ _harness_launcher_run() {
     fi
     [[ -n "$env_effort" ]] && claude_args+=(--effort "$env_effort")
     claude_args+=(--exclude-dynamic-system-prompt-sections)
+    # 1M context relaxes PCT threshold; 200K stays on settings.json fallback.
+    for _arg in "${claude_args[@]}"; do
+      [[ "$_arg" == *"[1m]"* ]] && export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 && break
+    done
     exec claude "${claude_args[@]}"
   else
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" \
