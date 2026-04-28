@@ -18,12 +18,47 @@ mkdir -p "$CODEX_HOME"
 if [[ -f "$HARNESS_DIR/CLAUDE.md" ]]; then
   ln -sfn "../../CLAUDE.md" "$CODEX_HOME/AGENTS.md"
 fi
-if [[ -d "$HOME/.codex/skills" ]]; then
-  ln -sfn "$HOME/.codex/skills" "$CODEX_HOME/skills"
-fi
 if [[ -f "$HOME/.codex/auth.json" ]]; then
   ln -sfn "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
 fi
+
+# Skills: merge global Codex skills (~/.codex/skills) with per-harness Claude
+# skills ($HARNESS_DIR/.claude/skills) into $CODEX_HOME/skills/. Each entry is
+# a symlink so source-of-truth stays in one place. A managed-marker file lets
+# re-runs drop stale entries when sources change.
+SKILLS_DIR="$CODEX_HOME/skills"
+# Migrate from old single-symlink layout
+[[ -L "$SKILLS_DIR" ]] && rm "$SKILLS_DIR"
+mkdir -p "$SKILLS_DIR"
+MARKER="$SKILLS_DIR/.harness-managed"
+if [[ -f "$MARKER" ]]; then
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    [[ -L "$SKILLS_DIR/$entry" ]] && rm "$SKILLS_DIR/$entry"
+  done < "$MARKER"
+fi
+: > "$MARKER"
+
+link_skill_dir() {
+  local src_root="$1"
+  [[ -d "$src_root" ]] || return 0
+  local src name
+  for src in "$src_root"/*/; do
+    [[ -d "$src" ]] || continue
+    [[ -f "$src/SKILL.md" ]] || continue
+    name="$(basename "$src")"
+    ln -sfn "${src%/}" "$SKILLS_DIR/$name"
+    echo "$name" >> "$MARKER"
+  done
+  # Preserve Codex system bundle if present (.system/ holds vendor skills)
+  if [[ -d "$src_root/.system" ]]; then
+    ln -sfn "$src_root/.system" "$SKILLS_DIR/.system"
+    echo ".system" >> "$MARKER"
+  fi
+}
+
+link_skill_dir "$HOME/.codex/skills"
+link_skill_dir "$HARNESS_DIR/.claude/skills"
 
 # 2. Generate config.toml content
 config_file="$CODEX_HOME/config.toml"

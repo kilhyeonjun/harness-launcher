@@ -100,12 +100,73 @@ if [[ -f "$HOME/.codex/auth.json" ]]; then
 else
   echo "SKIP: auth.json — ~/.codex/auth.json not present"
 fi
-if [[ -d "$HOME/.codex/skills" ]]; then
-  [[ -L "$CODEX_HOME/skills" ]] || { echo "FAIL: skills symlink missing"; exit 1; }
-  echo "PASS: skills symlink present"
-else
-  echo "SKIP: skills — ~/.codex/skills not present"
-fi
+# Skills merge: $CODEX_HOME/skills must be a real directory containing
+# per-skill symlinks from both global ~/.codex/skills/* and per-harness
+# .claude/skills/*. Use a mocked HOME so the test is self-contained.
+FAKE_HOME="$TEST_TEMP/fake-home"
+FAKE_HARNESS_S="$TEST_TEMP/fake-harness-skills"
+mkdir -p "$FAKE_HOME/.codex/skills/global-skill" \
+         "$FAKE_HOME/.codex/skills/.system/system-skill" \
+         "$FAKE_HARNESS_S/.claude/skills/harness-skill"
+echo "# fake rules" > "$FAKE_HARNESS_S/CLAUDE.md"
+cat > "$FAKE_HOME/.codex/skills/global-skill/SKILL.md" <<'EOF'
+---
+name: global-skill
+description: Globally available skill
+---
+EOF
+cat > "$FAKE_HOME/.codex/skills/.system/system-skill/SKILL.md" <<'EOF'
+---
+name: system-skill
+description: Codex system bundle
+---
+EOF
+cat > "$FAKE_HARNESS_S/.claude/skills/harness-skill/SKILL.md" <<'EOF'
+---
+name: harness-skill
+description: Per-harness Claude skill
+---
+EOF
+HOME="$FAKE_HOME" "$PREPARE" "$FAKE_HARNESS_S"
+SKILLS_OUT="$FAKE_HARNESS_S/.harness/codex/skills"
+
+[[ -d "$SKILLS_OUT" && ! -L "$SKILLS_OUT" ]] || {
+  echo "FAIL: skills should be a real directory, not a single symlink"; exit 1;
+}
+echo "PASS: skills is a real directory"
+
+[[ -L "$SKILLS_OUT/global-skill" ]] || { echo "FAIL: global-skill symlink missing"; exit 1; }
+[[ -f "$SKILLS_OUT/global-skill/SKILL.md" ]] || { echo "FAIL: global-skill resolves to file"; exit 1; }
+echo "PASS: ~/.codex/skills/global-skill linked"
+
+[[ -L "$SKILLS_OUT/harness-skill" ]] || { echo "FAIL: harness-skill symlink missing"; exit 1; }
+[[ -f "$SKILLS_OUT/harness-skill/SKILL.md" ]] || { echo "FAIL: harness-skill resolves to file"; exit 1; }
+echo "PASS: \$HARNESS_DIR/.claude/skills/harness-skill linked"
+
+[[ -L "$SKILLS_OUT/.system" ]] || { echo "FAIL: .system bundle symlink missing"; exit 1; }
+echo "PASS: ~/.codex/skills/.system bundle linked"
+
+[[ -f "$SKILLS_OUT/.harness-managed" ]] || { echo "FAIL: .harness-managed marker missing"; exit 1; }
+grep -qx 'global-skill' "$SKILLS_OUT/.harness-managed"  || { echo "FAIL: marker missing global-skill"; exit 1; }
+grep -qx 'harness-skill' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing harness-skill"; exit 1; }
+echo "PASS: .harness-managed marker tracks all linked entries"
+
+# Re-run after dropping a per-harness skill should remove its symlink
+rm -rf "$FAKE_HARNESS_S/.claude/skills/harness-skill"
+HOME="$FAKE_HOME" "$PREPARE" "$FAKE_HARNESS_S"
+[[ ! -L "$SKILLS_OUT/harness-skill" ]] || { echo "FAIL: stale harness-skill symlink not removed"; exit 1; }
+[[ -L "$SKILLS_OUT/global-skill" ]] || { echo "FAIL: global-skill should still be present"; exit 1; }
+echo "PASS: re-run drops sources that were removed"
+
+# Migration: old single-symlink layout should be replaced with directory
+rm -rf "$FAKE_HARNESS_S/.harness/codex/skills"
+ln -s "$FAKE_HOME/.codex/skills" "$FAKE_HARNESS_S/.harness/codex/skills"
+[[ -L "$FAKE_HARNESS_S/.harness/codex/skills" ]] || { echo "FAIL: setup precondition"; exit 1; }
+HOME="$FAKE_HOME" "$PREPARE" "$FAKE_HARNESS_S"
+[[ -d "$SKILLS_OUT" && ! -L "$SKILLS_OUT" ]] || {
+  echo "FAIL: migration from old symlink layout failed"; exit 1;
+}
+echo "PASS: migrates from old single-symlink layout"
 
 # Missing .mcp.json should not break — config.toml still has profiles
 TEST_HARNESS2="$TEST_TEMP/fake-harness-2"
