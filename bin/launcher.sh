@@ -73,6 +73,88 @@ HAPPY_RETURN_STEP=5
 HAS_HAPPY=false
 command -v happy >/dev/null 2>&1 && HAS_HAPPY=true
 
+LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Runtime selection: Claude Code vs Codex CLI native.
+HAS_CLAUDE=false
+HAS_CODEX=false
+command -v claude >/dev/null 2>&1 && HAS_CLAUDE=true
+command -v codex  >/dev/null 2>&1 && HAS_CODEX=true
+
+RUNTIME="claude"
+if $HAS_CLAUDE && $HAS_CODEX; then
+  menu "Select runtime" \
+    "1. ☁️  Claude Code" \
+    "2. ⚡ Codex CLI (native)" || exit 0
+  case "$MENU_RESULT" in
+    *Codex*) RUNTIME="codex" ;;
+  esac
+elif $HAS_CODEX && ! $HAS_CLAUDE; then
+  RUNTIME="codex"
+fi
+
+if [[ "$RUNTIME" == "codex" ]]; then
+  # Codex CLI native flow: session → mode → safety → exec codex
+  CODEX_SUBCMD=""
+  CODEX_SUBCMD_ARGS=()
+
+  menu "Session" \
+    "1. New session" \
+    "2. Continue last session (resume --last)" \
+    "3. Resume from picker" \
+    "4. Fork last session" || exit 0
+  case "$MENU_RESULT" in
+    *Continue*) CODEX_SUBCMD="resume"; CODEX_SUBCMD_ARGS=(--last) ;;
+    *Resume*)   CODEX_SUBCMD="resume" ;;
+    *Fork*)     CODEX_SUBCMD="fork";   CODEX_SUBCMD_ARGS=(--last) ;;
+  esac
+
+  menu "Mode" \
+    "1. ⚡ Fast — gpt-5.5, low effort" \
+    "2. ⚖️  Base — gpt-5.5, medium effort" \
+    "3. 🗺️  Plan — gpt-5.5, xhigh + read-only sandbox" \
+    "4. 🧠 Rich — gpt-5.5, xhigh effort" || exit 0
+  case "$MENU_RESULT" in
+    *Fast*) CODEX_PROFILE="fast" ;;
+    *Plan*) CODEX_PROFILE="plan" ;;
+    *Rich*) CODEX_PROFILE="rich" ;;
+    *)      CODEX_PROFILE="base" ;;
+  esac
+
+  CODEX_SAFETY_ARGS=()
+  menu "Safety" \
+    "1. Default (sandboxed, ask on request)" \
+    "2. Full auto (--full-auto)" \
+    "3. Never approval (-a never)" \
+    "4. Bypass — DANGEROUS (--dangerously-bypass-approvals-and-sandbox)" || exit 0
+  case "$MENU_RESULT" in
+    *auto*)   CODEX_SAFETY_ARGS=(--full-auto) ;;
+    *Never*)  CODEX_SAFETY_ARGS=(-a never) ;;
+    *Bypass*) CODEX_SAFETY_ARGS=(--dangerously-bypass-approvals-and-sandbox) ;;
+  esac
+
+  if [[ -x "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" ]]; then
+    "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" "$HARNESS_DIR" || exit $?
+  fi
+  export CODEX_HOME="$HARNESS_DIR/.harness/codex"
+
+  CODEX_CMD=(codex)
+  if [[ -n "$CODEX_SUBCMD" ]]; then
+    CODEX_CMD+=("$CODEX_SUBCMD")
+    CODEX_CMD+=("${CODEX_SUBCMD_ARGS[@]}")
+  fi
+  CODEX_CMD+=(--cd "$HARNESS_DIR" -p "$CODEX_PROFILE")
+  if [[ ${#CODEX_SAFETY_ARGS[@]} -gt 0 ]]; then
+    CODEX_CMD+=("${CODEX_SAFETY_ARGS[@]}")
+  fi
+
+  stty sane 2>/dev/null
+  echo ""
+  echo "Starting: ${CODEX_CMD[*]}"
+  echo ""
+  exec "${CODEX_CMD[@]}"
+fi
+
 active_providers=()
 while IFS= read -r line; do
   active_providers+=("$line")
