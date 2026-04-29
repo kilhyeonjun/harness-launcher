@@ -202,6 +202,11 @@ grep -q '^\[features\]' "$config3" || { echo "FAIL: [features] section missing";
 grep -q '^codex_hooks = true' "$config3" || { echo "FAIL: codex_hooks feature flag missing"; exit 1; }
 echo "PASS: [features].codex_hooks enabled in config.toml"
 
+# ChatGPT Apps/connectors disabled at feature-flag level — harness sessions
+# don't need them and the user opts deny-by-default globally.
+grep -q '^apps = false' "$config3" || { echo "FAIL: [features].apps = false missing"; exit 1; }
+echo "PASS: [features].apps disabled in config.toml"
+
 [[ -f "$hooks_json" ]] || { echo "FAIL: hooks.json not generated"; exit 1; }
 python3 -c "import json; json.load(open('$hooks_json'))" 2>/dev/null \
   || { echo "FAIL: hooks.json is not valid JSON"; exit 1; }

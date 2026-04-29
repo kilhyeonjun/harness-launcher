@@ -223,6 +223,9 @@ model = "gpt-5.5"
 model_reasoning_effort = "medium"
 
 [features]
+# ChatGPT Apps/connectors disabled — harness sessions don't use them and user
+# opts deny-by-default globally. Most-comprehensive disable: feature-flag level.
+apps = false
 codex_hooks = true
 
 [profiles.fast]
