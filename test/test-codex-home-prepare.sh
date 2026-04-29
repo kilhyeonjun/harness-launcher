@@ -242,6 +242,34 @@ print("OK")
 PY
 echo "PASS: hooks.json wires all expected hooks via absolute paths to core/hooks/"
 
+# Adapter wrapping: SessionStart, UserPromptSubmit, and Stop emit Claude-format
+# JSON ({"additionalContext": ...}) which Codex rejects. Those events MUST be
+# routed through codex-hook-adapter.sh; tool-use events stay direct.
+python3 - "$hooks_json" <<'PY' || exit 1
+import json, sys
+data = json.load(open(sys.argv[1]))
+adapted = {"SessionStart", "UserPromptSubmit", "Stop"}
+direct = {"PreToolUse", "PostToolUse"}
+for event in adapted:
+    for entry in data["hooks"].get(event, []):
+        for h in entry.get("hooks", []):
+            cmd = h.get("command", "")
+            if "codex-hook-adapter.sh" not in cmd:
+                print(f"FAIL: {event} hook not wrapped via adapter: {cmd}")
+                sys.exit(1)
+            if event not in cmd:
+                print(f"FAIL: {event} adapter call missing event arg: {cmd}")
+                sys.exit(1)
+for event in direct:
+    for entry in data["hooks"].get(event, []):
+        for h in entry.get("hooks", []):
+            cmd = h.get("command", "")
+            if "codex-hook-adapter.sh" in cmd:
+                print(f"FAIL: {event} hook should NOT use adapter (no rewrite needed): {cmd}")
+                sys.exit(1)
+PY
+echo "PASS: SessionStart/UserPromptSubmit/Stop routed through codex-hook-adapter.sh"
+
 # Bash matcher should be present and gate Bash-only hooks
 python3 - "$hooks_json" <<'PY' || exit 1
 import json, sys

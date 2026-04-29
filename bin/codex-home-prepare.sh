@@ -279,24 +279,36 @@ fi
 
 # 4. Generate hooks.json — Claude harness owns hook scripts as single source
 # of truth; Codex layer references them via absolute path so we never copy or
-# symlink shell logic across runtime boundaries.
+# symlink shell logic across runtime boundaries. SessionStart/UserPromptSubmit/
+# Stop run through codex-hook-adapter.sh because Codex rejects Claude's
+# top-level additionalContext schema for those events.
 hooks_file="$CODEX_HOME/hooks.json"
 tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
-python3 - "$HARNESS_DIR" > "$tmp_hooks" <<'PY'
+ADAPTER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-hook-adapter.sh"
+python3 - "$HARNESS_DIR" "$ADAPTER_PATH" > "$tmp_hooks" <<'PY'
 import json, os, sys
 harness = sys.argv[1]
+adapter = sys.argv[2]
 hooks_dir = os.path.join(harness, "core", "hooks")
 
-def cmd(script, timeout=None):
+# Events whose Claude output schema needs translation before Codex sees it.
+ADAPTED_EVENTS = {"SessionStart", "UserPromptSubmit", "Stop"}
+adapter_available = os.path.isfile(adapter)
+
+def cmd(script, event=None, timeout=None):
     path = os.path.join(hooks_dir, script)
-    entry = {"type": "command", "command": f'bash "{path}"'}
+    if event and event in ADAPTED_EVENTS and adapter_available:
+        command = f'bash "{adapter}" {event} "{path}"'
+    else:
+        command = f'bash "{path}"'
+    entry = {"type": "command", "command": command}
     if timeout is not None:
         entry["timeout"] = timeout
     return entry
 
-def group(scripts, matcher=None, timeouts=None):
+def group(scripts, matcher=None, timeouts=None, event=None):
     timeouts = timeouts or {}
-    entries = [{"hooks": [cmd(s, timeouts.get(s))]} for s in scripts]
+    entries = [{"hooks": [cmd(s, event=event, timeout=timeouts.get(s))]} for s in scripts]
     if matcher:
         for e in entries:
             e["matcher"] = matcher
@@ -311,31 +323,33 @@ config = {"hooks": {}}
 
 session_start = [s for s in ["session-start.sh"] if has(s)]
 if session_start:
-    config["hooks"]["SessionStart"] = group(session_start, timeouts={"session-start.sh": 10000})
+    config["hooks"]["SessionStart"] = group(session_start,
+                                            event="SessionStart",
+                                            timeouts={"session-start.sh": 10000})
 
 prompts = [s for s in ["user-prompt-session-end-detect.sh", "prompt-keyword-routing.sh"] if has(s)]
 if prompts:
-    config["hooks"]["UserPromptSubmit"] = group(prompts)
+    config["hooks"]["UserPromptSubmit"] = group(prompts, event="UserPromptSubmit")
 
 pre_bash = [s for s in ["pre-bash-irreversible-guard.sh", "pre-bash-gh-auth.sh",
                         "pre-bash-pr-gate.sh", "pre-bash-worktree-gate.sh"] if has(s)]
 pre_edit = [s for s in ["pre-tool-budget-guard.sh", "pre-edit-config-protection.sh"] if has(s)]
 pre_entries = []
 if pre_bash:
-    pre_entries.extend(group(pre_bash, matcher="Bash",
+    pre_entries.extend(group(pre_bash, matcher="Bash", event="PreToolUse",
                              timeouts={"pre-bash-irreversible-guard.sh": 2000}))
 if pre_edit:
-    pre_entries.extend(group(pre_edit, matcher="apply_patch|Edit|Write"))
+    pre_entries.extend(group(pre_edit, matcher="apply_patch|Edit|Write", event="PreToolUse"))
 if pre_entries:
     config["hooks"]["PreToolUse"] = pre_entries
 
 post_bash = [s for s in ["post-bash-audit.sh", "post-bash-commit-detect.sh"] if has(s)]
 if post_bash:
-    config["hooks"]["PostToolUse"] = group(post_bash, matcher="Bash")
+    config["hooks"]["PostToolUse"] = group(post_bash, matcher="Bash", event="PostToolUse")
 
 stop = [s for s in ["session-end.sh"] if has(s)]
 if stop:
-    config["hooks"]["Stop"] = group(stop)
+    config["hooks"]["Stop"] = group(stop, event="Stop")
 
 json.dump(config, sys.stdout, indent=2)
 sys.stdout.write("\n")
