@@ -156,10 +156,15 @@ _harness_launcher_run() {
         break
       fi
     done
-    exec claude "${claude_args[@]}"
+    # Plain invocation (not exec) so the user's interactive shell survives
+    # the launched process — Ctrl+C returns to the prompt instead of closing
+    # the terminal window.
+    claude "${claude_args[@]}"
+    return $?
   else
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" \
-      exec "$_HARNESS_LAUNCHER_BIN/launcher.sh"
+      "$_HARNESS_LAUNCHER_BIN/launcher.sh"
+    return $?
   fi
 }
 
@@ -198,11 +203,14 @@ _harness_launcher_run_codex_cli() {
     return 1
   }
 
+  # Plain invocation (not exec) so the user's interactive shell survives
+  # codex exit — Ctrl+C returns to the prompt instead of closing the terminal.
   if [[ -n "$subcmd" ]]; then
-    exec codex "$subcmd" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
+    codex "$subcmd" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
   else
-    exec codex --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
+    codex --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
   fi
+  return $?
 }
 
 # _harness_launcher_complete <harness-dir>
