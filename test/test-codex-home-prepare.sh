@@ -207,6 +207,12 @@ echo "PASS: [features].codex_hooks enabled in config.toml"
 grep -q '^apps = false' "$config3" || { echo "FAIL: [features].apps = false missing"; exit 1; }
 echo "PASS: [features].apps disabled in config.toml"
 
+grep -q '^\[tui\]' "$config3" || { echo "FAIL: [tui] section missing"; exit 1; }
+grep -q '^status_line = \["model-with-reasoning", "current-dir", "git-branch", "run-state", "context-remaining", "context-used"\]' "$config3" || {
+  echo "FAIL: [tui].status_line missing expected harness defaults"; exit 1;
+}
+echo "PASS: [tui].status_line configured in config.toml"
+
 [[ -f "$hooks_json" ]] || { echo "FAIL: hooks.json not generated"; exit 1; }
 python3 -c "import json; json.load(open('$hooks_json'))" 2>/dev/null \
   || { echo "FAIL: hooks.json is not valid JSON"; exit 1; }

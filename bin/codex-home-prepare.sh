@@ -228,6 +228,9 @@ model_reasoning_effort = "medium"
 apps = false
 codex_hooks = true
 
+[tui]
+status_line = ["model-with-reasoning", "current-dir", "git-branch", "run-state", "context-remaining", "context-used"]
+
 [profiles.fast]
 model = "gpt-5.5"
 model_reasoning_effort = "low"
