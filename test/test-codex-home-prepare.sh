@@ -220,8 +220,13 @@ expected = {
                    "pre-bash-pr-gate.sh", "pre-bash-worktree-gate.sh",
                    "pre-tool-budget-guard.sh", "pre-edit-config-protection.sh"],
     "PostToolUse": ["post-bash-audit.sh", "post-bash-commit-detect.sh"],
-    "Stop": ["session-end.sh"],
 }
+# Stop is intentionally NOT wired: Codex fires Stop after every turn while
+# session-end.sh emits a session-termination checklist. Wiring it would
+# trigger session-end procedures on every routine prompt.
+if "Stop" in hooks:
+    print(f"FAIL: Stop event must not be wired (Codex fires per-turn): {hooks['Stop']}")
+    sys.exit(1)
 for event, scripts in expected.items():
     found = []
     for entry in hooks.get(event, []):
@@ -248,7 +253,7 @@ echo "PASS: hooks.json wires all expected hooks via absolute paths to core/hooks
 python3 - "$hooks_json" <<'PY' || exit 1
 import json, sys
 data = json.load(open(sys.argv[1]))
-adapted = {"SessionStart", "UserPromptSubmit", "Stop"}
+adapted = {"SessionStart", "UserPromptSubmit"}
 direct = {"PreToolUse", "PostToolUse"}
 for event in adapted:
     for entry in data["hooks"].get(event, []):
@@ -268,7 +273,7 @@ for event in direct:
                 print(f"FAIL: {event} hook should NOT use adapter (no rewrite needed): {cmd}")
                 sys.exit(1)
 PY
-echo "PASS: SessionStart/UserPromptSubmit/Stop routed through codex-hook-adapter.sh"
+echo "PASS: SessionStart/UserPromptSubmit routed through codex-hook-adapter.sh; Stop unwired"
 
 # Bash matcher should be present and gate Bash-only hooks
 python3 - "$hooks_json" <<'PY' || exit 1

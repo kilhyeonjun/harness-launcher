@@ -347,9 +347,12 @@ post_bash = [s for s in ["post-bash-audit.sh", "post-bash-commit-detect.sh"] if 
 if post_bash:
     config["hooks"]["PostToolUse"] = group(post_bash, matcher="Bash", event="PostToolUse")
 
-stop = [s for s in ["session-end.sh"] if has(s)]
-if stop:
-    config["hooks"]["Stop"] = group(stop, event="Stop")
+# Stop intentionally NOT wired for Codex. The Claude harness's session-end.sh
+# emits a session-termination checklist (delivery-required, instinct-gap,
+# session-record-missing). Codex fires Stop after every turn — wiring it
+# would surface that checklist on every routine prompt and the Codex agent
+# tries to comply (e.g. invokes harness-improve skill after a single 'hi').
+# Session-end intent for Codex is detected via UserPromptSubmit instead.
 
 json.dump(config, sys.stdout, indent=2)
 sys.stdout.write("\n")
