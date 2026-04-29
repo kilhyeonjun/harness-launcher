@@ -77,7 +77,12 @@ case "$EVENT" in
     }'
     ;;
   *)
-    echo '{}'
+    jq -n --arg event "$EVENT" --arg ctx "$ADDL" '{
+      hookSpecificOutput: {
+        hookEventName: $event,
+        additionalContext: $ctx
+      }
+    }'
     ;;
 esac
 

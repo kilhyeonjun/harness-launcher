@@ -5,6 +5,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$LAUNCHER_DIR/../.." && pwd)"
 PREPARE="$LAUNCHER_DIR/bin/codex-home-prepare.sh"
 
 cleanup() {
@@ -185,15 +186,174 @@ echo "PASS: works without .mcp.json (no mcp_servers section, profiles intact)"
 # and hooks.json must reference Claude harness's core/hooks/*.sh by absolute path.
 # Source-of-truth: Claude harness owns hook scripts; Codex layer references them.
 TEST_HARNESS3="$TEST_TEMP/fake-harness-hooks"
-mkdir -p "$TEST_HARNESS3/core/hooks"
+mkdir -p "$TEST_HARNESS3/core/hooks" "$TEST_HARNESS3/.claude/source"
 echo "# rules" > "$TEST_HARNESS3/CLAUDE.md"
 # Stub hook scripts so the generator can verify they exist
 for h in session-start user-prompt-session-end-detect prompt-keyword-routing \
          pre-bash-irreversible-guard pre-bash-gh-auth pre-bash-pr-gate pre-bash-worktree-gate \
-         pre-tool-budget-guard pre-edit-config-protection \
-         post-bash-audit post-bash-commit-detect session-end; do
+         pre-tool-budget-guard pre-tool-opus-guard pre-edit-config-protection \
+         pre-edit-codex-output-guard pre-write-memory-block pre-tool-scoped-context \
+         post-edit-codex-resync suggest-compact post-bash-audit post-bash-commit-detect \
+         post-tool-auto-pilot-reinject session-end; do
   : > "$TEST_HARNESS3/core/hooks/$h.sh"
 done
+cat > "$TEST_HARNESS3/.claude/source/hooks.yaml" <<'EOF'
+hooks:
+  source: .claude/settings.json
+  mode: settings-driven
+  codex_exclusions:
+    - Stop
+    - post-edit-codex-resync.sh
+EOF
+cat > "$TEST_HARNESS3/.claude/settings.json" <<'EOF'
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/session-start.sh\"",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/prompt-keyword-routing.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/user-prompt-session-end-detect.sh\"",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-tool-budget-guard.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-tool-opus-guard.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-edit-codex-output-guard.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-write-memory-block.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Edit|Write|MultiEdit|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-tool-scoped-context.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-bash-irreversible-guard.sh\"",
+            "timeout": 2000
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-bash-gh-auth.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-bash-pr-gate.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-bash-worktree-gate.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/post-edit-codex-resync.sh\"",
+            "timeout": 2000
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/suggest-compact.sh\"",
+            "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/post-tool-auto-pilot-reinject.sh\"",
+            "timeout": 1000
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/post-bash-audit.sh\"",
+            "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/post-bash-commit-detect.sh\"",
+            "timeout": 3000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/session-end.sh\"",
+            "timeout": 20000
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
 "$PREPARE" "$TEST_HARNESS3"
 config3="$TEST_HARNESS3/.harness/codex/config.toml"
 hooks_json="$TEST_HARNESS3/.harness/codex/hooks.json"
@@ -229,8 +389,11 @@ expected = {
     "UserPromptSubmit": ["user-prompt-session-end-detect.sh", "prompt-keyword-routing.sh"],
     "PreToolUse": ["pre-bash-irreversible-guard.sh", "pre-bash-gh-auth.sh",
                    "pre-bash-pr-gate.sh", "pre-bash-worktree-gate.sh",
-                   "pre-tool-budget-guard.sh", "pre-edit-config-protection.sh"],
-    "PostToolUse": ["post-bash-audit.sh", "post-bash-commit-detect.sh"],
+                   "pre-tool-budget-guard.sh", "pre-tool-opus-guard.sh",
+                   "pre-edit-codex-output-guard.sh", "pre-write-memory-block.sh",
+                   "pre-tool-scoped-context.sh"],
+    "PostToolUse": ["suggest-compact.sh", "post-bash-audit.sh",
+                    "post-bash-commit-detect.sh", "post-tool-auto-pilot-reinject.sh"],
 }
 # Stop is intentionally NOT wired: Codex fires Stop after every turn while
 # session-end.sh emits a session-termination checklist. Wiring it would
@@ -258,14 +421,27 @@ print("OK")
 PY
 echo "PASS: hooks.json wires all expected hooks via absolute paths to core/hooks/"
 
-# Adapter wrapping: SessionStart, UserPromptSubmit, and Stop emit Claude-format
-# JSON ({"additionalContext": ...}) which Codex rejects. Those events MUST be
-# routed through codex-hook-adapter.sh; tool-use events stay direct.
 python3 - "$hooks_json" <<'PY' || exit 1
 import json, sys
 data = json.load(open(sys.argv[1]))
-adapted = {"SessionStart", "UserPromptSubmit"}
-direct = {"PreToolUse", "PostToolUse"}
+blob = json.dumps(data)
+for excluded in ("post-edit-codex-resync.sh", "session-end.sh"):
+    if excluded in blob:
+        print(f"FAIL: excluded hook should not be wired for Codex: {excluded}")
+        sys.exit(1)
+print("OK")
+PY
+echo "PASS: hooks.yaml exclusions respected for Codex hooks"
+
+# Adapter wrapping: SessionStart, UserPromptSubmit, and PostToolUse may emit
+# Claude-format JSON ({"additionalContext": ...}) which Codex rejects. Those
+# events MUST be routed through codex-hook-adapter.sh; PreToolUse stays direct
+# so blocking guard decisions are not hidden.
+python3 - "$hooks_json" <<'PY' || exit 1
+import json, sys
+data = json.load(open(sys.argv[1]))
+adapted = {"SessionStart", "UserPromptSubmit", "PostToolUse"}
+direct = {"PreToolUse"}
 for event in adapted:
     for entry in data["hooks"].get(event, []):
         for h in entry.get("hooks", []):
@@ -284,7 +460,7 @@ for event in direct:
                 print(f"FAIL: {event} hook should NOT use adapter (no rewrite needed): {cmd}")
                 sys.exit(1)
 PY
-echo "PASS: SessionStart/UserPromptSubmit routed through codex-hook-adapter.sh; Stop unwired"
+echo "PASS: SessionStart/UserPromptSubmit/PostToolUse routed through codex-hook-adapter.sh; Stop unwired"
 
 # Bash matcher should be present and gate Bash-only hooks
 python3 - "$hooks_json" <<'PY' || exit 1
@@ -466,6 +642,74 @@ grep -q "CLAUDE.md ≤ 60 lines" "$agents_file" || {
   echo "FAIL: new rule not picked up on regen"; exit 1;
 }
 echo "PASS: new rule auto-picked-up on regen"
+
+# Compiler integration: when a harness has canonical .claude/source files and
+# core/scripts/harness_compile.py, codex-home-prepare must delegate AGENTS.md
+# generation to the compiler so the Codex runtime gets the XML contract first.
+TEST_HARNESS_COMP="$TEST_TEMP/fake-harness-compiler"
+mkdir -p "$TEST_HARNESS_COMP/.claude/source" \
+         "$TEST_HARNESS_COMP/.claude/rules" \
+         "$TEST_HARNESS_COMP/core/scripts"
+echo "# compiler harness" > "$TEST_HARNESS_COMP/CLAUDE.md"
+cp "$REPO_ROOT/core/scripts/harness_compile.py" "$TEST_HARNESS_COMP/core/scripts/harness_compile.py"
+cat > "$TEST_HARNESS_COMP/.claude/source/runtime-contract.yaml" <<'EOF'
+runtime_contract:
+  id: harness-runtime-v1
+  source_of_truth: Claude harness source is canonical. Runtime surfaces are generated.
+  forbidden_edits:
+    - path: .harness/codex/**
+      reason: Generated Codex adapter layer.
+  before_work:
+    - Read relevant domain knowledge before repo work.
+    - Check cascading update rules before editing.
+  completion_gate:
+    - Run concrete verification before claiming done.
+    - Report failed or skipped verification.
+EOF
+cat > "$TEST_HARNESS_COMP/.claude/source/budgets.yaml" <<'EOF'
+budgets:
+  claude_md_max_lines: 80
+  always_on_total_max_lines: 160
+  codex_agents_max_bytes: 32768
+  skill_md_max_bytes: 10000
+EOF
+cat > "$TEST_HARNESS_COMP/.claude/rules/cascading-updates.md" <<'EOF'
+# Cascading Updates
+
+compiler cascading rule body
+EOF
+cat > "$TEST_HARNESS_COMP/.claude/rules/runtime-contract.md" <<'EOF'
+stale generated runtime duplicate should be skipped
+EOF
+cat > "$TEST_HARNESS_COMP/.claude/rules/_index.md" <<'EOF'
+compiler index should be skipped
+EOF
+
+"$PREPARE" "$TEST_HARNESS_COMP"
+compiler_agents="$TEST_HARNESS_COMP/.harness/codex/AGENTS.md"
+[[ -f "$compiler_agents" && ! -L "$compiler_agents" ]] || {
+  echo "FAIL: compiler AGENTS.md should be real generated file"; exit 1;
+}
+grep -q "Generated by harness_compile.py" "$compiler_agents" || {
+  echo "FAIL: compiler AGENTS.md missing compiler header"; exit 1;
+}
+grep -q '<runtime_contract id="harness-runtime-v1">' "$compiler_agents" || {
+  echo "FAIL: compiler AGENTS.md missing XML runtime contract"; exit 1;
+}
+grep -q "compiler cascading rule body" "$compiler_agents" || {
+  echo "FAIL: compiler AGENTS.md missing non-runtime rule body"; exit 1;
+}
+if grep -q "compiler index should be skipped" "$compiler_agents"; then
+  echo "FAIL: compiler AGENTS.md should skip _index.md"; exit 1;
+fi
+if grep -q "stale generated runtime duplicate" "$compiler_agents"; then
+  echo "FAIL: compiler AGENTS.md should skip generated runtime-contract.md rule"; exit 1;
+fi
+runtime_count=$(grep -c '<runtime_contract id=' "$compiler_agents")
+[[ "$runtime_count" == "1" ]] || {
+  echo "FAIL: compiler AGENTS.md should include runtime contract once, got $runtime_count"; exit 1;
+}
+echo "PASS: codex-home-prepare delegates AGENTS.md generation to harness compiler"
 
 # Migration from legacy symlink layout: if AGENTS.md exists as symlink AND
 # rules now exist, we must replace it with the generated file.
