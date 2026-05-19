@@ -55,12 +55,14 @@ echo "PASS: AGENTS.md → CLAUDE.md (no-rules fallback)"
 config="$CODEX_HOME/config.toml"
 [[ -f "$config" ]] || { echo "FAIL: config.toml missing"; exit 1; }
 grep -q '^model = "gpt-5.5"' "$config" || { echo "FAIL: top-level model missing"; exit 1; }
+grep -q '^model_context_window = 1050000' "$config" || { echo "FAIL: model_context_window missing"; exit 1; }
+grep -q '^model_auto_compact_token_limit = 900000' "$config" || { echo "FAIL: model_auto_compact_token_limit missing"; exit 1; }
 grep -q '^\[profiles.fast\]' "$config" || { echo "FAIL: profiles.fast missing"; exit 1; }
 grep -q '^\[profiles.base\]' "$config" || { echo "FAIL: profiles.base missing"; exit 1; }
 grep -q '^\[profiles.plan\]' "$config" || { echo "FAIL: profiles.plan missing"; exit 1; }
 grep -q '^\[profiles.rich\]' "$config" || { echo "FAIL: profiles.rich missing"; exit 1; }
 grep -q '^sandbox_mode = "read-only"' "$config" || { echo "FAIL: plan sandbox_mode missing"; exit 1; }
-echo "PASS: config.toml has top-level + 4 profiles"
+echo "PASS: config.toml has top-level + long context + 4 profiles"
 
 # mcp_servers schema (HTTP, stdio, env)
 grep -q '^\[mcp_servers.atlassian\]' "$config" || { echo "FAIL: atlassian section missing"; exit 1; }
@@ -108,7 +110,11 @@ FAKE_HOME="$TEST_TEMP/fake-home"
 FAKE_HARNESS_S="$TEST_TEMP/fake-harness-skills"
 mkdir -p "$FAKE_HOME/.codex/skills/global-skill" \
          "$FAKE_HOME/.codex/skills/.system/system-skill" \
-         "$FAKE_HARNESS_S/.claude/skills/harness-skill"
+         "$FAKE_HARNESS_S/.claude/skills/harness-skill" \
+         "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/.codex-plugin" \
+         "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/skills/browser" \
+         "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/.codex-plugin" \
+         "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/skills/computer-use"
 echo "# fake rules" > "$FAKE_HARNESS_S/CLAUDE.md"
 cat > "$FAKE_HOME/.codex/skills/global-skill/SKILL.md" <<'EOF'
 ---
@@ -126,6 +132,24 @@ cat > "$FAKE_HARNESS_S/.claude/skills/harness-skill/SKILL.md" <<'EOF'
 ---
 name: harness-skill
 description: Per-harness Claude skill
+---
+EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/.codex-plugin/plugin.json" <<'EOF'
+{"name":"browser","version":"0.1.0-test","skills":"./skills/"}
+EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/skills/browser/SKILL.md" <<'EOF'
+---
+name: browser
+description: Browser test skill
+---
+EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/.codex-plugin/plugin.json" <<'EOF'
+{"name":"computer-use","version":"1.0.0-test","skills":"./skills/"}
+EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/skills/computer-use/SKILL.md" <<'EOF'
+---
+name: computer-use
+description: Computer Use test skill
 ---
 EOF
 HOME="$FAKE_HOME" "$PREPARE" "$FAKE_HARNESS_S"
@@ -151,6 +175,20 @@ echo "PASS: ~/.codex/skills/.system bundle linked"
 grep -qx 'global-skill' "$SKILLS_OUT/.harness-managed"  || { echo "FAIL: marker missing global-skill"; exit 1; }
 grep -qx 'harness-skill' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing harness-skill"; exit 1; }
 echo "PASS: .harness-managed marker tracks all linked entries"
+
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/browser/0.1.0-test/.codex-plugin/plugin.json" ]] || {
+  echo "FAIL: browser plugin cache not materialized"; exit 1;
+}
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/browser/0.1.0-test/skills/browser/SKILL.md" ]] || {
+  echo "FAIL: browser plugin skill not materialized"; exit 1;
+}
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/computer-use/1.0.0-test/.codex-plugin/plugin.json" ]] || {
+  echo "FAIL: computer-use plugin cache not materialized"; exit 1;
+}
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/computer-use/1.0.0-test/skills/computer-use/SKILL.md" ]] || {
+  echo "FAIL: computer-use plugin skill not materialized"; exit 1;
+}
+echo "PASS: OpenAI bundled plugin roots materialized into Codex plugin cache"
 
 # Re-run after dropping a per-harness skill should remove its symlink
 rm -rf "$FAKE_HARNESS_S/.claude/skills/harness-skill"
@@ -182,7 +220,7 @@ if grep -q '^\[mcp_servers' "$config2"; then
 fi
 echo "PASS: works without .mcp.json (no mcp_servers section, profiles intact)"
 
-# Codex hooks infrastructure: config.toml must enable codex_hooks feature,
+# Codex hooks infrastructure: config.toml must enable hooks feature,
 # and hooks.json must reference Claude harness's core/hooks/*.sh by absolute path.
 # Source-of-truth: Claude harness owns hook scripts; Codex layer references them.
 TEST_HARNESS3="$TEST_TEMP/fake-harness-hooks"
@@ -359,19 +397,64 @@ config3="$TEST_HARNESS3/.harness/codex/config.toml"
 hooks_json="$TEST_HARNESS3/.harness/codex/hooks.json"
 
 grep -q '^\[features\]' "$config3" || { echo "FAIL: [features] section missing"; exit 1; }
-grep -q '^codex_hooks = true' "$config3" || { echo "FAIL: codex_hooks feature flag missing"; exit 1; }
-echo "PASS: [features].codex_hooks enabled in config.toml"
+grep -q '^hooks = true' "$config3" || { echo "FAIL: hooks feature flag missing"; exit 1; }
+if grep -q '^codex_hooks = true' "$config3"; then
+  echo "FAIL: deprecated codex_hooks feature flag present"; exit 1;
+fi
+echo "PASS: [features].hooks enabled in config.toml"
 
 # ChatGPT Apps/connectors disabled at feature-flag level — harness sessions
 # don't need them and the user opts deny-by-default globally.
 grep -q '^apps = false' "$config3" || { echo "FAIL: [features].apps = false missing"; exit 1; }
 echo "PASS: [features].apps disabled in config.toml"
 
+grep -q '^model_context_window = 1050000' "$config3" || {
+  echo "FAIL: model_context_window missing"; exit 1;
+}
+grep -q '^model_auto_compact_token_limit = 900000' "$config3" || {
+  echo "FAIL: model_auto_compact_token_limit missing"; exit 1;
+}
+echo "PASS: Codex long-context model settings configured"
+
+grep -q '^\[marketplaces.openai-bundled\]' "$config3" || {
+  echo "FAIL: openai-bundled marketplace missing"; exit 1;
+}
+grep -q "^source = \"$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled\"" "$config3" || {
+  echo "FAIL: openai-bundled marketplace source missing"; exit 1;
+}
+grep -q '^\[plugins\."computer-use@openai-bundled"\]' "$config3" || {
+  echo "FAIL: computer-use plugin section missing"; exit 1;
+}
+grep -q '^\[plugins\."browser@openai-bundled"\]' "$config3" || {
+  echo "FAIL: browser plugin section missing"; exit 1;
+}
+grep -A1 '^\[plugins\."computer-use@openai-bundled"\]' "$config3" | grep -q '^enabled = true' || {
+  echo "FAIL: computer-use plugin not enabled"; exit 1;
+}
+grep -A1 '^\[plugins\."browser@openai-bundled"\]' "$config3" | grep -q '^enabled = true' || {
+  echo "FAIL: browser plugin not enabled"; exit 1;
+}
+echo "PASS: OpenAI bundled Computer Use and Browser plugins enabled"
+
 grep -q '^\[tui\]' "$config3" || { echo "FAIL: [tui] section missing"; exit 1; }
 grep -q '^status_line = \["model-with-reasoning", "current-dir", "git-branch", "run-state", "context-remaining", "context-used"\]' "$config3" || {
   echo "FAIL: [tui].status_line missing expected harness defaults"; exit 1;
 }
 echo "PASS: [tui].status_line configured in config.toml"
+
+cat >> "$config3" <<'EOF'
+
+[hooks.state."test-preserve-hook"]
+trusted_hash = "sha256:preserved"
+EOF
+"$PREPARE" "$TEST_HARNESS3"
+grep -q '^\[hooks\.state\."test-preserve-hook"\]' "$config3" || {
+  echo "FAIL: hooks.state trust section was not preserved across config regeneration"; exit 1;
+}
+grep -q '^trusted_hash = "sha256:preserved"' "$config3" || {
+  echo "FAIL: hooks.state trusted_hash was not preserved across config regeneration"; exit 1;
+}
+echo "PASS: Codex hooks.state trust sections preserved across config regeneration"
 
 [[ -f "$hooks_json" ]] || { echo "FAIL: hooks.json not generated"; exit 1; }
 python3 -c "import json; json.load(open('$hooks_json'))" 2>/dev/null \

@@ -70,9 +70,14 @@ harness's `.mcp.json` and `CLAUDE.md`.
 populates `$HARNESS_DIR/.harness/codex/` with:
 
 - `config.toml` — top-level model defaults, `[profiles.fast|base|plan|rich]`,
-  and `[mcp_servers.*]` translated from `.mcp.json`.
+  long-context client settings, `[mcp_servers.*]` translated from `.mcp.json`,
+  and enabled entries for harness-approved Codex bundled plugins
+  (`computer-use`, `browser`).
+- `plugins/cache/openai-bundled/` — versioned plugin roots for those bundled
+  plugins, so Codex reports them as installed and loads their skills/tools.
 - `AGENTS.md` → `../../CLAUDE.md` (symlink, so Codex picks up the harness rules).
-- `skills` → `~/.codex/skills` (symlink, share global Codex skills).
+- `skills/` — per-skill symlink merge of global `~/.codex/skills` plus
+  harness-local `.claude/skills`.
 - `auth.json` → `~/.codex/auth.json` (symlink, share login).
 
 The script is idempotent: re-running rewrites `config.toml` only when the
