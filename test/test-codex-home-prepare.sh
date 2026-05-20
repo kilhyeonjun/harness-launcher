@@ -110,6 +110,7 @@ FAKE_HOME="$TEST_TEMP/fake-home"
 FAKE_HARNESS_S="$TEST_TEMP/fake-harness-skills"
 mkdir -p "$FAKE_HOME/.codex/skills/global-skill" \
          "$FAKE_HOME/.codex/skills/.system/system-skill" \
+         "$FAKE_HOME/.codex/superpowers/skills/brainstorming" \
          "$FAKE_HARNESS_S/.claude/skills/harness-skill" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/.codex-plugin" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/skills/browser" \
@@ -132,6 +133,12 @@ cat > "$FAKE_HARNESS_S/.claude/skills/harness-skill/SKILL.md" <<'EOF'
 ---
 name: harness-skill
 description: Per-harness Claude skill
+---
+EOF
+cat > "$FAKE_HOME/.codex/superpowers/skills/brainstorming/SKILL.md" <<'EOF'
+---
+name: brainstorming
+description: Superpowers brainstorming skill
 ---
 EOF
 cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/.codex-plugin/plugin.json" <<'EOF'
@@ -171,9 +178,16 @@ echo "PASS: \$HARNESS_DIR/.claude/skills/harness-skill linked"
 [[ -L "$SKILLS_OUT/.system" ]] || { echo "FAIL: .system bundle symlink missing"; exit 1; }
 echo "PASS: ~/.codex/skills/.system bundle linked"
 
+[[ -L "$SKILLS_OUT/superpowers" ]] || { echo "FAIL: superpowers namespace symlink missing"; exit 1; }
+[[ -f "$SKILLS_OUT/superpowers/brainstorming/SKILL.md" ]] || {
+  echo "FAIL: superpowers namespace symlink does not resolve to nested skills"; exit 1;
+}
+echo "PASS: ~/.codex/superpowers/skills namespace linked"
+
 [[ -f "$SKILLS_OUT/.harness-managed" ]] || { echo "FAIL: .harness-managed marker missing"; exit 1; }
 grep -qx 'global-skill' "$SKILLS_OUT/.harness-managed"  || { echo "FAIL: marker missing global-skill"; exit 1; }
 grep -qx 'harness-skill' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing harness-skill"; exit 1; }
+grep -qx 'superpowers' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing superpowers"; exit 1; }
 echo "PASS: .harness-managed marker tracks all linked entries"
 
 [[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/browser/0.1.0-test/.codex-plugin/plugin.json" ]] || {
@@ -398,10 +412,12 @@ hooks_json="$TEST_HARNESS3/.harness/codex/hooks.json"
 
 grep -q '^\[features\]' "$config3" || { echo "FAIL: [features] section missing"; exit 1; }
 grep -q '^hooks = true' "$config3" || { echo "FAIL: hooks feature flag missing"; exit 1; }
+grep -q '^goals = true' "$config3" || { echo "FAIL: goals feature flag missing"; exit 1; }
+grep -q '^multi_agent = true' "$config3" || { echo "FAIL: multi_agent feature flag missing"; exit 1; }
 if grep -q '^codex_hooks = true' "$config3"; then
   echo "FAIL: deprecated codex_hooks feature flag present"; exit 1;
 fi
-echo "PASS: [features].hooks enabled in config.toml"
+echo "PASS: [features].hooks, goals, and multi_agent enabled in config.toml"
 
 # ChatGPT Apps/connectors disabled at feature-flag level — harness sessions
 # don't need them and the user opts deny-by-default globally.

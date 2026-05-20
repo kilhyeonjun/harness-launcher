@@ -105,6 +105,16 @@ link_skill_dir() {
 }
 
 link_skill_dir "$HOME/.codex/skills"
+
+# Superpowers uses Codex's namespace-style skill discovery: the official
+# install links ~/.agents/skills/superpowers -> ~/.codex/superpowers/skills.
+# Harness Codex homes are generator-owned, so link the clone directly here as
+# well and do not depend on a mutable ~/.agents symlink staying present.
+if [[ -d "$HOME/.codex/superpowers/skills" ]]; then
+  ln -sfn "$HOME/.codex/superpowers/skills" "$SKILLS_DIR/superpowers"
+  echo "superpowers" >> "$MARKER"
+fi
+
 link_skill_dir "$HARNESS_DIR/.claude/skills"
 
 # Commands → Codex skills: portable orchestration commands (those without
@@ -240,7 +250,9 @@ model_auto_compact_token_limit = 900000
 # ChatGPT Apps/connectors disabled — harness sessions don't use them and user
 # opts deny-by-default globally. Most-comprehensive disable: feature-flag level.
 apps = false
+goals = true
 hooks = true
+multi_agent = true
 
 [marketplaces.openai-bundled]
 source_type = "local"
