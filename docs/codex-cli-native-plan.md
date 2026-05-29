@@ -23,7 +23,7 @@ Last updated: 2026-04-28.
 확인된 옵션:
 - `-c key=value` (TOML 리터럴, 도트경로, 반복 가능)
 - `-C, --cd <DIR>` 모든 서브커맨드에서 동작
-- `-p, --profile <NAME>` config.toml의 `[profiles.<name>]` 사용
+- `-p, --profile <NAME>` profile 선택 (0.125.0 당시엔 config.toml의 `[profiles.<name>]`; **0.134.0+부터는 별도 `<name>.config.toml` 파일 필수** — §4 갱신 노트 참조)
 - `-s, --sandbox` (`read-only` | `workspace-write` | `danger-full-access`)
 - `-a, --ask-for-approval` (`untrusted` | `on-request` | `never`; `on-failure`는 DEPRECATED)
 - `--full-auto`, `--dangerously-bypass-approvals-and-sandbox`
@@ -85,29 +85,39 @@ Safety: Default / Full auto / Never approval / Bypass
 
 ## 4. Mode → Codex profile mapping
 
-`$CODEX_HOME/config.toml`에 다음 profile 사전 정의 (launcher가 생성):
+> **갱신 (2026-05-29, Codex 0.134.0+):** config.toml 내 인라인 `[profiles.<name>]` 테이블과
+> top-level `profile =` selector는 더 이상 지원되지 않는다. `--profile X`를 그런 config와
+> 함께 쓰면 config **로드 단계에서 하드 에러**. 각 profile은 `$CODEX_HOME/<name>.config.toml`에
+> **top-level 키**로 분리한다(테이블로 감싸지 않음). 이 파일은 config.toml의 top-level
+> 기본값을 overlay하므로 달라지는 키만 담으면 된다. 생성 주체는 `codex-home-prepare.sh`의
+> `write_profile` 헬퍼(`3b` 단계).
+
+`$CODEX_HOME/`에 profile별 overlay 파일 사전 생성 (launcher가 `codex-home-prepare.sh`로 생성):
 
 ```toml
+# config.toml — top-level 기본값만 (profile 테이블 없음)
 model = "gpt-5.5"
 model_reasoning_effort = "medium"
+model_context_window = 1050000
+model_auto_compact_token_limit = 900000
 
-[profiles.fast]
+# fast.config.toml
 model = "gpt-5.5"
 model_reasoning_effort = "low"
 
-[profiles.base]
+# base.config.toml
 model = "gpt-5.5"
 model_reasoning_effort = "medium"
 
-[profiles.plan]
+# plan.config.toml
 model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 approval_policy = "on-request"
 
-[profiles.rich]
+# rich.config.toml
 model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "high"
 ```
 
 Launcher는 `codex -p fast --cd "$HARNESS_DIR"`처럼 profile만 넘기고 model/effort 인자 조립 안 함.

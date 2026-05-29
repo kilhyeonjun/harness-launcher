@@ -57,12 +57,29 @@ config="$CODEX_HOME/config.toml"
 grep -q '^model = "gpt-5.5"' "$config" || { echo "FAIL: top-level model missing"; exit 1; }
 grep -q '^model_context_window = 1050000' "$config" || { echo "FAIL: model_context_window missing"; exit 1; }
 grep -q '^model_auto_compact_token_limit = 900000' "$config" || { echo "FAIL: model_auto_compact_token_limit missing"; exit 1; }
-grep -q '^\[profiles.fast\]' "$config" || { echo "FAIL: profiles.fast missing"; exit 1; }
-grep -q '^\[profiles.base\]' "$config" || { echo "FAIL: profiles.base missing"; exit 1; }
-grep -q '^\[profiles.plan\]' "$config" || { echo "FAIL: profiles.plan missing"; exit 1; }
-grep -q '^\[profiles.rich\]' "$config" || { echo "FAIL: profiles.rich missing"; exit 1; }
-grep -q '^sandbox_mode = "read-only"' "$config" || { echo "FAIL: plan sandbox_mode missing"; exit 1; }
-echo "PASS: config.toml has top-level + long context + 4 profiles"
+# Codex 0.134.0+ rejects `--profile` when config.toml still contains inline
+# [profiles.*] tables. Profiles must live in separate <name>.config.toml files.
+if grep -q '^\[profiles\.' "$config"; then
+  echo "FAIL: config.toml still has legacy [profiles.*] table (Codex 0.134.0+ rejects --profile)"; exit 1;
+fi
+echo "PASS: config.toml has no legacy [profiles.*] tables"
+
+# Per-profile overlay files: top-level keys (NOT nested under [profiles.<name>])
+for p in fast base plan rich; do
+  pf="$CODEX_HOME/$p.config.toml"
+  [[ -f "$pf" ]] || { echo "FAIL: $p.config.toml missing"; exit 1; }
+  grep -q '^model = "gpt-5.5"' "$pf" || { echo "FAIL: $p.config.toml missing top-level model"; exit 1; }
+  if grep -q '^\[profiles' "$pf"; then
+    echo "FAIL: $p.config.toml must use top-level keys, not a [profiles.$p] table"; exit 1;
+  fi
+done
+grep -q '^model_reasoning_effort = "low"' "$CODEX_HOME/fast.config.toml" || { echo "FAIL: fast effort wrong"; exit 1; }
+grep -q '^model_reasoning_effort = "medium"' "$CODEX_HOME/base.config.toml" || { echo "FAIL: base effort wrong"; exit 1; }
+grep -q '^model_reasoning_effort = "high"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan effort wrong"; exit 1; }
+grep -q '^sandbox_mode = "read-only"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan sandbox_mode missing"; exit 1; }
+grep -q '^approval_policy = "on-request"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan approval_policy missing"; exit 1; }
+grep -q '^model_reasoning_effort = "high"' "$CODEX_HOME/rich.config.toml" || { echo "FAIL: rich effort wrong"; exit 1; }
+echo "PASS: per-profile *.config.toml files (top-level keys; fast/base/plan/rich)"
 
 # mcp_servers schema (HTTP, stdio, env)
 grep -q '^\[mcp_servers.atlassian\]' "$config" || { echo "FAIL: atlassian section missing"; exit 1; }
@@ -114,6 +131,8 @@ mkdir -p "$FAKE_HOME/.codex/skills/global-skill" \
          "$FAKE_HARNESS_S/.claude/skills/harness-skill" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/.codex-plugin" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/skills/browser" \
+         "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/.codex-plugin" \
+         "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/skills/chrome" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/.codex-plugin" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/skills/computer-use"
 echo "# fake rules" > "$FAKE_HARNESS_S/CLAUDE.md"
@@ -148,6 +167,15 @@ cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browse
 ---
 name: browser
 description: Browser test skill
+---
+EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/.codex-plugin/plugin.json" <<'EOF'
+{"name":"chrome","version":"0.1.0-test","skills":"./skills/"}
+EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/skills/chrome/SKILL.md" <<'EOF'
+---
+name: chrome
+description: Chrome test skill
 ---
 EOF
 cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/.codex-plugin/plugin.json" <<'EOF'
@@ -196,11 +224,20 @@ echo "PASS: .harness-managed marker tracks all linked entries"
 [[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/browser/0.1.0-test/skills/browser/SKILL.md" ]] || {
   echo "FAIL: browser plugin skill not materialized"; exit 1;
 }
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/0.1.0-test/.codex-plugin/plugin.json" ]] || {
+  echo "FAIL: chrome plugin cache not materialized"; exit 1;
+}
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/0.1.0-test/skills/chrome/SKILL.md" ]] || {
+  echo "FAIL: chrome plugin skill not materialized"; exit 1;
+}
 [[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/computer-use/1.0.0-test/.codex-plugin/plugin.json" ]] || {
   echo "FAIL: computer-use plugin cache not materialized"; exit 1;
 }
 [[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/computer-use/1.0.0-test/skills/computer-use/SKILL.md" ]] || {
   echo "FAIL: computer-use plugin skill not materialized"; exit 1;
+}
+grep -q '^\[plugins."chrome@openai-bundled"\]' "$FAKE_HARNESS_S/.harness/codex/config.toml" || {
+  echo "FAIL: chrome plugin config missing"; exit 1;
 }
 echo "PASS: OpenAI bundled plugin roots materialized into Codex plugin cache"
 
@@ -221,18 +258,18 @@ HOME="$FAKE_HOME" "$PREPARE" "$FAKE_HARNESS_S"
 }
 echo "PASS: migrates from old single-symlink layout"
 
-# Missing .mcp.json should not break — config.toml still has profiles
+# Missing .mcp.json should not break — per-profile files still generated
 TEST_HARNESS2="$TEST_TEMP/fake-harness-2"
 mkdir -p "$TEST_HARNESS2"
 echo "# rules" > "$TEST_HARNESS2/CLAUDE.md"
 "$PREPARE" "$TEST_HARNESS2"
 config2="$TEST_HARNESS2/.harness/codex/config.toml"
 [[ -f "$config2" ]] || { echo "FAIL: config.toml missing for harness without .mcp.json"; exit 1; }
-grep -q '^\[profiles.fast\]' "$config2" || { echo "FAIL: profiles missing for harness without .mcp.json"; exit 1; }
+[[ -f "$TEST_HARNESS2/.harness/codex/rich.config.toml" ]] || { echo "FAIL: rich.config.toml missing for harness without .mcp.json"; exit 1; }
 if grep -q '^\[mcp_servers' "$config2"; then
   echo "FAIL: should not have mcp_servers when .mcp.json missing"; exit 1;
 fi
-echo "PASS: works without .mcp.json (no mcp_servers section, profiles intact)"
+echo "PASS: works without .mcp.json (no mcp_servers section, per-profile files intact)"
 
 # Codex hooks infrastructure: config.toml must enable hooks feature,
 # and hooks.json must reference Claude harness's core/hooks/*.sh by absolute path.
