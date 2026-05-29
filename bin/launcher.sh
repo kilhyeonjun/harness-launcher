@@ -94,9 +94,10 @@ elif $HAS_CODEX && ! $HAS_CLAUDE; then
 fi
 
 if [[ "$RUNTIME" == "codex" ]]; then
-  # Codex CLI native flow: session → mode → safety → exec codex
+  # Codex CLI native flow: session → mode → safety → optional Happy → exec
   CODEX_SUBCMD=""
   CODEX_SUBCMD_ARGS=()
+  CODEX_USE_HAPPY=false
 
   menu "Session" \
     "1. New session" \
@@ -133,19 +134,39 @@ if [[ "$RUNTIME" == "codex" ]]; then
     *Bypass*) CODEX_SAFETY_ARGS=(--dangerously-bypass-approvals-and-sandbox) ;;
   esac
 
+  CODEX_HAPPY_COMPATIBLE=false
+  if [[ -z "$CODEX_SUBCMD" && ${#CODEX_SAFETY_ARGS[@]} -eq 0 && "$CODEX_PROFILE" == "base" ]]; then
+    CODEX_HAPPY_COMPATIBLE=true
+  fi
+
+  if $HAS_HAPPY && $CODEX_HAPPY_COMPATIBLE; then
+    menu "Use Happy mobile wrapper?" \
+      "1. No ← Recommended" \
+      "2. Yes" || exit 0
+    case "$MENU_RESULT" in
+      2*) CODEX_USE_HAPPY=true ;;
+    esac
+  fi
+
   if [[ -x "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" ]]; then
     "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" "$HARNESS_DIR" || exit $?
   fi
   export CODEX_HOME="$HARNESS_DIR/.harness/codex"
 
-  CODEX_CMD=(codex)
+  if $CODEX_USE_HAPPY; then
+    CODEX_CMD=(happy codex)
+  else
+    CODEX_CMD=(codex)
+  fi
   if [[ -n "$CODEX_SUBCMD" ]]; then
     CODEX_CMD+=("$CODEX_SUBCMD")
     CODEX_CMD+=("${CODEX_SUBCMD_ARGS[@]}")
   fi
-  CODEX_CMD+=(--cd "$HARNESS_DIR" -p "$CODEX_PROFILE")
-  if [[ ${#CODEX_SAFETY_ARGS[@]} -gt 0 ]]; then
-    CODEX_CMD+=("${CODEX_SAFETY_ARGS[@]}")
+  if ! $CODEX_USE_HAPPY; then
+    CODEX_CMD+=(--cd "$HARNESS_DIR" -p "$CODEX_PROFILE")
+    if [[ ${#CODEX_SAFETY_ARGS[@]} -gt 0 ]]; then
+      CODEX_CMD+=("${CODEX_SAFETY_ARGS[@]}")
+    fi
   fi
 
   stty sane 2>/dev/null
@@ -206,12 +227,17 @@ while true; do
       codex) RICH_LABEL="4. 🧠 Rich — Opus 4.6, high effort (1M via gateway)" ;;
       *)     RICH_LABEL="4. 🧠 Rich — Opus 1M, xhigh effort" ;;
     esac
-    menu "Select mode" \
-      "1. ⚡ Fast — Sonnet, low effort" \
-      "2. ⚖️  Base — Sonnet, high effort" \
-      "3. 🗺️  Plan — Opusplan, high effort" \
-      "$RICH_LABEL" \
-      "5. 🔧 Custom" || { STEP=1; continue; }
+    mode_opts=(
+      "1. ⚡ Fast — Sonnet, low effort"
+      "2. ⚖️  Base — Sonnet, high effort"
+      "3. 🗺️  Plan — Opusplan, high effort"
+      "$RICH_LABEL"
+    )
+    # Ultracode: Anthropic direct only. The orchestration half is session-only
+    # (set in-session via /effort), so at launch this is opus[1m] + xhigh.
+    [[ -z "$PROVIDER_NAME" ]] && mode_opts+=("5. 🌀 Ultracode — Opus 1M xhigh now, /effort→ultracode for workflows")
+    mode_opts+=("$(( ${#mode_opts[@]} + 1 )). 🔧 Custom")
+    menu "Select mode" "${mode_opts[@]}" || { STEP=1; continue; }
 
     CLAUDE_ARGS=""; EFFORT_ENV=""; IS_CUSTOM=false
     case "$MENU_RESULT" in
@@ -232,6 +258,11 @@ while true; do
           *)     CLAUDE_ARGS="--model opusplan"; EFFORT_ENV="high" ;;
         esac
         STEP=5 ;;
+      *Ultracode*)
+        # ultracode is session-only (CLI rejects it as an effort value); launch
+        # as rich and tell the user to enable orchestration in-session.
+        CLAUDE_ARGS="--model opus[1m]"; EFFORT_ENV="xhigh"
+        ULTRACODE_HINT=1; STEP=5 ;;
       *Rich*)
         case "$PROVIDER_NAME" in
           kiro)  CLAUDE_ARGS="--model claude-opus-4-6"; EFFORT_ENV="max" ;;
@@ -382,5 +413,6 @@ for _arg in "${CLAUDE_ARGS_ARR[@]}"; do
 done
 echo ""
 echo "Starting: ${PROVIDER_LABEL}$LAUNCH_EXECUTABLE ${CLAUDE_ARGS_ARR[*]}"
+[[ -n "${ULTRACODE_HINT:-}" ]] && echo "💡 ultracode는 세션 전용입니다 — 시작 후 /effort 에서 ultracode를 선택하면 워크플로우 오케스트레이션이 켜집니다 (지금은 opus[1m] + xhigh)."
 echo ""
 exec "$LAUNCH_EXECUTABLE" "${CLAUDE_ARGS_ARR[@]}"

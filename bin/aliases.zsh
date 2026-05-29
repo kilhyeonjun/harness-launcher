@@ -100,6 +100,20 @@ _harness_launcher_run() {
           *)     claude_args+=(--model 'opus[1m]'); env_effort=xhigh ;;
         esac
         skip_tui=true; mode_applied=true; shift ;;
+      ultracode)
+        # ultracode = xhigh + dynamic workflow orchestration. The orchestration
+        # half is a SESSION-ONLY Claude Code preset: the CLI rejects 'ultracode'
+        # as an --effort / env / settings value (allowed: low|medium|high|xhigh|
+        # max), so it cannot be set at launch. Launch as rich (opus[1m] + xhigh)
+        # and remind the user to flip it on in-session via /effort.
+        # Anthropic direct only — kiro/codex gateways don't support it at all.
+        if [[ "$provider_name" == "kiro" || "$provider_name" == "codex" ]]; then
+          echo "❌ ultracode는 Anthropic direct 전용입니다 (codex/kiro 미지원)" >&2
+          return 1
+        fi
+        claude_args+=(--model 'opus[1m]'); env_effort=xhigh
+        print -u2 "💡 ultracode는 세션 전용입니다 — 시작 후 /effort 에서 ultracode를 선택하면 워크플로우 오케스트레이션이 켜집니다 (지금은 opus[1m] + xhigh로 시작)."
+        skip_tui=true; mode_applied=true; shift ;;
       low|medium|high|xhigh|max)
         env_effort="$1"
         if ! $mode_applied; then
@@ -171,20 +185,24 @@ _harness_launcher_run() {
 # _harness_launcher_run_codex_cli <harness-dir> [args...]
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
 #   Modes:    fast | base | plan | rich  → -p <profile>
+#   Wrapper:  happy → `happy codex ...`
 #   Sessions: resume → `codex resume`,  continue → `codex resume --last`,
 #             fork   → `codex fork`
 _harness_launcher_run_codex_cli() {
   local HARNESS_DIR="$1"; shift
   local profile=""
+  local profile_explicit=false
   local subcmd=""
+  local use_happy=false
   local -a codex_args=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      fast|base|plan|rich) profile="$1"; shift ;;
+      fast|base|plan|rich) profile="$1"; profile_explicit=true; shift ;;
       resume)              subcmd="resume"; shift ;;
       continue)            subcmd="resume"; codex_args+=(--last); shift ;;
       fork)                subcmd="fork"; shift ;;
+      happy)               use_happy=true; shift ;;
       *)                   codex_args+=("$1"); shift ;;
     esac
   done
@@ -198,17 +216,40 @@ _harness_launcher_run_codex_cli() {
 
   export CODEX_HOME="$HARNESS_DIR/.harness/codex"
 
-  command -v codex >/dev/null 2>&1 || {
-    echo "❌ codex not found in PATH" >&2
-    return 1
-  }
+  if $use_happy; then
+    command -v happy >/dev/null 2>&1 || {
+      echo "❌ happy not found in PATH" >&2
+      return 1
+    }
+    if [[ -n "$subcmd" ]]; then
+      echo "❌ Happy Codex cannot map Codex CLI resume/continue/fork. Use 'happy resume <happy-session-id>' or 'happy codex --resume <codex-thread-id>'." >&2
+      return 1
+    fi
+    if $profile_explicit; then
+      echo "❌ Happy Codex does not support launcher profiles. Use '${HARNESS_PREFIX:-harness} codex happy' for Happy mode, or '${HARNESS_PREFIX:-harness} codex $profile' for native Codex CLI." >&2
+      return 1
+    fi
+  else
+    command -v codex >/dev/null 2>&1 || {
+      echo "❌ codex not found in PATH" >&2
+      return 1
+    }
+  fi
 
   # Plain invocation (not exec) so the user's interactive shell survives
   # codex exit — Ctrl+C returns to the prompt instead of closing the terminal.
-  if [[ -n "$subcmd" ]]; then
-    codex "$subcmd" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
+  local -a launch_cmd=()
+  if $use_happy; then
+    launch_cmd=(happy codex)
   else
-    codex --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
+    launch_cmd=(codex)
+  fi
+  if [[ -n "$subcmd" ]]; then
+    "${launch_cmd[@]}" "$subcmd" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
+  elif $use_happy; then
+    (cd "$HARNESS_DIR" && "${launch_cmd[@]}" "${codex_args[@]}")
+  else
+    "${launch_cmd[@]}" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
   fi
   return $?
 }
@@ -226,6 +267,7 @@ _harness_launcher_complete() {
     'base:Sonnet high effort'
     'plan:Opusplan — Opus plan, Sonnet exec, high effort'
     'rich:Opus 1M max effort'
+    'ultracode:Opus 1M xhigh now · /effort→ultracode for workflows (direct only)'
     'continue:Continue last session'
     'resume:Resume from list'
     'bypass:Skip all permission prompts'
@@ -234,6 +276,7 @@ _harness_launcher_complete() {
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
     'codex:Codex CLI native'
+    'happy:Use Happy mobile wrapper for Codex CLI'
   )
   if [[ -z "$_kiro_url" && -f "$_kiro_env" ]]; then
     source "$_kiro_env"; _kiro_url="${KIRO_GATEWAY_URL:-}"
