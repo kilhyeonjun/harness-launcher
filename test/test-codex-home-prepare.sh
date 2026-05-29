@@ -92,6 +92,56 @@ grep -q '^\[mcp_servers.google_workspace.env\]' "$config" || { echo "FAIL: env s
 grep -q '^FOO = "bar"' "$config" || { echo "FAIL: env value missing"; exit 1; }
 echo "PASS: mcp_servers TOML schema (HTTP, stdio, env)"
 
+# HTTP Authorization Bearer headers → bearer_token_env_var. Codex streamable_http
+# only accepts bearer_token_env_var (the env-var *name*), never a literal
+# bearer_token. `${VAR}` and `${VAR:-default}` both map to the name; any other
+# Authorization shape (or no headers) emits nothing — keeping the change additive.
+TEST_HARNESS_AUTH="$TEST_TEMP/fake-harness-auth"
+mkdir -p "$TEST_HARNESS_AUTH"
+echo "# rules" > "$TEST_HARNESS_AUTH/CLAUDE.md"
+cat > "$TEST_HARNESS_AUTH/.mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "bearer_default": {
+      "type": "http",
+      "url": "https://example.test/api/mcp",
+      "headers": { "Authorization": "Bearer ${HYPERDX_API_KEY:-}" }
+    },
+    "bearer_plain": {
+      "type": "http",
+      "url": "https://other.test/mcp",
+      "headers": { "Authorization": "Bearer ${OTHER_TOKEN}" }
+    },
+    "bearer_literal": {
+      "type": "http",
+      "url": "https://lit.test/mcp",
+      "headers": { "Authorization": "Bearer sk-static-literal" }
+    },
+    "no_auth": { "type": "http", "url": "https://noauth.test/mcp" }
+  }
+}
+EOF
+"$PREPARE" "$TEST_HARNESS_AUTH"
+config_auth="$TEST_HARNESS_AUTH/.harness/codex/config.toml"
+[[ -f "$config_auth" ]] || { echo "FAIL: auth config.toml missing"; exit 1; }
+# ${VAR:-default} form → bearer_token_env_var = "VAR"
+grep -q '^bearer_token_env_var = "HYPERDX_API_KEY"' "$config_auth" || {
+  echo "FAIL: \${VAR:-} Bearer header not mapped to bearer_token_env_var"; exit 1;
+}
+# ${VAR} form → bearer_token_env_var = "VAR"
+grep -q '^bearer_token_env_var = "OTHER_TOKEN"' "$config_auth" || {
+  echo "FAIL: \${VAR} Bearer header not mapped to bearer_token_env_var"; exit 1;
+}
+# Codex rejects a literal bearer_token for streamable_http — must NEVER emit one
+if grep -qE '^bearer_token[[:space:]]*=' "$config_auth"; then
+  echo "FAIL: literal bearer_token emitted (Codex rejects it for streamable_http)"; exit 1;
+fi
+# Non-\${VAR} Authorization (literal) and header-less servers must emit nothing
+[[ "$(grep -c '^bearer_token_env_var = ' "$config_auth")" == "2" ]] || {
+  echo "FAIL: expected exactly 2 bearer_token_env_var lines (literal/no-auth must not emit)"; exit 1;
+}
+echo "PASS: HTTP Authorization Bearer \${VAR}/\${VAR:-} → bearer_token_env_var (no literal bearer_token)"
+
 # Idempotent: re-run leaves config.toml mtime unchanged when input unchanged
 mtime_before=$(stat -f %m "$config" 2>/dev/null || stat -c %Y "$config")
 sleep 1.1

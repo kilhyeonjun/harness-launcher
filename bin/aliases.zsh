@@ -216,6 +216,16 @@ _harness_launcher_run_codex_cli() {
 
   export CODEX_HOME="$HARNESS_DIR/.harness/codex"
 
+  # Export MCP secrets from settings.local.json env so codex streamable_http
+  # bearer_token_env_var resolves (native codex inherits no other harness env).
+  # `gd codex <mode>` routes here (not launcher.sh), so the export must live here
+  # too; covers native `codex` and `happy codex` since it precedes the launch.
+  if [[ -f "$HARNESS_DIR/.claude/settings.local.json" ]]; then
+    while IFS=$'\t' read -r _mk _mv; do
+      [[ -n "$_mk" ]] && export "$_mk=$_mv"
+    done < <(python3 -c "import json;e=(json.load(open('$HARNESS_DIR/.claude/settings.local.json')).get('env') or {});[print(k+chr(9)+str(v)) for k,v in e.items()]" 2>/dev/null)
+  fi
+
   if $use_happy; then
     command -v happy >/dev/null 2>&1 || {
       echo "❌ happy not found in PATH" >&2

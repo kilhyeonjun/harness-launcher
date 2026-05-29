@@ -281,7 +281,7 @@ TOML
 
 if [[ -f "$mcp_json" ]]; then
   python3 - "$mcp_json" >> "$tmp_config" <<'PY'
-import json, sys
+import json, re, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
 servers = data.get("mcpServers", {}) or {}
@@ -290,6 +290,10 @@ for name in sorted(servers):
     print(f"[mcp_servers.{name}]")
     if "url" in spec:
         print(f'url = {json.dumps(spec["url"])}')
+        _auth = (spec.get("headers") or {}).get("Authorization", "")
+        _m = re.match(r'^Bearer \$\{([A-Za-z_]\w*)(?::-[^}]*)?\}$', _auth)
+        if _m:
+            print(f'bearer_token_env_var = {json.dumps(_m.group(1))}')
     elif "command" in spec:
         print(f'command = {json.dumps(spec["command"])}')
         if "args" in spec and spec["args"]:

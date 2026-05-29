@@ -37,6 +37,7 @@ cat > "$CODEX_STUB" <<'EOF'
   echo "ARGV:$*"
   echo "CODEX_HOME:${CODEX_HOME:-}"
   echo "PWD:$PWD"
+  echo "MCP_KEY:${HYPERDX_API_KEY:-<UNSET>}"
 } >> "$TEST_STUB_FILE"
 exit 0
 EOF
@@ -151,5 +152,25 @@ run_mode "rich" "rich" || exit 1
 # Session shortcuts
 run_session "resume"   "resume"           ""        || exit 1
 run_session "continue" "resume"           "--last"  || exit 1
+
+# `gd codex <mode>` routes through THIS aliases.zsh path (not launcher.sh), so it
+# must export MCP secrets from .claude/settings.local.json `env` — otherwise
+# native codex sees e.g. HYPERDX_API_KEY unset and streamable_http bearer auth
+# (bearer_token_env_var) cannot resolve. Earlier runs above had no
+# settings.local.json, proving the export is a no-op when the file is absent.
+mkdir -p "$TEST_HARNESS/.claude"
+cat > "$TEST_HARNESS/.claude/settings.local.json" <<'EOF'
+{ "env": { "HYPERDX_API_KEY": "secret-from-settings-xyz" } }
+EOF
+STUB_ENV="$TEST_TEMP/output-codex-cli-env.txt"
+: > "$STUB_ENV"
+run_codex "$STUB_ENV" "base"
+mcp_key="$(get_field MCP_KEY "$STUB_ENV")"
+if [[ "$mcp_key" != "secret-from-settings-xyz" ]]; then
+  echo "FAIL: codex CLI env — settings.local.json env not exported to codex (got '$mcp_key')"
+  sed 's/^/    /' "$STUB_ENV"
+  exit 1
+fi
+echo "PASS: codex CLI base → settings.local.json env exported to codex (gd codex MCP auth)"
 
 echo "✓ All codex CLI native tests passed"
