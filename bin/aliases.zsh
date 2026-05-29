@@ -223,7 +223,14 @@ _harness_launcher_run_codex_cli() {
   if [[ -f "$HARNESS_DIR/.claude/settings.local.json" ]]; then
     while IFS=$'\t' read -r _mk _mv; do
       [[ -n "$_mk" ]] && export "$_mk=$_mv"
-    done < <(python3 -c "import json;e=(json.load(open('$HARNESS_DIR/.claude/settings.local.json')).get('env') or {});[print(k+chr(9)+str(v)) for k,v in e.items()]" 2>/dev/null)
+    done < <(python3 - "$HARNESS_DIR/.claude/settings.local.json" 2>/dev/null <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    env = (json.load(f).get("env") or {})
+for k, v in env.items():
+    print(k + "\t" + str(v))
+PY
+)
   fi
 
   if $use_happy; then
