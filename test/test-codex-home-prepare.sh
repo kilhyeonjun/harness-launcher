@@ -55,8 +55,14 @@ echo "PASS: AGENTS.md → CLAUDE.md (no-rules fallback)"
 config="$CODEX_HOME/config.toml"
 [[ -f "$config" ]] || { echo "FAIL: config.toml missing"; exit 1; }
 grep -q '^model = "gpt-5.5"' "$config" || { echo "FAIL: top-level model missing"; exit 1; }
-grep -q '^model_context_window = 1050000' "$config" || { echo "FAIL: model_context_window missing"; exit 1; }
-grep -q '^model_auto_compact_token_limit = 900000' "$config" || { echo "FAIL: model_auto_compact_token_limit missing"; exit 1; }
+# Context window must NOT be pinned — Codex resolves the real backend limit
+# (272K for gpt-5.5) from its model metadata; pinned 1M values broke auto-compact.
+if grep -q '^model_context_window' "$config"; then
+  echo "FAIL: model_context_window pinned (must come from Codex model metadata)"; exit 1;
+fi
+if grep -q '^model_auto_compact_token_limit' "$config"; then
+  echo "FAIL: model_auto_compact_token_limit pinned (must come from Codex model metadata)"; exit 1;
+fi
 # Codex 0.134.0+ rejects `--profile` when config.toml still contains inline
 # [profiles.*] tables. Profiles must live in separate <name>.config.toml files.
 if grep -q '^\[profiles\.' "$config"; then
@@ -511,13 +517,10 @@ echo "PASS: [features].hooks, goals, and multi_agent enabled in config.toml"
 grep -q '^apps = false' "$config3" || { echo "FAIL: [features].apps = false missing"; exit 1; }
 echo "PASS: [features].apps disabled in config.toml"
 
-grep -q '^model_context_window = 1050000' "$config3" || {
-  echo "FAIL: model_context_window missing"; exit 1;
-}
-grep -q '^model_auto_compact_token_limit = 900000' "$config3" || {
-  echo "FAIL: model_auto_compact_token_limit missing"; exit 1;
-}
-echo "PASS: Codex long-context model settings configured"
+if grep -q '^model_context_window\|^model_auto_compact_token_limit' "$config3"; then
+  echo "FAIL: context window/auto-compact pinned (must come from Codex model metadata)"; exit 1;
+fi
+echo "PASS: no pinned context-window overrides (Codex metadata is source of truth)"
 
 grep -q '^\[marketplaces.openai-bundled\]' "$config3" || {
   echo "FAIL: openai-bundled marketplace missing"; exit 1;

@@ -250,8 +250,9 @@ cat > "$tmp_config" <<TOML
 
 model = "gpt-5.5"
 model_reasoning_effort = "medium"
-model_context_window = 1050000
-model_auto_compact_token_limit = 900000
+# Context window/auto-compact intentionally unpinned: Codex resolves them from
+# its model metadata (272K for gpt-5.5 as of 2026-06). Pinning 1M-style values
+# here made auto-compact fire past the real backend limit.
 
 [features]
 # ChatGPT Apps/connectors disabled — harness sessions don't use them and user
