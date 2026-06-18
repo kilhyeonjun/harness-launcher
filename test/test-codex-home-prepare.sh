@@ -281,9 +281,12 @@ cat > "$FAKE_HARNESS_S/.mcp.json" <<'EOF'
 }
 EOF
 mkdir -p "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/0.0.1-stale"
+mkdir -p "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/0.0.1-stale"
+ln -s 0.0.1-stale "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/latest"
+ln -s 0.0.1-stale "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/latest"
 "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/0.1.0-test/extension-host/macos/arm64/extension-host" chrome-extension://fake-chrome-extension-id/ &
 FAKE_EXTENSION_HOST_PID=$!
-HOME="$FAKE_HOME" "$PREPARE" "$FAKE_HARNESS_S"
+HOME="$FAKE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$PREPARE" "$FAKE_HARNESS_S"
 SKILLS_OUT="$FAKE_HARNESS_S/.harness/codex/skills"
 FAKE_CONFIG="$FAKE_HARNESS_S/.harness/codex/config.toml"
 
@@ -330,11 +333,17 @@ echo "PASS: .harness-managed marker tracks all linked entries"
 [[ -L "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/latest" ]] || {
   echo "FAIL: harness chrome latest symlink missing"; exit 1;
 }
+[[ "$(readlink "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/latest")" == "0.1.0-test" ]] || {
+  echo "FAIL: harness chrome latest symlink should replace stale target"; exit 1;
+}
 [[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/latest/scripts/browser-client.mjs" ]] || {
   echo "FAIL: harness chrome latest symlink does not resolve"; exit 1;
 }
 [[ -L "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/latest" ]] || {
   echo "FAIL: global chrome latest symlink missing"; exit 1;
+}
+[[ "$(readlink "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/latest")" == "0.1.0-test" ]] || {
+  echo "FAIL: global chrome latest symlink should replace stale target"; exit 1;
 }
 [[ -f "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/extension-host" ]] || {
   echo "FAIL: global chrome latest symlink does not expose extension host"; exit 1;
@@ -420,7 +429,7 @@ echo "PASS: node_repl Browser Use runtime env mirrors Codex app defaults"
 
 # Re-run after dropping a per-harness skill should remove its symlink
 rm -rf "$FAKE_HARNESS_S/.claude/skills/harness-skill"
-HOME="$FAKE_HOME" "$PREPARE" "$FAKE_HARNESS_S"
+HOME="$FAKE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$PREPARE" "$FAKE_HARNESS_S"
 [[ ! -L "$SKILLS_OUT/harness-skill" ]] || { echo "FAIL: stale harness-skill symlink not removed"; exit 1; }
 [[ -L "$SKILLS_OUT/global-skill" ]] || { echo "FAIL: global-skill should still be present"; exit 1; }
 echo "PASS: re-run drops sources that were removed"
@@ -429,7 +438,7 @@ echo "PASS: re-run drops sources that were removed"
 rm -rf "$FAKE_HARNESS_S/.harness/codex/skills"
 ln -s "$FAKE_HOME/.codex/skills" "$FAKE_HARNESS_S/.harness/codex/skills"
 [[ -L "$FAKE_HARNESS_S/.harness/codex/skills" ]] || { echo "FAIL: setup precondition"; exit 1; }
-HOME="$FAKE_HOME" "$PREPARE" "$FAKE_HARNESS_S"
+HOME="$FAKE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$PREPARE" "$FAKE_HARNESS_S"
 [[ -d "$SKILLS_OUT" && ! -L "$SKILLS_OUT" ]] || {
   echo "FAIL: migration from old symlink layout failed"; exit 1;
 }

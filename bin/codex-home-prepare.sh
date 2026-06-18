@@ -13,6 +13,7 @@ HARNESS_DIR="${1:?HARNESS_DIR required (positional arg 1)}"
 
 CODEX_HOME="$HARNESS_DIR/.harness/codex"
 mkdir -p "$CODEX_HOME"
+CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/Applications/Codex.app/Contents/Resources/plugins/openai-bundled}"
 
 # 1. AGENTS.md: compiler-first when canonical .claude/source exists. The
 # compiler emits Codex-native XML runtime contracts plus non-runtime rules. For
@@ -474,6 +475,32 @@ prune_bundled_plugin_versions() {
   done
 }
 
+update_latest_symlink() {
+  local cache_dir="$1"
+  local version="$2"
+  mkdir -p "$cache_dir"
+  rm -f "$cache_dir/latest"
+  ln -s "$version" "$cache_dir/latest"
+}
+
+sync_bundled_marketplace_from_app_bundle() {
+  local app_marketplace="$CODEX_BUNDLED_MARKETPLACE_SOURCE"
+  local dest="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
+  local src_manifest="$app_marketplace/plugins/chrome/.codex-plugin/plugin.json"
+  local dest_manifest="$dest/plugins/chrome/.codex-plugin/plugin.json"
+  [[ -f "$src_manifest" ]] || return 0
+  if [[ -f "$dest_manifest" ]] && cmp -s "$src_manifest" "$dest_manifest"; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$dest")"
+  local tmp_marketplace
+  tmp_marketplace="$(mktemp -d "$HOME/.codex/.tmp/openai-bundled.XXXXXX")"
+  cp -pR "$app_marketplace/." "$tmp_marketplace/"
+  rm -rf "$dest"
+  mv "$tmp_marketplace" "$dest"
+}
+
 materialize_bundled_plugin() {
   local plugin="$1"
   local marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
@@ -493,7 +520,7 @@ PY
   local cache_dir="$CODEX_HOME/plugins/cache/openai-bundled/$plugin"
   local dest="$cache_dir/$version"
   if [[ -f "$dest/.codex-plugin/plugin.json" ]] && cmp -s "$manifest" "$dest/.codex-plugin/plugin.json"; then
-    ln -sfn "$version" "$cache_dir/latest"
+    update_latest_symlink "$cache_dir" "$version"
     prune_bundled_plugin_versions "$cache_dir" "$version"
     return 0
   fi
@@ -504,7 +531,7 @@ PY
   cp -pR "$src/." "$tmp_plugin/"
   rm -rf "$dest"
   mv "$tmp_plugin" "$dest"
-  ln -sfn "$version" "$cache_dir/latest"
+  update_latest_symlink "$cache_dir" "$version"
   prune_bundled_plugin_versions "$cache_dir" "$version"
 }
 
@@ -534,7 +561,7 @@ PY
     rm -rf "$dest"
     mv "$tmp_plugin" "$dest"
   fi
-  ln -sfn "$version" "$cache_dir/latest"
+  update_latest_symlink "$cache_dir" "$version"
 }
 
 write_global_chrome_extension_host_config() {
@@ -657,6 +684,7 @@ remove_bundled_plugin_cache() {
   rm -rf "$CODEX_HOME/plugins/cache/openai-bundled/$plugin"
 }
 
+sync_bundled_marketplace_from_app_bundle
 materialize_bundled_plugin "computer-use"
 materialize_bundled_plugin "chrome"
 # Chrome's native messaging manifest is global and points at
