@@ -5,6 +5,162 @@
 #   harness_register /path/to/some-harness
 
 _HARNESS_LAUNCHER_BIN="$(cd "$(dirname "${(%):-%x}")" 2>/dev/null && pwd)"
+_HARNESS_CODEX_APP_BIN="/Applications/Codex.app/Contents/Resources/codex"
+typeset -ga _HARNESS_LAUNCHER_REGISTERED_DIRS=()
+
+_harness_launcher_codex_bin() {
+  local configured="${HARNESS_CODEX_BIN:-}"
+  if [[ -n "$configured" ]]; then
+    if [[ -x "$configured" ]]; then
+      print -r -- "$configured"
+      return 0
+    fi
+    whence -p -- "$configured" 2>/dev/null
+    return $?
+  fi
+  if [[ -x "$_HARNESS_CODEX_APP_BIN" ]]; then
+    print -r -- "$_HARNESS_CODEX_APP_BIN"
+    return 0
+  fi
+  whence -p -- codex 2>/dev/null
+}
+
+_harness_launcher_start_codex_app_server() {
+  local codex_bin="$1"
+  local codex_home="$2"
+  local runtime_dir="$codex_home/app-server"
+  local pid_file="$runtime_dir/codex-app-server.pid"
+  local url_file="$runtime_dir/codex-app-server.url"
+  local log_file="$runtime_dir/codex-app-server.log"
+
+  mkdir -p "$runtime_dir"
+  if [[ -f "$pid_file" ]]; then
+    local old_pid
+    old_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null && [[ -s "$url_file" ]]; then
+      cat "$url_file"
+      return 0
+    fi
+  fi
+
+  local port remote_url ready_url
+  port="$(
+    python3 - <<'PY'
+import socket
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.bind(("127.0.0.1", 0))
+    print(s.getsockname()[1])
+PY
+  )"
+  remote_url="ws://127.0.0.1:$port"
+  ready_url="http://127.0.0.1:$port/readyz"
+
+  (
+    export CODEX_HOME="$codex_home"
+    "$codex_bin" app-server --listen "$remote_url" >"$log_file" 2>&1 &
+    print -r -- "$!" >"$pid_file"
+    print -r -- "$remote_url" >"$url_file"
+  )
+
+  if [[ "${HARNESS_LAUNCHER_SKIP_APP_SERVER_READY:-}" == "1" ]]; then
+    print -r -- "$remote_url"
+    return 0
+  fi
+
+  local i
+  for i in {1..80}; do
+    if curl -fsS "$ready_url" >/dev/null 2>&1; then
+      print -r -- "$remote_url"
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "❌ Codex app-server did not become ready: $log_file" >&2
+  tail -n 20 "$log_file" >&2 2>/dev/null || true
+  return 1
+}
+
+_harness_launcher_export_codex_runtime_env() {
+  local HARNESS_DIR="$1"
+  local prepare="$_HARNESS_LAUNCHER_BIN/codex-home-prepare.sh"
+  if [[ -x "$prepare" ]]; then
+    "$prepare" "$HARNESS_DIR" || return $?
+  fi
+
+  export CODEX_HOME="$HARNESS_DIR/.harness/codex"
+
+  # Export MCP secrets from settings.local.json env so codex streamable_http
+  # bearer_token_env_var resolves (native codex inherits no other harness env).
+  if [[ -f "$HARNESS_DIR/.claude/settings.local.json" ]]; then
+    while IFS=$'\t' read -r _mk _mv; do
+      [[ -n "$_mk" ]] && export "$_mk=$_mv"
+    done < <(python3 - "$HARNESS_DIR/.claude/settings.local.json" 2>/dev/null <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    env = (json.load(f).get("env") or {})
+for k, v in env.items():
+    print(k + "\t" + str(v))
+PY
+)
+  fi
+}
+
+_harness_launcher_codex_cd_arg() {
+  local -a args=("$@")
+  local i arg
+  for (( i = 1; i <= ${#args[@]}; i++ )); do
+    arg="${args[$i]}"
+    case "$arg" in
+      --cd|-C)
+        (( i < ${#args[@]} )) && print -r -- "${args[$((i + 1))]}"
+        return 0
+        ;;
+      --cd=*)
+        print -r -- "${arg#--cd=}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+_harness_launcher_codex_harness_for_args() {
+  local cd_arg cd_abs registered
+  cd_arg="$(_harness_launcher_codex_cd_arg "$@")" || return 1
+  [[ -n "$cd_arg" && -d "$cd_arg" ]] || return 1
+  cd_abs="${cd_arg:A}"
+
+  for registered in "${_HARNESS_LAUNCHER_REGISTERED_DIRS[@]}"; do
+    [[ "$cd_abs" == "$registered" ]] && {
+      print -r -- "$registered"
+      return 0
+    }
+  done
+
+  if [[ -f "$cd_abs/config/launcher.env" ]]; then
+    print -r -- "$cd_abs"
+    return 0
+  fi
+
+  return 1
+}
+
+codex() {
+  local codex_bin harness_dir
+  codex_bin="$(_harness_launcher_codex_bin)" || {
+    echo "❌ codex not found in PATH" >&2
+    return 1
+  }
+
+  if [[ "${HARNESS_LAUNCHER_DISABLE_CODEX_WRAPPER:-}" != "1" ]]; then
+    if harness_dir="$(_harness_launcher_codex_harness_for_args "$@")"; then
+      _harness_launcher_export_codex_runtime_env "$harness_dir" || return $?
+    fi
+  fi
+
+  "$codex_bin" "$@"
+}
 
 # harness_register <harness-dir>
 #   Reads <dir>/config/launcher.env (HARNESS_NAME, HARNESS_PREFIX),
@@ -12,6 +168,7 @@ _HARNESS_LAUNCHER_BIN="$(cd "$(dirname "${(%):-%x}")" 2>/dev/null && pwd)"
 harness_register() {
   local dir="$1"
   [[ -z "$dir" || ! -d "$dir" ]] && { echo "harness_register: invalid dir: $dir" >&2; return 1; }
+  dir="${dir:A}"
   local env_file="$dir/config/launcher.env"
   [[ ! -f "$env_file" ]] && { echo "harness_register: missing $env_file" >&2; return 1; }
 
@@ -27,7 +184,15 @@ harness_register() {
   eval "${HARNESS_PREFIX}() { _harness_launcher_run '$dir' \"\$@\"; }"
   # Define _<prefix>_complete() — delegates to generic completion
   eval "_${HARNESS_PREFIX}_complete() { _harness_launcher_complete '$dir' \"\$@\"; }"
-  compdef "_${HARNESS_PREFIX}_complete" "$HARNESS_PREFIX"
+  if (( $+functions[compdef] )); then
+    compdef "_${HARNESS_PREFIX}_complete" "$HARNESS_PREFIX"
+  fi
+
+  local registered exists=false
+  for registered in "${_HARNESS_LAUNCHER_REGISTERED_DIRS[@]}"; do
+    [[ "$registered" == "$dir" ]] && { exists=true; break; }
+  done
+  $exists || _HARNESS_LAUNCHER_REGISTERED_DIRS+=("$dir")
 }
 
 # _harness_launcher_run <harness-dir> [args...]
@@ -209,29 +374,7 @@ _harness_launcher_run_codex_cli() {
 
   [[ -z "$profile" ]] && profile="base"
 
-  local prepare="$_HARNESS_LAUNCHER_BIN/codex-home-prepare.sh"
-  if [[ -x "$prepare" ]]; then
-    "$prepare" "$HARNESS_DIR" || return $?
-  fi
-
-  export CODEX_HOME="$HARNESS_DIR/.harness/codex"
-
-  # Export MCP secrets from settings.local.json env so codex streamable_http
-  # bearer_token_env_var resolves (native codex inherits no other harness env).
-  # `gd codex <mode>` routes here (not launcher.sh), so the export must live here
-  # too; covers native `codex` and `happy codex` since it precedes the launch.
-  if [[ -f "$HARNESS_DIR/.claude/settings.local.json" ]]; then
-    while IFS=$'\t' read -r _mk _mv; do
-      [[ -n "$_mk" ]] && export "$_mk=$_mv"
-    done < <(python3 - "$HARNESS_DIR/.claude/settings.local.json" 2>/dev/null <<'PY'
-import json, sys
-with open(sys.argv[1]) as f:
-    env = (json.load(f).get("env") or {})
-for k, v in env.items():
-    print(k + "\t" + str(v))
-PY
-)
-  fi
+  _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
 
   if $use_happy; then
     command -v happy >/dev/null 2>&1 || {
@@ -247,7 +390,8 @@ PY
       return 1
     fi
   else
-    command -v codex >/dev/null 2>&1 || {
+    local codex_bin
+    codex_bin="$(_harness_launcher_codex_bin)" || {
       echo "❌ codex not found in PATH" >&2
       return 1
     }
@@ -259,7 +403,7 @@ PY
   if $use_happy; then
     launch_cmd=(happy codex)
   else
-    launch_cmd=(codex)
+    launch_cmd=("$codex_bin")
   fi
   if [[ -n "$subcmd" ]]; then
     "${launch_cmd[@]}" "$subcmd" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"

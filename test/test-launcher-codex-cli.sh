@@ -33,6 +33,24 @@ EOF
 CODEX_STUB="$TEST_BIN/codex"
 cat > "$CODEX_STUB" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "app-server" ]]; then
+  listen=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --listen)
+        listen="$2"
+        shift 2
+        ;;
+      *) shift ;;
+    esac
+  done
+  {
+    echo "APP_SERVER_CODEX_HOME:${CODEX_HOME:-}"
+    echo "APP_SERVER_LISTEN:$listen"
+  } >> "$TEST_STUB_FILE"
+  sleep 1
+  exit 0
+fi
 {
   echo "ARGV:$*"
   echo "CODEX_HOME:${CODEX_HOME:-}"
@@ -42,6 +60,18 @@ cat > "$CODEX_STUB" <<'EOF'
 exit 0
 EOF
 chmod +x "$CODEX_STUB"
+
+# Stub: happy — captures args + env to a file
+HAPPY_STUB="$TEST_BIN/happy"
+cat > "$HAPPY_STUB" <<'EOF'
+#!/usr/bin/env bash
+{
+  echo "HAPPY_ARGV:$*"
+  echo "HAPPY_CODEX_HOME:${CODEX_HOME:-}"
+} >> "$TEST_STUB_FILE"
+exit 0
+EOF
+chmod +x "$HAPPY_STUB"
 
 # Stub: codex-home-prepare.sh — records invocation, succeeds
 PREPARE_STUB="$TEST_BIN/codex-home-prepare.sh"
@@ -64,10 +94,27 @@ run_codex() {
   (
     export TEST_STUB_FILE="$stub_file"
     export PATH="$TEST_BIN:$PATH"
+    export HARNESS_CODEX_BIN="$CODEX_STUB"
+    export HARNESS_LAUNCHER_SKIP_APP_SERVER_READY=1
     source "$LAUNCHER_DIR/bin/aliases.zsh"
     # Redirect prepare-script lookup to test bin
     _HARNESS_LAUNCHER_BIN="$TEST_BIN"
     _harness_launcher_run "$TEST_HARNESS" 'codex' "$@"
+  ) 2>/dev/null || true
+}
+
+run_raw_codex() {
+  local stub_file="$1"; shift
+  (
+    export TEST_STUB_FILE="$stub_file"
+    export PATH="$TEST_BIN:/usr/bin:/bin"
+    export HARNESS_CODEX_BIN="$CODEX_STUB"
+    compdef() { :; }
+    source "$LAUNCHER_DIR/bin/aliases.zsh"
+    # Redirect prepare-script lookup to test bin
+    _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+    harness_register "$TEST_HARNESS"
+    codex "$@"
   ) 2>/dev/null || true
 }
 
@@ -102,13 +149,16 @@ run_mode() {
     *"--cd $TEST_HARNESS"* | *"-C $TEST_HARNESS"*) ;;
     *) echo "FAIL: codex CLI $mode — expected --cd $TEST_HARNESS in argv, got '$argv'"; return 1 ;;
   esac
+  case "$argv" in
+    *"--remote "*) echo "FAIL: codex CLI $mode — must not use local app-server --remote, got '$argv'"; return 1 ;;
+  esac
 
   case "$argv" in
     *"-p $expected_profile"* | *"--profile $expected_profile"*) ;;
     *) echo "FAIL: codex CLI $mode — expected profile $expected_profile in argv, got '$argv'"; return 1 ;;
   esac
 
-  echo "PASS: codex CLI $mode → -p $expected_profile + --cd $TEST_HARNESS + CODEX_HOME"
+  echo "PASS: codex CLI $mode → direct TUI + -p $expected_profile + --cd $TEST_HARNESS + CODEX_HOME"
   return 0
 }
 
@@ -138,6 +188,9 @@ run_session() {
       *) echo "FAIL: codex CLI session '$input_arg' — expected '$expected_extra' in argv, got '$argv'"; return 1 ;;
     esac
   fi
+  case "$argv" in
+    *"--remote "*) echo "FAIL: codex CLI session '$input_arg' — must not use local app-server --remote, got '$argv'"; return 1 ;;
+  esac
 
   echo "PASS: codex CLI '$input_arg' → first-arg '$expected_subcmd'${expected_extra:+ + $expected_extra}"
   return 0
@@ -172,5 +225,58 @@ if [[ "$mcp_key" != "secret-from-settings-xyz" ]]; then
   exit 1
 fi
 echo "PASS: codex CLI base → settings.local.json env exported to codex (gd codex MCP auth)"
+
+STUB_RAW="$TEST_TEMP/output-raw-codex-wrapper.txt"
+: > "$STUB_RAW"
+run_raw_codex "$STUB_RAW" --cd "$TEST_HARNESS" -p rich exec smoke
+raw_argv="$(get_field ARGV "$STUB_RAW")"
+raw_codex_home="$(get_field CODEX_HOME "$STUB_RAW")"
+raw_mcp_key="$(get_field MCP_KEY "$STUB_RAW")"
+raw_harness="${TEST_HARNESS:A}"
+if ! grep -q "^PREPARE_ARGV:$raw_harness\$" "$STUB_RAW"; then
+  echo "FAIL: raw codex wrapper — codex-home-prepare.sh not called for registered --cd harness"
+  sed 's/^/    /' "$STUB_RAW"
+  exit 1
+fi
+if [[ "$raw_codex_home" != "$raw_harness/.harness/codex" ]]; then
+  echo "FAIL: raw codex wrapper — expected CODEX_HOME=$raw_harness/.harness/codex, got '$raw_codex_home'"
+  sed 's/^/    /' "$STUB_RAW"
+  exit 1
+fi
+case "$raw_argv" in
+  *"--cd $TEST_HARNESS"*"-p rich"*"exec smoke"*) ;;
+  *) echo "FAIL: raw codex wrapper — argv not preserved, got '$raw_argv'"; exit 1 ;;
+esac
+if [[ "$raw_mcp_key" != "secret-from-settings-xyz" ]]; then
+  echo "FAIL: raw codex wrapper — settings.local.json env not exported (got '$raw_mcp_key')"
+  sed 's/^/    /' "$STUB_RAW"
+  exit 1
+fi
+echo "PASS: raw codex --cd registered harness → prepare + CODEX_HOME + env export"
+
+STUB_HAPPY="$TEST_TEMP/output-codex-cli-happy.txt"
+: > "$STUB_HAPPY"
+run_codex "$STUB_HAPPY" "happy"
+happy_argv="$(get_field HAPPY_ARGV "$STUB_HAPPY")"
+happy_codex_home="$(get_field HAPPY_CODEX_HOME "$STUB_HAPPY")"
+
+[[ "$happy_argv" == "codex" ]] || {
+  echo "FAIL: codex CLI happy — expected happy argv 'codex', got '$happy_argv'"; exit 1;
+}
+if [[ "$happy_codex_home" != "$TEST_HARNESS/.harness/codex" ]]; then
+  echo "FAIL: codex CLI happy — expected CODEX_HOME=$TEST_HARNESS/.harness/codex, got '$happy_codex_home'"
+  exit 1
+fi
+echo "PASS: codex CLI happy → happy codex + CODEX_HOME"
+
+STUB_HAPPY_RESUME="$TEST_TEMP/output-codex-cli-happy-resume.txt"
+: > "$STUB_HAPPY_RESUME"
+run_codex "$STUB_HAPPY_RESUME" "happy" "continue"
+if grep -q "^HAPPY_ARGV:" "$STUB_HAPPY_RESUME"; then
+  echo "FAIL: codex CLI happy continue — must not launch unsupported Happy Codex resume mapping"
+  cat "$STUB_HAPPY_RESUME"
+  exit 1
+fi
+echo "PASS: codex CLI happy continue blocked (Happy Codex cannot map codex resume --last)"
 
 echo "✓ All codex CLI native tests passed"
