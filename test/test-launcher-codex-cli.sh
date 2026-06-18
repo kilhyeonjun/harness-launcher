@@ -33,24 +33,6 @@ EOF
 CODEX_STUB="$TEST_BIN/codex"
 cat > "$CODEX_STUB" <<'EOF'
 #!/usr/bin/env bash
-if [[ "${1:-}" == "app-server" ]]; then
-  listen=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --listen)
-        listen="$2"
-        shift 2
-        ;;
-      *) shift ;;
-    esac
-  done
-  {
-    echo "APP_SERVER_CODEX_HOME:${CODEX_HOME:-}"
-    echo "APP_SERVER_LISTEN:$listen"
-  } >> "$TEST_STUB_FILE"
-  sleep 1
-  exit 0
-fi
 {
   echo "ARGV:$*"
   echo "CODEX_HOME:${CODEX_HOME:-}"
@@ -95,7 +77,6 @@ run_codex() {
     export TEST_STUB_FILE="$stub_file"
     export PATH="$TEST_BIN:$PATH"
     export HARNESS_CODEX_BIN="$CODEX_STUB"
-    export HARNESS_LAUNCHER_SKIP_APP_SERVER_READY=1
     source "$LAUNCHER_DIR/bin/aliases.zsh"
     # Redirect prepare-script lookup to test bin
     _HARNESS_LAUNCHER_BIN="$TEST_BIN"

@@ -14,7 +14,7 @@
 #   kiro ultracode          → rejected (non-zero exit, claude never launched)
 #   codex-gateway ultracode → rejected (non-zero exit, claude never launched)
 # Rejection must trigger on the `ultracode` token, NOT a health failure, so the
-# curl health probe is stubbed to succeed.
+# node-based health probe is stubbed to succeed.
 #
 # compdef is stubbed before sourcing aliases.zsh: in non-interactive zsh compdef
 # is absent, so harness_register's trailing compdef call would 127 under set -e
@@ -40,12 +40,12 @@ exit 0
 EOF
 chmod +x "$STUB_BIN/claude"
 
-# Stub curl: health probe always succeeds, so gateway rejection is on the token.
-cat > "$STUB_BIN/curl" <<'EOF'
+# Stub node: health probe always succeeds, so gateway rejection is on the token.
+cat > "$STUB_BIN/node" <<'EOF'
 #!/bin/bash
 exit 0
 EOF
-chmod +x "$STUB_BIN/curl"
+chmod +x "$STUB_BIN/node"
 
 mk_harness() {  # <dir> <prefix> [with_gateways]
   local dir="$1" prefix="$2" gw="${3:-}"

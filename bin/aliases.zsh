@@ -25,60 +25,11 @@ _harness_launcher_codex_bin() {
   whence -p -- codex 2>/dev/null
 }
 
-_harness_launcher_start_codex_app_server() {
-  local codex_bin="$1"
-  local codex_home="$2"
-  local runtime_dir="$codex_home/app-server"
-  local pid_file="$runtime_dir/codex-app-server.pid"
-  local url_file="$runtime_dir/codex-app-server.url"
-  local log_file="$runtime_dir/codex-app-server.log"
-
-  mkdir -p "$runtime_dir"
-  if [[ -f "$pid_file" ]]; then
-    local old_pid
-    old_pid="$(cat "$pid_file" 2>/dev/null || true)"
-    if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null && [[ -s "$url_file" ]]; then
-      cat "$url_file"
-      return 0
-    fi
-  fi
-
-  local port remote_url ready_url
-  port="$(
-    python3 - <<'PY'
-import socket
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.bind(("127.0.0.1", 0))
-    print(s.getsockname()[1])
-PY
-  )"
-  remote_url="ws://127.0.0.1:$port"
-  ready_url="http://127.0.0.1:$port/readyz"
-
-  (
-    export CODEX_HOME="$codex_home"
-    "$codex_bin" app-server --listen "$remote_url" >"$log_file" 2>&1 &
-    print -r -- "$!" >"$pid_file"
-    print -r -- "$remote_url" >"$url_file"
-  )
-
-  if [[ "${HARNESS_LAUNCHER_SKIP_APP_SERVER_READY:-}" == "1" ]]; then
-    print -r -- "$remote_url"
-    return 0
-  fi
-
-  local i
-  for i in {1..80}; do
-    if curl -fsS "$ready_url" >/dev/null 2>&1; then
-      print -r -- "$remote_url"
-      return 0
-    fi
-    sleep 0.1
-  done
-
-  echo "❌ Codex app-server did not become ready: $log_file" >&2
-  tail -n 20 "$log_file" >&2 2>/dev/null || true
-  return 1
+_harness_launcher_probe_provider_health() {
+  local provider_url="$1"
+  [[ -z "$provider_url" ]] && return 1
+  PROBE_PROVIDER_URL="$provider_url" \
+    node -e 'const baseUrl = process.env.PROBE_PROVIDER_URL; const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000); fetch(`${baseUrl}/health`, { signal: controller.signal }).then(() => { clearTimeout(timer); process.exit(0); }).catch(() => { clearTimeout(timer); process.exit(1); });' >/dev/null 2>&1
 }
 
 _harness_launcher_export_codex_runtime_env() {
@@ -217,7 +168,7 @@ _harness_launcher_run() {
         [[ -n "${KIRO_GATEWAY_API_KEY:-}" ]] && gateway_api_key="$KIRO_GATEWAY_API_KEY"
       fi
       [[ -z "$provider_url" ]] && echo "❌ KIRO_GATEWAY_URL이 설정되지 않았습니다" && return 1
-      curl -s --max-time 2 -o /dev/null "${provider_url}/health" >/dev/null 2>&1 \
+      _harness_launcher_probe_provider_health "$provider_url" \
         || { echo "❌ kiro-gateway에 연결할 수 없습니다 ($provider_url)"; return 1; }
       skip_tui=true; shift ;;
     codex)
@@ -234,7 +185,7 @@ _harness_launcher_run() {
         [[ -n "${CODEX_GATEWAY_API_KEY:-}" ]] && gateway_api_key="$CODEX_GATEWAY_API_KEY"
       fi
       [[ -z "$provider_url" ]] && echo "❌ CODEX_GATEWAY_URL이 설정되지 않았습니다" && return 1
-      curl -s --max-time 2 -o /dev/null "${provider_url}/health" >/dev/null 2>&1 \
+      _harness_launcher_probe_provider_health "$provider_url" \
         || { echo "❌ codex-gateway에 연결할 수 없습니다 ($provider_url)"; return 1; }
       skip_tui=true; shift ;;
   esac

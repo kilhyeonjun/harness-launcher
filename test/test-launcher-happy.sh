@@ -55,6 +55,7 @@ run_fallback() {
   local input="$1" out_file="$2" stub_file="$3"
   TEST_STUB_FILE="$stub_file" \
   PATH="$TEST_BASE_PATH" \
+  HARNESS_CODEX_BIN="$TEST_TEMP/missing-codex" \
   HARNESS_DIR="$TEST_HARNESS" \
   HARNESS_NAME="test harness" \
   bash "$LAUNCHER_DIR/bin/launcher.sh" <<< "$input" > "$out_file" 2>&1
@@ -66,6 +67,7 @@ run_provider_fallback() {
   TEST_KIRO_HEALTH="$kiro_health" \
   TEST_CODEX_HEALTH="$codex_health" \
   PATH="$TEST_BASE_PATH" \
+  HARNESS_CODEX_BIN="$TEST_TEMP/missing-codex" \
   HARNESS_DIR="$TEST_HARNESS" \
   HARNESS_NAME="test harness" \
   bash "$LAUNCHER_DIR/bin/launcher.sh" <<< "$input" > "$out_file" 2>&1
@@ -340,7 +342,7 @@ run_gum() {
     echo 'FAIL: gum path test requires script command'
     exit 1
   fi
-  script -q /dev/null bash -c "env TEST_STUB_FILE='$stub_file' TEST_GUM_LOG='$TEST_TEMP/gum.log' TEST_GUM_COUNT_FILE='$TEST_TEMP/gum-count' PATH='$TEST_BASE_PATH' HARNESS_DIR='$TEST_HARNESS' HARNESS_NAME='test harness' bash '$LAUNCHER_DIR/bin/launcher.sh'" > "$out_file" 2>&1
+  script -q /dev/null bash -c "env TEST_STUB_FILE='$stub_file' TEST_GUM_LOG='$TEST_TEMP/gum.log' TEST_GUM_COUNT_FILE='$TEST_TEMP/gum-count' PATH='$TEST_BASE_PATH' HARNESS_CODEX_BIN='$TEST_TEMP/missing-codex' HARNESS_DIR='$TEST_HARNESS' HARNESS_NAME='test harness' bash '$LAUNCHER_DIR/bin/launcher.sh'" > "$out_file" 2>&1
 }
 
 write_gum_stub

@@ -50,12 +50,26 @@ exit 0
 EOF
 chmod +x "$TEST_BIN/codex"
 
+HAPPY_BIN="$TEST_TEMP/bin-happy"
+mkdir -p "$HAPPY_BIN"
+cat > "$HAPPY_BIN/happy" <<'EOF'
+#!/usr/bin/env bash
+{
+  echo "EXEC:happy"
+  echo "ARGS:$*"
+  echo "CODEX_HOME:${CODEX_HOME:-}"
+} >> "$TEST_STUB_FILE"
+exit 0
+EOF
+chmod +x "$HAPPY_BIN/happy"
+
 run_tui() {
   local input="$1" stub_file="$2" extra_path="${3:-}"
   local path_value="$TEST_BIN:/usr/bin:/bin"
   [[ -n "$extra_path" ]] && path_value="$extra_path:$path_value"
   TEST_STUB_FILE="$stub_file" \
   PATH="$path_value" \
+  HARNESS_CODEX_BIN="$TEST_BIN/codex" \
   HARNESS_DIR="$TEST_HARNESS" \
   HARNESS_NAME="test harness" \
   bash "$LAUNCHER_DIR/bin/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
@@ -71,6 +85,9 @@ grep -q "^EXEC:codex" "$STUB1" || {
 grep -qE "^ARGS:.*--cd $TEST_HARNESS" "$STUB1" || {
   echo "FAIL: case1 — missing --cd"; cat "$STUB1"; exit 1;
 }
+if grep -qE "^ARGS:.*--remote " "$STUB1"; then
+  echo "FAIL: case1 — must not use local app-server --remote"; cat "$STUB1"; exit 1;
+fi
 grep -qE "^ARGS:.*-p base" "$STUB1" || {
   echo "FAIL: case1 — missing -p base"; cat "$STUB1"; exit 1;
 }
@@ -83,7 +100,7 @@ grep -q "^CODEX_HOME:$TEST_HARNESS/.harness/codex\$" "$STUB1" || {
 [[ -L "$TEST_HARNESS/.harness/codex/AGENTS.md" ]] || {
   echo "FAIL: case1 — AGENTS.md symlink not created (prepare not invoked)"; exit 1;
 }
-echo "PASS: case1 — runtime=Codex base → exec codex --cd ... -p base + CODEX_HOME prepared"
+echo "PASS: case1 — runtime=Codex base → direct TUI + codex --cd ... -p base + CODEX_HOME prepared"
 
 # Case 2: runtime=Codex, session=Continue last, mode=Plan, safety=Default
 STUB2="$TEST_TEMP/out2-codex-continue.txt"
@@ -109,6 +126,36 @@ grep -qE "^ARGS:.*--full-auto" "$STUB3" || {
 }
 echo "PASS: case3 — Safety=Full auto → --full-auto flag"
 
+# Case 3b: runtime=Codex, Happy=yes → exec happy codex with same Codex args
+STUB3B="$TEST_TEMP/out3b-codex-happy.txt"
+: > "$STUB3B"
+run_tui $'2\n1\n2\n1\n2\n' "$STUB3B" "$HAPPY_BIN"
+grep -q "^EXEC:happy" "$STUB3B" || {
+  echo "FAIL: case3b — expected happy exec; got:"; cat "$STUB3B"; cat "$STUB3B.tui.log"; exit 1;
+}
+grep -qE "^ARGS:codex$" "$STUB3B" || {
+  echo "FAIL: case3b — expected happy codex without unsupported Codex CLI args"; cat "$STUB3B"; exit 1;
+}
+grep -q "^CODEX_HOME:$TEST_HARNESS/.harness/codex\$" "$STUB3B" || {
+  echo "FAIL: case3b — CODEX_HOME mismatch"; cat "$STUB3B"; exit 1;
+}
+echo "PASS: case3b — runtime=Codex + Happy=yes → exec happy codex"
+
+# Case 3c: Happy installed, but non-base Codex mode must not offer Happy prompt
+STUB3C="$TEST_TEMP/out3c-codex-rich-happy-installed.txt"
+: > "$STUB3C"
+run_tui $'2\n1\n4\n1\n' "$STUB3C" "$HAPPY_BIN"
+grep -q "^EXEC:codex" "$STUB3C" || {
+  echo "FAIL: case3c — expected native codex exec; got:"; cat "$STUB3C"; cat "$STUB3C.tui.log"; exit 1;
+}
+grep -qE "^ARGS:.*-p rich" "$STUB3C" || {
+  echo "FAIL: case3c — expected native codex rich profile"; cat "$STUB3C"; exit 1;
+}
+if grep -q "^EXEC:happy" "$STUB3C"; then
+  echo "FAIL: case3c — Happy prompt/path should be skipped for non-base Codex profile"; cat "$STUB3C"; exit 1;
+fi
+echo "PASS: case3c — Happy installed + Codex rich skips Happy prompt and runs native Codex"
+
 # Case 4: only Claude in PATH (no codex) → runtime menu auto-skips, Claude flow runs
 NO_CODEX_BIN="$TEST_TEMP/bin-noco"
 mkdir -p "$NO_CODEX_BIN"
@@ -119,6 +166,7 @@ STUB4="$TEST_TEMP/out4-claude-only.txt"
 : > "$STUB4"
 TEST_STUB_FILE="$STUB4" \
 PATH="$NO_CODEX_BIN:/usr/bin:/bin" \
+HARNESS_CODEX_BIN="$TEST_TEMP/missing-codex" \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
 bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'1\n2\n2\n' >/dev/null 2>&1 || true

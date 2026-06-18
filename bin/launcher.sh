@@ -74,12 +74,33 @@ HAS_HAPPY=false
 command -v happy >/dev/null 2>&1 && HAS_HAPPY=true
 
 LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+HARNESS_CODEX_APP_BIN="/Applications/Codex.app/Contents/Resources/codex"
+
+harness_launcher_codex_bin() {
+  local configured="${HARNESS_CODEX_BIN:-}"
+  if [[ -n "$configured" ]]; then
+    if [[ -x "$configured" ]]; then
+      printf '%s\n' "$configured"
+      return 0
+    fi
+    command -v "$configured" 2>/dev/null
+    return $?
+  fi
+  if [[ -x "$HARNESS_CODEX_APP_BIN" ]]; then
+    printf '%s\n' "$HARNESS_CODEX_APP_BIN"
+    return 0
+  fi
+  command -v codex 2>/dev/null
+}
 
 # Runtime selection: Claude Code vs Codex CLI native.
 HAS_CLAUDE=false
 HAS_CODEX=false
 command -v claude >/dev/null 2>&1 && HAS_CLAUDE=true
-command -v codex  >/dev/null 2>&1 && HAS_CODEX=true
+CODEX_BIN=""
+if CODEX_BIN="$(harness_launcher_codex_bin)"; then
+  HAS_CODEX=true
+fi
 
 RUNTIME="claude"
 if $HAS_CLAUDE && $HAS_CODEX; then
@@ -171,7 +192,7 @@ PY
   if $CODEX_USE_HAPPY; then
     CODEX_CMD=(happy codex)
   else
-    CODEX_CMD=(codex)
+    CODEX_CMD=("$CODEX_BIN")
   fi
   if [[ -n "$CODEX_SUBCMD" ]]; then
     CODEX_CMD+=("$CODEX_SUBCMD")
