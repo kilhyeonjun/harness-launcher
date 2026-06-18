@@ -186,9 +186,13 @@ mkdir -p "$FAKE_HOME/.codex/skills/global-skill" \
          "$FAKE_HOME/.codex/superpowers/skills/brainstorming" \
          "$FAKE_HARNESS_S/.claude/skills/harness-skill" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/.codex-plugin" \
+         "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/scripts" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/skills/browser" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/.codex-plugin" \
+         "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/extension-host/macos/arm64" \
+         "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/scripts" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/skills/chrome" \
+         "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/.codex-plugin" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/skills/computer-use"
 echo "# fake rules" > "$FAKE_HARNESS_S/CLAUDE.md"
@@ -225,6 +229,9 @@ name: browser
 description: Browser test skill
 ---
 EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/scripts/browser-client.mjs" <<'EOF'
+export const fakeBrowserClient = "browser-current";
+EOF
 cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/.codex-plugin/plugin.json" <<'EOF'
 {"name":"chrome","version":"0.1.0-test","skills":"./skills/"}
 EOF
@@ -234,6 +241,23 @@ name: chrome
 description: Chrome test skill
 ---
 EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/scripts/browser-client.mjs" <<'EOF'
+export const fakeBrowserClient = "chrome-current";
+EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/scripts/extension-id.json" <<'EOF'
+{
+  "extensionId": "fake-chrome-extension-id",
+  "extensionHostName": "com.openai.codexextension"
+}
+EOF
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/extension-host/macos/arm64/extension-host" <<'EOF'
+#!/bin/sh
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+EOF
+chmod +x "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/extension-host/macos/arm64/extension-host"
+cp -pR "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome" \
+        "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/0.1.0-test"
 cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/.codex-plugin/plugin.json" <<'EOF'
 {"name":"computer-use","version":"1.0.0-test","skills":"./skills/"}
 EOF
@@ -243,8 +267,25 @@ name: computer-use
 description: Computer Use test skill
 ---
 EOF
+cat > "$FAKE_HARNESS_S/.mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "node_repl": {
+      "command": "/fake/node_repl",
+      "env": {
+        "NODE_REPL_BROWSER_CLIENT_MARKETPLACE_NAME": "openai-bundled",
+        "NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  }
+}
+EOF
+mkdir -p "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/0.0.1-stale"
+"$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/0.1.0-test/extension-host/macos/arm64/extension-host" chrome-extension://fake-chrome-extension-id/ &
+FAKE_EXTENSION_HOST_PID=$!
 HOME="$FAKE_HOME" "$PREPARE" "$FAKE_HARNESS_S"
 SKILLS_OUT="$FAKE_HARNESS_S/.harness/codex/skills"
+FAKE_CONFIG="$FAKE_HARNESS_S/.harness/codex/config.toml"
 
 [[ -d "$SKILLS_OUT" && ! -L "$SKILLS_OUT" ]] || {
   echo "FAIL: skills should be a real directory, not a single symlink"; exit 1;
@@ -274,28 +315,108 @@ grep -qx 'harness-skill' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker 
 grep -qx 'superpowers' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing superpowers"; exit 1; }
 echo "PASS: .harness-managed marker tracks all linked entries"
 
-[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/browser/0.1.0-test/.codex-plugin/plugin.json" ]] || {
-  echo "FAIL: browser plugin cache not materialized"; exit 1;
-}
-[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/browser/0.1.0-test/skills/browser/SKILL.md" ]] || {
-  echo "FAIL: browser plugin skill not materialized"; exit 1;
-}
-[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/0.1.0-test/.codex-plugin/plugin.json" ]] || {
-  echo "FAIL: chrome plugin cache not materialized"; exit 1;
-}
-[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/0.1.0-test/skills/chrome/SKILL.md" ]] || {
-  echo "FAIL: chrome plugin skill not materialized"; exit 1;
-}
 [[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/computer-use/1.0.0-test/.codex-plugin/plugin.json" ]] || {
   echo "FAIL: computer-use plugin cache not materialized"; exit 1;
 }
 [[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/computer-use/1.0.0-test/skills/computer-use/SKILL.md" ]] || {
   echo "FAIL: computer-use plugin skill not materialized"; exit 1;
 }
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/0.1.0-test/.codex-plugin/plugin.json" ]] || {
+  echo "FAIL: chrome plugin cache not materialized"; exit 1;
+}
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/0.1.0-test/scripts/browser-client.mjs" ]] || {
+  echo "FAIL: chrome browser-client not materialized"; exit 1;
+}
+[[ -L "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/latest" ]] || {
+  echo "FAIL: harness chrome latest symlink missing"; exit 1;
+}
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/latest/scripts/browser-client.mjs" ]] || {
+  echo "FAIL: harness chrome latest symlink does not resolve"; exit 1;
+}
+[[ -L "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/latest" ]] || {
+  echo "FAIL: global chrome latest symlink missing"; exit 1;
+}
+[[ -f "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/extension-host" ]] || {
+  echo "FAIL: global chrome latest symlink does not expose extension host"; exit 1;
+}
+HOST_CONFIG="$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/extension-host-config.json"
+[[ -f "$HOST_CONFIG" ]] || {
+  echo "FAIL: global chrome extension-host-config.json missing"; exit 1;
+}
+grep -q "\"browserClientPath\": \"$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/latest/scripts/browser-client.mjs\"" "$HOST_CONFIG" || {
+  echo "FAIL: extension-host-config browserClientPath should point at global chrome latest browser-client"; exit 1;
+}
+grep -q '"codexCliPath": "/Applications/Codex.app/Contents/Resources/codex"' "$HOST_CONFIG" || {
+  echo "FAIL: extension-host-config codexCliPath missing"; exit 1;
+}
+grep -q '"nodeReplPath": "/Applications/Codex.app/Contents/Resources/cua_node/bin/node_repl"' "$HOST_CONFIG" || {
+  echo "FAIL: extension-host-config nodeReplPath missing"; exit 1;
+}
+grep -q '"extensionId": "fake-chrome-extension-id"' "$HOST_CONFIG" || {
+  echo "FAIL: extension-host-config extensionId should follow chrome plugin metadata"; exit 1;
+}
+sleep 0.3
+if kill -0 "$FAKE_EXTENSION_HOST_PID" 2>/dev/null && ! ps -p "$FAKE_EXTENSION_HOST_PID" -o stat= | grep -q 'Z'; then
+  ps -p "$FAKE_EXTENSION_HOST_PID" -o pid=,stat=,command= >&2 || true
+  kill "$FAKE_EXTENSION_HOST_PID" 2>/dev/null || true
+  echo "FAIL: stale global chrome extension-host should be stopped after config rewrite"; exit 1;
+fi
+wait "$FAKE_EXTENSION_HOST_PID" 2>/dev/null || true
+echo "PASS: stale global chrome extension-host stopped after config rewrite"
+[[ ! -e "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/browser" ]] || {
+  echo "FAIL: browser plugin cache should be pruned for terminal Codex"; exit 1;
+}
 grep -q '^\[plugins."chrome@openai-bundled"\]' "$FAKE_HARNESS_S/.harness/codex/config.toml" || {
   echo "FAIL: chrome plugin config missing"; exit 1;
 }
-echo "PASS: OpenAI bundled plugin roots materialized into Codex plugin cache"
+if grep -q '^\[plugins."browser@openai-bundled"\]' "$FAKE_HARNESS_S/.harness/codex/config.toml"; then
+  echo "FAIL: browser plugin config should be omitted for terminal Codex TUI"; exit 1;
+fi
+grep -q '^\[plugins."computer-use@openai-bundled"\]' "$FAKE_HARNESS_S/.harness/codex/config.toml" || {
+  echo "FAIL: computer-use plugin config missing"; exit 1;
+}
+echo "PASS: terminal Codex plugin cache exposes Computer Use and Chrome; Browser pruned"
+
+grep -q '^NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = ' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl should trust Chrome browser-client hash"; exit 1;
+}
+grep -q '^NODE_REPL_BROWSER_CLIENT_MARKETPLACE_NAME = "openai-bundled"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl should carry browser-client marketplace"; exit 1;
+}
+grep -q '^BROWSER_USE_AVAILABLE_BACKENDS = "chrome"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl should enable Chrome backend"; exit 1;
+}
+grep -q '^BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl missing Browser Use build flavor"; exit 1;
+}
+grep -q '^BROWSER_USE_CODEX_APP_VERSION = "0.1.0-test"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl missing Browser Use app version"; exit 1;
+}
+grep -q '^NODE_REPL_UNTRUSTED_ENV_ALLOWLIST = "BROWSER_USE_AVAILABLE_BACKENDS,BROWSER_USE_CODEX_APP_BUILD_FLAVOR,BROWSER_USE_CODEX_APP_VERSION,BROWSER_USE_DISABLE_AMBIENT_NETWORK,BROWSER_USE_DISABLE_BROWSER_CAPABILITIES,BROWSER_USE_DISABLE_TAB_CAPABILITIES,BROWSER_USE_SECURITY_MODE"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl must expose Browser Use env to browser-client when it runs outside trusted context"; exit 1;
+}
+grep -q "^CODEX_HOME = \"$FAKE_HARNESS_S/.harness/codex\"" "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl missing generated CODEX_HOME env"; exit 1;
+}
+grep -q "^NODE_REPL_TRUSTED_CODE_PATHS = \".*$FAKE_HARNESS_S/.harness/codex.*$FAKE_HOME/.codex" "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl trusted code paths do not include harness and global Codex homes"; exit 1;
+}
+grep -q '^NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "5000"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl missing native pipe connect timeout env"; exit 1;
+}
+grep -q '^NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Terminal kh/gd/gp Codex sessions do not receive Codex Desktop'\''s in-app Browser/IAB backend. Do not use @Browser from terminal Codex."' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl Browser instruction should state terminal Browser/IAB absence"; exit 1;
+}
+grep -q '^NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Chrome plugin cache and native host are prepared, but terminal codex exec/TUI currently may not receive the extension backend. Verify agent.browsers.list() before claiming @Chrome works; Codex Desktop @Chrome remains the supported path."' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl Chrome instruction should require live backend verification"; exit 1;
+}
+grep -q '^NODE_REPL_NODE_PATH = "/Applications/Codex.app/Contents/Resources/cua_node/bin/node"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl missing bundled node path env"; exit 1;
+}
+grep -q '^NODE_REPL_NODE_MODULE_DIRS = "/Applications/Codex.app/Contents/Resources/cua_node/lib/node_modules"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl missing bundled node module dirs env"; exit 1;
+}
+echo "PASS: node_repl Browser Use runtime env mirrors Codex app defaults"
 
 # Re-run after dropping a per-harness skill should remove its symlink
 rm -rf "$FAKE_HARNESS_S/.claude/skills/harness-skill"
@@ -531,16 +652,19 @@ grep -q "^source = \"$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled\"" "$
 grep -q '^\[plugins\."computer-use@openai-bundled"\]' "$config3" || {
   echo "FAIL: computer-use plugin section missing"; exit 1;
 }
-grep -q '^\[plugins\."browser@openai-bundled"\]' "$config3" || {
-  echo "FAIL: browser plugin section missing"; exit 1;
+grep -q '^\[plugins\."chrome@openai-bundled"\]' "$config3" || {
+  echo "FAIL: chrome plugin section missing"; exit 1;
 }
+if grep -q '^\[plugins\."browser@openai-bundled"\]' "$config3"; then
+  echo "FAIL: browser plugin should not be enabled in terminal Codex config"; exit 1;
+fi
 grep -A1 '^\[plugins\."computer-use@openai-bundled"\]' "$config3" | grep -q '^enabled = true' || {
   echo "FAIL: computer-use plugin not enabled"; exit 1;
 }
-grep -A1 '^\[plugins\."browser@openai-bundled"\]' "$config3" | grep -q '^enabled = true' || {
-  echo "FAIL: browser plugin not enabled"; exit 1;
+grep -A1 '^\[plugins\."chrome@openai-bundled"\]' "$config3" | grep -q '^enabled = true' || {
+  echo "FAIL: chrome plugin not enabled"; exit 1;
 }
-echo "PASS: OpenAI bundled Computer Use and Browser plugins enabled"
+echo "PASS: terminal Codex enables Computer Use and Chrome; Browser omitted"
 
 grep -q '^\[tui\]' "$config3" || { echo "FAIL: [tui] section missing"; exit 1; }
 grep -q '^status_line = \["model-with-reasoning", "current-dir", "git-branch", "run-state", "context-remaining", "context-used"\]' "$config3" || {
