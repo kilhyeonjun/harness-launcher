@@ -1066,6 +1066,10 @@ description: Run daily workflow in sequence
 # Daily Pipeline
 
 Run daily-sync → worklog → slack-format.
+
+<command_contract>
+  <completion_gate>Run daily workflow only after prerequisites pass.</completion_gate>
+</command_contract>
 EOF
 
 # Skipped: references CLAUDE_PROJECT_DIR (Claude-coupled)
@@ -1097,6 +1101,10 @@ skills_out="$TEST_HARNESS_C/.harness/codex/skills"
 [[ -f "$skills_out/daily-pipeline/SKILL.md" ]] || { echo "FAIL: SKILL.md missing for daily-pipeline"; exit 1; }
 grep -q "^name: daily-pipeline" "$skills_out/daily-pipeline/SKILL.md" || { echo "FAIL: SKILL.md frontmatter name"; exit 1; }
 grep -q "Run daily-sync" "$skills_out/daily-pipeline/SKILL.md" || { echo "FAIL: SKILL.md body content"; exit 1; }
+grep -q "<execution_policy>" "$skills_out/daily-pipeline/SKILL.md" || { echo "FAIL: command contract was not converted to skill execution policy"; exit 1; }
+if grep -q "<command_contract>" "$skills_out/daily-pipeline/SKILL.md"; then
+  echo "FAIL: command contract leaked into generated skill"; exit 1;
+fi
 echo "PASS: portable command → SKILL.md generated"
 
 # Explicit-only invocation policy
