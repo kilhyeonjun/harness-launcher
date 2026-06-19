@@ -182,6 +182,7 @@ fi
 FAKE_HOME="$TEST_TEMP/fake-home"
 FAKE_HARNESS_S="$TEST_TEMP/fake-harness-skills"
 mkdir -p "$FAKE_HOME/.codex/skills/global-skill" \
+         "$FAKE_HOME/.agents/skills/agents-global-skill" \
          "$FAKE_HOME/.codex/skills/.system/system-skill" \
          "$FAKE_HOME/.codex/superpowers/skills/brainstorming" \
          "$FAKE_HARNESS_S/.claude/skills/harness-skill" \
@@ -200,6 +201,12 @@ cat > "$FAKE_HOME/.codex/skills/global-skill/SKILL.md" <<'EOF'
 ---
 name: global-skill
 description: Globally available skill
+---
+EOF
+cat > "$FAKE_HOME/.agents/skills/agents-global-skill/SKILL.md" <<'EOF'
+---
+name: agents-global-skill
+description: Global skill installed by skills CLI
 ---
 EOF
 cat > "$FAKE_HOME/.codex/skills/.system/system-skill/SKILL.md" <<'EOF'
@@ -299,6 +306,10 @@ echo "PASS: skills is a real directory"
 [[ -f "$SKILLS_OUT/global-skill/SKILL.md" ]] || { echo "FAIL: global-skill resolves to file"; exit 1; }
 echo "PASS: ~/.codex/skills/global-skill linked"
 
+[[ -L "$SKILLS_OUT/agents-global-skill" ]] || { echo "FAIL: agents-global-skill symlink missing"; exit 1; }
+[[ -f "$SKILLS_OUT/agents-global-skill/SKILL.md" ]] || { echo "FAIL: agents-global-skill resolves to file"; exit 1; }
+echo "PASS: ~/.agents/skills/agents-global-skill linked"
+
 [[ -L "$SKILLS_OUT/harness-skill" ]] || { echo "FAIL: harness-skill symlink missing"; exit 1; }
 [[ -f "$SKILLS_OUT/harness-skill/SKILL.md" ]] || { echo "FAIL: harness-skill resolves to file"; exit 1; }
 echo "PASS: \$HARNESS_DIR/.claude/skills/harness-skill linked"
@@ -314,6 +325,7 @@ echo "PASS: ~/.codex/superpowers/skills namespace linked"
 
 [[ -f "$SKILLS_OUT/.harness-managed" ]] || { echo "FAIL: .harness-managed marker missing"; exit 1; }
 grep -qx 'global-skill' "$SKILLS_OUT/.harness-managed"  || { echo "FAIL: marker missing global-skill"; exit 1; }
+grep -qx 'agents-global-skill' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing agents-global-skill"; exit 1; }
 grep -qx 'harness-skill' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing harness-skill"; exit 1; }
 grep -qx 'superpowers' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing superpowers"; exit 1; }
 echo "PASS: .harness-managed marker tracks all linked entries"
@@ -372,6 +384,29 @@ if kill -0 "$FAKE_EXTENSION_HOST_PID" 2>/dev/null && ! ps -p "$FAKE_EXTENSION_HO
 fi
 wait "$FAKE_EXTENSION_HOST_PID" 2>/dev/null || true
 echo "PASS: stale global chrome extension-host stopped after config rewrite"
+[[ ! -e "$FAKE_HOME/.codex/.codex-home-prepare-global.lock" ]] || {
+  echo "FAIL: global Codex cache lock was not released"; exit 1;
+}
+FAKE_HARNESS_PAR_A="$TEST_TEMP/fake-harness-parallel-a"
+FAKE_HARNESS_PAR_B="$TEST_TEMP/fake-harness-parallel-b"
+mkdir -p "$FAKE_HARNESS_PAR_A" "$FAKE_HARNESS_PAR_B"
+echo "# fake rules" > "$FAKE_HARNESS_PAR_A/CLAUDE.md"
+echo "# fake rules" > "$FAKE_HARNESS_PAR_B/CLAUDE.md"
+HOME="$FAKE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$PREPARE" "$FAKE_HARNESS_PAR_A" &
+pid_a=$!
+HOME="$FAKE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$PREPARE" "$FAKE_HARNESS_PAR_B" &
+pid_b=$!
+set +e
+wait "$pid_a"; rc_a=$?
+wait "$pid_b"; rc_b=$?
+set -e
+[[ "$rc_a" -eq 0 && "$rc_b" -eq 0 ]] || {
+  echo "FAIL: concurrent prepare should not race on global Codex cache"; exit 1;
+}
+[[ ! -e "$FAKE_HOME/.codex/.codex-home-prepare-global.lock" ]] || {
+  echo "FAIL: global Codex cache lock left behind after concurrent prepare"; exit 1;
+}
+echo "PASS: concurrent prepare serializes global Codex cache updates"
 [[ ! -e "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/browser" ]] || {
   echo "FAIL: browser plugin cache should be pruned for terminal Codex"; exit 1;
 }

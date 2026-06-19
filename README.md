@@ -81,8 +81,9 @@ populates `$HARNESS_DIR/.harness/codex/` with:
 - `plugins/cache/openai-bundled/` — versioned plugin roots for those bundled
   plugins, so Codex reports them as installed and loads their skills/tools.
 - `AGENTS.md` → `../../CLAUDE.md` (symlink, so Codex picks up the harness rules).
-- `skills/` — per-skill symlink merge of global `~/.codex/skills` plus
-  harness-local `.claude/skills`.
+- `skills/` — per-skill symlink merge of global `~/.codex/skills`,
+  active Skills CLI installs from `~/.agents/skills`, and harness-local
+  `.claude/skills`.
 - `auth.json` → `~/.codex/auth.json` (symlink, share login).
 
 The script is idempotent: re-running rewrites `config.toml` only when the

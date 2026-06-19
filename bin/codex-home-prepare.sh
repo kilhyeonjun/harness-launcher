@@ -89,10 +89,11 @@ if [[ -f "$HOME/.codex/auth.json" ]]; then
   ln -sfn "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
 fi
 
-# Skills: merge global Codex skills (~/.codex/skills) with per-harness Claude
-# skills ($HARNESS_DIR/.claude/skills) into $CODEX_HOME/skills/. Each entry is
-# a symlink so source-of-truth stays in one place. A managed-marker file lets
-# re-runs drop stale entries when sources change.
+# Skills: merge global Codex skills (~/.codex/skills), global agent skills
+# (~/.agents/skills), and per-harness Claude skills ($HARNESS_DIR/.claude/skills)
+# into $CODEX_HOME/skills/. Each entry is a symlink so source-of-truth stays in
+# one place. A managed-marker file lets re-runs drop stale entries when sources
+# change.
 SKILLS_DIR="$CODEX_HOME/skills"
 # Migrate from old single-symlink layout
 [[ -L "$SKILLS_DIR" ]] && rm "$SKILLS_DIR"
@@ -106,6 +107,17 @@ if [[ -f "$MARKER" ]]; then
 fi
 : > "$MARKER"
 
+managed_names=()
+
+record_managed_skill() {
+  local name="$1" existing
+  for existing in "${managed_names[@]}"; do
+    [[ "$existing" == "$name" ]] && return 0
+  done
+  managed_names+=("$name")
+  echo "$name" >> "$MARKER"
+}
+
 link_skill_dir() {
   local src_root="$1"
   [[ -d "$src_root" ]] || return 0
@@ -115,16 +127,17 @@ link_skill_dir() {
     [[ -f "$src/SKILL.md" ]] || continue
     name="$(basename "$src")"
     ln -sfn "${src%/}" "$SKILLS_DIR/$name"
-    echo "$name" >> "$MARKER"
+    record_managed_skill "$name"
   done
   # Preserve Codex system bundle if present (.system/ holds vendor skills)
   if [[ -d "$src_root/.system" ]]; then
     ln -sfn "$src_root/.system" "$SKILLS_DIR/.system"
-    echo ".system" >> "$MARKER"
+    record_managed_skill ".system"
   fi
 }
 
 link_skill_dir "$HOME/.codex/skills"
+link_skill_dir "$HOME/.agents/skills"
 
 # Superpowers uses Codex's namespace-style skill discovery: the official
 # install links ~/.agents/skills/superpowers -> ~/.codex/superpowers/skills.
@@ -132,7 +145,7 @@ link_skill_dir "$HOME/.codex/skills"
 # well and do not depend on a mutable ~/.agents symlink staying present.
 if [[ -d "$HOME/.codex/superpowers/skills" ]]; then
   ln -sfn "$HOME/.codex/superpowers/skills" "$SKILLS_DIR/superpowers"
-  echo "superpowers" >> "$MARKER"
+  record_managed_skill "superpowers"
 fi
 
 link_skill_dir "$HARNESS_DIR/.claude/skills"
@@ -510,6 +523,33 @@ update_latest_symlink() {
   ln -s "$version" "$cache_dir/latest"
 }
 
+with_global_codex_lock() {
+  local lock_dir="$HOME/.codex/.codex-home-prepare-global.lock"
+  local acquired=0
+  local i
+  mkdir -p "$HOME/.codex"
+  for i in {1..400}; do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      acquired=1
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ "$acquired" -ne 1 ]]; then
+    echo "ERROR: timed out waiting for Codex global cache lock: $lock_dir" >&2
+    return 1
+  fi
+
+  local rc
+  if "$@"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  rmdir "$lock_dir" 2>/dev/null || true
+  return "$rc"
+}
+
 sync_bundled_marketplace_from_app_bundle() {
   local app_marketplace="$CODEX_BUNDLED_MARKETPLACE_SOURCE"
   local dest="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
@@ -711,15 +751,20 @@ remove_bundled_plugin_cache() {
   rm -rf "$CODEX_HOME/plugins/cache/openai-bundled/$plugin"
 }
 
-sync_bundled_marketplace_from_app_bundle
-materialize_bundled_plugin "computer-use"
-materialize_bundled_plugin "chrome"
-# Chrome's native messaging manifest is global and points at
-# ~/.codex/plugins/cache/openai-bundled/chrome/latest. Keep that link valid even
-# when kh/gd/gp run with a per-harness CODEX_HOME.
-ensure_global_bundled_plugin_latest "chrome"
-write_global_chrome_extension_host_config
-restart_global_chrome_extension_host_if_config_changed
+prepare_bundled_plugins() {
+  sync_bundled_marketplace_from_app_bundle
+  materialize_bundled_plugin "computer-use"
+  materialize_bundled_plugin "chrome"
+  # Chrome's native messaging manifest is global and points at
+  # ~/.codex/plugins/cache/openai-bundled/chrome/latest. Keep that link valid
+  # even when kh/gd/gp run with a per-harness CODEX_HOME. This touches global
+  # cache state, so callers may run it under with_global_codex_lock.
+  ensure_global_bundled_plugin_latest "chrome"
+  write_global_chrome_extension_host_config
+  restart_global_chrome_extension_host_if_config_changed
+}
+
+with_global_codex_lock prepare_bundled_plugins
 remove_bundled_plugin_cache "browser"
 
 # 5. Generate hooks.json — Claude harness owns hook scripts as single source
