@@ -463,6 +463,23 @@ echo "PASS: works without .mcp.json (no mcp_servers section, per-profile files i
 TEST_HARNESS3="$TEST_TEMP/fake-harness-hooks"
 mkdir -p "$TEST_HARNESS3/core/hooks" "$TEST_HARNESS3/.claude/source"
 echo "# rules" > "$TEST_HARNESS3/CLAUDE.md"
+mkdir -p "$TEST_HARNESS3/.codex"
+cat > "$TEST_HARNESS3/.codex/hooks.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-tool-budget-guard.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
 # Stub hook scripts so the generator can verify they exist
 for h in session-start user-prompt-session-end-detect prompt-keyword-routing \
          pre-bash-irreversible-guard pre-bash-gh-auth pre-bash-pr-gate pre-bash-worktree-gate \
@@ -632,6 +649,12 @@ EOF
 "$PREPARE" "$TEST_HARNESS3"
 config3="$TEST_HARNESS3/.harness/codex/config.toml"
 hooks_json="$TEST_HARNESS3/.harness/codex/hooks.json"
+legacy_backup_count="$(find "$TEST_HARNESS3" -maxdepth 1 -type d -name '.codex.legacy-*' | wc -l | tr -d ' ')"
+[[ ! -e "$TEST_HARNESS3/.codex" ]] || { echo "FAIL: legacy project .codex directory should be quarantined"; exit 1; }
+[[ "$legacy_backup_count" == "1" ]] || {
+  echo "FAIL: expected one .codex.legacy-* quarantine backup, got $legacy_backup_count"; exit 1;
+}
+echo "PASS: legacy project .codex quarantined so Codex does not load stale root hooks"
 
 grep -q '^\[features\]' "$config3" || { echo "FAIL: [features] section missing"; exit 1; }
 grep -q '^hooks = true' "$config3" || { echo "FAIL: hooks feature flag missing"; exit 1; }

@@ -12,6 +12,25 @@ HARNESS_DIR="${1:?HARNESS_DIR required (positional arg 1)}"
 [[ -d "$HARNESS_DIR" ]] || { echo "harness dir not found: $HARNESS_DIR" >&2; exit 1; }
 
 CODEX_HOME="$HARNESS_DIR/.harness/codex"
+PROJECT_CODEX_DIR="$HARNESS_DIR/.codex"
+
+quarantine_project_codex_dir() {
+  [[ -e "$PROJECT_CODEX_DIR" || -L "$PROJECT_CODEX_DIR" ]] || return 0
+
+  local stamp backup i
+  stamp="$(date +%Y%m%d%H%M%S 2>/dev/null || printf 'unknown')"
+  backup="$HARNESS_DIR/.codex.legacy-$stamp-$$"
+  i=0
+  while [[ -e "$backup" || -L "$backup" ]]; do
+    i=$((i + 1))
+    backup="$HARNESS_DIR/.codex.legacy-$stamp-$$-$i"
+  done
+
+  mv "$PROJECT_CODEX_DIR" "$backup"
+  echo "WARN: quarantined legacy project .codex to $backup" >&2
+}
+
+quarantine_project_codex_dir
 mkdir -p "$CODEX_HOME"
 CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/Applications/Codex.app/Contents/Resources/plugins/openai-bundled}"
 
