@@ -523,22 +523,69 @@ update_latest_symlink() {
   ln -s "$version" "$cache_dir/latest"
 }
 
+# Self-healing global mutex. The lock is a directory (atomic mkdir). On
+# acquire we stamp $lock_dir/owner with our PID + epoch so a contender can
+# tell a live holder from an orphan. If mkdir fails we inspect the owner:
+# a dead PID, or a lock older than the staleness ceiling, gets reclaimed.
+# A trap releases the lock on EXIT/INT/TERM/HUP so a killed process between
+# acquire and release no longer wedges every future kh/gd/gp run — the bug
+# this guards against was a Jun-2026 orphan that timed out all three commands.
 with_global_codex_lock() {
   local lock_dir="$HOME/.codex/.codex-home-prepare-global.lock"
+  local owner_file="$lock_dir/owner"
+  local stale_after=120   # seconds; far longer than any real prepare run
   local acquired=0
   local i
   mkdir -p "$HOME/.codex"
+
+  _global_codex_lock_is_stale() {
+    # stale if owner unreadable, PID dead, or held past the ceiling
+    local opid otime now age
+    [[ -f "$owner_file" ]] || return 0
+    opid="$(sed -n '1p' "$owner_file" 2>/dev/null)"
+    otime="$(sed -n '2p' "$owner_file" 2>/dev/null)"
+    [[ "$opid" =~ ^[0-9]+$ ]] || return 0
+    if ! kill -0 "$opid" 2>/dev/null; then
+      return 0
+    fi
+    if [[ "$otime" =~ ^[0-9]+$ ]]; then
+      now="$(date +%s 2>/dev/null || echo 0)"
+      age=$(( now - otime ))
+      (( age > stale_after )) && return 0
+    fi
+    return 1
+  }
+
   for i in {1..400}; do
     if mkdir "$lock_dir" 2>/dev/null; then
       acquired=1
       break
     fi
+    # Could not acquire — reclaim if the current holder is dead or expired.
+    if _global_codex_lock_is_stale; then
+      echo "WARN: reclaiming stale Codex global cache lock: $lock_dir" >&2
+      rm -rf "$lock_dir" 2>/dev/null || true
+      mkdir "$lock_dir" 2>/dev/null && { acquired=1; break; }
+    fi
     sleep 0.05
   done
   if [[ "$acquired" -ne 1 ]]; then
     echo "ERROR: timed out waiting for Codex global cache lock: $lock_dir" >&2
+    echo "       If no other kh/gd/gp/codex run is active, remove it: rmdir '$lock_dir'" >&2
+    unset -f _global_codex_lock_is_stale 2>/dev/null || true
     return 1
   fi
+
+  # Stamp ownership atomically (temp file + mv) so a half-written owner file
+  # never trips the staleness check for a contender.
+  {
+    printf '%s\n%s\n' "$$" "$(date +%s 2>/dev/null || echo 0)" > "$lock_dir/.owner.$$" \
+      && mv -f "$lock_dir/.owner.$$" "$owner_file"
+  } 2>/dev/null || true
+
+  # Release on any exit path, including interruption — closes the leak that
+  # a plain post-run rmdir left open when the process was killed mid-prepare.
+  trap 'rm -rf "$lock_dir" 2>/dev/null || true' EXIT INT TERM HUP
 
   local rc
   if "$@"; then
@@ -546,7 +593,9 @@ with_global_codex_lock() {
   else
     rc=$?
   fi
-  rmdir "$lock_dir" 2>/dev/null || true
+  rm -rf "$lock_dir" 2>/dev/null || true
+  trap - EXIT INT TERM HUP
+  unset -f _global_codex_lock_is_stale 2>/dev/null || true
   return "$rc"
 }
 
