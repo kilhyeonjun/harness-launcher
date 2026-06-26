@@ -34,6 +34,35 @@ quarantine_project_codex_dir
 mkdir -p "$CODEX_HOME"
 CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/Applications/Codex.app/Contents/Resources/plugins/openai-bundled}"
 
+warn_claude_global_mcp_drift() {
+  local claude_json="$HOME/.claude.json"
+  local harness_mcp="$HARNESS_DIR/.mcp.json"
+  [[ -f "$claude_json" && -f "$harness_mcp" ]] || return 0
+
+  python3 - "$claude_json" "$harness_mcp" <<'PY'
+import json
+import sys
+
+claude_path, harness_path = sys.argv[1], sys.argv[2]
+
+try:
+    with open(claude_path, encoding="utf-8") as f:
+        claude = json.load(f)
+    with open(harness_path, encoding="utf-8") as f:
+        harness = json.load(f)
+except Exception:
+    sys.exit(0)
+
+global_servers = set((claude.get("mcpServers") or {}).keys())
+harness_servers = set((harness.get("mcpServers") or {}).keys())
+
+for name in sorted(global_servers - harness_servers):
+    print(f"WARN: Claude global MCP server not declared in harness .mcp.json: {name}", file=sys.stderr)
+PY
+}
+
+warn_claude_global_mcp_drift
+
 # 1. AGENTS.md: compiler-first when canonical .claude/source exists. The
 # compiler emits Codex-native XML runtime contracts plus non-runtime rules. For
 # older harnesses, keep the legacy rules concatenation fallback. Without rules,
@@ -286,7 +315,9 @@ tmp_config="$(mktemp "$CODEX_HOME/.config.toml.XXXXXX")"
 bundled_marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
 browser_client_sha256s="$(
   for client in "$bundled_marketplace/plugins/chrome/scripts/browser-client.mjs"; do
-    [[ -f "$client" ]] && shasum -a 256 "$client" | awk '{print $1}'
+    if [[ -f "$client" ]]; then
+      shasum -a 256 "$client" | awk '{print $1}'
+    fi
   done | sort -u | paste -sd' ' -
 )"
 browser_use_app_version="$(

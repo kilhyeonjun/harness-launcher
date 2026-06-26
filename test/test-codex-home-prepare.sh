@@ -5,8 +5,27 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$LAUNCHER_DIR/../.." && pwd)"
 PREPARE="$LAUNCHER_DIR/bin/codex-home-prepare.sh"
+
+find_harness_repo_root() {
+  local candidate
+  for candidate in \
+    "${HARNESS_TEST_REPO_ROOT:-}" \
+    "$LAUNCHER_DIR/../.." \
+    "$HOME/kilhyeonjun-harness" \
+    "$HOME/gameduo-personal-harness" \
+    "$HOME/gameduo-platform-harness"
+  do
+    [[ -n "$candidate" ]] || continue
+    if [[ -f "$candidate/core/scripts/harness_compile.py" ]]; then
+      (cd "$candidate" && pwd)
+      return 0
+    fi
+  done
+  return 1
+}
+
+REPO_ROOT="$(find_harness_repo_root || true)"
 
 cleanup() {
   [[ -n "${TEST_TEMP:-}" && -d "$TEST_TEMP" ]] && rm -rf "$TEST_TEMP"
@@ -28,6 +47,11 @@ cat > "$TEST_HARNESS/.mcp.json" <<'EOF'
   "mcpServers": {
     "atlassian": { "type": "http", "url": "http://localhost:38100/mcp" },
     "context7": { "command": "npx", "args": ["-y", "@upstash/context7-mcp"] },
+    "glider": {
+      "type": "stdio",
+      "command": "/usr/local/bin/glider",
+      "args": ["mcp", "serve"]
+    },
     "google_workspace": {
       "command": "bash",
       "args": ["core/bin/start-google-workspace-mcp.sh"],
@@ -93,10 +117,14 @@ grep -q '^url = "http://localhost:38100/mcp"' "$config" || { echo "FAIL: atlassi
 grep -q '^\[mcp_servers.context7\]' "$config" || { echo "FAIL: context7 section missing"; exit 1; }
 grep -q '^command = "npx"' "$config" || { echo "FAIL: context7 command missing"; exit 1; }
 grep -q '^args = \["-y", "@upstash/context7-mcp"\]' "$config" || { echo "FAIL: context7 args missing"; exit 1; }
+grep -q '^\[mcp_servers.glider\]' "$config" || { echo "FAIL: glider section missing"; exit 1; }
+grep -q '^command = "/usr/local/bin/glider"' "$config" || { echo "FAIL: glider command missing"; exit 1; }
+grep -q '^args = \["mcp", "serve"\]' "$config" || { echo "FAIL: glider args missing"; exit 1; }
 grep -q '^\[mcp_servers.google_workspace\]' "$config" || { echo "FAIL: google_workspace section missing"; exit 1; }
 grep -q '^\[mcp_servers.google_workspace.env\]' "$config" || { echo "FAIL: env subtable missing"; exit 1; }
 grep -q '^FOO = "bar"' "$config" || { echo "FAIL: env value missing"; exit 1; }
 echo "PASS: mcp_servers TOML schema (HTTP, stdio, env)"
+echo "PASS: glider stdio MCP converted"
 
 # HTTP Authorization Bearer headers → bearer_token_env_var. Codex streamable_http
 # only accepts bearer_token_env_var (the env-var *name*), never a literal
@@ -1031,6 +1059,7 @@ mkdir -p "$TEST_HARNESS_COMP/.claude/source" \
          "$TEST_HARNESS_COMP/.claude/rules" \
          "$TEST_HARNESS_COMP/core/scripts"
 echo "# compiler harness" > "$TEST_HARNESS_COMP/CLAUDE.md"
+[[ -n "$REPO_ROOT" ]] || { echo "FAIL: harness repo root with core/scripts/harness_compile.py not found"; exit 1; }
 cp "$REPO_ROOT/core/scripts/harness_compile.py" "$TEST_HARNESS_COMP/core/scripts/harness_compile.py"
 cat > "$TEST_HARNESS_COMP/.claude/source/runtime-contract.yaml" <<'EOF'
 runtime_contract:
