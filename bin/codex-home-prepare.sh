@@ -140,7 +140,9 @@ managed_names=()
 
 record_managed_skill() {
   local name="$1" existing
-  for existing in "${managed_names[@]}"; do
+  # `${arr[@]:-}` guard: under `set -u`, bash 3.2 (macOS system /bin/bash) errors
+  # on a bare "${managed_names[@]}" while the array is still empty (first call).
+  for existing in "${managed_names[@]:-}"; do
     [[ "$existing" == "$name" ]] && return 0
   done
   managed_names+=("$name")
