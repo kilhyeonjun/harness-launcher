@@ -1213,4 +1213,76 @@ rm "$TEST_HARNESS_C/.claude/commands/daily-pipeline.md"
 [[ ! -d "$skills_out/daily-pipeline" ]] || { echo "FAIL: removed command's skill not cleaned up"; exit 1; }
 echo "PASS: removing source command drops generated skill"
 
+# ---------------------------------------------------------------------------
+# Claude plugin cache merge: ~/.claude/plugins/cache/<mp>/<plugin>/<version>/
+# skills must be linked into $CODEX_HOME/skills, newest version auto-resolved.
+# ---------------------------------------------------------------------------
+CPLUG="$FAKE_HOME/.claude/plugins/cache"
+
+# Single-skill plugin: SKILL.md at version root. Two versions present; newest wins.
+mkdir -p "$CPLUG/vid-mp/watchx/0.9.0" "$CPLUG/vid-mp/watchx/0.10.0"
+cat > "$CPLUG/vid-mp/watchx/0.9.0/SKILL.md" <<'EOF'
+---
+name: watchx
+description: old
+---
+old body
+EOF
+cat > "$CPLUG/vid-mp/watchx/0.10.0/SKILL.md" <<'EOF'
+---
+name: watchx
+description: new
+---
+new body
+EOF
+
+# Multi-skill plugin: skills/<name>/SKILL.md under the version dir.
+mkdir -p "$CPLUG/multi-mp/bundle/2.0.0/skills/alpha" \
+         "$CPLUG/multi-mp/bundle/2.0.0/skills/beta"
+cat > "$CPLUG/multi-mp/bundle/2.0.0/skills/alpha/SKILL.md" <<'EOF'
+---
+name: alpha
+description: a
+---
+a
+EOF
+cat > "$CPLUG/multi-mp/bundle/2.0.0/skills/beta/SKILL.md" <<'EOF'
+---
+name: beta
+description: b
+---
+b
+EOF
+
+# Stale version-pin self-heal regression: a dangling manual link in ~/.codex/skills
+# pointing at a now-missing version must not survive as a broken link; the engine
+# must produce a working link to the current version instead.
+mkdir -p "$CPLUG/pin-mp/pinned/1.2.0"
+cat > "$CPLUG/pin-mp/pinned/1.2.0/SKILL.md" <<'EOF'
+---
+name: pinned
+description: p
+---
+p
+EOF
+mkdir -p "$FAKE_HOME/.codex/skills"
+ln -sfn "$CPLUG/pin-mp/pinned/1.0.0" "$FAKE_HOME/.codex/skills/pinned"  # dangling (1.0.0 absent)
+
+HOME="$FAKE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$PREPARE" "$FAKE_HARNESS_S"
+
+# 1. Single-skill plugin linked, resolving to the NEWEST version (0.10.0 > 0.9.0).
+[[ -L "$SKILLS_OUT/watchx" ]] || { echo "FAIL: watchx symlink missing"; exit 1; }
+[[ -f "$SKILLS_OUT/watchx/SKILL.md" ]] || { echo "FAIL: watchx resolves to file"; exit 1; }
+grep -q "new body" "$SKILLS_OUT/watchx/SKILL.md" || { echo "FAIL: watchx not pointing at newest version (sort -V)"; exit 1; }
+echo "PASS: Claude-plugin single-skill merged at newest version"
+
+# 2. Multi-skill plugin: both skills linked.
+[[ -f "$SKILLS_OUT/alpha/SKILL.md" ]] || { echo "FAIL: multi-skill alpha not linked"; exit 1; }
+[[ -f "$SKILLS_OUT/beta/SKILL.md" ]] || { echo "FAIL: multi-skill beta not linked"; exit 1; }
+echo "PASS: Claude-plugin multi-skill merged"
+
+# 3. Stale manual pin self-heals: pinned resolves to a real SKILL.md (current version).
+[[ -f "$SKILLS_OUT/pinned/SKILL.md" ]] || { echo "FAIL: stale version pin did not self-heal"; exit 1; }
+echo "PASS: stale Claude-plugin version pin self-healed"
+
 echo "✓ All codex-home-prepare tests passed"
