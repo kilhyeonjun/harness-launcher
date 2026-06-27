@@ -168,6 +168,54 @@ link_skill_dir() {
 link_skill_dir "$HOME/.codex/skills"
 link_skill_dir "$HOME/.agents/skills"
 
+# Claude plugins install under ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/.
+# Merge their skills into the Codex home, auto-resolving the newest version each run so
+# a plugin update never leaves a dangling version-pinned link. Handles two layouts:
+#   1. SKILL.md at the version root      -> link as <plugin-name>
+#   2. skills/<name>/SKILL.md under it   -> link each as <skill-name>
+link_claude_plugin_skills() {
+  local cache_root="$HOME/.claude/plugins/cache"
+  [[ -d "$cache_root" ]] || return 0
+  local mp plug ver_root newest skill name vdir
+  for mp in "$cache_root"/*/; do
+    [[ -d "$mp" ]] || continue
+    for plug in "$mp"*/; do
+      [[ -d "$plug" ]] || continue
+      # Pick newest immediate child dir by version sort, excluding 'latest'.
+      newest=""
+      while IFS= read -r ver_root; do
+        [[ -n "$ver_root" ]] && newest="$ver_root"
+      done < <(
+        for ver_root in "$plug"*/; do
+          [[ -d "$ver_root" ]] || continue
+          name="$(basename "$ver_root")"
+          [[ "$name" == "latest" ]] && continue
+          printf '%s\n' "$name"
+        done | sort -V
+      )
+      [[ -n "$newest" ]] || continue
+      vdir="${plug}${newest}"
+      # Layout 1: single-skill plugin (SKILL.md at version root).
+      if [[ -f "$vdir/SKILL.md" ]]; then
+        name="$(basename "$plug")"
+        ln -sfn "$vdir" "$SKILLS_DIR/$name"
+        record_managed_skill "$name"
+      fi
+      # Layout 2: multi-skill plugin (skills/<name>/SKILL.md).
+      if [[ -d "$vdir/skills" ]]; then
+        for skill in "$vdir"/skills/*/; do
+          [[ -f "$skill/SKILL.md" ]] || continue
+          name="$(basename "$skill")"
+          ln -sfn "${skill%/}" "$SKILLS_DIR/$name"
+          record_managed_skill "$name"
+        done
+      fi
+    done
+  done
+}
+
+link_claude_plugin_skills
+
 # Superpowers uses Codex's namespace-style skill discovery: the official
 # install links ~/.agents/skills/superpowers -> ~/.codex/superpowers/skills.
 # Harness Codex homes are generator-owned, so link the clone directly here as
