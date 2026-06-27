@@ -1285,4 +1285,31 @@ echo "PASS: Claude-plugin multi-skill merged"
 [[ -f "$SKILLS_OUT/pinned/SKILL.md" ]] || { echo "FAIL: stale version pin did not self-heal"; exit 1; }
 echo "PASS: stale Claude-plugin version pin self-healed"
 
+# ---------------------------------------------------------------------------
+# nounset regression: prep runs under `set -euo pipefail`. On bash 3.2 (macOS
+# system /bin/bash), a bare "${managed_names[@]}" expansion errors with
+# "unbound variable" when the array is still empty. Run prep via /bin/bash
+# against a harness that has NO skill sources, so record_managed_skill's loop
+# is first reached with an empty array. Must not abort.
+# ---------------------------------------------------------------------------
+if [[ -x /bin/bash ]] && /bin/bash -uc 'a=(); for _ in "${a[@]}"; do :; done' 2>/dev/null; then
+  echo "SKIP: /bin/bash does not exhibit empty-array nounset behavior; regression not applicable here"
+else
+  NOUNSET_HARNESS="$TEST_TEMP/fake-harness-nounset"
+  NOUNSET_HOME="$TEST_TEMP/fake-home-nounset"
+  mkdir -p "$NOUNSET_HARNESS" "$NOUNSET_HOME/.codex/skills/probe-skill" "$NOUNSET_HOME/.claude"
+  echo "# rules" > "$NOUNSET_HARNESS/CLAUDE.md"
+  # Exactly one skill source so record_managed_skill is reached while managed_names
+  # is still empty — that first record is where bash 3.2 nounset trips on "${arr[@]}".
+  printf -- '---\nname: probe-skill\ndescription: x\n---\nbody\n' \
+    > "$NOUNSET_HOME/.codex/skills/probe-skill/SKILL.md"
+  if HOME="$NOUNSET_HOME" /bin/bash "$PREPARE" "$NOUNSET_HARNESS" >/dev/null 2>"$TEST_TEMP/nounset.err"; then
+    echo "PASS: prep survives empty managed_names under bash 3.2 nounset"
+  else
+    echo "FAIL: prep aborted under bash 3.2 nounset (empty managed_names):"
+    cat "$TEST_TEMP/nounset.err" >&2
+    exit 1
+  fi
+fi
+
 echo "✓ All codex-home-prepare tests passed"
