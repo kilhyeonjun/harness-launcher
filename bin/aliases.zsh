@@ -32,6 +32,58 @@ _harness_launcher_probe_provider_health() {
     node -e 'const baseUrl = process.env.PROBE_PROVIDER_URL; const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000); fetch(`${baseUrl}/health`, { signal: controller.signal }).then(() => { clearTimeout(timer); process.exit(0); }).catch(() => { clearTimeout(timer); process.exit(1); });' >/dev/null 2>&1
 }
 
+_harness_launcher_mcp_local_configs() {
+  local HARNESS_DIR="$1"
+  [[ -f "$HARNESS_DIR/.mcp.local.json" ]] && print -r -- "$HARNESS_DIR/.mcp.local.json"
+  [[ -f "$HARNESS_DIR/mcp.local.json" ]] && print -r -- "$HARNESS_DIR/mcp.local.json"
+}
+
+_harness_launcher_validate_mcp_local_configs() {
+  local HARNESS_DIR="$1"
+  local -a mcp_files=("$HARNESS_DIR/.mcp.json")
+  [[ -f "$HARNESS_DIR/.mcp.local.json" ]] && mcp_files+=("$HARNESS_DIR/.mcp.local.json")
+  [[ -f "$HARNESS_DIR/mcp.local.json" ]] && mcp_files+=("$HARNESS_DIR/mcp.local.json")
+  [[ ${#mcp_files[@]} -gt 1 ]] || return 0
+
+  python3 - "${mcp_files[@]}" <<'PY'
+import json, sys
+
+seen = {}
+for path in sys.argv[1:]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            servers = (json.load(f).get("mcpServers") or {})
+    except FileNotFoundError:
+        continue
+    for name in servers:
+        if name in seen:
+            print(
+                f"ERROR: duplicate MCP server '{name}' in {seen[name]} and {path}; "
+                "rename the local server instead of overriding committed .mcp.json",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        seen[name] = path
+PY
+}
+
+_harness_launcher_add_claude_mcp_local_args() {
+  local HARNESS_DIR="$1"; shift
+  local -a local_files=()
+  local f
+
+  _harness_launcher_validate_mcp_local_configs "$HARNESS_DIR" || return $?
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && local_files+=("$f")
+  done < <(_harness_launcher_mcp_local_configs "$HARNESS_DIR")
+
+  if [[ ${#local_files[@]} -gt 0 ]]; then
+    "$@" --mcp-config "${local_files[@]}"
+  else
+    "$@"
+  fi
+}
+
 _harness_launcher_export_codex_runtime_env() {
   local HARNESS_DIR="$1"
   local prepare="$_HARNESS_LAUNCHER_BIN/codex-home-prepare.sh"
@@ -289,7 +341,7 @@ _harness_launcher_run() {
     # Plain invocation (not exec) so the user's interactive shell survives
     # the launched process — Ctrl+C returns to the prompt instead of closing
     # the terminal window.
-    claude "${claude_args[@]}"
+    _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}"
     return $?
   else
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" \

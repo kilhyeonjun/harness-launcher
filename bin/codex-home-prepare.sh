@@ -36,25 +36,32 @@ CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/A
 
 warn_claude_global_mcp_drift() {
   local claude_json="$HOME/.claude.json"
-  local harness_mcp="$HARNESS_DIR/.mcp.json"
-  [[ -f "$claude_json" && -f "$harness_mcp" ]] || return 0
+  local harness_mcp_files=()
+  [[ -f "$HARNESS_DIR/.mcp.json" ]] && harness_mcp_files+=("$HARNESS_DIR/.mcp.json")
+  [[ -f "$HARNESS_DIR/.mcp.local.json" ]] && harness_mcp_files+=("$HARNESS_DIR/.mcp.local.json")
+  [[ -f "$HARNESS_DIR/mcp.local.json" ]] && harness_mcp_files+=("$HARNESS_DIR/mcp.local.json")
+  [[ -f "$claude_json" && ${#harness_mcp_files[@]} -gt 0 ]] || return 0
 
-  python3 - "$claude_json" "$harness_mcp" <<'PY'
+  python3 - "$claude_json" "${harness_mcp_files[@]}" <<'PY'
 import json
 import sys
 
-claude_path, harness_path = sys.argv[1], sys.argv[2]
+claude_path, harness_paths = sys.argv[1], sys.argv[2:]
 
 try:
     with open(claude_path, encoding="utf-8") as f:
         claude = json.load(f)
-    with open(harness_path, encoding="utf-8") as f:
-        harness = json.load(f)
 except Exception:
     sys.exit(0)
 
 global_servers = set((claude.get("mcpServers") or {}).keys())
-harness_servers = set((harness.get("mcpServers") or {}).keys())
+harness_servers = set()
+for harness_path in harness_paths:
+    try:
+        with open(harness_path, encoding="utf-8") as f:
+            harness_servers.update((json.load(f).get("mcpServers") or {}).keys())
+    except Exception:
+        pass
 
 for name in sorted(global_servers - harness_servers):
     print(f"WARN: Claude global MCP server not declared in harness .mcp.json: {name}", file=sys.stderr)
@@ -360,7 +367,10 @@ fi
 
 # 2. Generate config.toml content
 config_file="$CODEX_HOME/config.toml"
-mcp_json="$HARNESS_DIR/.mcp.json"
+mcp_json_files=()
+[[ -f "$HARNESS_DIR/.mcp.json" ]] && mcp_json_files+=("$HARNESS_DIR/.mcp.json")
+[[ -f "$HARNESS_DIR/.mcp.local.json" ]] && mcp_json_files+=("$HARNESS_DIR/.mcp.local.json")
+[[ -f "$HARNESS_DIR/mcp.local.json" ]] && mcp_json_files+=("$HARNESS_DIR/mcp.local.json")
 tmp_config="$(mktemp "$CODEX_HOME/.config.toml.XXXXXX")"
 bundled_marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
 browser_client_sha256s="$(
@@ -416,16 +426,29 @@ status_line = ["model-with-reasoning", "current-dir", "git-branch", "run-state",
 
 TOML
 
-if [[ -f "$mcp_json" ]]; then
-  python3 - "$mcp_json" "$browser_client_sha256s" "$browser_use_app_version" "$CODEX_HOME" "$HOME/.codex" >> "$tmp_config" <<'PY'
+if [[ ${#mcp_json_files[@]} -gt 0 ]]; then
+  python3 - "$browser_client_sha256s" "$browser_use_app_version" "$CODEX_HOME" "$HOME/.codex" "${mcp_json_files[@]}" >> "$tmp_config" <<'PY'
 import json, os, re, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-browser_client_sha256s = re.findall(r"\b[a-fA-F0-9]{64}\b", sys.argv[2] if len(sys.argv) > 2 else "")
-browser_use_app_version = sys.argv[3] if len(sys.argv) > 3 else ""
-codex_home = sys.argv[4] if len(sys.argv) > 4 else ""
-global_codex_home = sys.argv[5] if len(sys.argv) > 5 else ""
-servers = data.get("mcpServers", {}) or {}
+browser_client_sha256s = re.findall(r"\b[a-fA-F0-9]{64}\b", sys.argv[1] if len(sys.argv) > 1 else "")
+browser_use_app_version = sys.argv[2] if len(sys.argv) > 2 else ""
+codex_home = sys.argv[3] if len(sys.argv) > 3 else ""
+global_codex_home = sys.argv[4] if len(sys.argv) > 4 else ""
+mcp_paths = sys.argv[5:]
+servers = {}
+owners = {}
+for path in mcp_paths:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    for name, spec in (data.get("mcpServers") or {}).items():
+        if name in servers:
+            print(
+                f"ERROR: duplicate MCP server '{name}' in {owners[name]} and {path}; "
+                "rename the local server instead of overriding committed .mcp.json",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        servers[name] = spec
+        owners[name] = path
 for name in sorted(servers):
     spec = servers[name]
     print(f"[mcp_servers.{name}]")

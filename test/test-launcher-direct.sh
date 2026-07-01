@@ -114,4 +114,59 @@ run_mode "base" "sonnet" "high"     || exit 1
 run_mode "plan" "opusplan" "high"   || exit 1
 run_mode "rich" "opus[1m]" "xhigh"  || exit 1
 
+# Local MCP overlay: Claude Code should receive local/private MCP config files
+# in addition to its normal project .mcp.json auto-discovery. Duplicate server
+# names across committed/local config must fail instead of silently overriding.
+cat > "$TEST_HARNESS/.mcp.json" <<'EOF'
+{ "mcpServers": { "committed": { "type": "http", "url": "https://committed.test/mcp" } } }
+EOF
+cat > "$TEST_HARNESS/.mcp.local.json" <<'EOF'
+{ "mcpServers": { "local_private": { "command": "local-private", "args": ["mcp"] } } }
+EOF
+cat > "$TEST_HARNESS/mcp.local.json" <<'EOF'
+{ "mcpServers": { "legacy_local": { "type": "http", "url": "https://legacy-local.test/mcp" } } }
+EOF
+stub_file="$TEST_TEMP/output-local-mcp.txt"
+(
+  export TEST_STUB_FILE="$stub_file"
+  export PATH="$TEST_TEMP:$PATH"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _harness_launcher_run "$TEST_HARNESS" base
+) 2>/dev/null || true
+args_line=$(grep "^ARGS:" "$stub_file" | head -1 | cut -d: -f2-)
+case "$args_line" in
+  *"--mcp-config $TEST_HARNESS/.mcp.local.json $TEST_HARNESS/mcp.local.json"*)
+    echo "PASS: Claude launcher appends local MCP overlay files" ;;
+  *)
+    echo "FAIL: Claude launcher did not append both local MCP overlay files"
+    echo "  Full args: $args_line"
+    exit 1 ;;
+esac
+
+cat > "$TEST_HARNESS/.mcp.local.json" <<'EOF'
+{ "mcpServers": { "committed": { "type": "http", "url": "https://local.test/mcp" } } }
+EOF
+dup_stub_file="$TEST_TEMP/output-duplicate-mcp.txt"
+dup_err_file="$TEST_TEMP/output-duplicate-mcp.err"
+if (
+  export TEST_STUB_FILE="$dup_stub_file"
+  export PATH="$TEST_TEMP:$PATH"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _harness_launcher_run "$TEST_HARNESS" base
+) 2> "$dup_err_file"; then
+  echo "FAIL: duplicate MCP server name across committed/local configs should fail"
+  exit 1
+fi
+grep -q "duplicate MCP server 'committed'" "$dup_err_file" || {
+  echo "FAIL: duplicate MCP error message missing"
+  cat "$dup_err_file"
+  exit 1
+}
+if [[ -s "$dup_stub_file" ]]; then
+  echo "FAIL: claude should not launch when MCP config validation fails"
+  cat "$dup_stub_file"
+  exit 1
+fi
+echo "PASS: Claude launcher rejects duplicate MCP server names before launch"
+
 echo "✓ All direct OAuth tests passed"

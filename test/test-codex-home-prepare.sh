@@ -176,6 +176,57 @@ fi
 }
 echo "PASS: HTTP Authorization Bearer \${VAR}/\${VAR:-} → bearer_token_env_var (no literal bearer_token)"
 
+# Local MCP overlay: .mcp.local.json and mcp.local.json are gitignored/private
+# overlays that must merge into the same generated Codex config without
+# allowing silent overrides of committed .mcp.json entries.
+TEST_HARNESS_LOCAL="$TEST_TEMP/fake-harness-local-mcp"
+mkdir -p "$TEST_HARNESS_LOCAL"
+echo "# rules" > "$TEST_HARNESS_LOCAL/CLAUDE.md"
+cat > "$TEST_HARNESS_LOCAL/.mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "committed": { "type": "http", "url": "https://committed.test/mcp" }
+  }
+}
+EOF
+cat > "$TEST_HARNESS_LOCAL/.mcp.local.json" <<'EOF'
+{
+  "mcpServers": {
+    "local_private": { "command": "local-private", "args": ["mcp"] }
+  }
+}
+EOF
+cat > "$TEST_HARNESS_LOCAL/mcp.local.json" <<'EOF'
+{
+  "mcpServers": {
+    "legacy_local": { "type": "http", "url": "https://legacy-local.test/mcp" }
+  }
+}
+EOF
+"$PREPARE" "$TEST_HARNESS_LOCAL"
+config_local="$TEST_HARNESS_LOCAL/.harness/codex/config.toml"
+grep -q '^\[mcp_servers.committed\]' "$config_local" || { echo "FAIL: committed .mcp.json server missing from merged config"; exit 1; }
+grep -q '^\[mcp_servers.local_private\]' "$config_local" || { echo "FAIL: .mcp.local.json server missing from merged config"; exit 1; }
+grep -q '^\[mcp_servers.legacy_local\]' "$config_local" || { echo "FAIL: mcp.local.json server missing from merged config"; exit 1; }
+echo "PASS: Codex MCP config merges .mcp.json + .mcp.local.json + mcp.local.json"
+
+TEST_HARNESS_DUP="$TEST_TEMP/fake-harness-duplicate-mcp"
+mkdir -p "$TEST_HARNESS_DUP"
+echo "# rules" > "$TEST_HARNESS_DUP/CLAUDE.md"
+cat > "$TEST_HARNESS_DUP/.mcp.json" <<'EOF'
+{ "mcpServers": { "dupe": { "type": "http", "url": "https://committed.test/mcp" } } }
+EOF
+cat > "$TEST_HARNESS_DUP/.mcp.local.json" <<'EOF'
+{ "mcpServers": { "dupe": { "type": "http", "url": "https://local.test/mcp" } } }
+EOF
+if "$PREPARE" "$TEST_HARNESS_DUP" > "$TEST_TEMP/dup.out" 2> "$TEST_TEMP/dup.err"; then
+  echo "FAIL: duplicate MCP server name across committed/local configs should fail"; exit 1;
+fi
+grep -q "duplicate MCP server 'dupe'" "$TEST_TEMP/dup.err" || {
+  echo "FAIL: duplicate MCP error message missing"; cat "$TEST_TEMP/dup.err"; exit 1;
+}
+echo "PASS: duplicate MCP server names across committed/local configs fail fast"
+
 # Idempotent: re-run leaves config.toml mtime unchanged when input unchanged
 mtime_before=$(stat -f %m "$config" 2>/dev/null || stat -c %Y "$config")
 sleep 1.1

@@ -26,7 +26,8 @@ HARNESS_PREFIX="test"
 EOF
 
 PORT_FILE="$TEST_TEMP/http-port"
-python3 - <<PY > /dev/null 2>&1 &
+PORT_FILE="$PORT_FILE" python3 - <<'PY' > /dev/null 2>&1 &
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class Handler(BaseHTTPRequestHandler):
@@ -44,17 +45,18 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 server = HTTPServer(('127.0.0.1', 0), Handler)
-with open(${PORT_FILE@Q}, 'w', encoding='utf-8') as f:
+with open(os.environ['PORT_FILE'], 'w', encoding='utf-8') as f:
     f.write(str(server.server_port))
 server.serve_forever()
 PY
 HTTP_PID=$!
 
-python3 - <<PY
+PORT_FILE="$PORT_FILE" python3 - <<'PY'
+import os
 from pathlib import Path
 import time
 
-port_file = Path(${PORT_FILE@Q})
+port_file = Path(os.environ['PORT_FILE'])
 for _ in range(50):
     if port_file.exists() and port_file.read_text().strip():
         raise SystemExit(0)
@@ -83,6 +85,7 @@ chmod +x "$TEST_BIN/node"
 
 OUTPUT_FILE="$TEST_TEMP/output.txt"
 PATH="$TEST_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+HARNESS_CODEX_BIN="$TEST_TEMP/no-codex" \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
 bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'9\n' > "$OUTPUT_FILE" 2>&1 || true
@@ -131,6 +134,7 @@ EOF
 
 NEGATIVE_OUTPUT_FILE="$TEST_TEMP/output-negative.txt"
 PATH="$TEST_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+HARNESS_CODEX_BIN="$TEST_TEMP/no-codex" \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
 bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'9\n' > "$NEGATIVE_OUTPUT_FILE" 2>&1 || true

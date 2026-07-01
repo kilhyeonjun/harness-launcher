@@ -48,6 +48,42 @@ probe_provider_health() {
     node -e 'const baseUrl = process.env.PROBE_PROVIDER_URL; const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000); fetch(`${baseUrl}/health`, { signal: controller.signal }).then(() => { clearTimeout(timer); process.exit(0); }).catch(() => { clearTimeout(timer); process.exit(1); });' >/dev/null 2>&1
 }
 
+mcp_local_configs() {
+  local dir="$1"
+  [[ -f "$dir/.mcp.local.json" ]] && printf '%s\n' "$dir/.mcp.local.json"
+  [[ -f "$dir/mcp.local.json" ]] && printf '%s\n' "$dir/mcp.local.json"
+}
+
+validate_mcp_local_configs() {
+  local dir="$1"
+  local -a mcp_files=()
+  [[ -f "$dir/.mcp.json" ]] && mcp_files+=("$dir/.mcp.json")
+  [[ -f "$dir/.mcp.local.json" ]] && mcp_files+=("$dir/.mcp.local.json")
+  [[ -f "$dir/mcp.local.json" ]] && mcp_files+=("$dir/mcp.local.json")
+  [[ ${#mcp_files[@]} -gt 1 ]] || return 0
+
+  python3 - "${mcp_files[@]}" <<'PY'
+import json, sys
+
+seen = {}
+for path in sys.argv[1:]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            servers = (json.load(f).get("mcpServers") or {})
+    except FileNotFoundError:
+        continue
+    for name in servers:
+        if name in seen:
+            print(
+                f"ERROR: duplicate MCP server '{name}' in {seen[name]} and {path}; "
+                "rename the local server instead of overriding committed .mcp.json",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        seen[name] = path
+PY
+}
+
 detect_active_providers() {
   [[ -f "$HARNESS_DIR/config/.local/kiro-gateway.env" ]]  && source "$HARNESS_DIR/config/.local/kiro-gateway.env"
   [[ -f "$HARNESS_DIR/config/.local/codex-gateway.env" ]] && source "$HARNESS_DIR/config/.local/codex-gateway.env"
@@ -431,6 +467,12 @@ if [[ -n "$PROVIDER_URL" ]]; then
 fi
 [[ -n "$EFFORT_ENV" ]] && CLAUDE_ARGS_ARR+=(--effort "$EFFORT_ENV")
 CLAUDE_ARGS_ARR+=(--exclude-dynamic-system-prompt-sections)
+if [[ "$LAUNCH_EXECUTABLE" == "claude" ]]; then
+  validate_mcp_local_configs "$HARNESS_DIR"
+  while IFS= read -r _mcp_local; do
+    [[ -n "$_mcp_local" ]] && CLAUDE_ARGS_ARR+=(--mcp-config "$_mcp_local")
+  done < <(mcp_local_configs "$HARNESS_DIR")
+fi
 # Auto-compact PCT by detected context size + provider + model:
 #   [1m] + codex + (opus|sonnet contains "5.5") → PCT=35 (real 400K Codex limit)
 #   [1m] otherwise (direct Anthropic, or codex with non-5.5 model) → PCT=50

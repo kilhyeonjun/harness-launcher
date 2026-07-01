@@ -33,6 +33,7 @@ STUB="$TT/out.txt"; : > "$STUB"
 # No gateways → single provider (direct), STEP starts at session menu.
 # Flow: session=New(1) → mode=Ultracode(5) → advanced=No, start now(2)
 TEST_STUB_FILE="$STUB" PATH="$BIN:/usr/bin:/bin" \
+  HARNESS_CODEX_BIN="$TT/no-codex" \
   HARNESS_DIR="$H" HARNESS_NAME="test harness" \
   bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'1\n5\n2\n' > "$STUB.log" 2>&1 || true
 
