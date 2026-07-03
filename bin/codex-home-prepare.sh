@@ -73,9 +73,19 @@ warn_claude_global_mcp_drift
 # 1. AGENTS.md: compiler-first when canonical .claude/source exists. The
 # compiler emits Codex-native XML runtime contracts plus non-runtime rules. For
 # older harnesses, keep the legacy rules concatenation fallback. Without rules,
-# fall back to symlinking CLAUDE.md — Codex's project-scope walk still picks up
-# harness-root AGENTS.md → CLAUDE.md.
+# start from CLAUDE.md content. A Codex-only supplement below materializes the
+# final file so Claude source surfaces stay untouched.
 agents_md="$CODEX_HOME/AGENTS.md"
+prev_agents_snapshot=""
+if [[ -e "$agents_md" || -L "$agents_md" ]]; then
+  prev_agents_snapshot="$(mktemp "$CODEX_HOME/.AGENTS.prev.XXXXXX")"
+  if cat "$agents_md" > "$prev_agents_snapshot"; then
+    touch -r "$agents_md" "$prev_agents_snapshot" 2>/dev/null || true
+  else
+    rm -f "$prev_agents_snapshot"
+    prev_agents_snapshot=""
+  fi
+fi
 compiler="$HARNESS_DIR/core/scripts/harness_compile.py"
 compiled_agents=0
 if [[ -f "$compiler" && -f "$HARNESS_DIR/.claude/source/runtime-contract.yaml" ]]; then
@@ -119,6 +129,50 @@ if [[ "$compiled_agents" -eq 0 ]]; then
   elif [[ -f "$HARNESS_DIR/CLAUDE.md" ]]; then
     ln -sfn "../../CLAUDE.md" "$agents_md"
   fi
+fi
+
+append_codex_response_language_supplement() {
+  [[ -e "$agents_md" || -L "$agents_md" ]] || return 0
+
+  local tmp_agents tmp_stripped
+  tmp_agents="$(mktemp "$CODEX_HOME/.AGENTS.md.XXXXXX")"
+  tmp_stripped="$(mktemp "$CODEX_HOME/.AGENTS.md.XXXXXX")"
+  cat "$agents_md" > "$tmp_agents"
+  awk '
+    /<!-- BEGIN HARNESS-CODEX-RESPONSE-LANGUAGE -->/ { skip = 1; next }
+    /<!-- END HARNESS-CODEX-RESPONSE-LANGUAGE -->/ { skip = 0; next }
+    !skip { print }
+  ' "$tmp_agents" > "$tmp_stripped"
+  mv "$tmp_stripped" "$tmp_agents"
+  cat >> "$tmp_agents" <<'EOF'
+
+<!-- BEGIN HARNESS-CODEX-RESPONSE-LANGUAGE -->
+## Codex Response Language
+
+- Default to Korean for conversational responses.
+- Keep code, identifiers, commands, paths, logs, errors, and quoted source text in their original language unless the user asks to translate them.
+- If the user explicitly asks for another response language, follow that request for the current task.
+<!-- END HARNESS-CODEX-RESPONSE-LANGUAGE -->
+EOF
+
+  if [[ -e "$agents_md" ]] && [[ ! -L "$agents_md" ]] && cmp -s "$tmp_agents" "$agents_md"; then
+    rm -f "$tmp_agents"
+  else
+    rm -f "$agents_md"
+    mv "$tmp_agents" "$agents_md"
+  fi
+}
+
+# Codex has no Claude-style `language: korean` setting. Add the preference only
+# to the generated Codex home so Claude settings and source surfaces stay
+# untouched.
+append_codex_response_language_supplement
+
+if [[ -n "$prev_agents_snapshot" ]]; then
+  if [[ -f "$agents_md" ]] && cmp -s "$prev_agents_snapshot" "$agents_md"; then
+    touch -r "$prev_agents_snapshot" "$agents_md" 2>/dev/null || true
+  fi
+  rm -f "$prev_agents_snapshot"
 fi
 
 if [[ -f "$HOME/.codex/auth.json" ]]; then
