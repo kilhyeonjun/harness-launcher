@@ -129,25 +129,98 @@ harness_launcher_codex_bin() {
   command -v codex 2>/dev/null
 }
 
-# Runtime selection: Claude Code vs Codex CLI native.
+# Runtime selection: Claude Code vs Codex CLI native vs Kiro CLI.
 HAS_CLAUDE=false
 HAS_CODEX=false
+HAS_KIRO=false
 command -v claude >/dev/null 2>&1 && HAS_CLAUDE=true
+command -v kiro-cli >/dev/null 2>&1 && HAS_KIRO=true
 CODEX_BIN=""
 if CODEX_BIN="$(harness_launcher_codex_bin)"; then
   HAS_CODEX=true
 fi
 
 RUNTIME="claude"
-if $HAS_CLAUDE && $HAS_CODEX; then
-  menu "Select runtime" \
-    "1. ☁️  Claude Code" \
-    "2. ⚡ Codex CLI (native)" || exit 0
+runtime_opts=()
+$HAS_CLAUDE && runtime_opts+=("☁️  Claude Code")
+$HAS_CODEX && runtime_opts+=("⚡ Codex CLI (native)")
+$HAS_KIRO && runtime_opts+=("🦜 Kiro CLI (native)")
+
+if [[ ${#runtime_opts[@]} -ge 2 ]]; then
+  menu_items=()
+  for i in "${!runtime_opts[@]}"; do
+    menu_items+=("$((i + 1)). ${runtime_opts[$i]}")
+  done
+  menu "Select runtime" "${menu_items[@]}" || exit 0
   case "$MENU_RESULT" in
     *Codex*) RUNTIME="codex" ;;
+    *Kiro*)  RUNTIME="kiro" ;;
   esac
 elif $HAS_CODEX && ! $HAS_CLAUDE; then
   RUNTIME="codex"
+elif $HAS_KIRO && ! $HAS_CLAUDE; then
+  RUNTIME="kiro"
+fi
+
+if [[ "$RUNTIME" == "kiro" ]]; then
+  # Kiro CLI native flow: session → mode → safety → UI mode → exec
+  KIRO_ARGS=()
+
+  menu "Session" \
+    "1. New session" \
+    "2. Resume last session (-r)" \
+    "3. Resume from picker" || exit 0
+  case "$MENU_RESULT" in
+    *last*)   KIRO_ARGS+=(-r) ;;
+    *picker*) KIRO_ARGS+=(--resume-picker) ;;
+  esac
+
+  menu "Mode" \
+    "1. ⚡ Fast — Haiku 4.5, low effort" \
+    "2. ⚖️  Base — Sonnet 4.6, high effort" \
+    "3. 🗺️  Plan — Opus 4.6, high effort" \
+    "4. 🧠 Rich — Opus 4.6, max effort" || exit 0
+  case "$MENU_RESULT" in
+    *Fast*) KIRO_MODEL="claude-haiku-4.5"; KIRO_EFFORT="low" ;;
+    *Plan*) KIRO_MODEL="claude-opus-4.6";  KIRO_EFFORT="high" ;;
+    *Rich*) KIRO_MODEL="claude-opus-4.6";  KIRO_EFFORT="max" ;;
+    *)      KIRO_MODEL="claude-sonnet-4.6"; KIRO_EFFORT="high" ;;
+  esac
+
+  menu "Safety" \
+    "1. Default (ask before tools)" \
+    "2. Trust all (-a)" || exit 0
+  case "$MENU_RESULT" in
+    *Trust*) KIRO_ARGS+=(-a) ;;
+  esac
+
+  # Prepare KIRO_HOME
+  if [[ -x "$LAUNCHER_BIN_DIR/kiro-home-prepare.sh" ]]; then
+    "$LAUNCHER_BIN_DIR/kiro-home-prepare.sh" "$HARNESS_DIR" || exit $?
+  fi
+  export KIRO_HOME="$HARNESS_DIR/.harness/kiro"
+
+  # Export MCP secrets
+  if [[ -f "$HARNESS_DIR/.claude/settings.local.json" ]]; then
+    while IFS=$'\t' read -r _mk _mv; do
+      [[ -n "$_mk" ]] && export "$_mk=$_mv"
+    done < <(python3 - "$HARNESS_DIR/.claude/settings.local.json" 2>/dev/null <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    env = (json.load(f).get("env") or {})
+for k, v in env.items():
+    print(k + "\t" + str(v))
+PY
+)
+  fi
+
+  KIRO_CMD=(kiro-cli chat --model "$KIRO_MODEL" --effort "$KIRO_EFFORT" --agent harness "${KIRO_ARGS[@]}")
+
+  stty sane 2>/dev/null
+  echo ""
+  echo "Starting: ${KIRO_CMD[*]}"
+  echo ""
+  exec "${KIRO_CMD[@]}"
 fi
 
 if [[ "$RUNTIME" == "codex" ]]; then

@@ -109,6 +109,41 @@ PY
   fi
 }
 
+_harness_launcher_kiro_bin() {
+  local configured="${HARNESS_KIRO_BIN:-}"
+  if [[ -n "$configured" ]]; then
+    if [[ -x "$configured" ]]; then
+      print -r -- "$configured"
+      return 0
+    fi
+    whence -p -- "$configured" 2>/dev/null
+    return $?
+  fi
+  whence -p -- kiro-cli 2>/dev/null
+}
+
+_harness_launcher_export_kiro_runtime_env() {
+  local HARNESS_DIR="$1"
+  local prepare="$_HARNESS_LAUNCHER_BIN/kiro-home-prepare.sh"
+  if [[ -x "$prepare" ]]; then
+    "$prepare" "$HARNESS_DIR" || return $?
+  fi
+  export KIRO_HOME="$HARNESS_DIR/.harness/kiro"
+
+  if [[ -f "$HARNESS_DIR/.claude/settings.local.json" ]]; then
+    while IFS=$'\t' read -r _mk _mv; do
+      [[ -n "$_mk" ]] && export "$_mk=$_mv"
+    done < <(python3 - "$HARNESS_DIR/.claude/settings.local.json" 2>/dev/null <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    env = (json.load(f).get("env") or {})
+for k, v in env.items():
+    print(k + "\t" + str(v))
+PY
+)
+  fi
+}
+
 _harness_launcher_codex_cd_arg() {
   local -a args=("$@")
   local i arg
@@ -226,6 +261,11 @@ _harness_launcher_run() {
     codex)
       shift
       _harness_launcher_run_codex_cli "$HARNESS_DIR" "$@"
+      return $?
+      ;;
+    kiro-cli)
+      shift
+      _harness_launcher_run_kiro_cli "$HARNESS_DIR" "$@"
       return $?
       ;;
     codex-gateway)
@@ -418,6 +458,48 @@ _harness_launcher_run_codex_cli() {
   return $?
 }
 
+# _harness_launcher_run_kiro_cli <harness-dir> [args...]
+#   Launches Kiro CLI natively against a per-harness KIRO_HOME.
+#   Modes:    fast | base | plan | rich → --model + --effort
+#   Sessions: resume → --resume-picker, continue → -r
+_harness_launcher_run_kiro_cli() {
+  local HARNESS_DIR="$1"; shift
+  local model="" effort="" agent="harness"
+  local -a kiro_args=()
+  local session_flag=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      fast)     model="claude-haiku-4.5"; effort="low"; shift ;;
+      base)     model="claude-sonnet-4.6"; effort="high"; shift ;;
+      plan)     model="claude-opus-4.6"; effort="high"; shift ;;
+      rich)     model="claude-opus-4.6"; effort="max"; shift ;;
+      resume)   session_flag="--resume-picker"; shift ;;
+      continue) session_flag="-r"; shift ;;
+      bypass)   kiro_args+=(-a); shift ;;
+      *)        kiro_args+=("$1"); shift ;;
+    esac
+  done
+
+  [[ -z "$model" ]] && model="claude-sonnet-4.6" && effort="high"
+
+  _harness_launcher_export_kiro_runtime_env "$HARNESS_DIR" || return $?
+
+  local kiro_bin
+  kiro_bin="$(_harness_launcher_kiro_bin)" || {
+    echo "❌ kiro-cli not found in PATH" >&2
+    return 1
+  }
+
+  local -a launch_cmd=("$kiro_bin" chat)
+  [[ -n "$session_flag" ]] && launch_cmd+=("$session_flag")
+  launch_cmd+=(--model "$model" --effort "$effort" --agent "$agent")
+  [[ ${#kiro_args[@]} -gt 0 ]] && launch_cmd+=("${kiro_args[@]}")
+
+  (cd "$HARNESS_DIR" && "${launch_cmd[@]}")
+  return $?
+}
+
 # _harness_launcher_complete <harness-dir>
 _harness_launcher_complete() {
   local dir="$1"
@@ -440,6 +522,7 @@ _harness_launcher_complete() {
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
     'codex:Codex CLI native'
+    'kiro-cli:Kiro CLI native'
     'happy:Use Happy mobile wrapper for Codex CLI'
   )
   if [[ -z "$_kiro_url" && -f "$_kiro_env" ]]; then
