@@ -3,9 +3,9 @@
 # Modes: fast, base, plan, rich
 # Expected behavior (kiro):
 #   fast  → --model haiku --effort low
-#   base  → (no --model, defaults to sonnet 200K) --effort high
-#   plan  → --model opusplan --effort high
-#   rich  → --model claude-opus-4-6 --effort max
+#   base  → --model sonnet[1m] --effort high
+#   plan  → --model opusplan[1m] --effort high
+#   rich  → --model claude-opus-4-6[1m] --effort max
 # Also verifies kiro env exports
 
 set -e
@@ -169,10 +169,10 @@ run_mode() {
 }
 
 # Run mode tests
-# kiro base: NO --model arg expected (defaults to sonnet 200K)
+# kiro base: --model sonnet[1m] (1M context via gateway)
 run_mode "fast" "haiku" "true" "low"         || exit 1
-run_mode "base" "" "false" "high"            || exit 1
-run_mode "plan" "opusplan" "true" "high"     || exit 1
-run_mode "rich" "claude-opus-4-6" "true" "max" || exit 1
+run_mode "base" "sonnet[1m]" "true" "high"   || exit 1
+run_mode "plan" "opusplan[1m]" "true" "high" || exit 1
+run_mode "rich" "claude-opus-4-6[1m]" "true" "max" || exit 1
 
 echo "✓ All kiro gateway tests passed"
