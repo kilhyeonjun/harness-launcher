@@ -295,7 +295,7 @@ while true; do
 
   2)
     case "$PROVIDER_NAME" in
-      kiro)  RICH_LABEL="4. 🧠 Rich — Opus 4.6, max effort (200K via gateway)" ;;
+      kiro)  RICH_LABEL="4. 🧠 Rich — Opus 4.6, max effort (1M via gateway)" ;;
       codex) RICH_LABEL="4. 🧠 Rich — Opus 4.6, high effort (1M via gateway)" ;;
       *)     RICH_LABEL="4. 🧠 Rich — Opus 1M, xhigh effort" ;;
     esac
@@ -318,14 +318,14 @@ while true; do
         EFFORT_ENV="low"; STEP=5 ;;
       *Base*)
         case "$PROVIDER_NAME" in
-          kiro)  ;;
+          kiro)  CLAUDE_ARGS="--model sonnet[1m]" ;;
           codex) CLAUDE_ARGS="--model sonnet${CODEX_CONTEXT_SUFFIX:-}" ;;
           *)     CLAUDE_ARGS="--model sonnet" ;;
         esac
         EFFORT_ENV="high"; STEP=5 ;;
       *Plan*)
         case "$PROVIDER_NAME" in
-          kiro)  CLAUDE_ARGS="--model opusplan"; EFFORT_ENV="high" ;;
+          kiro)  CLAUDE_ARGS="--model opusplan[1m]"; EFFORT_ENV="high" ;;
           codex) CLAUDE_ARGS="--model opusplan${CODEX_CONTEXT_SUFFIX:-}"; EFFORT_ENV="high" ;;
           *)     CLAUDE_ARGS="--model opusplan"; EFFORT_ENV="high" ;;
         esac
@@ -337,7 +337,7 @@ while true; do
         ULTRACODE_HINT=1; STEP=5 ;;
       *Rich*)
         case "$PROVIDER_NAME" in
-          kiro)  CLAUDE_ARGS="--model claude-opus-4-6"; EFFORT_ENV="max" ;;
+          kiro)  CLAUDE_ARGS="--model claude-opus-4-6[1m]"; EFFORT_ENV="max" ;;
           codex) CLAUDE_ARGS="--model opus${CODEX_CONTEXT_SUFFIX:-}"; EFFORT_ENV="high" ;;
           *)     CLAUDE_ARGS="--model opus[1m]"; EFFORT_ENV="xhigh" ;;
         esac
@@ -368,7 +368,7 @@ while true; do
     C_MODEL_ID="$C_MODEL"
     if [[ "$C_MODEL" == "opus-1m" ]]; then
       case "$PROVIDER_NAME" in
-        kiro)  C_MODEL_ID="claude-opus-4-6" ;;
+        kiro)  C_MODEL_ID="claude-opus-4-6[1m]" ;;
         codex) C_MODEL_ID="opus${CODEX_CONTEXT_SUFFIX:-[1m]}" ;;
         *)     C_MODEL_ID="claude-opus-4-6[1m]" ;;
       esac
