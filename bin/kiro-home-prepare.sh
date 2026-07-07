@@ -85,14 +85,23 @@ agents_out="$KIRO_HOME/agents/harness.json"
 tmp_agents="$(mktemp "$KIRO_HOME/.harness.json.XXXXXX")"
 hooks_dir="$HARNESS_DIR/core/hooks"
 
-python3 - "$HARNESS_DIR" "$hooks_dir" > "$tmp_agents" <<'PY'
+python3 - "$HARNESS_DIR" "$hooks_dir" "$mcp_out" > "$tmp_agents" <<'PY'
 import json, os, sys
 
 harness = sys.argv[1]
 hooks_dir = sys.argv[2]
+mcp_out = sys.argv[3]
 
 def has_hook(name):
     return os.path.isfile(os.path.join(hooks_dir, name))
+
+# Inline the merged MCP servers (from section 2) so the agent sees them.
+# useLegacyMcpJson stays False: legacy mode would also merge default/global
+# mcp.json, leaking servers across scopes. Inline keeps this agent hermetic.
+mcp_servers = {}
+if os.path.isfile(mcp_out):
+    with open(mcp_out) as f:
+        mcp_servers = json.load(f).get("mcpServers") or {}
 
 # Build hooks — only 2 events supported by kiro-cli
 hooks = {"agentSpawn": [], "userPromptSubmit": []}
@@ -121,7 +130,7 @@ agent = {
     "name": "harness",
     "description": f"Harness-managed Kiro CLI agent for {os.path.basename(harness)}",
     "prompt": None,
-    "mcpServers": {},
+    "mcpServers": mcp_servers,
     "tools": ["*"],
     "toolAliases": {},
     "allowedTools": allowed_tools,
