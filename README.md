@@ -41,6 +41,11 @@ When both `claude` and `codex` are in `PATH`, the no-arg interactive launcher
 (`kh`, `gd`, `gp` with no shortcut args) asks which runtime to use first.
 With only one available, the menu auto-skips.
 
+Codex binary resolution is explicit-first: `HARNESS_CODEX_BIN`, then `codex`
+from `PATH`. The bundled Codex.app CLI is not used by default because it can
+lag behind the terminal CLI; set `HARNESS_CODEX_ALLOW_APP_FALLBACK=1` only when
+you intentionally want the app bundle as a fallback.
+
 ## Shortcut commands
 
 ```sh

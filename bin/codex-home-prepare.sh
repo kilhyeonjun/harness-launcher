@@ -35,6 +35,8 @@ mkdir -p "$CODEX_HOME"
 CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/Applications/Codex.app/Contents/Resources/plugins/openai-bundled}"
 
 warn_claude_global_mcp_drift() {
+  [[ "${HARNESS_CODEX_WARN_CLAUDE_GLOBAL_MCP_DRIFT:-0}" == "1" ]] || return 0
+
   local claude_json="$HOME/.claude.json"
   local harness_mcp_files=()
   [[ -f "$HARNESS_DIR/.mcp.json" ]] && harness_mcp_files+=("$HARNESS_DIR/.mcp.json")

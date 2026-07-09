@@ -36,8 +36,19 @@ output="$(
   HOME="$HOME_FAKE" bash "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
 )"
 
+if printf '%s\n' "$output" | grep -q 'WARN: Claude global MCP server not declared in harness .mcp.json: glider'; then
+  echo "FAIL: global MCP drift warning should be opt-in"
+  printf '%s\n' "$output"
+  exit 1
+fi
+
+output="$(
+  HOME="$HOME_FAKE" HARNESS_CODEX_WARN_CLAUDE_GLOBAL_MCP_DRIFT=1 \
+    bash "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
+)"
+
 printf '%s\n' "$output" | grep -q 'WARN: Claude global MCP server not declared in harness .mcp.json: glider' \
-  || { echo "FAIL: missing global MCP drift warning"; printf '%s\n' "$output"; exit 1; }
+  || { echo "FAIL: missing opt-in global MCP drift warning"; printf '%s\n' "$output"; exit 1; }
 
 grep -q '^\[mcp_servers.context7\]' "$HARNESS/.harness/codex/config.toml" \
   || { echo "FAIL: harness MCP missing from generated config"; exit 1; }
@@ -47,4 +58,4 @@ if grep -q '^\[mcp_servers.glider\]' "$HARNESS/.harness/codex/config.toml"; then
   exit 1
 fi
 
-echo "PASS: warns on Claude global MCP drift without importing it"
+echo "PASS: global MCP drift warning is opt-in and never auto-imports global servers"

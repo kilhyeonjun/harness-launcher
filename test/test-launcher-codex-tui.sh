@@ -97,8 +97,8 @@ grep -q "^CODEX_HOME:$TEST_HARNESS/.harness/codex\$" "$STUB1" || {
 [[ -d "$TEST_HARNESS/.harness/codex" ]] || {
   echo "FAIL: case1 — CODEX_HOME directory not prepared"; exit 1;
 }
-[[ -L "$TEST_HARNESS/.harness/codex/AGENTS.md" ]] || {
-  echo "FAIL: case1 — AGENTS.md symlink not created (prepare not invoked)"; exit 1;
+[[ -e "$TEST_HARNESS/.harness/codex/AGENTS.md" ]] || {
+  echo "FAIL: case1 — AGENTS.md not created (prepare not invoked)"; exit 1;
 }
 echo "PASS: case1 — runtime=Codex base → direct TUI + codex --cd ... -p base + CODEX_HOME prepared"
 

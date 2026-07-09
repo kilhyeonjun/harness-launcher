@@ -43,6 +43,14 @@ exit 0
 EOF
 chmod +x "$CODEX_STUB"
 
+APP_CODEX_STUB="$TEST_BIN/codex-app"
+cat > "$APP_CODEX_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "app codex stub should not be selected" >&2
+exit 99
+EOF
+chmod +x "$APP_CODEX_STUB"
+
 # Stub: happy — captures args + env to a file
 HAPPY_STUB="$TEST_BIN/happy"
 cat > "$HAPPY_STUB" <<'EOF'
@@ -234,6 +242,47 @@ if [[ "$raw_mcp_key" != "secret-from-settings-xyz" ]]; then
   exit 1
 fi
 echo "PASS: raw codex --cd registered harness → prepare + CODEX_HOME + env export"
+
+(
+  export PATH="$TEST_BIN:/usr/bin:/bin"
+  unset HARNESS_CODEX_BIN
+  unset HARNESS_CODEX_ALLOW_APP_FALLBACK
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_CODEX_APP_BIN="$APP_CODEX_STUB"
+  selected="$(_harness_launcher_codex_bin)"
+  if [[ "$selected" != "$CODEX_STUB" ]]; then
+    echo "FAIL: codex bin selection — expected PATH codex before app bundle, got '$selected'"
+    exit 1
+  fi
+)
+echo "PASS: codex bin selection → PATH codex preferred before app bundle"
+
+(
+  export PATH="/usr/bin:/bin"
+  unset HARNESS_CODEX_BIN
+  unset HARNESS_CODEX_ALLOW_APP_FALLBACK
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_CODEX_APP_BIN="$APP_CODEX_STUB"
+  if selected="$(_harness_launcher_codex_bin)"; then
+    echo "FAIL: codex bin selection — app bundle fallback should be opt-in, got '$selected'"
+    exit 1
+  fi
+)
+echo "PASS: codex bin selection → app bundle fallback disabled by default"
+
+(
+  export PATH="/usr/bin:/bin"
+  unset HARNESS_CODEX_BIN
+  export HARNESS_CODEX_ALLOW_APP_FALLBACK=1
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_CODEX_APP_BIN="$APP_CODEX_STUB"
+  selected="$(_harness_launcher_codex_bin)"
+  if [[ "$selected" != "$APP_CODEX_STUB" ]]; then
+    echo "FAIL: codex bin selection — expected opt-in app bundle fallback, got '$selected'"
+    exit 1
+  fi
+)
+echo "PASS: codex bin selection → app bundle fallback works when explicitly enabled"
 
 STUB_HAPPY="$TEST_TEMP/output-codex-cli-happy.txt"
 : > "$STUB_HAPPY"

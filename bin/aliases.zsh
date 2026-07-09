@@ -18,11 +18,15 @@ _harness_launcher_codex_bin() {
     whence -p -- "$configured" 2>/dev/null
     return $?
   fi
-  if [[ -x "$_HARNESS_CODEX_APP_BIN" ]]; then
+  if whence -p -- codex >/dev/null 2>&1; then
+    whence -p -- codex
+    return 0
+  fi
+  if [[ "${HARNESS_CODEX_ALLOW_APP_FALLBACK:-0}" == "1" && -x "$_HARNESS_CODEX_APP_BIN" ]]; then
     print -r -- "$_HARNESS_CODEX_APP_BIN"
     return 0
   fi
-  whence -p -- codex 2>/dev/null
+  return 1
 }
 
 _harness_launcher_probe_provider_health() {

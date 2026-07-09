@@ -122,11 +122,15 @@ harness_launcher_codex_bin() {
     command -v "$configured" 2>/dev/null
     return $?
   fi
-  if [[ -x "$HARNESS_CODEX_APP_BIN" ]]; then
+  if command -v codex >/dev/null 2>&1; then
+    command -v codex
+    return 0
+  fi
+  if [[ "${HARNESS_CODEX_ALLOW_APP_FALLBACK:-0}" == "1" && -x "$HARNESS_CODEX_APP_BIN" ]]; then
     printf '%s\n' "$HARNESS_CODEX_APP_BIN"
     return 0
   fi
-  command -v codex 2>/dev/null
+  return 1
 }
 
 # Runtime selection: Claude Code vs Codex CLI native vs Kiro CLI.
