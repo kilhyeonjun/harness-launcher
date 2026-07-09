@@ -72,8 +72,8 @@ populates `$HARNESS_DIR/.harness/codex/` with:
 
 - `config.toml` — top-level model defaults, long-context client settings,
   `[mcp_servers.*]` translated from `.mcp.json`, and enabled entries for
-  harness-approved Codex bundled plugins (`computer-use`, `chrome`; `browser`
-  is pruned for terminal Codex).
+  harness-approved Codex bundled plugins (`computer-use`; `browser` and
+  `chrome` are pruned for terminal Codex).
 - `<profile>.config.toml` (`fast`/`base`/`plan`/`rich`) — per-profile overlay
   files with top-level keys, selected via `codex --profile <name>`. Required by
   Codex 0.134.0+, which rejects inline `[profiles.*]` tables in `config.toml`
@@ -89,16 +89,13 @@ populates `$HARNESS_DIR/.harness/codex/` with:
 The script is idempotent: re-running rewrites `config.toml` only when the
 content would change.
 
-Chrome Browser Use still requires the official Codex Desktop Chrome plugin setup
-flow. The launcher keeps `chrome@openai-bundled` installed/enabled and keeps the
-global native-host target
-`~/.codex/plugins/cache/openai-bundled/chrome/latest` valid, but terminal
-`codex exec`/TUI currently may still see `Browser is not available: extension`
-because the Chrome extension backend is not registered to that terminal turn.
-Native Codex should not be routed through a harness-created local app-server
-`--remote`; that server also does not receive the Chrome extension backend. Use
-Codex Desktop `@Chrome` for Chrome-profile browser tasks unless a live
-`agent.browsers.list()` check in the terminal session returns a Chrome backend.
+Browser automation for kh/gd/gp terminal Codex uses `browser-harness` instead
+of Codex Desktop Browser Use surfaces. The launcher prunes
+`browser@openai-bundled` and `chrome@openai-bundled` from per-harness
+`CODEX_HOME`, and omits `node_repl` from generated Codex MCP config. Native
+Codex should not be routed through a harness-created local app-server
+`--remote`; use browser-harness with a harness-local `BH_HOME` and isolated
+Chrome/CDP profile.
 
 If `happy` is installed, the no-arg interactive launcher asks whether to route
 Claude sessions through Happy. Native Codex uses the real Codex CLI. `kh codex
