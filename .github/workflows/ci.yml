@@ -49,4 +49,6 @@ jobs:
 
       - name: Run regression suite
         shell: bash
+        env:
+          HARNESS_TEST_TRACE: "1"
         run: BASH_BIN="$(brew --prefix)/bin/bash" ZSH_BIN=/bin/zsh ./test/run-all.sh

@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASH_BIN="${BASH_BIN:-$(command -v bash)}"
+BASH_ARGS=()
+[[ "${HARNESS_TEST_TRACE:-0}" == "1" ]] && BASH_ARGS+=(-x)
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -36,7 +38,7 @@ JSON
 
 if ! output="$(
   HOME="$HOME_FAKE" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$NO_MARKETPLACE" \
-    "$BASH_BIN" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
+    "$BASH_BIN" "${BASH_ARGS[@]}" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
 )"; then
   echo "FAIL: Codex preparation failed without the drift-warning opt-in"
   printf '%s\n' "$output"
@@ -52,7 +54,7 @@ fi
 if ! output="$(
   HOME="$HOME_FAKE" HARNESS_CODEX_WARN_CLAUDE_GLOBAL_MCP_DRIFT=1 \
     HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$NO_MARKETPLACE" \
-    "$BASH_BIN" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
+    "$BASH_BIN" "${BASH_ARGS[@]}" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
 )"; then
   echo "FAIL: Codex preparation failed with the drift-warning opt-in"
   printf '%s\n' "$output"
