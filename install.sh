@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# harness-launcher standalone installer (brew-free path).
-# Usage: curl -fsSL .../install.sh | sh, or run locally after git clone.
+# harness-launcher standalone installer (Homebrew-free path).
+# Usage: clone the repository, then run:
+#   HARNESS_LAUNCHER_PREFIX="$HOME/.local" ./install.sh
 set -e
 
 LAUNCHER_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -15,7 +16,13 @@ cp "$LAUNCHER_DIR/bin/launcher.sh"                "$SHARE_DIR/launcher.sh"
 cp "$LAUNCHER_DIR/bin/codex-home-prepare.sh"      "$SHARE_DIR/codex-home-prepare.sh"
 cp "$LAUNCHER_DIR/bin/codex-hook-adapter.sh"      "$SHARE_DIR/codex-hook-adapter.sh"
 cp "$LAUNCHER_DIR/bin/codex-migrate-to-symlinks.sh" "$SHARE_DIR/codex-migrate-to-symlinks.sh"
-chmod +x "$SHARE_DIR/launcher.sh" "$SHARE_DIR/codex-home-prepare.sh" "$SHARE_DIR/codex-hook-adapter.sh" "$SHARE_DIR/codex-migrate-to-symlinks.sh"
+cp "$LAUNCHER_DIR/bin/kiro-home-prepare.sh"       "$SHARE_DIR/kiro-home-prepare.sh"
+chmod +x \
+  "$SHARE_DIR/launcher.sh" \
+  "$SHARE_DIR/codex-home-prepare.sh" \
+  "$SHARE_DIR/codex-hook-adapter.sh" \
+  "$SHARE_DIR/codex-migrate-to-symlinks.sh" \
+  "$SHARE_DIR/kiro-home-prepare.sh"
 
 echo "Installed to $SHARE_DIR"
 echo ""

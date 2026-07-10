@@ -1,0 +1,11 @@
+# harness-launcher generated runtime state
+.harness/
+
+# Local MCP overlays and runtime environment values
+.mcp.local.json
+mcp.local.json
+.claude/settings.local.json
+config/.local/
+
+# Optional local Codex-only repositories
+.codex-only/repos/

@@ -1,0 +1,56 @@
+name: Feature request
+description: Propose a focused improvement to command routing, runtime support, or project isolation
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and documentation.
+          required: true
+        - label: This request does not include credentials or private configuration.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the workflow that is difficult today. Avoid starting with a proposed implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Proposed behavior
+      description: Show the command or configuration shape you would expect.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Area
+      options:
+        - Registration and shell completion
+        - Interactive TUI
+        - Claude Code
+        - Codex CLI
+        - Kiro CLI
+        - MCP configuration
+        - Skills, agents, hooks, or plugins
+        - Installation and release
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Compatibility and trust boundaries
+      description: Note effects on generated homes, credentials, MCP config, sandboxing, macOS portability, or existing command behavior.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
