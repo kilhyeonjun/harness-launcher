@@ -245,10 +245,10 @@ if [[ "$RUNTIME" == "codex" ]]; then
   esac
 
   menu "Mode" \
-    "1. ⚡ Fast — gpt-5.5, low effort" \
-    "2. ⚖️  Base — gpt-5.5, medium effort" \
-    "3. 🗺️  Plan — gpt-5.5, high + read-only sandbox" \
-    "4. 🧠 Rich — gpt-5.5, high effort" || exit 0
+    "1. ⚡ Fast — gpt-5.6-luna, low effort" \
+    "2. ⚖️  Base — gpt-5.6-terra, medium effort" \
+    "3. 🗺️  Plan — gpt-5.6-sol, high + read-only sandbox" \
+    "4. 🧠 Rich — gpt-5.6-sol, high effort" || exit 0
   case "$MENU_RESULT" in
     *Fast*) CODEX_PROFILE="fast" ;;
     *Plan*) CODEX_PROFILE="plan" ;;

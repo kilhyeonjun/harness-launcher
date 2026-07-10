@@ -96,27 +96,26 @@ Safety: Default / Full auto / Never approval / Bypass
 
 ```toml
 # config.toml — top-level 기본값만 (profile 테이블 없음)
-model = "gpt-5.5"
+model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
-model_context_window = 1050000
-model_auto_compact_token_limit = 900000
+# context/auto-compact 값은 Codex 모델 메타데이터를 사용하고 고정하지 않음
 
 # fast.config.toml
-model = "gpt-5.5"
+model = "gpt-5.6-luna"
 model_reasoning_effort = "low"
 
 # base.config.toml
-model = "gpt-5.5"
+model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
 
 # plan.config.toml
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 approval_policy = "on-request"
 
 # rich.config.toml
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 ```
 
@@ -137,9 +136,10 @@ fork last     → codex fork --last --cd ... -p <mode>
 ### CODEX_HOME 위치
 ```
 $HARNESS_DIR/.harness/codex/
-  config.toml          # 자동 생성 (model defaults + profiles + mcp_servers)
-  AGENTS.md  → ../../CLAUDE.md   (symlink)
-  skills     → ~/.codex/skills    (symlink, 글로벌 skill 공유)
+  config.toml          # 자동 생성 (model defaults + mcp_servers)
+  <profile>.config.toml # fast/base/plan/rich overlay
+  AGENTS.md            # harness rules + Codex response-language supplement
+  skills/              # global + .claude + .codex-only skill symlink merge
   auth.json  → ~/.codex/auth.json (symlink, 로그인 공유)
   sessions/            # Codex 자동 생성 (per-harness 격리)
   history.jsonl        # Codex 자동 생성
@@ -164,9 +164,9 @@ launcher가 `codex` 실행 직전에 `bin/codex-home-prepare.sh "$HARNESS_DIR"` 
 
 ## 6. AGENTS.md 전략
 
-각 하네스 root에 `AGENTS.md → CLAUDE.md` symlink 추가. Codex는 `--cd` 디렉토리에서 AGENTS.md를 읽음. `CLAUDE.md` 내용은 1차에서 그대로 노출, 향후 generic화는 별도 task.
+하네스 root의 `AGENTS.md`/`CLAUDE.md`는 project-scope 규칙 소스로 유지한다. Launcher는 이를 직접 수정하지 않는다.
 
-CODEX_HOME 안에도 `AGENTS.md → ../../CLAUDE.md` symlink로 이중 노출 (Codex global agents.md + project agents.md 모두 같은 파일 가리킴).
+`CODEX_HOME/AGENTS.md`는 symlink가 아니라 `codex-home-prepare.sh`가 생성하는 실제 파일이다. 가능한 경우 harness compiler의 Codex-native 규칙을 사용하고, 구형 하네스에서는 `.claude/rules` 또는 `CLAUDE.md`를 fallback으로 사용한 뒤 Codex 전용 response-language supplement를 덧붙인다. 따라서 Claude source surface는 오염시키지 않으면서 Codex global-scope discovery에 필요한 규칙을 제공한다.
 
 ## 7. Hook 전략 (부분 parity 수용)
 

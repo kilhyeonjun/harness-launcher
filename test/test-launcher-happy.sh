@@ -252,10 +252,10 @@ if grep -q '^EXEC:claude' "$KIRO_HAPPY_STUB"; then
   echo 'FAIL: Kiro Happy path should not execute claude'
   exit 1
 fi
-if grep -q '^EXEC:happy .*--model ' "$KIRO_HAPPY_STUB"; then
-  echo 'FAIL: Kiro base Happy path should preserve no-model behavior'
+grep -q '^EXEC:happy .*--model sonnet\[1m\]' "$KIRO_HAPPY_STUB" || {
+  echo 'FAIL: Kiro base Happy path should preserve explicit sonnet[1m] model routing'
   exit 1
-fi
+}
 grep -q '^BASE_URL:https://kiro.test$' "$KIRO_HAPPY_STUB" || {
   echo 'FAIL: Kiro Happy path should preserve gateway base URL'
   exit 1
