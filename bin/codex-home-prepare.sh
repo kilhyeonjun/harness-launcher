@@ -951,7 +951,10 @@ prepare_bundled_plugins() {
   restart_global_chrome_extension_host_if_config_changed
 }
 
-with_global_codex_lock prepare_bundled_plugins
+if [[ -f "$bundled_marketplace/plugins/computer-use/.codex-plugin/plugin.json" \
+   || -f "$bundled_marketplace/plugins/chrome/.codex-plugin/plugin.json" ]]; then
+  with_global_codex_lock prepare_bundled_plugins
+fi
 remove_bundled_plugin_cache "browser"
 
 # 5. Generate hooks.json — Claude harness owns hook scripts as single source
