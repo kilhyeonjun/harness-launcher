@@ -4,6 +4,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-07-10
+
 ### Added
 
 - Contributor guide, security policy, issue forms, pull request template, and CI workflow.
@@ -13,6 +15,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 ### Fixed
 
 - Source installation now includes the Kiro runtime-home adapter.
+- Kiro MCP inputs are validated in external staging; duplicate server names leave no new or modified generated runtime state.
+- Codex takes the global cache lock only when bundled marketplace or plugin work needs synchronization.
 
 ### Changed
 
@@ -53,6 +57,7 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.9.2...v0.9.3
