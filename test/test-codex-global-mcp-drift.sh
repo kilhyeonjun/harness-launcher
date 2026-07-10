@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BASH_BIN="${BASH_BIN:-$(command -v bash)}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -33,7 +34,7 @@ cat > "$HARNESS/.mcp.json" <<'JSON'
 JSON
 
 output="$(
-  HOME="$HOME_FAKE" bash "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
+  HOME="$HOME_FAKE" "$BASH_BIN" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
 )"
 
 if printf '%s\n' "$output" | grep -q 'WARN: Claude global MCP server not declared in harness .mcp.json: glider'; then
@@ -44,7 +45,7 @@ fi
 
 output="$(
   HOME="$HOME_FAKE" HARNESS_CODEX_WARN_CLAUDE_GLOBAL_MCP_DRIFT=1 \
-    bash "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
+    "$BASH_BIN" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
 )"
 
 printf '%s\n' "$output" | grep -q 'WARN: Claude global MCP server not declared in harness .mcp.json: glider' \
