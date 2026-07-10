@@ -811,14 +811,17 @@ write_global_chrome_extension_host_config() {
     amd64) arch="x86_64" ;;
   esac
 
-  # Current macOS bundles use extension-host/macos/<arch>/Codex for Chrome.
-  # Prefer the running platform/architecture, then retain legacy host names and
-  # a cross-layout fallback for older bundles.
+  # Current macOS bundles use extension-host/macos/<arch>/Codex for Chrome;
+  # older caches used ChatGPT for Chrome. Prefer the running platform and
+  # architecture, then retain legacy generic host names and cross-layout
+  # fallbacks for older bundles.
   for candidate in \
     "$plugin_root/extension-host/$platform/$arch/Codex for Chrome" \
+    "$plugin_root/extension-host/$platform/$arch/ChatGPT for Chrome" \
     "$plugin_root/extension-host/$platform/$arch/extension-host" \
     "$plugin_root/extension-host/$platform/$arch/extension-host.exe" \
     "$plugin_root"/extension-host/*/*/"Codex for Chrome" \
+    "$plugin_root"/extension-host/*/*/"ChatGPT for Chrome" \
     "$plugin_root"/extension-host/*/*/extension-host \
     "$plugin_root"/extension-host/*/*/extension-host.exe; do
     [[ -x "$candidate" ]] || continue

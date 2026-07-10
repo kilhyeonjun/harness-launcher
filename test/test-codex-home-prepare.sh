@@ -465,6 +465,26 @@ lock_file="$FAKE_HOME/.codex/.codex-home-prepare-global.lock"
 /usr/bin/lockf -s -k -t 0 "$lock_file" true || {
   echo "FAIL: global Codex cache kernel lock was not released"; exit 1;
 }
+
+# Older Codex Desktop plugin caches used `ChatGPT for Chrome` as the macOS
+# native-host executable name. Keep those caches operational on machines where
+# the app bundle is no longer present but the versioned global cache remains.
+LEGACY_CHROME_HOME="$TEST_TEMP/fake-home-legacy-chrome-host"
+LEGACY_CHROME_SOURCE="$TEST_TEMP/bundled-source-legacy-chrome-host"
+LEGACY_CHROME_HARNESS="$TEST_TEMP/fake-harness-legacy-chrome-host"
+mkdir -p "$LEGACY_CHROME_HOME" "$LEGACY_CHROME_HARNESS"
+cp -pR "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$LEGACY_CHROME_SOURCE"
+mv "$LEGACY_CHROME_SOURCE/plugins/chrome/extension-host/macos/arm64/Codex for Chrome" \
+   "$LEGACY_CHROME_SOURCE/plugins/chrome/extension-host/macos/arm64/ChatGPT for Chrome"
+echo "# legacy chrome host rules" > "$LEGACY_CHROME_HARNESS/CLAUDE.md"
+HOME="$LEGACY_CHROME_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$LEGACY_CHROME_SOURCE" \
+  "$PREPARE" "$LEGACY_CHROME_HARNESS"
+legacy_extension_host_config="$LEGACY_CHROME_HOME/.codex/plugins/cache/openai-bundled/chrome/0.1.0-test/extension-host/macos/arm64/extension-host-config.json"
+[[ -f "$legacy_extension_host_config" ]] || {
+  echo "FAIL: legacy macOS 'ChatGPT for Chrome' host was not discovered/configured"; exit 1;
+}
+echo "PASS: legacy macOS 'ChatGPT for Chrome' host remains supported"
+
 grep -q '/usr/bin/lockf' "$PREPARE" || {
   echo "FAIL: global Codex cache must use the macOS kernel advisory lock"; exit 1;
 }
