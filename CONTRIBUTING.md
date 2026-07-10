@@ -66,6 +66,8 @@ Run every test through its declared interpreter:
 ./test/run-all.sh
 ```
 
+`test-codex-home-prepare.sh` exercises the production `/usr/bin/lockf` contract. The runner reports it as skipped only on hosts where that macOS system binary is unavailable; run it on a supported Mac before merging changes to shared Codex cache or browser-plugin behavior.
+
 Run syntax checks before opening a pull request:
 
 ```bash
