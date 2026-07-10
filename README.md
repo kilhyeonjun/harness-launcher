@@ -1,110 +1,246 @@
 # harness-launcher
 
-Universal launcher for kilhyeonjun-harness / gameduo-*-harness repos.
+[![CI](https://github.com/kilhyeonjun/harness-launcher/actions/workflows/ci.yml/badge.svg)](https://github.com/kilhyeonjun/harness-launcher/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kilhyeonjun/harness-launcher)](https://github.com/kilhyeonjun/harness-launcher/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+A profile-aware Zsh launcher for Claude Code, OpenAI Codex CLI, and Kiro CLI. Register one or more project directories, give each a short command, and keep runtime state isolated per project.
+
+```text
+wh             interactive runtime and mode picker
+wh base        Claude Code with the base preset
+wh codex fast  Codex CLI with the fast profile
+wh kiro-cli    Kiro CLI with an isolated KIRO_HOME
+```
+
+## Why use it?
+
+AI coding CLIs usually keep sessions, configuration, skills, and MCP servers in a global home directory. That gets messy when you work across projects with different trust boundaries.
+
+`harness-launcher` keeps the command short while preparing project-scoped runtime homes:
+
+```text
+<project>/.harness/codex
+<project>/.harness/kiro
+```
+
+It also provides consistent `fast`, `base`, `plan`, and `rich` presets, optional gateway routing for Claude Code, tab completion, and an interactive TUI.
+
+## Requirements
+
+- macOS
+- Zsh
+- Python 3
+- At least one supported runtime:
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+  - [OpenAI Codex CLI](https://github.com/openai/codex)
+  - [Kiro CLI](https://kiro.dev/cli/)
+
+Optional tools:
+
+- [`gum`](https://github.com/charmbracelet/gum) for a richer menu
+- [`happy`](https://github.com/slopus/happy) for Happy-managed sessions
+- Node.js when using local Claude gateway health checks
 
 ## Install
+
+### Homebrew
 
 ```bash
 brew tap kilhyeonjun/tap
 brew install harness-launcher
 ```
 
-## Usage
+Upgrade later with:
 
-Each harness declares its identity in `config/launcher.env`:
-
-```shell
-HARNESS_NAME="kilhyeonjun harness"
-HARNESS_PREFIX="kh"
+```bash
+brew update
+brew upgrade harness-launcher
 ```
 
-Register it in your shell:
+### From source
+
+```bash
+git clone https://github.com/kilhyeonjun/harness-launcher.git
+cd harness-launcher
+HARNESS_LAUNCHER_PREFIX="$HOME/.local" ./install.sh
+```
+
+The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher`. Homebrew is the recommended installation path on macOS.
+
+## Quick start
+
+A registered project needs `config/launcher.env`:
+
+```bash
+mkdir -p "$HOME/work-harness/config"
+cat > "$HOME/work-harness/config/launcher.env" <<'EOF'
+HARNESS_NAME="Work harness"
+HARNESS_PREFIX="wh"
+EOF
+```
+
+Add the launcher and project registration to `~/.zshrc`. Use the source line that matches how you installed it.
+
+Homebrew:
 
 ```zsh
-source "$(brew --prefix)/share/harness-launcher/aliases.zsh"
-harness_register "$HOME/kilhyeonjun-harness"
-harness_register "$HOME/gameduo-personal-harness"
-harness_register "$HOME/gameduo-platform-harness"
+source "$(brew --prefix harness-launcher)/share/harness-launcher/aliases.zsh"
+harness_register "$HOME/work-harness"
 ```
 
-This creates `kh`, `gd`, `gp` functions with tab completion.
+Source install with `HARNESS_LAUNCHER_PREFIX="$HOME/.local"`:
 
-## Runtimes
-
-The launcher supports two AI CLI runtimes:
-
-- **Claude Code** — default. Direct Anthropic, or via Kiro / Codex gateways.
-- **Codex CLI** — OpenAI's `codex`, launched natively against a per-harness
-  `CODEX_HOME` at `$HARNESS_DIR/.harness/codex/`.
-
-When both `claude` and `codex` are in `PATH`, the no-arg interactive launcher
-(`kh`, `gd`, `gp` with no shortcut args) asks which runtime to use first.
-With only one available, the menu auto-skips.
-
-Codex binary resolution is explicit-first: `HARNESS_CODEX_BIN`, then `codex`
-from `PATH`. The bundled Codex.app CLI is not used by default because it can
-lag behind the terminal CLI; set `HARNESS_CODEX_ALLOW_APP_FALLBACK=1` only when
-you intentionally want the app bundle as a fallback.
-
-## Shortcut commands
-
-```sh
-kh                       # TUI (runtime → session → mode → ...)
-kh base                  # Claude Code, base mode
-kh kiro rich             # Claude Code via Kiro gateway, rich mode
-kh codex                 # Codex CLI native (default mode = base)
-kh codex base            # Codex CLI native, base profile
-kh codex plan            # Codex CLI native, plan profile (read-only sandbox)
-kh codex happy           # Happy Codex mode (not Codex CLI passthrough)
-kh codex resume          # Codex CLI resume picker
-kh codex continue        # Codex CLI resume --last
-kh codex-gateway base    # Claude Code via Codex gateway (legacy)
+```zsh
+source "$HOME/.local/share/harness-launcher/aliases.zsh"
+harness_register "$HOME/work-harness"
 ```
 
-`gd`, `gp` follow the same pattern.
+Start a new shell and verify the command:
 
-### Migration note
+```bash
+exec zsh
+wh codex --version
+```
 
-Previously, `kh codex` invoked Claude Code with the Codex gateway as backend.
-That path now lives under `kh codex-gateway`. The bare `kh codex` runs the
-real Codex CLI binary with a per-harness `CODEX_HOME` populated from the
-harness's `.mcp.json` and `CLAUDE.md`.
+`HARNESS_PREFIX` becomes the shell function name. Register as many projects as you need, but each prefix must be unique.
 
-## Codex CLI integration details
+> [!WARNING]
+> `config/launcher.env` is sourced as shell code. Only register project directories you trust.
 
-`bin/codex-home-prepare.sh` is invoked before every Codex launch and
-populates `$HARNESS_DIR/.harness/codex/` with:
+## Commands
 
-- `config.toml` — GPT-5.6 Terra+medium top-level defaults, unpinned
-  context/auto-compact values from Codex model metadata, `[mcp_servers.*]`
-  translated from `.mcp.json`, and enabled entries for harness-approved bundled
-  plugins (`computer-use` and the Chrome bridge; `browser` stays pruned).
-- `<profile>.config.toml` (`fast`/`base`/`plan`/`rich`) — Luna+low,
-  Terra+medium, Sol+high read-only, and Sol+high overlays respectively. Files
-  use top-level keys selected via `codex --profile <name>`, as required by
-  Codex 0.134.0+.
-- `plugins/cache/openai-bundled/` — versioned plugin roots for those bundled
-  plugins, so Codex reports them as installed and loads their skills/tools.
-- `AGENTS.md` — generated harness rules plus the Codex response-language
-  supplement.
-- `skills/` — per-skill symlink merge of global `~/.codex/skills`, active
-  Skills CLI installs from `~/.agents/skills`, harness-local `.claude/skills`,
-  and Codex-only `$HARNESS_DIR/.codex-only/skills`.
-- `auth.json` → `~/.codex/auth.json` (symlink, share login).
+The same command shape works for every registered prefix:
 
-The script is idempotent: re-running rewrites `config.toml` only when the
-content would change.
+```text
+<prefix>                         interactive TUI
+<prefix> fast|base|plan|rich     Claude Code preset
+<prefix> continue|resume         Claude Code session shortcut
+<prefix> codex [profile]         native Codex CLI
+<prefix> codex continue          Codex `resume --last`
+<prefix> codex resume            Codex resume picker
+<prefix> kiro-cli [mode]         native Kiro CLI
+<prefix> kiro [mode]             Claude Code through a Kiro gateway
+<prefix> codex-gateway [mode]    Claude Code through a Codex gateway
+```
 
-Browser automation for kh/gd/gp terminal Codex keeps `browser-harness` as the
-stable CDP path and also materializes Codex's Chrome plugin bridge when the
-Codex app bundle provides it. `browser@openai-bundled` remains pruned;
-`chrome@openai-bundled` and the `node_repl` Chrome bridge are generated into
-the isolated per-harness `CODEX_HOME`. Native Codex is never routed through a
-harness-created local app-server `--remote`.
+Extra arguments pass through to the selected runtime. Run the prefix without arguments to choose the runtime, session, mode, and safety level interactively.
 
-If `happy` is installed, the no-arg interactive launcher asks whether to route
-Claude sessions through Happy. Native Codex uses the real Codex CLI. `kh codex
-happy` enters Happy's separate Codex mode: it starts from the harness directory
-with harness `CODEX_HOME`, but it does not support Codex CLI profiles or
-`resume --last`; use `happy resume <happy-session-id>` or `happy codex --resume
-<codex-thread-id>` for Happy-managed resumes.
+### Presets
+
+| Preset | Claude Code | Codex CLI | Intended use |
+| --- | --- | --- | --- |
+| `fast` | Haiku, low effort | GPT-5.6 Luna, low effort | Small edits and quick checks |
+| `base` | Sonnet | GPT-5.6 Terra, medium effort | General implementation work |
+| `plan` | Opus Plan | GPT-5.6 Sol, high effort, read-only | Investigation and planning |
+| `rich` | Opus | GPT-5.6 Sol, high effort | Difficult implementation and review |
+
+Model names follow the capabilities exposed by the installed runtime. The launcher does not pin Codex context-window or auto-compaction values; Codex model metadata remains the source of truth.
+
+## Project layout
+
+A typical registered project looks like this:
+
+```text
+work-harness/
+├── config/
+│   ├── launcher.env
+│   └── .local/                 # optional, never commit secrets
+├── .claude/
+│   ├── skills/                 # shared Claude/Codex-compatible skills
+│   └── settings.local.json     # optional local environment values
+├── .codex-only/
+│   └── skills/                 # project skills exposed only to Codex
+├── .mcp.json                   # optional committed MCP definitions
+├── .mcp.local.json             # optional local MCP definitions
+└── .harness/                   # generated runtime state; gitignore this
+```
+
+The launcher merges `.mcp.json`, `.mcp.local.json`, and `mcp.local.json`. Duplicate MCP server names fail fast instead of silently overriding one another.
+
+## Codex integration
+
+Before each native Codex launch, `bin/codex-home-prepare.sh` prepares an isolated `CODEX_HOME` under `<project>/.harness/codex`:
+
+- `config.toml` with project MCP servers and the default Terra/medium route
+- `fast.config.toml`, `base.config.toml`, `plan.config.toml`, and `rich.config.toml`
+- generated `AGENTS.md`
+- merged skill links from global, shared project, and `.codex-only` sources
+- project-scoped sessions and history
+- an `auth.json` symlink to the active native Codex login
+
+The terminal `codex` from `PATH` is preferred. Set `HARNESS_CODEX_BIN` for an explicit binary. Codex.app's bundled CLI is only used when `HARNESS_CODEX_ALLOW_APP_FALLBACK=1` because app bundles can lag behind the terminal release.
+
+Browser support keeps the terminal-safe `browser-harness` path, materializes supported bundled plugins, and uses an exact browser-client SHA allowlist for `node_repl`. Shared plugin cache updates use the macOS kernel lock (`lockf`) so concurrent project launches cannot corrupt global cache state.
+
+See [Codex integration](docs/codex-integration.md) for the generated layout, configuration translation, plugin policy, and compatibility notes.
+
+## Local configuration and secrets
+
+Keep machine-specific gateway URLs, API keys, and MCP credentials out of Git:
+
+```text
+config/.local/kiro-gateway.env
+config/.local/codex-gateway.env
+.claude/settings.local.json
+.mcp.local.json
+mcp.local.json
+```
+
+Use environment-variable references in committed MCP configuration when authentication is required. Never paste credentials into bug reports, logs, screenshots, or pull requests.
+
+Copy the relevant entries from [the project `.gitignore` template](templates/project.gitignore) into each registered project's existing `.gitignore`. Do not overwrite a project's existing ignore rules.
+
+Read [Security](SECURITY.md) before changing auth, MCP, plugin, or runtime-home behavior.
+
+## Troubleshooting
+
+Common fixes are collected in [docs/troubleshooting.md](docs/troubleshooting.md), including:
+
+- a prefix shadowed by an existing alias
+- a login shell selecting a stale mise-managed Codex binary
+- Codex.app fallback behavior
+- duplicate MCP names
+- generated state that needs regeneration
+- Chrome native-host compatibility
+
+When reporting a bug, include the launcher version, macOS version, Zsh version, selected runtime version, command shape, and a redacted error message.
+
+## Development
+
+Clone the repository and run the full suite:
+
+```bash
+git clone https://github.com/kilhyeonjun/harness-launcher.git
+cd harness-launcher
+./test/run-all.sh
+```
+
+The suite dispatches each test through its declared Bash or Zsh interpreter. Run syntax checks as well:
+
+```bash
+bash -n bin/*.sh test/*.sh
+zsh -n bin/aliases.zsh bin/*.sh test/*.sh
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for project scope, test expectations, portability rules, and the pull request checklist.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Architecture and trust boundaries](docs/architecture.md)
+- [Codex integration](docs/codex-integration.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Changelog](CHANGELOG.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+
+## Contributing
+
+Bug reports, focused fixes, portability improvements, and documentation corrections are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) and use the repository issue templates.
+
+For vulnerabilities or credential-handling problems, do not open a public issue. Follow [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE)

@@ -472,7 +472,12 @@ sync_bundled_marketplace_from_app_bundle() {
 
 # Browser trust/version must be derived from the marketplace synchronized in
 # this same prepare run, never from a missing or stale previous-run cache.
-with_global_codex_lock sync_bundled_marketplace_from_app_bundle
+# Global Codex cache is touched only when a valid bundled marketplace is present.
+# Avoid taking a host-global lock for harness-only preparation that has no cache
+# work to serialize; when cache synchronization is needed it remains fail-closed.
+if [[ -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
+  with_global_codex_lock sync_bundled_marketplace_from_app_bundle
+fi
 
 # 2. Generate config.toml content
 config_file="$CODEX_HOME/config.toml"
@@ -946,7 +951,10 @@ prepare_bundled_plugins() {
   restart_global_chrome_extension_host_if_config_changed
 }
 
-with_global_codex_lock prepare_bundled_plugins
+if [[ -f "$bundled_marketplace/plugins/computer-use/.codex-plugin/plugin.json" \
+   || -f "$bundled_marketplace/plugins/chrome/.codex-plugin/plugin.json" ]]; then
+  with_global_codex_lock prepare_bundled_plugins
+fi
 remove_bundled_plugin_cache "browser"
 
 # 5. Generate hooks.json — Claude harness owns hook scripts as single source

@@ -11,7 +11,13 @@ HARNESS_DIR="${1:?HARNESS_DIR required (positional arg 1)}"
 [[ -d "$HARNESS_DIR" ]] || { echo "harness dir not found: $HARNESS_DIR" >&2; exit 1; }
 
 KIRO_HOME="$HARNESS_DIR/.harness/kiro"
-mkdir -p "$KIRO_HOME/settings" "$KIRO_HOME/agents" "$KIRO_HOME/steering" "$KIRO_HOME/skills"
+# Parse and render MCP configuration outside the harness first. A validation
+# failure must not create `.harness/kiro` or leave temporary runtime files.
+STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/harness-launcher-kiro.XXXXXX")"
+cleanup_staging() {
+  rm -rf "$STAGING_DIR"
+}
+trap cleanup_staging EXIT
 
 LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -25,40 +31,35 @@ atomic_write() {
   fi
 }
 
-# ─── 1. settings/cli.json ───────────────────────────────────────────────────
-
-cli_json="$KIRO_HOME/settings/cli.json"
-tmp_cli="$(mktemp "$KIRO_HOME/.cli.json.XXXXXX")"
-cat > "$tmp_cli" <<'JSON'
-{
-  "chat.enableThinking": true,
-  "chat.enableTodoList": true,
-  "chat.enableContextUsageIndicator": true,
-  "chat.enableDelegate": true,
-  "chat.enableKnowledge": true
-}
-JSON
-atomic_write "$cli_json" "$tmp_cli"
-
-# ─── 2. settings/mcp.json ───────────────────────────────────────────────────
-# Merge .mcp.json + mcp.local.json into kiro-cli format (add "type" field)
+# ─── 1. settings/mcp.json ───────────────────────────────────────────────────
+# Merge committed and local MCP sources into kiro-cli format. Local files extend
+# the committed configuration; duplicate server names fail rather than override.
 
 mcp_out="$KIRO_HOME/settings/mcp.json"
-tmp_mcp="$(mktemp "$KIRO_HOME/.mcp.json.XXXXXX")"
+tmp_mcp="$STAGING_DIR/mcp.json"
 
 python3 - "$HARNESS_DIR" > "$tmp_mcp" <<'PY'
 import json, os, sys
 
 harness = sys.argv[1]
 merged = {}
+seen = {}
 
-for name in (".mcp.json", "mcp.local.json"):
+for name in (".mcp.json", ".mcp.local.json", "mcp.local.json"):
     path = os.path.join(harness, name)
     if not os.path.isfile(path):
         continue
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     for srv_name, spec in (data.get("mcpServers") or {}).items():
+        if srv_name in seen:
+            print(
+                f"ERROR: duplicate MCP server '{srv_name}' in {seen[srv_name]} and {path}; "
+                "rename the local server instead of overriding committed .mcp.json",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        seen[srv_name] = path
         merged[srv_name] = spec
 
 # Convert to kiro-cli format: ensure "type" field
@@ -76,7 +77,27 @@ json.dump({"mcpServers": output}, sys.stdout, indent=2)
 sys.stdout.write("\n")
 PY
 
+# MCP parsing and duplicate validation succeeded. It is now safe to materialize
+# the per-harness runtime home and atomically install generated files.
+mkdir -p "$KIRO_HOME/settings" "$KIRO_HOME/agents" "$KIRO_HOME/steering" "$KIRO_HOME/skills"
 atomic_write "$mcp_out" "$tmp_mcp"
+
+# ─── 2. settings/cli.json ───────────────────────────────────────────────────
+# Generate only after MCP validation succeeds, so a rejected local duplicate
+# leaves every pre-existing generated file untouched.
+
+cli_json="$KIRO_HOME/settings/cli.json"
+tmp_cli="$(mktemp "$KIRO_HOME/.cli.json.XXXXXX")"
+cat > "$tmp_cli" <<'JSON'
+{
+  "chat.enableThinking": true,
+  "chat.enableTodoList": true,
+  "chat.enableContextUsageIndicator": true,
+  "chat.enableDelegate": true,
+  "chat.enableKnowledge": true
+}
+JSON
+atomic_write "$cli_json" "$tmp_cli"
 
 # ─── 3. agents/harness.json ──────────────────────────────────────────────────
 # Per-harness agent with hooks, resources, allowedTools

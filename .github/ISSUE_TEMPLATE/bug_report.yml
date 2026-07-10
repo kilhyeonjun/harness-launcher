@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a reproducible launcher, runtime-home, or command-routing problem
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Remove credentials, internal URLs, account identifiers, and personal paths before submitting. Security issues belong in the private advisory form.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight
+      options:
+        - label: I upgraded to the latest harness-launcher release.
+          required: true
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: This report contains no secrets or private configuration.
+          required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Claude Code (direct)
+        - Codex CLI (native)
+        - Kiro CLI (native)
+        - Claude Code via Kiro gateway
+        - Claude Code via Codex gateway
+        - Registration, completion, or TUI
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: harness-launcher version
+      description: Output of `brew list --versions harness-launcher`, or the commit SHA for a source install.
+      placeholder: harness-launcher 0.9.4
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include macOS, Zsh, and selected runtime versions.
+      placeholder: |
+        macOS: 15.x
+        zsh: 5.9
+        runtime: codex-cli x.y.z
+        installation: Homebrew
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Use a disposable project and fake values where possible.
+      placeholder: |
+        1. Create ...
+        2. Register ...
+        3. Run ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and redacted output
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Add a minimal config sample or screenshots only after redacting secrets and personal paths.

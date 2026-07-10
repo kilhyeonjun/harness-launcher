@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Commands below use only checked-in paths and runner-provided tool locations.
+# No issue, pull request, commit, or ref text is interpolated into shell commands.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install current Bash
+        run: brew install bash
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash_bin="$(brew --prefix)/bin/bash"
+          for file in install.sh bin/*.sh test/*.sh; do
+            first_line="$(sed -n '1p' "$file")"
+            if [[ "$first_line" == *zsh* ]]; then
+              /bin/zsh -n "$file"
+            else
+              "$bash_bin" -n "$file"
+            fi
+          done
+          /bin/zsh -n bin/aliases.zsh
+
+      - name: Lint public documentation
+        run: npx --yes markdownlint-cli2@0.23.0 README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md 'docs/*.md' '.github/*.md'
+
+      - name: Run regression suite
+        shell: bash
+        run: BASH_BIN="$(brew --prefix)/bin/bash" ZSH_BIN=/bin/zsh ./test/run-all.sh

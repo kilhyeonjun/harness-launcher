@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/kilhyeonjun/harness-launcher/security/advisories/new
+    about: Report vulnerabilities and credential-handling issues privately.
+  - name: Documentation
+    url: https://github.com/kilhyeonjun/harness-launcher/tree/main/docs
+    about: Check architecture, Codex integration, and troubleshooting guides first.
