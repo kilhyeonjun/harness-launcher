@@ -33,9 +33,13 @@ cat > "$HARNESS/.mcp.json" <<'JSON'
 }
 JSON
 
-output="$(
+if ! output="$(
   HOME="$HOME_FAKE" "$BASH_BIN" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
-)"
+)"; then
+  echo "FAIL: Codex preparation failed without the drift-warning opt-in"
+  printf '%s\n' "$output"
+  exit 1
+fi
 
 if printf '%s\n' "$output" | grep -q 'WARN: Claude global MCP server not declared in harness .mcp.json: glider'; then
   echo "FAIL: global MCP drift warning should be opt-in"
@@ -43,10 +47,14 @@ if printf '%s\n' "$output" | grep -q 'WARN: Claude global MCP server not declare
   exit 1
 fi
 
-output="$(
+if ! output="$(
   HOME="$HOME_FAKE" HARNESS_CODEX_WARN_CLAUDE_GLOBAL_MCP_DRIFT=1 \
     "$BASH_BIN" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
-)"
+)"; then
+  echo "FAIL: Codex preparation failed with the drift-warning opt-in"
+  printf '%s\n' "$output"
+  exit 1
+fi
 
 printf '%s\n' "$output" | grep -q 'WARN: Claude global MCP server not declared in harness .mcp.json: glider' \
   || { echo "FAIL: missing opt-in global MCP drift warning"; printf '%s\n' "$output"; exit 1; }
