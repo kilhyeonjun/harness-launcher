@@ -75,32 +75,32 @@ harness's `.mcp.json` and `CLAUDE.md`.
 `bin/codex-home-prepare.sh` is invoked before every Codex launch and
 populates `$HARNESS_DIR/.harness/codex/` with:
 
-- `config.toml` — top-level model defaults, long-context client settings,
-  `[mcp_servers.*]` translated from `.mcp.json`, and enabled entries for
-  harness-approved Codex bundled plugins (`computer-use`; `browser` and
-  `chrome` are pruned for terminal Codex).
-- `<profile>.config.toml` (`fast`/`base`/`plan`/`rich`) — per-profile overlay
-  files with top-level keys, selected via `codex --profile <name>`. Required by
-  Codex 0.134.0+, which rejects inline `[profiles.*]` tables in `config.toml`
-  when `--profile` is used.
+- `config.toml` — GPT-5.6 Terra+medium top-level defaults, unpinned
+  context/auto-compact values from Codex model metadata, `[mcp_servers.*]`
+  translated from `.mcp.json`, and enabled entries for harness-approved bundled
+  plugins (`computer-use` and the Chrome bridge; `browser` stays pruned).
+- `<profile>.config.toml` (`fast`/`base`/`plan`/`rich`) — Luna+low,
+  Terra+medium, Sol+high read-only, and Sol+high overlays respectively. Files
+  use top-level keys selected via `codex --profile <name>`, as required by
+  Codex 0.134.0+.
 - `plugins/cache/openai-bundled/` — versioned plugin roots for those bundled
   plugins, so Codex reports them as installed and loads their skills/tools.
-- `AGENTS.md` → `../../CLAUDE.md` (symlink, so Codex picks up the harness rules).
-- `skills/` — per-skill symlink merge of global `~/.codex/skills`,
-  active Skills CLI installs from `~/.agents/skills`, and harness-local
-  `.claude/skills`.
+- `AGENTS.md` — generated harness rules plus the Codex response-language
+  supplement.
+- `skills/` — per-skill symlink merge of global `~/.codex/skills`, active
+  Skills CLI installs from `~/.agents/skills`, harness-local `.claude/skills`,
+  and Codex-only `$HARNESS_DIR/.codex-only/skills`.
 - `auth.json` → `~/.codex/auth.json` (symlink, share login).
 
 The script is idempotent: re-running rewrites `config.toml` only when the
 content would change.
 
-Browser automation for kh/gd/gp terminal Codex uses `browser-harness` instead
-of Codex Desktop Browser Use surfaces. The launcher prunes
-`browser@openai-bundled` and `chrome@openai-bundled` from per-harness
-`CODEX_HOME`, and omits `node_repl` from generated Codex MCP config. Native
-Codex should not be routed through a harness-created local app-server
-`--remote`; use browser-harness with a harness-local `BH_HOME` and isolated
-Chrome/CDP profile.
+Browser automation for kh/gd/gp terminal Codex keeps `browser-harness` as the
+stable CDP path and also materializes Codex's Chrome plugin bridge when the
+Codex app bundle provides it. `browser@openai-bundled` remains pruned;
+`chrome@openai-bundled` and the `node_repl` Chrome bridge are generated into
+the isolated per-harness `CODEX_HOME`. Native Codex is never routed through a
+harness-created local app-server `--remote`.
 
 If `happy` is installed, the no-arg interactive launcher asks whether to route
 Claude sessions through Happy. Native Codex uses the real Codex CLI. `kh codex

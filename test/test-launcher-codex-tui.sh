@@ -101,6 +101,17 @@ grep -q "^CODEX_HOME:$TEST_HARNESS/.harness/codex\$" "$STUB1" || {
   echo "FAIL: case1 — AGENTS.md not created (prepare not invoked)"; exit 1;
 }
 echo "PASS: case1 — runtime=Codex base → direct TUI + codex --cd ... -p base + CODEX_HOME prepared"
+for expected in \
+  "Fast — gpt-5.6-luna, low effort" \
+  "Base — gpt-5.6-terra, medium effort" \
+  "Plan — gpt-5.6-sol, high + read-only sandbox" \
+  "Rich — gpt-5.6-sol, high effort"
+do
+  grep -q "$expected" "$STUB1.tui.log" || {
+    echo "FAIL: Codex mode menu missing current routing label: $expected"; exit 1;
+  }
+done
+echo "PASS: Codex TUI mode labels match GPT-5.6 routing"
 
 # Case 2: runtime=Codex, session=Continue last, mode=Plan, safety=Default
 STUB2="$TEST_TEMP/out2-codex-continue.txt"

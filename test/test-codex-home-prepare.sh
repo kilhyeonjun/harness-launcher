@@ -91,9 +91,9 @@ echo "PASS: AGENTS.md materialized with Codex response language supplement"
 # config.toml structure
 config="$CODEX_HOME/config.toml"
 [[ -f "$config" ]] || { echo "FAIL: config.toml missing"; exit 1; }
-grep -q '^model = "gpt-5.5"' "$config" || { echo "FAIL: top-level model missing"; exit 1; }
+grep -q '^model = "gpt-5.6-terra"' "$config" || { echo "FAIL: top-level model should use Terra"; exit 1; }
 # Context window must NOT be pinned — Codex resolves the real backend limit
-# (272K for gpt-5.5) from its model metadata; pinned 1M values broke auto-compact.
+# (372K for GPT-5.6 as of 2026-07) from model metadata; pinned values broke auto-compact.
 if grep -q '^model_context_window' "$config"; then
   echo "FAIL: model_context_window pinned (must come from Codex model metadata)"; exit 1;
 fi
@@ -111,11 +111,14 @@ echo "PASS: config.toml has no legacy [profiles.*] tables"
 for p in fast base plan rich; do
   pf="$CODEX_HOME/$p.config.toml"
   [[ -f "$pf" ]] || { echo "FAIL: $p.config.toml missing"; exit 1; }
-  grep -q '^model = "gpt-5.5"' "$pf" || { echo "FAIL: $p.config.toml missing top-level model"; exit 1; }
   if grep -q '^\[profiles' "$pf"; then
     echo "FAIL: $p.config.toml must use top-level keys, not a [profiles.$p] table"; exit 1;
   fi
 done
+grep -q '^model = "gpt-5.6-luna"' "$CODEX_HOME/fast.config.toml" || { echo "FAIL: fast model should use Luna"; exit 1; }
+grep -q '^model = "gpt-5.6-terra"' "$CODEX_HOME/base.config.toml" || { echo "FAIL: base model should use Terra"; exit 1; }
+grep -q '^model = "gpt-5.6-sol"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan model should use Sol"; exit 1; }
+grep -q '^model = "gpt-5.6-sol"' "$CODEX_HOME/rich.config.toml" || { echo "FAIL: rich model should use Sol"; exit 1; }
 grep -q '^model_reasoning_effort = "low"' "$CODEX_HOME/fast.config.toml" || { echo "FAIL: fast effort wrong"; exit 1; }
 grep -q '^model_reasoning_effort = "medium"' "$CODEX_HOME/base.config.toml" || { echo "FAIL: base effort wrong"; exit 1; }
 grep -q '^model_reasoning_effort = "high"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan effort wrong"; exit 1; }
@@ -278,6 +281,7 @@ mkdir -p "$FAKE_HOME/.codex/skills/global-skill" \
          "$FAKE_HOME/.codex/skills/.system/system-skill" \
          "$FAKE_HOME/.codex/superpowers/skills/brainstorming" \
          "$FAKE_HARNESS_S/.claude/skills/harness-skill" \
+         "$FAKE_HARNESS_S/.codex-only/skills/codex-only-skill" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/.codex-plugin" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/scripts" \
          "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/browser/skills/browser" \
@@ -311,6 +315,12 @@ cat > "$FAKE_HARNESS_S/.claude/skills/harness-skill/SKILL.md" <<'EOF'
 ---
 name: harness-skill
 description: Per-harness Claude skill
+---
+EOF
+cat > "$FAKE_HARNESS_S/.codex-only/skills/codex-only-skill/SKILL.md" <<'EOF'
+---
+name: codex-only-skill
+description: Per-harness skill visible only to Codex
 ---
 EOF
 cat > "$FAKE_HOME/.codex/superpowers/skills/brainstorming/SKILL.md" <<'EOF'
@@ -349,12 +359,12 @@ cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome
   "extensionHostName": "com.openai.codexextension"
 }
 EOF
-cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/extension-host/macos/arm64/extension-host" <<'EOF'
+cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/extension-host/macos/arm64/Codex for Chrome" <<'EOF'
 #!/bin/sh
 trap 'exit 0' TERM INT
 while :; do sleep 1; done
 EOF
-chmod +x "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/extension-host/macos/arm64/extension-host"
+chmod +x "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/extension-host/macos/arm64/Codex for Chrome"
 cp -pR "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome" \
         "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/0.1.0-test"
 cat > "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/.codex-plugin/plugin.json" <<'EOF'
@@ -385,7 +395,7 @@ mkdir -p "$FAKE_HARNESS_S/.harness/codex/browser/sessions"
 mkdir -p "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/0.0.1-stale"
 ln -s 0.0.1-stale "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/latest"
 ln -s 0.0.1-stale "$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/latest"
-"$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/0.1.0-test/extension-host/macos/arm64/extension-host" chrome-extension://fake-chrome-extension-id/ &
+"$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/0.1.0-test/extension-host/macos/arm64/Codex for Chrome" chrome-extension://fake-chrome-extension-id/ &
 FAKE_EXTENSION_HOST_PID=$!
 HOME="$FAKE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$PREPARE" "$FAKE_HARNESS_S"
 SKILLS_OUT="$FAKE_HARNESS_S/.harness/codex/skills"
@@ -408,6 +418,10 @@ echo "PASS: ~/.agents/skills/agents-global-skill linked"
 [[ -f "$SKILLS_OUT/harness-skill/SKILL.md" ]] || { echo "FAIL: harness-skill resolves to file"; exit 1; }
 echo "PASS: \$HARNESS_DIR/.claude/skills/harness-skill linked"
 
+[[ -L "$SKILLS_OUT/codex-only-skill" ]] || { echo "FAIL: codex-only-skill symlink missing"; exit 1; }
+[[ -f "$SKILLS_OUT/codex-only-skill/SKILL.md" ]] || { echo "FAIL: codex-only-skill resolves to file"; exit 1; }
+echo "PASS: \$HARNESS_DIR/.codex-only/skills/codex-only-skill linked"
+
 [[ -L "$SKILLS_OUT/.system" ]] || { echo "FAIL: .system bundle symlink missing"; exit 1; }
 echo "PASS: ~/.codex/skills/.system bundle linked"
 
@@ -421,6 +435,7 @@ echo "PASS: ~/.codex/superpowers/skills namespace linked"
 grep -qx 'global-skill' "$SKILLS_OUT/.harness-managed"  || { echo "FAIL: marker missing global-skill"; exit 1; }
 grep -qx 'agents-global-skill' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing agents-global-skill"; exit 1; }
 grep -qx 'harness-skill' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing harness-skill"; exit 1; }
+grep -qx 'codex-only-skill' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing codex-only-skill"; exit 1; }
 grep -qx 'superpowers' "$SKILLS_OUT/.harness-managed" || { echo "FAIL: marker missing superpowers"; exit 1; }
 echo "PASS: .harness-managed marker tracks all linked entries"
 
@@ -430,21 +445,117 @@ echo "PASS: .harness-managed marker tracks all linked entries"
 [[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/computer-use/1.0.0-test/skills/computer-use/SKILL.md" ]] || {
   echo "FAIL: computer-use plugin skill not materialized"; exit 1;
 }
-[[ ! -e "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome" ]] || {
-  echo "FAIL: chrome plugin cache should be pruned from harness Codex home"; exit 1;
+[[ -f "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/0.1.0-test/.codex-plugin/plugin.json" ]] || {
+  echo "FAIL: chrome plugin cache should be materialized for harness Codex"; exit 1;
 }
-[[ ! -e "$FAKE_HARNESS_S/.harness/codex/node_repl" ]] || {
-  echo "FAIL: stale node_repl runtime directory should be pruned from harness Codex home"; exit 1;
+[[ -L "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/chrome/latest" ]] || {
+  echo "FAIL: harness chrome plugin latest symlink missing"; exit 1;
 }
-[[ ! -e "$FAKE_HARNESS_S/.harness/codex/browser" ]] || {
-  echo "FAIL: stale browser runtime directory should be pruned from harness Codex home"; exit 1;
+extension_host_config="$FAKE_HOME/.codex/plugins/cache/openai-bundled/chrome/0.1.0-test/extension-host/macos/arm64/extension-host-config.json"
+[[ -f "$extension_host_config" ]] || {
+  echo "FAIL: current macOS 'Codex for Chrome' host was not discovered/configured"; exit 1;
+}
+grep -q '"extensionId": "fake-chrome-extension-id"' "$extension_host_config" || {
+  echo "FAIL: Chrome extension host config missing fixture extension id"; exit 1;
 }
 kill "$FAKE_EXTENSION_HOST_PID" 2>/dev/null || true
 wait "$FAKE_EXTENSION_HOST_PID" 2>/dev/null || true
-echo "PASS: terminal Codex materializes Computer Use only; Chrome/node_repl/browser runtime surfaces omitted"
-[[ ! -e "$FAKE_HOME/.codex/.codex-home-prepare-global.lock" ]] || {
-  echo "FAIL: global Codex cache lock was not released"; exit 1;
+echo "PASS: terminal Codex materializes plugins and configures current macOS 'Codex for Chrome' host"
+lock_file="$FAKE_HOME/.codex/.codex-home-prepare-global.lock"
+/usr/bin/lockf -s -k -t 0 "$lock_file" true || {
+  echo "FAIL: global Codex cache kernel lock was not released"; exit 1;
 }
+grep -q '/usr/bin/lockf' "$PREPARE" || {
+  echo "FAIL: global Codex cache must use the macOS kernel advisory lock"; exit 1;
+}
+if grep -q '_global_codex_lock_is_stale\|initializing_grace\|trap .*lock_dir' "$PREPARE"; then
+  echo "FAIL: PID/mtime stale-reclaim or signal cleanup heuristics must not replace kernel locking"; exit 1;
+fi
+
+# Kernel-lock adversarial test: hold the first marketplace copy inside the
+# critical section, terminate the outer prepare shell, then start a contender.
+# The protected child must retain the advisory lock until it finishes; the
+# contender must never enter while the first copy is still active.
+RACE_HOME="$TEST_TEMP/fake-home-lock-race"
+RACE_SOURCE="$TEST_TEMP/bundled-source-lock-race"
+RACE_HARNESS_A="$TEST_TEMP/fake-harness-lock-race-a"
+RACE_HARNESS_B="$TEST_TEMP/fake-harness-lock-race-b"
+RACE_BIN="$TEST_TEMP/lock-race-bin"
+RACE_OWNER_CLAIM="$TEST_TEMP/lock-owner-claim"
+RACE_FIRST_BLOCKED="$TEST_TEMP/lock-first-blocked"
+RACE_FIRST_RELEASE="$TEST_TEMP/lock-first-release"
+RACE_CONTENDER_ENTERED="$TEST_TEMP/lock-contender-entered"
+RACE_LOG_A="$TEST_TEMP/lock-race-a.log"
+RACE_LOG_B="$TEST_TEMP/lock-race-b.log"
+REAL_CP="$(command -v cp)"
+mkdir -p "$RACE_HOME" "$RACE_HARNESS_A" "$RACE_HARNESS_B" "$RACE_BIN"
+cp -pR "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$RACE_SOURCE"
+echo "# lock race a" > "$RACE_HARNESS_A/CLAUDE.md"
+echo "# lock race b" > "$RACE_HARNESS_B/CLAUDE.md"
+cat > "$RACE_BIN/cp" <<'EOF'
+#!/usr/bin/env bash
+set -e
+is_marketplace_copy=0
+for arg in "$@"; do
+  case "$arg" in
+    "$RACE_SOURCE"|"$RACE_SOURCE/"|"$RACE_SOURCE/.") is_marketplace_copy=1; break ;;
+  esac
+done
+if [[ "$is_marketplace_copy" -eq 1 ]]; then
+  if mkdir "$RACE_OWNER_CLAIM" 2>/dev/null; then
+    : > "$RACE_FIRST_BLOCKED"
+    while [[ ! -e "$RACE_FIRST_RELEASE" ]]; do sleep 0.02; done
+  else
+    : > "$RACE_CONTENDER_ENTERED"
+  fi
+fi
+exec "$REAL_CP" "$@"
+EOF
+chmod +x "$RACE_BIN/cp"
+RACE_OWNER_CLAIM="$RACE_OWNER_CLAIM" RACE_FIRST_BLOCKED="$RACE_FIRST_BLOCKED" \
+RACE_FIRST_RELEASE="$RACE_FIRST_RELEASE" RACE_SOURCE="$RACE_SOURCE" \
+RACE_CONTENDER_ENTERED="$RACE_CONTENDER_ENTERED" REAL_CP="$REAL_CP" \
+PATH="$RACE_BIN:$PATH" HOME="$RACE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$RACE_SOURCE" \
+  "$PREPARE" "$RACE_HARNESS_A" >"$RACE_LOG_A" 2>&1 &
+race_pid_a=$!
+for _ in {1..250}; do
+  [[ -e "$RACE_FIRST_BLOCKED" ]] && break
+  sleep 0.02
+done
+[[ -e "$RACE_FIRST_BLOCKED" ]] || {
+  kill "$race_pid_a" 2>/dev/null || true
+  echo "FAIL: kernel lock test did not enter the protected marketplace copy"; exit 1;
+}
+kill -TERM "$race_pid_a" 2>/dev/null || true
+sleep 0.1
+RACE_OWNER_CLAIM="$RACE_OWNER_CLAIM" RACE_FIRST_BLOCKED="$RACE_FIRST_BLOCKED" \
+RACE_FIRST_RELEASE="$RACE_FIRST_RELEASE" RACE_SOURCE="$RACE_SOURCE" \
+RACE_CONTENDER_ENTERED="$RACE_CONTENDER_ENTERED" REAL_CP="$REAL_CP" \
+PATH="$RACE_BIN:$PATH" HOME="$RACE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$RACE_SOURCE" \
+  "$PREPARE" "$RACE_HARNESS_B" >"$RACE_LOG_B" 2>&1 &
+race_pid_b=$!
+sleep 1
+race_overlap=0
+[[ -e "$RACE_CONTENDER_ENTERED" ]] && race_overlap=1
+: > "$RACE_FIRST_RELEASE"
+set +e
+wait "$race_pid_a"; race_rc_a=$?
+wait "$race_pid_b"; race_rc_b=$?
+set -e
+[[ "$race_overlap" -eq 0 ]] || {
+  echo "FAIL: contender entered after SIGTERM released the lock before protected work stopped"; exit 1;
+}
+if grep -q 'reclaiming stale Codex global cache lock' "$RACE_LOG_A" "$RACE_LOG_B"; then
+  echo "FAIL: live kernel lock must never be reclaimed through stale owner heuristics"; exit 1;
+fi
+[[ "$race_rc_a" -eq 0 || "$race_rc_a" -eq 143 ]] || {
+  echo "FAIL: terminated first prepare returned unexpected status $race_rc_a"; exit 1;
+}
+[[ "$race_rc_b" -eq 0 ]] || {
+  echo "FAIL: contender did not complete after protected work released the kernel lock"; exit 1;
+}
+echo "PASS: kernel lock survives outer SIGTERM until protected work finishes"
+
 FAKE_HARNESS_PAR_A="$TEST_TEMP/fake-harness-parallel-a"
 FAKE_HARNESS_PAR_B="$TEST_TEMP/fake-harness-parallel-b"
 mkdir -p "$FAKE_HARNESS_PAR_A" "$FAKE_HARNESS_PAR_B"
@@ -461,31 +572,83 @@ set -e
 [[ "$rc_a" -eq 0 && "$rc_b" -eq 0 ]] || {
   echo "FAIL: concurrent prepare should not race on global Codex cache"; exit 1;
 }
-[[ ! -e "$FAKE_HOME/.codex/.codex-home-prepare-global.lock" ]] || {
-  echo "FAIL: global Codex cache lock left behind after concurrent prepare"; exit 1;
+/usr/bin/lockf -s -k -t 0 "$FAKE_HOME/.codex/.codex-home-prepare-global.lock" true || {
+  echo "FAIL: global Codex cache kernel lock remained held after concurrent prepare"; exit 1;
 }
 echo "PASS: concurrent prepare serializes global Codex cache updates"
 [[ ! -e "$FAKE_HARNESS_S/.harness/codex/plugins/cache/openai-bundled/browser" ]] || {
-  echo "FAIL: browser plugin cache should be pruned for terminal Codex"; exit 1;
+  echo "FAIL: browser plugin cache should remain pruned for terminal Codex"; exit 1;
 }
-if grep -q '^\[plugins."chrome@openai-bundled"\]' "$FAKE_HARNESS_S/.harness/codex/config.toml"; then
-  echo "FAIL: chrome plugin config should be omitted for terminal Codex"; exit 1;
-fi
+grep -q '^\[plugins."chrome@openai-bundled"\]' "$FAKE_HARNESS_S/.harness/codex/config.toml" || {
+  echo "FAIL: chrome plugin config missing"; exit 1;
+}
 if grep -q '^\[plugins."browser@openai-bundled"\]' "$FAKE_HARNESS_S/.harness/codex/config.toml"; then
   echo "FAIL: browser plugin config should be omitted for terminal Codex TUI"; exit 1;
 fi
 grep -q '^\[plugins."computer-use@openai-bundled"\]' "$FAKE_HARNESS_S/.harness/codex/config.toml" || {
   echo "FAIL: computer-use plugin config missing"; exit 1;
 }
-echo "PASS: terminal Codex plugin cache exposes Computer Use only; Browser and Chrome pruned"
+echo "PASS: terminal Codex exposes Computer Use and Chrome while Browser stays pruned"
 
-if grep -q '^\[mcp_servers.node_repl\]' "$FAKE_CONFIG"; then
-  echo "FAIL: node_repl MCP should be omitted from terminal Codex config"; exit 1;
+grep -q '^\[mcp_servers.node_repl\]' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl MCP should be preserved for Chrome bridge support"; exit 1;
+}
+grep -q '^BROWSER_USE_AVAILABLE_BACKENDS = "chrome"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl Chrome backend env missing"; exit 1;
+}
+grep -q '^NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "5000"' "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl native pipe timeout missing"; exit 1;
+}
+if grep -q '^NODE_REPL_TRUSTED_CODE_PATHS = ' "$FAKE_CONFIG"; then
+  echo "FAIL: launcher must not trust entire per-harness or global Codex homes"; exit 1;
 fi
-if grep -q '^BROWSER_USE_\|^NODE_REPL_' "$FAKE_CONFIG"; then
-  echo "FAIL: Browser Use/node_repl env should be absent from terminal Codex config"; exit 1;
-fi
-echo "PASS: node_repl Browser Use runtime surface omitted"
+expected_browser_sha="$(shasum -a 256 "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/chrome/scripts/browser-client.mjs" | awk '{print $1}')"
+grep -q "^NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa $expected_browser_sha\"" "$FAKE_CONFIG" || {
+  echo "FAIL: node_repl should trust only the exact configured/browser-client SHA allowlist"; exit 1;
+}
+echo "PASS: node_repl Chrome bridge uses exact browser-client SHA trust without broad code paths"
+
+# First-run convergence: bundled marketplace sync must finish under the global
+# lock before config derives Chrome browser-client trust and plugin version.
+FIRST_RUN_HOME="$TEST_TEMP/fake-home-first-run"
+FIRST_RUN_SOURCE="$TEST_TEMP/bundled-source-first-run"
+FIRST_RUN_HARNESS="$TEST_TEMP/fake-harness-first-run"
+mkdir -p "$FIRST_RUN_HOME" "$FIRST_RUN_HARNESS"
+cp -pR "$FAKE_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled" "$FIRST_RUN_SOURCE"
+echo "# first-run rules" > "$FIRST_RUN_HARNESS/CLAUDE.md"
+cat > "$FIRST_RUN_HARNESS/.mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "node_repl": { "command": "/fake/node_repl" }
+  }
+}
+EOF
+HOME="$FIRST_RUN_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$FIRST_RUN_SOURCE" "$PREPARE" "$FIRST_RUN_HARNESS"
+first_run_config="$FIRST_RUN_HARNESS/.harness/codex/config.toml"
+first_run_sha="$(shasum -a 256 "$FIRST_RUN_SOURCE/plugins/chrome/scripts/browser-client.mjs" | awk '{print $1}')"
+grep -q "^NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = \"$first_run_sha\"" "$first_run_config" || {
+  echo "FAIL: first prepare run did not derive browser-client SHA after marketplace sync"; exit 1;
+}
+grep -q '^BROWSER_USE_CODEX_APP_VERSION = "0.1.0-test"' "$first_run_config" || {
+  echo "FAIL: first prepare run did not derive Chrome plugin version after marketplace sync"; exit 1;
+}
+echo "PASS: first prepare run converges marketplace sync, browser SHA, and plugin version"
+
+# Complete marketplace authority: a non-Chrome plugin content change with the
+# Chrome manifest unchanged must refresh both marketplace and materialized cache
+# in one prepare run.
+printf '%s\n' 'updated computer-use skill without manifest bump' \
+  > "$FIRST_RUN_SOURCE/plugins/computer-use/skills/computer-use/SKILL.md"
+HOME="$FIRST_RUN_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$FIRST_RUN_SOURCE" "$PREPARE" "$FIRST_RUN_HARNESS"
+first_run_marketplace_skill="$FIRST_RUN_HOME/.codex/.tmp/bundled-marketplaces/openai-bundled/plugins/computer-use/skills/computer-use/SKILL.md"
+first_run_cached_skill="$FIRST_RUN_HARNESS/.harness/codex/plugins/cache/openai-bundled/computer-use/1.0.0-test/skills/computer-use/SKILL.md"
+grep -q 'updated computer-use skill without manifest bump' "$first_run_marketplace_skill" || {
+  echo "FAIL: marketplace did not refresh when computer-use changed under unchanged Chrome manifest"; exit 1;
+}
+grep -q 'updated computer-use skill without manifest bump' "$first_run_cached_skill" || {
+  echo "FAIL: materialized computer-use cache did not refresh in the same prepare run"; exit 1;
+}
+echo "PASS: complete marketplace/plugin changes refresh in one prepare run"
 
 # Re-run after dropping a per-harness skill should remove its symlink
 rm -rf "$FAKE_HARNESS_S/.claude/skills/harness-skill"
@@ -744,16 +907,19 @@ grep -q "^source = \"$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled\"" "$
 grep -q '^\[plugins\."computer-use@openai-bundled"\]' "$config3" || {
   echo "FAIL: computer-use plugin section missing"; exit 1;
 }
-if grep -q '^\[plugins\."chrome@openai-bundled"\]' "$config3"; then
-  echo "FAIL: chrome plugin should not be enabled in terminal Codex config"; exit 1;
-fi
+grep -q '^\[plugins\."chrome@openai-bundled"\]' "$config3" || {
+  echo "FAIL: chrome plugin should be enabled for terminal Codex"; exit 1;
+}
 if grep -q '^\[plugins\."browser@openai-bundled"\]' "$config3"; then
   echo "FAIL: browser plugin should not be enabled in terminal Codex config"; exit 1;
 fi
 grep -A1 '^\[plugins\."computer-use@openai-bundled"\]' "$config3" | grep -q '^enabled = true' || {
   echo "FAIL: computer-use plugin not enabled"; exit 1;
 }
-echo "PASS: terminal Codex enables Computer Use only; Browser and Chrome omitted"
+grep -A1 '^\[plugins\."chrome@openai-bundled"\]' "$config3" | grep -q '^enabled = true' || {
+  echo "FAIL: chrome plugin not enabled"; exit 1;
+}
+echo "PASS: terminal Codex enables Computer Use and Chrome; Browser omitted"
 
 grep -q '^\[tui\]' "$config3" || { echo "FAIL: [tui] section missing"; exit 1; }
 grep -q '^status_line = \["model-with-reasoning", "current-dir", "git-branch", "run-state", "context-remaining", "context-used"\]' "$config3" || {
@@ -893,7 +1059,7 @@ mtime_h_after=$(stat -f %m "$hooks_json" 2>/dev/null || stat -c %Y "$hooks_json"
 echo "PASS: hooks.json idempotent on no-op re-run"
 
 # Subagents: .claude/agents/*.md should be converted to $CODEX_HOME/agents/*.toml
-# with model mapping (haiku→gpt-5.4-mini, sonnet→gpt-5.5, opus→gpt-5.5+high effort)
+# with model mapping (haiku→Luna+low, sonnet→Terra+medium, opus→Sol+high)
 # and sandbox derived from tools/disallowedTools.
 TEST_HARNESS4="$TEST_TEMP/fake-harness-agents"
 mkdir -p "$TEST_HARNESS4/.claude/agents"
@@ -954,27 +1120,26 @@ echo "PASS: agents output directory created"
 [[ -f "$agents_out/_index.toml" ]] && { echo "FAIL: _index.md should be skipped"; exit 1; }
 echo "PASS: 3 agents converted, _index.md skipped"
 
-# explorer: haiku → gpt-5.4-mini, read-only sandbox
+# explorer: haiku → Luna+low, read-only sandbox
 grep -q '^name = "explorer"' "$agents_out/explorer.toml" || { echo "FAIL: explorer name"; exit 1; }
-grep -q '^model = "gpt-5.4-mini"' "$agents_out/explorer.toml" || { echo "FAIL: explorer model"; exit 1; }
+grep -q '^model = "gpt-5.6-luna"' "$agents_out/explorer.toml" || { echo "FAIL: explorer model"; exit 1; }
+grep -q '^model_reasoning_effort = "low"' "$agents_out/explorer.toml" || { echo "FAIL: explorer effort"; exit 1; }
 grep -q '^sandbox_mode = "read-only"' "$agents_out/explorer.toml" || { echo "FAIL: explorer sandbox"; exit 1; }
 grep -q '^developer_instructions = """' "$agents_out/explorer.toml" || { echo "FAIL: explorer developer_instructions"; exit 1; }
 grep -q 'Quickly search and analyze' "$agents_out/explorer.toml" || { echo "FAIL: explorer body content"; exit 1; }
-echo "PASS: explorer (haiku) → gpt-5.4-mini + read-only"
+echo "PASS: explorer (haiku) → Luna + low + read-only"
 
-# reviewer: opus → gpt-5.5 + effort=high, read-only sandbox
-grep -q '^model = "gpt-5.5"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer model"; exit 1; }
+# reviewer: opus → Sol+high, read-only sandbox
+grep -q '^model = "gpt-5.6-sol"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer model"; exit 1; }
 grep -q '^model_reasoning_effort = "high"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer effort"; exit 1; }
 grep -q '^sandbox_mode = "read-only"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer sandbox"; exit 1; }
-echo "PASS: reviewer (opus) → gpt-5.5 + effort=high + read-only"
+echo "PASS: reviewer (opus) → Sol + high + read-only"
 
-# implementer: sonnet → gpt-5.5 default effort, workspace-write sandbox
-grep -q '^model = "gpt-5.5"' "$agents_out/implementer.toml" || { echo "FAIL: implementer model"; exit 1; }
-if grep -q '^model_reasoning_effort' "$agents_out/implementer.toml"; then
-  echo "FAIL: implementer should not have explicit effort (sonnet uses default)"; exit 1
-fi
+# implementer: sonnet → Terra+medium, workspace-write sandbox
+grep -q '^model = "gpt-5.6-terra"' "$agents_out/implementer.toml" || { echo "FAIL: implementer model"; exit 1; }
+grep -q '^model_reasoning_effort = "medium"' "$agents_out/implementer.toml" || { echo "FAIL: implementer effort"; exit 1; }
 grep -q '^sandbox_mode = "workspace-write"' "$agents_out/implementer.toml" || { echo "FAIL: implementer sandbox"; exit 1; }
-echo "PASS: implementer (sonnet) → gpt-5.5 + workspace-write"
+echo "PASS: implementer (sonnet) → Terra + medium + workspace-write"
 
 # Idempotent
 mtime_a_before=$(stat -f %m "$agents_out/explorer.toml" 2>/dev/null || stat -c %Y "$agents_out/explorer.toml")
