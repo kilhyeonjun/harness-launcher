@@ -8,6 +8,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 HOME_FAKE="$TMP/home"
 HARNESS="$TMP/harness"
+NO_MARKETPLACE="$TMP/no-marketplace"
 mkdir -p "$HOME_FAKE" "$HARNESS"
 
 cat > "$HOME_FAKE/.claude.json" <<'JSON'
@@ -34,7 +35,8 @@ cat > "$HARNESS/.mcp.json" <<'JSON'
 JSON
 
 if ! output="$(
-  HOME="$HOME_FAKE" "$BASH_BIN" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
+  HOME="$HOME_FAKE" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$NO_MARKETPLACE" \
+    "$BASH_BIN" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
 )"; then
   echo "FAIL: Codex preparation failed without the drift-warning opt-in"
   printf '%s\n' "$output"
@@ -49,6 +51,7 @@ fi
 
 if ! output="$(
   HOME="$HOME_FAKE" HARNESS_CODEX_WARN_CLAUDE_GLOBAL_MCP_DRIFT=1 \
+    HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$NO_MARKETPLACE" \
     "$BASH_BIN" "$ROOT/bin/codex-home-prepare.sh" "$HARNESS" 2>&1 >/dev/null
 )"; then
   echo "FAIL: Codex preparation failed with the drift-warning opt-in"
