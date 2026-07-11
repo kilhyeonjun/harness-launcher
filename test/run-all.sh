@@ -15,7 +15,9 @@ for test_file in "$ROOT"/test/test-*.sh; do
   # This integration test verifies the macOS /usr/bin/lockf kernel-lock contract.
   # Hosted macOS images without that system binary cannot exercise it safely;
   # production preparation remains fail-closed when cache synchronization needs it.
-  if [[ "$test_name" == "test-codex-home-prepare.sh" && "$has_lockf" -eq 0 ]]; then
+  if [[ "$has_lockf" -eq 0 ]] && [[ "$test_name" == "test-codex-home-prepare.sh" \
+    || "$test_name" == "test-codex-home-lock.sh" \
+    || "$test_name" == "test-codex-config-preservation.sh" ]]; then
     printf '==> %s (SKIP: /usr/bin/lockf unavailable)\n' "$test_name"
     skipped=$((skipped + 1))
     continue
