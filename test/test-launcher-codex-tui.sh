@@ -21,7 +21,16 @@ trap cleanup EXIT
 TEST_TEMP="$(mktemp -d)"
 TEST_HARNESS="$TEST_TEMP/fake-harness"
 TEST_BIN="$TEST_TEMP/bin"
-mkdir -p "$TEST_HARNESS/config" "$TEST_BIN"
+TEST_LAUNCHER_BIN="$TEST_TEMP/launcher-bin"
+mkdir -p "$TEST_HARNESS/config" "$TEST_BIN" "$TEST_LAUNCHER_BIN"
+cp "$LAUNCHER_DIR/bin/launcher.sh" "$TEST_LAUNCHER_BIN/launcher.sh"
+cat > "$TEST_LAUNCHER_BIN/codex-home-prepare.sh" <<'EOF'
+#!/usr/bin/env bash
+set -e
+mkdir -p "$1/.harness/codex"
+printf '# prepared by test stub\n' > "$1/.harness/codex/AGENTS.md"
+EOF
+chmod +x "$TEST_LAUNCHER_BIN/launcher.sh" "$TEST_LAUNCHER_BIN/codex-home-prepare.sh"
 
 cat > "$TEST_HARNESS/config/launcher.env" <<'EOF'
 HARNESS_NAME="test harness"
@@ -72,7 +81,7 @@ run_tui() {
   HARNESS_CODEX_BIN="$TEST_BIN/codex" \
   HARNESS_DIR="$TEST_HARNESS" \
   HARNESS_NAME="test harness" \
-  bash "$LAUNCHER_DIR/bin/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
+  bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
 }
 
 # Case 1: runtime=Codex, session=New, mode=Base, safety=Default
@@ -180,7 +189,7 @@ PATH="$NO_CODEX_BIN:/usr/bin:/bin" \
 HARNESS_CODEX_BIN="$TEST_TEMP/missing-codex" \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
-bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'1\n2\n2\n' >/dev/null 2>&1 || true
+bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< $'1\n2\n2\n' >/dev/null 2>&1 || true
 grep -q "^EXEC:claude" "$STUB4" || {
   echo "FAIL: case4 — runtime auto-skip didn't reach Claude exec"; cat "$STUB4"; exit 1;
 }
