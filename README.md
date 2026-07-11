@@ -30,7 +30,7 @@ It also provides consistent `fast`, `base`, `plan`, and `rich` presets, optional
 
 - macOS
 - Zsh
-- Python 3
+- Python 3.11 or newer (`tomllib` is required by the Codex surface validator)
 - At least one supported runtime:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
   - [OpenAI Codex CLI](https://github.com/openai/codex)

@@ -20,6 +20,7 @@ import shutil
 import sys
 import tempfile
 import time
+import tomllib
 from typing import Iterable
 
 
@@ -107,6 +108,110 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+class FingerprintHashCache:
+    def __init__(self, path: Path | None):
+        self.path = path
+        self.loaded: dict[str, dict] = {}
+        self.used: dict[str, dict] = {}
+        self.loaded_watch: dict[str, list | None] = {}
+        self.watched: dict[str, list | None] = {}
+        self.loaded_fingerprint: dict | None = None
+        self.fingerprint: dict | None = None
+        if path and path.is_file():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if value.get("schema_version") in {1, 2} and isinstance(value.get("files"), dict):
+                    self.loaded = value["files"]
+                    if isinstance(value.get("watch"), dict):
+                        self.loaded_watch = value["watch"]
+                    if isinstance(value.get("fingerprint"), dict):
+                        self.loaded_fingerprint = value["fingerprint"]
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                self.loaded = {}
+
+    @staticmethod
+    def identity(path: Path) -> list:
+        stat = path.stat()
+        return [
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_size,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            os.path.realpath(path),
+        ]
+
+    def watch(self, path: Path) -> list | None:
+        key = os.path.abspath(path)
+        try:
+            identity = self.identity(path)
+        except FileNotFoundError:
+            identity = None
+        real_key = os.path.realpath(path)
+        self.watched[real_key] = identity
+        # Watching the root symlink itself catches retargeting. Descendants
+        # are keyed only by their resolved source path, avoiding duplicate
+        # stat calls for every file below a symlinked store.
+        if real_key != key and path.is_symlink():
+            self.watched[key] = identity
+        return identity
+
+    def hash(self, path: Path) -> str:
+        identity = self.watch(path)
+        if identity is None:
+            raise FileNotFoundError(path)
+        key = os.path.realpath(path)
+        cached = self.loaded.get(key)
+        if cached and cached.get("identity") == identity and isinstance(cached.get("sha256"), str):
+            entry = cached
+        else:
+            entry = {"identity": identity, "sha256": sha256(path)}
+        self.used[key] = entry
+        return entry["sha256"]
+
+    def save(self) -> None:
+        if not self.path:
+            return
+        if (
+            self.used == self.loaded
+            and self.watched == self.loaded_watch
+            and self.fingerprint == self.loaded_fingerprint
+            and self.path.is_file()
+        ):
+            return
+        atomic_write(
+            self.path,
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "files": self.used,
+                    "watch": self.watched,
+                    "fingerprint": self.fingerprint,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+        )
+
+    def set_fingerprint(self, payload: dict) -> None:
+        self.fingerprint = payload
+
+
+ACTIVE_FINGERPRINT_CACHE: FingerprintHashCache | None = None
+
+
+def fingerprint_sha256(path: Path) -> str:
+    if ACTIVE_FINGERPRINT_CACHE is None:
+        return sha256(path)
+    return ACTIVE_FINGERPRINT_CACHE.hash(path)
+
+
+def fingerprint_watch(path: Path) -> None:
+    if ACTIVE_FINGERPRINT_CACHE is not None:
+        ACTIVE_FINGERPRINT_CACHE.watch(path)
 
 
 def scan_skill_root(
@@ -248,6 +353,26 @@ def validate_manifest(manifest: dict) -> None:
             overlap = set(section.get("implicit", [])) & set(section.get("explicit_only", []))
             if overlap:
                 fail(f"skills.{section_name} classifies entries twice: {sorted(overlap)}")
+    commands = skills.get("commands") or {
+        "root": ".claude/commands",
+        "explicit_only": [],
+        "unlisted": "disabled",
+    }
+    if not isinstance(commands, dict) or commands.get("unlisted") != "disabled":
+        fail("skills.commands.unlisted must be 'disabled'")
+    if not isinstance(commands.get("root"), str) or not isinstance(
+        commands.get("explicit_only"), list
+    ):
+        fail("skills.commands needs a root and explicit_only array")
+    command_names = commands["explicit_only"]
+    if any(
+        not isinstance(name, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)
+        for name in command_names
+    ):
+        fail("skills.commands.explicit_only entries must be portable command names")
+    if len(command_names) != len(set(command_names)):
+        fail("skills.commands.explicit_only contains duplicate names")
     plugins = skills.get("claude_plugins")
     if not isinstance(plugins, dict) or plugins.get("unlisted_packages") != "disabled":
         fail("skills.claude_plugins.unlisted_packages must be 'disabled'")
@@ -270,6 +395,12 @@ def validate_manifest(manifest: dict) -> None:
         fail("skills.codex_only.unlisted must be 'disabled'")
     if not isinstance(codex_only.get("profiles"), dict):
         fail("skills.codex_only.profiles must be an object")
+    namespace = codex_only.get("namespace")
+    if namespace is not None and (
+        not isinstance(namespace, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", namespace)
+    ):
+        fail("skills.codex_only.namespace must be a portable name when set")
 
     mcp = manifest.get("mcp")
     if not isinstance(mcp, dict) or mcp.get("mode") != "exact":
@@ -358,7 +489,15 @@ def collect_candidates(manifest: dict, *, home: Path, repo_root: Path, codex_hom
                     add(f"claude-plugin:{package_id}", scan_plugin_root(root, package_id))
 
     codex_only_root = expand_path(skills["codex_only"]["root"], home=home, repo_root=repo_root, codex_home=codex_home)
-    add("codex-only", scan_skill_root(codex_only_root, "codex-only", "codex-only"))
+    add(
+        "codex-only",
+        scan_skill_root(
+            codex_only_root,
+            "codex-only",
+            "codex-only",
+            namespace=skills["codex_only"].get("namespace"),
+        ),
+    )
     native_superpowers = home / ".codex" / "superpowers" / "skills"
     add(
         "native-codex-superpowers",
@@ -395,7 +534,16 @@ def collect_candidates(manifest: dict, *, home: Path, repo_root: Path, codex_hom
     return by_source, all_candidates
 
 
-def choose_skills(manifest: dict, *, skill_profile: str, by_source: dict[str, list[Candidate]], all_candidates: list[Candidate]) -> list[Selected]:
+def choose_skills(
+    manifest: dict,
+    *,
+    skill_profile: str,
+    by_source: dict[str, list[Candidate]],
+    all_candidates: list[Candidate],
+    home: Path,
+    repo_root: Path,
+    codex_home: Path,
+) -> list[Selected]:
     skills = manifest["skills"]
     selected: list[Selected] = []
 
@@ -420,6 +568,41 @@ def choose_skills(manifest: dict, *, skill_profile: str, by_source: dict[str, li
         fail(f"unknown Codex skill profile {skill_profile!r}; expected one of {sorted(profiles)}")
     for requested in profiles[skill_profile]:
         selected.append(Selected(find_requested(by_source["codex-only"], requested, f"Codex-only profile {skill_profile}"), "implicit"))
+
+    # Commands are generated explicit-only wrappers. A canonical project skill
+    # with the same effective name always wins, so command conversion can never
+    # write through or shadow its source symlink.
+    selected_names = {item.candidate.name for item in selected}
+    commands = skills.get("commands") or {
+        "root": ".claude/commands",
+        "explicit_only": [],
+    }
+    command_root = expand_path(
+        commands.get("root", ".claude/commands"),
+        home=home,
+        repo_root=repo_root,
+        codex_home=codex_home,
+    )
+    for name in commands.get("explicit_only", []):
+        if name in selected_names:
+            continue
+        path = command_root / f"{name}.md"
+        if not path.is_file():
+            fail(f"configured explicit command {name!r} was not found: {path}")
+        selected.append(
+            Selected(
+                Candidate(
+                    name=name,
+                    path=path.resolve(),
+                    source="repo-command",
+                    selector="repo-command",
+                    digest=sha256(path),
+                    directory_key=name,
+                ),
+                "explicit_only",
+            )
+        )
+        selected_names.add(name)
 
     grouped: dict[str, list[Selected]] = {}
     for item in selected:
@@ -599,19 +782,68 @@ def make_skill_wrapper(
         (destination / "agents").symlink_to(source_agents, target_is_directory=True)
 
 
+def make_command_wrapper(destination: Path, command_path: Path, name: str) -> None:
+    text = command_path.read_text(encoding="utf-8")
+    claude_coupled = re.compile(
+        r"\$CLAUDE_PROJECT_DIR|~/\.claude/|/tmp/claude-|\.jsonl|Skill\(skill="
+    )
+    if claude_coupled.search(text):
+        fail(f"manifest command {name!r} is Claude-coupled and cannot be exposed to Codex")
+    meta = {}
+    body = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end >= 0:
+            for line in text[3:end].lstrip("\n").splitlines():
+                if ":" in line:
+                    key, _, value = line.partition(":")
+                    meta[key.strip()] = value.strip().strip('"').strip("'")
+            body = text[end + 4 :].lstrip("\n")
+    description = meta.get("description", "").strip()
+    if not description:
+        for line in body.splitlines():
+            if line.strip() and not line.strip().startswith("#"):
+                description = line.strip()
+                break
+    if not description:
+        description = f"Codex equivalent of /{name} command (explicit invocation only)."
+    body = body.replace("<command_contract>", "<execution_policy>").replace(
+        "</command_contract>", "</execution_policy>"
+    )
+    destination.mkdir(parents=True)
+    (destination / ".harness-surface-wrapper").write_text("schema=1\n", encoding="utf-8")
+    (destination / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        f"description: {json.dumps(description, ensure_ascii=False)}\n"
+        "---\n\n"
+        f"> Generated from {command_path}.\n"
+        "> Source-of-truth: edit the command, not this generated wrapper.\n\n"
+        f"{body.rstrip()}\n",
+        encoding="utf-8",
+    )
+    agents = destination / "agents"
+    agents.mkdir()
+    (agents / "openai.yaml").write_text(
+        "# Generated by codex-surface.py — explicit invocation remains available.\n"
+        "policy:\n"
+        "  allow_implicit_invocation: false\n",
+        encoding="utf-8",
+    )
+
+
 def materialize(selected: list[Selected], *, codex_home: Path, all_candidates: list[Candidate]) -> tuple[list[dict], list[Path]]:
     skills_dir = codex_home / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     marker = skills_dir / ".harness-managed"
     previous = []
     if marker.is_file():
-        previous = [line.strip() for line in marker.read_text(encoding="utf-8").splitlines() if line.strip()]
-    for name in previous:
-        remove_managed_entry(skills_dir / name)
-
-    catalog_entries = []
-    managed_names = []
-    selected_by_name = {item.candidate.name: item for item in selected}
+        previous = [
+            name
+            for line in marker.read_text(encoding="utf-8").splitlines()
+            if (name := line.strip())
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)
+        ]
     destinations = [
         managed_destination(skills_dir, item.candidate)
         for item in selected
@@ -622,6 +854,30 @@ def materialize(selected: list[Selected], *, codex_home: Path, all_candidates: l
             {path.name for path in destinations if destinations.count(path) > 1}
         )
         fail(f"selected skills collide on generated directory names: {collisions}")
+    planned_names = {path.name for path in destinations}
+
+    # Marker membership is only a cleanup hint, never proof of ownership. A
+    # poisoned marker must not make a real user/unowned directory deletable or
+    # exempt it from quarantine.
+    for name in previous:
+        remove_managed_entry(skills_dir / name)
+
+    quarantine_root = codex_home / ".surface-quarantine" / "skills"
+    for entry in sorted(skills_dir.iterdir(), key=lambda path: path.name):
+        if entry.name.startswith(".") or entry.name in planned_names:
+            continue
+        if not (entry / "SKILL.md").is_file():
+            continue
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        destination = quarantine_root / entry.name
+        suffix = 1
+        while destination.exists() or destination.is_symlink():
+            destination = quarantine_root / f"{entry.name}.{suffix}"
+            suffix += 1
+        shutil.move(str(entry), destination)
+    catalog_entries = []
+    managed_names = []
+    selected_by_name = {item.candidate.name: item for item in selected}
 
     for item in selected:
         candidate = item.candidate
@@ -643,7 +899,10 @@ def materialize(selected: list[Selected], *, codex_home: Path, all_candidates: l
         if destination.exists() or destination.is_symlink():
             fail(f"refusing to replace unowned Codex skill entry: {destination}")
         needs_wrapper = item.invocation == "explicit_only" or candidate.source == "claude-plugin"
-        if needs_wrapper:
+        if candidate.source == "repo-command":
+            make_command_wrapper(destination, candidate.path, candidate.name)
+            exposed = destination / "SKILL.md"
+        elif needs_wrapper:
             make_skill_wrapper(
                 destination,
                 candidate.path,
@@ -666,6 +925,12 @@ def materialize(selected: list[Selected], *, codex_home: Path, all_candidates: l
             }
         )
 
+    managed_set = set(managed_names)
+    for entry in sorted(skills_dir.iterdir(), key=lambda path: path.name):
+        if entry.name.startswith(".") or entry.name in managed_set:
+            continue
+        if (entry / "SKILL.md").is_file():
+            fail(f"unowned Codex skill survived surface materialization: {entry}")
     atomic_write(marker, "".join(f"{name}\n" for name in sorted(managed_names)))
 
     disabled_paths = []
@@ -746,7 +1011,8 @@ def render_surface_config(disabled_paths: list[Path]) -> str:
 
 def add_tree_signature(digest, root: Path, label: str) -> None:
     """Hash source identity without depending on generated runtime mtimes."""
-    digest.update(f"TREE\0{label}\0".encode())
+    digest.update(f"TREE\0{label}\0{os.path.abspath(root)}\0".encode())
+    fingerprint_watch(root)
     if not root.exists() and not root.is_symlink():
         digest.update(b"MISSING\0")
         return
@@ -754,6 +1020,7 @@ def add_tree_signature(digest, root: Path, label: str) -> None:
     if root.is_dir():
         paths.extend(sorted(root.rglob("*")))
     for path in paths:
+        fingerprint_watch(path)
         try:
             relative = "." if path == root else str(path.relative_to(root))
             stat = path.lstat()
@@ -768,12 +1035,225 @@ def add_tree_signature(digest, root: Path, label: str) -> None:
             # Large bundled binaries use size+mtime to keep warm launch cheap;
             # manifests, skills, configs, and scripts are content hashed.
             if stat.st_size <= 1024 * 1024:
-                digest.update(bytes.fromhex(sha256(path)))
+                digest.update(bytes.fromhex(fingerprint_sha256(path)))
             else:
                 digest.update(f"LARGE\0{stat.st_mtime_ns}\0".encode())
 
 
+def add_hook_signature(digest, root: Path, label: str) -> None:
+    """Track hook entrypoint topology/content without scanning hook tests."""
+    digest.update(f"HOOKS\0{label}\0{os.path.abspath(root)}\0".encode())
+    fingerprint_watch(root)
+    if not root.is_dir():
+        digest.update(b"MISSING\0")
+        return
+    scripts = sorted(root.glob("*.sh"))
+    digest.update(f"COUNT\0{len(scripts)}\0".encode())
+    for path in scripts:
+        fingerprint_watch(path)
+        digest.update(f"{path.name}\0{sha256(path)}\0".encode())
+
+
+def skill_metadata_paths(root: Path) -> list[Path]:
+    """Return only metadata copied/used by surface generation.
+
+    Skill scripts, references, tests, docs, and assets stay linked to their
+    source and do not require regeneration when their contents change.
+    """
+    paths: list[Path] = []
+    seen = set()
+
+    def add_file(path: Path) -> None:
+        fingerprint_watch(path)
+        key = os.path.abspath(path)
+        if path.is_file() and key not in seen:
+            seen.add(key)
+            paths.append(path)
+
+    def add_skill_dir(directory: Path) -> bool:
+        fingerprint_watch(directory)
+        skill = directory / "SKILL.md"
+        if not skill.is_file():
+            return False
+        add_file(skill)
+        add_file(directory / "agents" / "openai.yaml")
+        return True
+
+    def add_skills_container(container: Path) -> None:
+        fingerprint_watch(container)
+        if not container.is_dir():
+            return
+        try:
+            entries = sorted(container.iterdir(), key=lambda path: path.name)
+        except OSError:
+            return
+        for entry in entries:
+            fingerprint_watch(entry)
+            if entry.is_dir():
+                add_skill_dir(entry)
+
+    fingerprint_watch(root)
+    add_skill_dir(root)
+    add_skills_container(root)
+    add_skills_container(root / "skills")
+    try:
+        children = sorted(root.iterdir(), key=lambda path: path.name) if root.is_dir() else []
+    except OSError:
+        children = []
+    for child in children:
+        fingerprint_watch(child)
+        if not child.is_dir():
+            continue
+        add_skills_container(child / "skills")
+    for manifest_name in (
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+        "plugin.json",
+    ):
+        add_file(root / manifest_name)
+    return sorted(paths, key=lambda path: os.path.abspath(path))
+
+
+def add_skill_signature(digest, root: Path, label: str) -> None:
+    digest.update(
+        f"SKILLS\0{label}\0{os.path.abspath(root)}\0{os.path.realpath(root)}\0".encode()
+    )
+    fingerprint_watch(root)
+    if not root.exists() and not root.is_symlink():
+        digest.update(b"MISSING\0")
+        return
+    paths = skill_metadata_paths(root)
+    digest.update(f"COUNT\0{len(paths)}\0".encode())
+    for path in paths:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            digest.update(f"VANISHED\0{path}\0".encode())
+            continue
+        digest.update(
+            f"{os.path.abspath(path)}\0{os.path.realpath(path)}\0{stat.st_size}\0".encode()
+        )
+        digest.update(bytes.fromhex(fingerprint_sha256(path)))
+
+
+def add_skill_topology_signature(digest, root: Path, label: str) -> None:
+    """Track skill route additions/removals without hashing disabled content."""
+    digest.update(
+        f"SKILL_TOPOLOGY\0{label}\0{os.path.abspath(root)}\0{os.path.realpath(root)}\0".encode()
+    )
+    fingerprint_watch(root)
+    if not root.exists() and not root.is_symlink():
+        digest.update(b"MISSING\0")
+        return
+
+    routes: list[tuple[str, bool]] = []
+
+    def add_skill_dir(directory: Path) -> None:
+        fingerprint_watch(directory)
+        routes.append((os.path.abspath(directory), (directory / "SKILL.md").is_file()))
+
+    def add_container(container: Path) -> None:
+        fingerprint_watch(container)
+        if not container.is_dir():
+            return
+        try:
+            entries = sorted(container.iterdir(), key=lambda path: path.name)
+        except OSError:
+            return
+        for entry in entries:
+            if entry.is_dir():
+                add_skill_dir(entry)
+
+    add_skill_dir(root)
+    add_container(root)
+    add_container(root / "skills")
+    try:
+        children = sorted(root.iterdir(), key=lambda path: path.name) if root.is_dir() else []
+    except OSError:
+        children = []
+    for child in children:
+        fingerprint_watch(child)
+        if child.is_dir():
+            add_container(child / "skills")
+    for path, has_skill in sorted(set(routes)):
+        digest.update(f"{path}\0{int(has_skill)}\0".encode())
+
+
+def add_bundled_marketplace_signature(digest, root: Path, label: str) -> None:
+    digest.update(f"BUNDLED\0{label}\0{os.path.abspath(root)}\0".encode())
+    fingerprint_watch(root)
+    if not root.is_dir():
+        digest.update(b"MISSING\0")
+        return
+    relevant = []
+    for plugin in ("computer-use", "chrome"):
+        plugin_root = root / "plugins" / plugin
+        fingerprint_watch(plugin_root)
+        relevant.extend(
+            [
+                plugin_root / ".codex-plugin" / "plugin.json",
+                plugin_root / "scripts" / "browser-client.mjs",
+                plugin_root / "scripts" / "extension-id.json",
+            ]
+        )
+    for path in relevant:
+        if path.is_file():
+            stat = path.stat()
+            digest.update(f"{path.relative_to(root)}\0{stat.st_size}\0".encode())
+            digest.update(bytes.fromhex(fingerprint_sha256(path)))
+
+
+def add_plugin_cache_signature(
+    digest, root: Path, label: str, approved_packages: set[str]
+) -> None:
+    """Hash all package topology and only approved-package skill metadata."""
+    digest.update(
+        f"PLUGIN_CACHE\0{label}\0{os.path.abspath(root)}\0{os.path.realpath(root)}\0".encode()
+    )
+    fingerprint_watch(root)
+    if not root.is_dir():
+        digest.update(b"MISSING\0")
+        return
+    packages = []
+    try:
+        marketplaces = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError:
+        marketplaces = []
+    for marketplace in marketplaces:
+        fingerprint_watch(marketplace)
+        if not marketplace.is_dir():
+            continue
+        try:
+            plugins = sorted(marketplace.iterdir(), key=lambda path: path.name)
+        except OSError:
+            continue
+        for plugin in plugins:
+            fingerprint_watch(plugin)
+            if not plugin.is_dir():
+                continue
+            package_id = f"{plugin.name}@{marketplace.name}"
+            latest = newest_plugin_root(root, package_id)
+            if latest is not None:
+                fingerprint_watch(latest)
+            packages.append((package_id, latest))
+    digest.update(f"COUNT\0{len(packages)}\0".encode())
+    for package_id, latest in packages:
+        digest.update(
+            f"PACKAGE\0{package_id}\0{os.path.abspath(latest) if latest else 'MISSING'}\0".encode()
+        )
+        if latest is None:
+            continue
+        add_skill_topology_signature(digest, latest, f"{label}:{package_id}")
+        if package_id in approved_packages:
+            add_skill_signature(digest, latest, f"{label}:{package_id}:approved")
+
+
 def fingerprint_payload(args: argparse.Namespace) -> dict:
+    global ACTIVE_FINGERPRINT_CACHE
+    cache_arg = getattr(args, "fingerprint_cache", None)
+    ACTIVE_FINGERPRINT_CACHE = FingerprintHashCache(
+        Path(os.path.abspath(cache_arg)) if cache_arg else None
+    )
     manifest_path = Path(os.path.abspath(args.manifest))
     repo_root = Path(os.path.abspath(args.repo_root))
     codex_home = Path(os.path.abspath(args.codex_home))
@@ -787,16 +1267,17 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
     if mcp_profile not in manifest["mcp"]["profiles"]:
         fail(f"unknown MCP profile {mcp_profile!r}")
 
-    roots: list[tuple[str, Path]] = [
-        ("manifest", manifest_path),
-        ("claude-source", repo_root / ".claude" / "source"),
-        ("claude-rules", repo_root / ".claude" / "rules"),
-        ("claude-settings", repo_root / ".claude" / "settings.json"),
-        ("claude-commands", repo_root / ".claude" / "commands"),
-        ("claude-agents", repo_root / ".claude" / "agents"),
-        ("repo-agents", repo_root / ".agents" / "skills"),
-        ("claude-md", repo_root / "CLAUDE.md"),
-        ("compiler", repo_root / "core" / "scripts" / "harness_compile.py"),
+    roots: list[tuple[str, Path, str]] = [
+        ("manifest", manifest_path, "tree"),
+        ("claude-source", repo_root / ".claude" / "source", "tree"),
+        ("claude-rules", repo_root / ".claude" / "rules", "tree"),
+        ("claude-settings", repo_root / ".claude" / "settings.json", "tree"),
+        ("claude-commands", repo_root / ".claude" / "commands", "tree"),
+        ("claude-agents", repo_root / ".claude" / "agents", "tree"),
+        ("core-hooks", repo_root / "core" / "hooks", "hooks"),
+        ("repo-agents", repo_root / ".agents" / "skills", "skills-topology"),
+        ("claude-md", repo_root / "CLAUDE.md", "tree"),
+        ("compiler", repo_root / "core" / "scripts" / "harness_compile.py", "tree"),
     ]
     skills = manifest["skills"]
     roots.extend(
@@ -804,18 +1285,25 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
             (
                 "project-skills",
                 expand_path(skills["project"]["root"], home=home, repo_root=repo_root, codex_home=codex_home),
+                "skills",
             ),
             (
                 "global-agent-skills",
                 expand_path(skills["global_agents"]["root"], home=home, repo_root=repo_root, codex_home=codex_home),
+                "skills",
             ),
-            ("native-superpowers", home / ".codex" / "superpowers" / "skills"),
-            ("codex-product-skills", home / ".codex" / "skills" / ".system"),
-            # Generated curated plugin *contents* may add a new duplicate route;
-            # hash content/paths but intentionally not directory mtimes.
+            (
+                "native-superpowers",
+                home / ".codex" / "superpowers" / "skills",
+                "skills-topology",
+            ),
+            ("codex-product-skills", home / ".codex" / "skills" / ".system", "skills"),
+            # Generated curated routes are unselected and exact-path disabled;
+            # only additions/removals require regeneration.
             (
                 "generated-curated-superpowers",
                 codex_home / "plugins" / "cache" / "openai-curated-remote" / "superpowers",
+                "skills-topology",
             ),
         ]
     )
@@ -824,46 +1312,71 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
             (
                 f"disabled-root:{index}",
                 expand_path(raw, home=home, repo_root=repo_root, codex_home=codex_home),
+                "skills-topology",
             )
         )
-    if manifest["skills"]["codex_only"]["profiles"][skill_profile]:
-        roots.append(
-            (
-                "codex-only-profile",
-                expand_path(skills["codex_only"]["root"], home=home, repo_root=repo_root, codex_home=codex_home),
-            )
+    roots.append(
+        (
+            "codex-only",
+            expand_path(
+                skills["codex_only"]["root"],
+                home=home,
+                repo_root=repo_root,
+                codex_home=codex_home,
+            ),
+            "skills"
+            if manifest["skills"]["codex_only"]["profiles"][skill_profile]
+            else "skills-topology",
         )
+    )
     plugin_cache = expand_path(skills["claude_plugins"]["root"], home=home, repo_root=repo_root, codex_home=codex_home)
-    for package in skills["claude_plugins"]["packages"]:
-        plugin_root = newest_plugin_root(plugin_cache, package["id"])
-        roots.append((f"claude-plugin:{package['id']}", plugin_root or plugin_cache / "__missing__" / package["id"]))
+    roots.append(("claude-plugin-cache", plugin_cache, "plugin-cache"))
     mcp_sources = list(manifest["mcp"].get("definition_sources") or [])
     for supported in (".mcp.json", ".mcp.local.json", "mcp.local.json"):
-        if (repo_root / supported).is_file() and supported not in mcp_sources:
+        if supported not in mcp_sources:
             mcp_sources.append(supported)
     for raw in mcp_sources:
         if raw != "codex-product":
-            roots.append((f"mcp:{raw}", expand_path(raw, home=home, repo_root=repo_root, codex_home=codex_home)))
+            roots.append((f"mcp:{raw}", expand_path(raw, home=home, repo_root=repo_root, codex_home=codex_home), "tree"))
     for index, raw in enumerate(args.launcher_file or []):
-        roots.append((f"launcher:{index}", Path(os.path.abspath(raw))))
+        roots.append((f"launcher:{index}", Path(os.path.abspath(raw)), "tree"))
     if args.bundled_marketplace:
-        roots.append(("bundled-marketplace", Path(os.path.abspath(args.bundled_marketplace))))
+        roots.append(("bundled-marketplace", Path(os.path.abspath(args.bundled_marketplace)), "bundled"))
 
     digest = hashlib.sha256()
-    digest.update(f"surface-fingerprint-v1\0{skill_profile}\0{mcp_profile}\0".encode())
+    digest.update(f"surface-fingerprint-v2\0{skill_profile}\0{mcp_profile}\0".encode())
     seen_roots = set()
-    for label, root in roots:
+    for label, root, mode in roots:
         root_key = os.path.abspath(root)
         if root_key in seen_roots:
             continue
         seen_roots.add(root_key)
-        add_tree_signature(digest, root, label)
-    return {
+        if mode == "skills":
+            add_skill_signature(digest, root, label)
+        elif mode == "skills-topology":
+            add_skill_topology_signature(digest, root, label)
+        elif mode == "plugin-cache":
+            add_plugin_cache_signature(
+                digest,
+                root,
+                label,
+                {package["id"] for package in skills["claude_plugins"]["packages"]},
+            )
+        elif mode == "bundled":
+            add_bundled_marketplace_signature(digest, root, label)
+        elif mode == "hooks":
+            add_hook_signature(digest, root, label)
+        else:
+            add_tree_signature(digest, root, label)
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "digest": digest.hexdigest(),
         "skill_profile": skill_profile,
         "mcp_profile": mcp_profile,
     }
+    ACTIVE_FINGERPRINT_CACHE.set_fingerprint(payload)
+    ACTIVE_FINGERPRINT_CACHE.save()
+    return payload
 
 
 def fingerprint(args: argparse.Namespace) -> None:
@@ -880,115 +1393,112 @@ def load_inline_json(raw: str, label: str) -> dict:
     return value
 
 
-def runtime_config_matches(codex_home: Path, catalog: dict) -> bool:
-    try:
-        text = (codex_home / "config.toml").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return False
+SURFACE_FIXED_OUTPUTS = (
+    "AGENTS.md",
+    "hooks.json",
+    "skill-catalog.json",
+    "surface.config.toml",
+    "fast.config.toml",
+    "base.config.toml",
+    "plan.config.toml",
+    "rich.config.toml",
+    "skills/.harness-managed",
+)
 
-    configured_paths: dict[str, list[bool]] = {}
-    for match in re.finditer(r"(?ms)^\[\[skills\.config\]\]\s*\n(.*?)(?=^\[|\Z)", text):
-        block = match.group(1)
-        path_match = re.search(r'^path\s*=\s*("(?:[^"\\]|\\.)*")\s*$', block, re.MULTILINE)
-        enabled_match = re.search(r"^enabled\s*=\s*(true|false)\s*$", block, re.MULTILINE)
-        if not path_match or not enabled_match:
+
+def managed_config_projection(codex_home: Path) -> dict:
+    config_path = codex_home / "config.toml"
+    try:
+        with config_path.open("rb") as stream:
+            config = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        fail(f"cannot parse generated Codex config for success stamp: {error}")
+    config.pop("hooks", None)
+    config.pop("skills", None)
+    marketplaces = config.get("marketplaces")
+    if isinstance(marketplaces, dict):
+        config["marketplaces"] = {
+            key: value for key, value in marketplaces.items()
+            if key == "openai-bundled"
+        }
+    plugins = config.get("plugins")
+    if isinstance(plugins, dict):
+        config["plugins"] = {
+            key: value for key, value in plugins.items()
+            if isinstance(key, str) and key.endswith("@openai-bundled")
+        }
+    return config
+
+
+def managed_config_projection_sha256(codex_home: Path) -> str:
+    try:
+        payload = json.dumps(
+            managed_config_projection(codex_home),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    except TypeError as error:
+        fail(f"generated Codex config contains unsupported TOML values: {error}")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def surface_output_signatures(codex_home: Path) -> dict[str, str]:
+    """Hash launcher-owned outputs without folding mutable config.toml state in."""
+    signatures: dict[str, str] = {}
+
+    def add(relative: str, *, required: bool = True) -> None:
+        path = codex_home / relative
+        if path.is_symlink():
+            signatures[relative] = f"symlink:{os.readlink(path)}"
+        elif path.is_file():
+            signatures[relative] = f"sha256:{sha256(path)}"
+        elif required:
+            fail(f"launcher-owned runtime output is missing: {path}")
+
+    for relative in SURFACE_FIXED_OUTPUTS:
+        add(relative)
+
+    skill_marker = codex_home / "skills" / ".harness-managed"
+    for raw_name in skill_marker.read_text(encoding="utf-8").splitlines():
+        name = raw_name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+            fail(f"invalid managed skill marker entry: {name!r}")
+        root = codex_home / "skills" / name
+        relative_root = f"skills/{name}"
+        if root.is_symlink():
+            add(relative_root)
             continue
-        try:
-            path = json.loads(path_match.group(1))
-        except json.JSONDecodeError:
-            return False
-        configured_paths.setdefault(path, []).append(enabled_match.group(1) == "true")
-    for path in catalog.get("disabled_skill_paths") or []:
-        if configured_paths.get(path) != [False]:
-            return False
+        if not root.is_dir():
+            fail(f"managed skill output is missing: {root}")
+        for current, directories, files in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            for directory in list(directories):
+                candidate = current_path / directory
+                if candidate.is_symlink():
+                    add(str(candidate.relative_to(codex_home)))
+                    directories.remove(directory)
+            for filename in files:
+                add(str((current_path / filename).relative_to(codex_home)))
 
-    mcp = catalog.get("mcp") or {}
-    enabled_servers = set(mcp.get("enabled") or [])
-    for name in (mcp.get("definitions") or {}):
-        header = re.escape(f"[mcp_servers.{name}]")
-        match = re.search(rf"(?ms)^{header}\s*\n(.*?)(?=^\[|\Z)", text)
-        if not match:
-            return False
-        enabled_match = re.search(r"^enabled\s*=\s*(true|false)\s*$", match.group(1), re.MULTILINE)
-        if not enabled_match or (enabled_match.group(1) == "true") != (name in enabled_servers):
-            return False
-
-    for plugin, expected in (
-        ("computer-use", "computer-use" in enabled_servers),
-        ("chrome", False),
-    ):
-        header = re.escape(f'[plugins."{plugin}@openai-bundled"]')
-        match = re.search(rf"(?ms)^{header}\s*\n(.*?)(?=^\[|\Z)", text)
-        if not match:
-            return False
-        enabled_match = re.search(r"^enabled\s*=\s*(true|false)\s*$", match.group(1), re.MULTILINE)
-        if not enabled_match or (enabled_match.group(1) == "true") != expected:
-            return False
-    return True
-
-
-def is_warm(stamp_path: Path, codex_home: Path, expected: dict) -> bool:
-    if not stamp_path.is_file():
-        return False
-    try:
-        stamp = load_json(stamp_path)
-    except SurfaceError:
-        return False
-    if any(stamp.get(key) != expected.get(key) for key in ("schema_version", "digest", "skill_profile", "mcp_profile")):
-        return False
-    required = [
-        codex_home / "config.toml",
-        codex_home / "hooks.json",
-        codex_home / "skill-catalog.json",
-        codex_home / "surface.config.toml",
-        codex_home / "skills" / ".harness-managed",
-        codex_home / "fast.config.toml",
-        codex_home / "base.config.toml",
-        codex_home / "plan.config.toml",
-        codex_home / "rich.config.toml",
-    ]
-    if not all(path.is_file() for path in required):
-        return False
-    try:
-        catalog = load_json(codex_home / "skill-catalog.json")
-    except SurfaceError:
-        return False
-    if catalog.get("skill_profile") != expected.get("skill_profile"):
-        return False
-    if (catalog.get("mcp") or {}).get("profile") != expected.get("mcp_profile"):
-        return False
-    if not runtime_config_matches(codex_home, catalog):
-        return False
-    for skill in catalog.get("skills") or []:
-        exposed = Path(skill.get("exposed_path", ""))
-        source = Path(skill.get("source_path", ""))
-        if not exposed.is_file() or not source.is_file():
-            return False
-        try:
-            if sha256(source) != skill.get("sha256"):
-                return False
-        except OSError:
-            return False
-    return True
-
-
-def warm_check(args: argparse.Namespace) -> None:
-    expected = load_inline_json(args.fingerprint_json, "fingerprint")
-    if not is_warm(Path(args.stamp), Path(os.path.abspath(args.codex_home)), expected):
-        raise SystemExit(1)
-
-
-def warm_probe(args: argparse.Namespace) -> None:
-    payload = fingerprint_payload(args)
-    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-    if not is_warm(Path(args.stamp), Path(os.path.abspath(args.codex_home)), payload):
-        raise SystemExit(3)
+    agent_marker = codex_home / "agents" / ".harness-managed"
+    if agent_marker.is_file():
+        add("agents/.harness-managed")
+        for raw_name in agent_marker.read_text(encoding="utf-8").splitlines():
+            name = raw_name.strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.toml", name):
+                fail(f"invalid managed agent marker entry: {name!r}")
+            add(f"agents/{name}")
+    return dict(sorted(signatures.items()))
 
 
 def write_stamp(args: argparse.Namespace) -> None:
     payload = load_inline_json(args.fingerprint_json, "fingerprint")
     if set(payload) != {"schema_version", "digest", "skill_profile", "mcp_profile"}:
         fail("fingerprint payload has unexpected fields")
+    codex_home = Path(args.codex_home)
+    payload["config_projection_sha256"] = managed_config_projection_sha256(codex_home)
+    payload["output_signatures"] = surface_output_signatures(codex_home)
     payload["completed_unix"] = int(time.time())
     atomic_write(Path(args.stamp), json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
@@ -1010,6 +1520,9 @@ def resolve(args: argparse.Namespace) -> None:
         skill_profile=skill_profile,
         by_source=by_source,
         all_candidates=all_candidates,
+        home=home,
+        repo_root=repo_root,
+        codex_home=codex_home,
     )
     catalog_entries, disabled_paths = materialize(
         selected, codex_home=codex_home, all_candidates=all_candidates
@@ -1057,29 +1570,13 @@ def parser() -> argparse.ArgumentParser:
     fingerprint_parser.add_argument("--mcp-profile")
     fingerprint_parser.add_argument("--launcher-file", action="append")
     fingerprint_parser.add_argument("--bundled-marketplace")
+    fingerprint_parser.add_argument("--fingerprint-cache")
     fingerprint_parser.set_defaults(function=fingerprint)
-
-    probe_parser = subcommands.add_parser("warm-probe", help="fingerprint inputs and check the success stamp once")
-    probe_parser.add_argument("--manifest", required=True)
-    probe_parser.add_argument("--repo-root", required=True)
-    probe_parser.add_argument("--codex-home", required=True)
-    probe_parser.add_argument("--home", default=str(Path.home()))
-    probe_parser.add_argument("--skill-profile")
-    probe_parser.add_argument("--mcp-profile")
-    probe_parser.add_argument("--launcher-file", action="append")
-    probe_parser.add_argument("--bundled-marketplace")
-    probe_parser.add_argument("--stamp", required=True)
-    probe_parser.set_defaults(function=warm_probe)
-
-    check_parser = subcommands.add_parser("warm-check", help="verify a successful warm runtime surface")
-    check_parser.add_argument("--stamp", required=True)
-    check_parser.add_argument("--codex-home", required=True)
-    check_parser.add_argument("--fingerprint-json", required=True)
-    check_parser.set_defaults(function=warm_check)
 
     stamp_parser = subcommands.add_parser("write-stamp", help="atomically record a successful preparation")
     stamp_parser.add_argument("--stamp", required=True)
     stamp_parser.add_argument("--fingerprint-json", required=True)
+    stamp_parser.add_argument("--codex-home", required=True)
     stamp_parser.set_defaults(function=write_stamp)
     return result
 

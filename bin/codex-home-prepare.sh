@@ -11,6 +11,43 @@ set -euo pipefail
 HARNESS_DIR="${1:?HARNESS_DIR required (positional arg 1)}"
 [[ -d "$HARNESS_DIR" ]] || { echo "harness dir not found: $HARNESS_DIR" >&2; exit 1; }
 
+select_harness_python3() {
+  local candidate
+  if [[ -n "${HARNESS_PYTHON_BIN:-}" ]]; then
+    candidate="$HARNESS_PYTHON_BIN"
+    if [[ -x "$candidate" ]] && "$candidate" -c \
+      'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+      2>/dev/null; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    echo "ERROR: HARNESS_PYTHON_BIN must point to Python 3.11 or newer" >&2
+    return 1
+  fi
+  # Homebrew is the supported installation path and the Formula pins a modern
+  # Python. Avoid a second interpreter startup on every warm Codex launch.
+  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  candidate="$(command -v python3 2>/dev/null || true)"
+  if [[ -x "$candidate" ]] && "$candidate" -c \
+    'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+    2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+  fi
+  echo "ERROR: harness-launcher requires Python 3.11 or newer (set HARNESS_PYTHON_BIN)" >&2
+  return 1
+}
+
+HARNESS_PYTHON3_BIN="$(select_harness_python3)" || exit 1
+python3() {
+  "$HARNESS_PYTHON3_BIN" "$@"
+}
+
 CODEX_HOME="$HARNESS_DIR/.harness/codex"
 PROJECT_CODEX_DIR="$HARNESS_DIR/.codex"
 
@@ -60,34 +97,28 @@ CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/A
 # the warm path.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SURFACE_RESOLVER="$SCRIPT_DIR/codex-surface.py"
+SURFACE_WARM_PROBE="$SCRIPT_DIR/codex-surface-warm.py"
 SURFACE_MANIFEST="$HARNESS_DIR/config/codex-surface.json"
 SURFACE_STAMP="$CODEX_HOME/.surface-success.json"
+SURFACE_FINGERPRINT_CACHE="$CODEX_HOME/.surface-fingerprint-cache.json"
 SURFACE_ENABLED=0
 SURFACE_FINGERPRINT_JSON=""
 SURFACE_SKILL_PROFILE="${HARNESS_CODEX_SKILL_PROFILE:-default}"
 SURFACE_MCP_PROFILE="${HARNESS_CODEX_MCP_PROFILE:-}"
 
 if [[ -f "$SURFACE_MANIFEST" ]]; then
-  [[ -x "$SURFACE_RESOLVER" ]] || {
-    echo "ERROR: Codex surface manifest requires executable resolver: $SURFACE_RESOLVER" >&2
+  [[ -x "$SURFACE_RESOLVER" && -x "$SURFACE_WARM_PROBE" ]] || {
+    echo "ERROR: Codex surface manifest requires executable resolver and warm probe" >&2
     exit 1
   }
   SURFACE_ENABLED=1
-  fingerprint_args=(
-    warm-probe
-    --manifest "$SURFACE_MANIFEST"
-    --repo-root "$HARNESS_DIR"
-    --codex-home "$CODEX_HOME"
-    --home "$HOME"
-    --skill-profile "$SURFACE_SKILL_PROFILE"
-    --launcher-file "$SURFACE_RESOLVER"
-    --launcher-file "$0"
-    --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
-    --bundled-marketplace "$CODEX_BUNDLED_MARKETPLACE_SOURCE"
-    --stamp "$SURFACE_STAMP"
-  )
-  [[ -z "$SURFACE_MCP_PROFILE" ]] || fingerprint_args+=(--mcp-profile "$SURFACE_MCP_PROFILE")
-  if SURFACE_FINGERPRINT_JSON="$(python3 "$SURFACE_RESOLVER" "${fingerprint_args[@]}")"; then
+  if SURFACE_FINGERPRINT_JSON="$(python3 "$SURFACE_WARM_PROBE" \
+      "$SURFACE_STAMP" \
+      "$SURFACE_FINGERPRINT_CACHE" \
+      "$CODEX_HOME" \
+      "$SURFACE_MANIFEST" \
+      "$SURFACE_SKILL_PROFILE" \
+      "$SURFACE_MCP_PROFILE")"; then
     if [[ -f "$HOME/.codex/auth.json" ]]; then
       ln -sfn "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
     fi
@@ -102,6 +133,23 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
   # compiler error, or resolver failure can therefore never leave a stale warm
   # stamp behind.
   rm -f "$SURFACE_STAMP"
+
+  fingerprint_args=(
+    fingerprint
+    --manifest "$SURFACE_MANIFEST"
+    --repo-root "$HARNESS_DIR"
+    --codex-home "$CODEX_HOME"
+    --home "$HOME"
+    --skill-profile "$SURFACE_SKILL_PROFILE"
+    --launcher-file "$SURFACE_RESOLVER"
+    --launcher-file "$SURFACE_WARM_PROBE"
+    --launcher-file "$0"
+    --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
+    --bundled-marketplace "$CODEX_BUNDLED_MARKETPLACE_SOURCE"
+    --fingerprint-cache "$SURFACE_FINGERPRINT_CACHE"
+  )
+  [[ -z "$SURFACE_MCP_PROFILE" ]] || fingerprint_args+=(--mcp-profile "$SURFACE_MCP_PROFILE")
+  SURFACE_FINGERPRINT_JSON="$(python3 "$SURFACE_RESOLVER" "${fingerprint_args[@]}")"
 fi
 
 warn_claude_global_mcp_drift() {
@@ -235,10 +283,12 @@ EOF
   fi
 }
 
-# Codex has no Claude-style `language: korean` setting. Add the preference only
-# to the generated Codex home so Claude settings and source surfaces stay
-# untouched.
-append_codex_response_language_supplement
+# Canonical harness compilers own their complete AGENTS.md output, including
+# any response-language preference. Legacy/rules-only harnesses have no source
+# field for that preference, so the launcher supplies the compatibility block.
+if [[ "$compiled_agents" -eq 0 ]]; then
+  append_codex_response_language_supplement
+fi
 
 if [[ -n "$prev_agents_snapshot" ]]; then
   if [[ -f "$agents_md" ]] && cmp -s "$prev_agents_snapshot" "$agents_md"; then
@@ -257,7 +307,29 @@ fi
 # one place. A managed-marker file lets re-runs drop stale entries when sources
 # change.
 SKILLS_DIR="$CODEX_HOME/skills"
+is_safe_managed_basename() {
+  [[ "$1" =~ ^[[:alnum:]_][[:alnum:]_.:-]*$ ]]
+}
 if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+  # Remove only real command directories recorded by the legacy command
+  # generator before the resolver claims exact destinations. Symlinked
+  # collisions belong to canonical project skills and are reconciled through
+  # `.harness-managed` below without following or mutating their targets.
+  legacy_cmd_marker="$SKILLS_DIR/.harness-managed-cmds"
+  if [[ -f "$legacy_cmd_marker" ]]; then
+    while IFS= read -r legacy_command; do
+      [[ -n "$legacy_command" ]] || continue
+      is_safe_managed_basename "$legacy_command" || continue
+      legacy_dir="$SKILLS_DIR/$legacy_command"
+      if [[ ! -L "$legacy_dir" \
+         && -f "$legacy_dir/SKILL.md" \
+         && ! -f "$legacy_dir/.harness-surface-wrapper" ]] \
+         && grep -qF 'Generated by codex-home-prepare.sh from .claude/commands/' "$legacy_dir/SKILL.md"; then
+        rm -rf "$legacy_dir"
+      fi
+    done < "$legacy_cmd_marker"
+    rm -f "$legacy_cmd_marker"
+  fi
   resolve_args=(
     resolve
     --manifest "$SURFACE_MANIFEST"
@@ -386,6 +458,7 @@ fi
 # distinctly from the symlink-merged skills above.
 CMD_MARKER="$SKILLS_DIR/.harness-managed-cmds"
 cmd_src="$HARNESS_DIR/.claude/commands"
+if [[ "$SURFACE_ENABLED" -eq 0 ]]; then
 prev_cmds=()
 if [[ -f "$CMD_MARKER" ]]; then
   while IFS= read -r line; do
@@ -492,13 +565,14 @@ fi
 # disappeared (or became Claude-coupled) gets removed here.
 if [[ ${#prev_cmds[@]} -gt 0 ]]; then
   for prev in "${prev_cmds[@]}"; do
+    is_safe_managed_basename "$prev" || continue
     match=0
     if [[ ${#new_cmds[@]} -gt 0 ]]; then
       for cur in "${new_cmds[@]}"; do
         [[ "$prev" == "$cur" ]] && { match=1; break; }
       done
     fi
-    [[ "$match" -eq 0 ]] && rm -rf "$SKILLS_DIR/$prev"
+    [[ "$match" -eq 0 ]] && rm -rf "${SKILLS_DIR:?}/$prev"
   done
 fi
 
@@ -508,6 +582,7 @@ fi
     for n in "${new_cmds[@]}"; do echo "$n"; done
   fi
 } > "$CMD_MARKER"
+fi
 
 # Kernel-backed global mutex for all launcher-managed global Codex cache state.
 # macOS lockf holds the advisory lock on fd 9 for the lifetime of the
@@ -571,11 +646,10 @@ mcp_json_files=()
 tmp_config="$(mktemp "$CODEX_HOME/.config.toml.XXXXXX")"
 bundled_marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
 browser_client_sha256s="$(
-  for client in "$bundled_marketplace/plugins/chrome/scripts/browser-client.mjs"; do
-    if [[ -f "$client" ]]; then
-      shasum -a 256 "$client" | awk '{print $1}'
-    fi
-  done | sort -u | paste -sd' ' -
+  client="$bundled_marketplace/plugins/chrome/scripts/browser-client.mjs"
+  if [[ -f "$client" ]]; then
+    shasum -a 256 "$client" | awk '{print $1}'
+  fi
 )"
 browser_use_app_version="$(
   manifest="$bundled_marketplace/plugins/chrome/.codex-plugin/plugin.json"
@@ -742,22 +816,41 @@ if [[ "$SURFACE_ENABLED" -eq 1 && -f "$CODEX_HOME/surface.config.toml" ]]; then
 fi
 
 if [[ -f "$config_file" ]]; then
-  python3 - "$config_file" "$surface_catalog" >> "$tmp_config" <<'PY'
+  python3 - "$config_file" "$surface_catalog" "$CODEX_HOME" >> "$tmp_config" <<'PY'
 import json
+import os
 import re
 import sys
+import tomllib
 
 path = sys.argv[1]
 surface_catalog = sys.argv[2] if len(sys.argv) > 2 else ""
-managed_disabled = set()
+codex_home = sys.argv[3] if len(sys.argv) > 3 else ""
+managed_plugin_root = os.path.join(codex_home, "plugins", "cache", "openai-bundled")
+managed_skill_paths = set()
 if surface_catalog:
     with open(surface_catalog, encoding="utf-8") as f:
-        managed_disabled = set(json.load(f).get("disabled_skill_paths") or [])
+        catalog = json.load(f)
+    managed_skill_paths.update(catalog.get("disabled_skill_paths") or [])
+    for skill in catalog.get("skills") or []:
+        managed_skill_paths.add(skill.get("source_path"))
+        managed_skill_paths.add(skill.get("exposed_path"))
+    managed_skill_paths.discard(None)
 section_header = re.compile(r"^\[.*\]\s*$")
 hooks_state_header = re.compile(r"^\[hooks\.state(?:\.|\])")
 preserved = []
 current = []
 in_preserved_section = False
+
+def is_managed_plugin_path(value):
+    if not surface_catalog or not managed_plugin_root:
+        return False
+    try:
+        return os.path.commonpath(
+            (os.path.abspath(value), os.path.abspath(managed_plugin_root))
+        ) == os.path.abspath(managed_plugin_root)
+    except (TypeError, ValueError):
+        return False
 
 def first_toml_key(raw):
     raw = raw.strip()
@@ -797,10 +890,17 @@ def flush_current():
         "launcher-managed-surface" in line for line in current
     ):
         return
-    if current[0].strip() == "[[skills.config]]" and managed_disabled:
-        for line in current[1:]:
-            match = re.match(r'^\s*path\s*=\s*("(?:[^"\\]|\\.)*")\s*$', line)
-            if match and json.loads(match.group(1)) in managed_disabled:
+    if current[0].strip() == "[[skills.config]]" and managed_skill_paths:
+        try:
+            parsed = tomllib.loads("".join(current))
+            entries = (parsed.get("skills") or {}).get("config") or []
+        except tomllib.TOMLDecodeError:
+            entries = []
+        if len(entries) == 1 and isinstance(entries[0], dict):
+            configured_path = entries[0].get("path")
+            if configured_path in managed_skill_paths:
+                return
+            if isinstance(configured_path, str) and is_managed_plugin_path(configured_path):
                 return
     preserved.extend(current)
 
@@ -1128,6 +1228,80 @@ if [[ -f "$bundled_marketplace/plugins/computer-use/.codex-plugin/plugin.json" \
 fi
 remove_bundled_plugin_cache "browser"
 
+# Product plugins contribute skills outside $CODEX_HOME/skills. Reconcile those
+# routes into the exact catalog after plugin materialization so work-profile
+# prompt audits do not treat Computer Use as an unexpected late addition.
+if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+  python3 - "$CODEX_HOME/skill-catalog.json" "$CODEX_HOME" <<'PY'
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+catalog_path = Path(sys.argv[1])
+codex_home = Path(sys.argv[2])
+catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+skills = [
+    item for item in catalog.get("skills", [])
+    if not str(item.get("source", "")).startswith("codex-product-plugin:")
+]
+enabled = set((catalog.get("mcp") or {}).get("enabled") or [])
+
+def declared_name(path):
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise SystemExit(f"invalid bundled plugin skill frontmatter: {path}")
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line.startswith("name:"):
+            value = line.partition(":")[2].strip().strip('"').strip("'")
+            if value:
+                return value
+    raise SystemExit(f"missing bundled plugin skill name: {path}")
+
+for plugin in ("computer-use",):
+    if plugin not in enabled:
+        continue
+    root = codex_home / "plugins" / "cache" / "openai-bundled" / plugin / "latest"
+    if not root.is_dir():
+        raise SystemExit(f"enabled bundled plugin is not materialized: {plugin}")
+    for raw_path in sorted(root.rglob("SKILL.md")):
+        path = raw_path.resolve()
+        name = declared_name(path)
+        effective_name = name if ":" in name else f"{plugin}:{name}"
+        skills.append(
+            {
+                "name": effective_name,
+                "invocation": "implicit",
+                "source": f"codex-product-plugin:{plugin}",
+                "source_path": str(path),
+                "exposed_path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+
+catalog["skills"] = sorted(skills, key=lambda item: item["name"])
+content = json.dumps(catalog, indent=2, sort_keys=True) + "\n"
+if catalog_path.read_text(encoding="utf-8") != content:
+    descriptor, temporary = tempfile.mkstemp(prefix=".skill-catalog.", dir=catalog_path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, catalog_path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+PY
+fi
+
 # 5. Generate hooks.json — Claude harness owns hook scripts as single source
 # of truth; Codex layer references them via absolute path so we never copy or
 # symlink shell logic across runtime boundaries. SessionStart/UserPromptSubmit/
@@ -1137,7 +1311,7 @@ hooks_file="$CODEX_HOME/hooks.json"
 tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
 ADAPTER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-hook-adapter.sh"
 python3 - "$HARNESS_DIR" "$ADAPTER_PATH" > "$tmp_hooks" <<'PY'
-import json, os, re, sys
+import json, os, re, shlex, sys
 harness = sys.argv[1]
 adapter = sys.argv[2]
 hooks_dir = os.path.join(harness, "core", "hooks")
@@ -1151,9 +1325,11 @@ adapter_available = os.path.isfile(adapter)
 def cmd(script, event=None, timeout=None):
     path = os.path.join(hooks_dir, script)
     if event and event in ADAPTED_EVENTS and adapter_available:
-        command = f'bash "{adapter}" {event} "{path}"'
+        command = " ".join(
+            ("bash", shlex.quote(adapter), shlex.quote(event), shlex.quote(path))
+        )
     else:
-        command = f'bash "{path}"'
+        command = f"bash {shlex.quote(path)}"
     entry = {"type": "command", "command": command}
     if timeout is not None:
         entry["timeout"] = timeout
@@ -1298,18 +1474,15 @@ agents_out="$CODEX_HOME/agents"
 mkdir -p "$agents_out"
 agents_marker="$agents_out/.harness-managed"
 
-if [[ -d "$agents_src" ]]; then
-  python3 - "$agents_src" "$agents_out" "$agents_marker" <<'PY'
-import os, sys, glob
+python3 - "$agents_src" "$agents_out" "$agents_marker" <<'PY'
+import glob
+import os
+import shutil
+import sys
 
 src_dir, out_dir, marker = sys.argv[1], sys.argv[2], sys.argv[3]
-
-# Preserve mtime when nothing changed: read previous marker, regenerate
-# unconditionally, then drop only entries no longer present.
-prev = set()
-if os.path.exists(marker):
-    with open(marker, "r", encoding="utf-8") as f:
-        prev = {line.strip() for line in f if line.strip()}
+quarantine_dir = os.path.join(os.path.dirname(out_dir), ".surface-quarantine", "agents")
+owned_header = "# Generated by codex-home-prepare.sh — do not edit manually."
 
 # Model mapping: Claude tiers → Codex GPT-5.6 roles.
 def map_model(claude_model):
@@ -1383,7 +1556,7 @@ for path in sorted(glob.glob(os.path.join(src_dir, "*.md"))):
     sandbox = map_sandbox(meta.get("tools", ""), meta.get("disallowedTools", ""))
     desc = meta.get("description", "").strip()
 
-    out_lines = []
+    out_lines = [owned_header]
     out_lines.append(f'name = "{meta["name"]}"')
     if desc:
         # description is single-line in Codex agent TOML
@@ -1405,27 +1578,45 @@ for path in sorted(glob.glob(os.path.join(src_dir, "*.md"))):
         if old == new_content:
             generated.append(f"{name}.toml")
             continue
+        if not old.startswith(owned_header + "\n"):
+            os.makedirs(quarantine_dir, exist_ok=True)
+            destination = os.path.join(quarantine_dir, os.path.basename(out_path))
+            suffix = 1
+            while os.path.lexists(destination):
+                destination = os.path.join(
+                    quarantine_dir, f"{os.path.basename(out_path)}.{suffix}"
+                )
+                suffix += 1
+            shutil.move(out_path, destination)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(new_content)
     generated.append(f"{name}.toml")
 
-# Drop stale entries whose source disappeared.
-stale = prev - set(generated)
-for entry in stale:
-    try:
-        os.remove(os.path.join(out_dir, entry))
-    except FileNotFoundError:
-        pass
+# Every unplanned TOML is reversible-quarantined. Marker membership is not
+# proof of ownership, so a poisoned marker cannot exempt or delete a real file.
+generated_set = set(generated)
+for path in sorted(glob.glob(os.path.join(out_dir, "*.toml"))):
+    if os.path.basename(path) in generated_set:
+        continue
+    os.makedirs(quarantine_dir, exist_ok=True)
+    destination = os.path.join(quarantine_dir, os.path.basename(path))
+    suffix = 1
+    while os.path.lexists(destination):
+        destination = os.path.join(
+            quarantine_dir, f"{os.path.basename(path)}.{suffix}"
+        )
+        suffix += 1
+    shutil.move(path, destination)
 
 new_marker = "".join(g + "\n" for g in generated)
 if not os.path.exists(marker) or open(marker).read() != new_marker:
     with open(marker, "w", encoding="utf-8") as f:
         f.write(new_marker)
 PY
-fi
 
 if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
   python3 "$SURFACE_RESOLVER" write-stamp \
     --stamp "$SURFACE_STAMP" \
-    --fingerprint-json "$SURFACE_FINGERPRINT_JSON"
+    --fingerprint-json "$SURFACE_FINGERPRINT_JSON" \
+    --codex-home "$CODEX_HOME"
 fi

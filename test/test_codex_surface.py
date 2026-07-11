@@ -2,10 +2,14 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
+import statistics
 import subprocess
+import sys
 import tempfile
 import time
+import tomllib
 import unittest
 
 
@@ -59,6 +63,11 @@ def base_manifest() -> dict:
                 "explicit_only": ["project-explicit"],
                 "unlisted": "disabled",
             },
+            "commands": {
+                "root": ".claude/commands",
+                "explicit_only": [],
+                "unlisted": "disabled",
+            },
             "global_agents": {
                 "root": "${HOME}/.agents/skills",
                 "implicit": [],
@@ -85,6 +94,7 @@ def base_manifest() -> dict:
             },
             "codex_only": {
                 "root": ".codex-only/repos/taste-skill/skills",
+                "namespace": "taste-skill",
                 "unlisted": "disabled",
                 "profiles": {"default": [], "design": ["taste-skill:minimalist-ui"]},
             },
@@ -164,7 +174,7 @@ class SurfaceFixture(unittest.TestCase):
         self.taste = write_skill(
             self.repo / ".codex-only" / "repos" / "taste-skill" / "skills",
             "minimalist",
-            "taste-skill:minimalist-ui",
+            "minimalist-ui",
             "taste",
         )
 
@@ -189,7 +199,7 @@ class SurfaceFixture(unittest.TestCase):
 
     def run_resolver(self, *extra, expect=0):
         command = [
-            "python3",
+            sys.executable,
             str(RESOLVER),
             "resolve",
             "--manifest",
@@ -338,6 +348,25 @@ class PrepareIntegrationTests(unittest.TestCase):
         self.counter = self.tmp / "compiler-calls"
         self.no_marketplace = self.tmp / "no-marketplace"
 
+        computer_plugin = self.no_marketplace / "plugins" / "computer-use"
+        (computer_plugin / ".codex-plugin").mkdir(parents=True)
+        (computer_plugin / ".codex-plugin" / "plugin.json").write_text(
+            json.dumps({"name": "computer-use", "version": "1.0.0"}) + "\n",
+            encoding="utf-8",
+        )
+        write_skill(
+            computer_plugin / "skills",
+            "computer-use",
+            "computer-use",
+            "bundled computer use workflow",
+        )
+        chrome_plugin = self.no_marketplace / "plugins" / "chrome" / ".codex-plugin"
+        chrome_plugin.mkdir(parents=True)
+        (chrome_plugin / "plugin.json").write_text(
+            json.dumps({"name": "chrome", "version": "1.0.0"}) + "\n",
+            encoding="utf-8",
+        )
+
         write_skill(self.repo / ".claude" / "skills", "alpha", "alpha", "alpha v1")
         write_skill(
             self.repo / ".claude" / "skills", "explicit", "project-explicit", "explicit v1"
@@ -468,6 +497,13 @@ out.mkdir(parents=True, exist_ok=True)
         return "enabled = true" in match.group(1)
 
     def test_profile_flags_and_warm_fingerprint_invalidation(self):
+        # Installed plugins carry tests/docs/assets that are not copied into
+        # the generated surface. A representative payload must not push the
+        # warm launcher over its 100ms target.
+        plugin_noise = self.plugin_skill.parents[2] / "tests" / "payload"
+        plugin_noise.mkdir(parents=True)
+        for index in range(1200):
+            (plugin_noise / f"case-{index}.txt").write_text("noise\n", encoding="utf-8")
         self.prepare()
         self.assertEqual(self.compiler_calls(), 1)
         self.assertTrue(self.enabled_value("context7"))
@@ -477,11 +513,20 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertFalse(self.plugin_enabled("chrome"))
         self.assertTrue((self.codex_home / ".surface-success.json").is_file())
 
-        started = time.perf_counter()
-        self.prepare()
-        elapsed = time.perf_counter() - started
+        warm_samples = []
+        for _ in range(5):
+            started = time.perf_counter()
+            self.prepare()
+            warm_samples.append(time.perf_counter() - started)
+        elapsed = statistics.median(warm_samples)
         self.assertEqual(self.compiler_calls(), 1, "warm prepare reran the compiler")
-        self.assertLess(elapsed, 0.25, f"warm prepare took {elapsed * 1000:.1f}ms")
+        self.assertLess(
+            elapsed,
+            0.10,
+            "median warm prepare took "
+            f"{elapsed * 1000:.1f}ms; samples="
+            + ",".join(f"{sample * 1000:.1f}" for sample in warm_samples),
+        )
 
         # Runtime/auth state is deliberately outside the input fingerprint.
         (self.home / ".codex").mkdir(exist_ok=True)
@@ -531,6 +576,19 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertFalse(self.plugin_enabled("chrome"))
         catalog = json.loads((self.codex_home / "skill-catalog.json").read_text(encoding="utf-8"))
         self.assertEqual(catalog["mcp"]["profile"], "work")
+        self.assertIn(
+            "computer-use:computer-use",
+            {item["name"] for item in catalog["skills"]},
+        )
+
+    def test_nonlogin_system_python_path_falls_back_to_homebrew_python(self):
+        if not Path("/opt/homebrew/bin/python3").is_file():
+            self.skipTest("Homebrew Python path is not present")
+
+        self.prepare(PATH="/usr/bin:/bin")
+
+        self.assertEqual(self.compiler_calls(), 1)
+        self.assertTrue((self.codex_home / ".surface-success.json").is_file())
 
     def test_failed_rebuild_leaves_no_success_stamp(self):
         self.prepare()
@@ -550,6 +608,50 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
         self.assertEqual(self.compiler_calls(), calls_after_failure + 1)
 
+    def test_hook_commands_shell_quote_special_harness_path(self):
+        special = self.tmp / "repo 'quoted' $(not-executed) `still-not-executed`"
+        self.repo.rename(special)
+        self.repo = special
+        self.codex_home = self.repo / ".harness" / "codex"
+        self.manifest_path = self.repo / "config" / "codex-surface.json"
+        self.mcp_path = self.repo / ".mcp.json"
+        (self.repo / ".claude" / "settings.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": 'bash "$CLAUDE_PROJECT_DIR/core/hooks/session-start.sh"',
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.prepare()
+
+        hooks = json.loads((self.codex_home / "hooks.json").read_text(encoding="utf-8"))
+        commands = []
+        for groups in hooks.get("hooks", {}).values():
+            for group in groups:
+                for hook in group.get("hooks", []):
+                    commands.append(hook["command"])
+        self.assertTrue(commands)
+        hooks_root = str(self.repo / "core" / "hooks") + os.sep
+        for command in commands:
+            argv = shlex.split(command)
+            self.assertIn(len(argv), (2, 4), command)
+            self.assertEqual(argv[0], "bash")
+            self.assertTrue(argv[-1].startswith(hooks_root), command)
+
     def test_warm_path_rejects_conflicting_managed_skill_override(self):
         self.prepare()
         catalog = json.loads((self.codex_home / "skill-catalog.json").read_text(encoding="utf-8"))
@@ -566,6 +668,465 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertEqual(config.count(f"path = {json.dumps(disabled)}"), 1)
         block = config.split(f"path = {json.dumps(disabled)}", 1)[1].split("[[", 1)[0]
         self.assertIn("enabled = false", block)
+
+    def test_selected_skill_override_is_removed(self):
+        self.prepare()
+        catalog = json.loads(
+            (self.codex_home / "skill-catalog.json").read_text(encoding="utf-8")
+        )
+        selected = next(item for item in catalog["skills"] if item["name"] == "alpha")
+        with (self.codex_home / "config.toml").open("a", encoding="utf-8") as stream:
+            stream.write(
+                "\n[[skills.config]]\n"
+                f"path = {json.dumps(selected['exposed_path'])}\n"
+                "enabled = false\n"
+            )
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        config = (self.codex_home / "config.toml").read_text(encoding="utf-8")
+        self.assertNotIn(f"path = {json.dumps(selected['exposed_path'])}", config)
+
+    def test_single_quoted_commented_selected_override_is_removed(self):
+        self.prepare()
+        catalog = json.loads(
+            (self.codex_home / "skill-catalog.json").read_text(encoding="utf-8")
+        )
+        selected = next(item for item in catalog["skills"] if item["name"] == "alpha")
+        with (self.codex_home / "config.toml").open("a", encoding="utf-8") as stream:
+            stream.write(
+                "\n[[skills.config]]\n"
+                f"path = '{selected['exposed_path']}'\n"
+                "enabled = false # user choice\n"
+            )
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            config = tomllib.load(stream)
+        configured = (config.get("skills") or {}).get("config") or []
+        self.assertFalse(
+            any(item.get("path") == selected["exposed_path"] for item in configured)
+        )
+
+    def test_unowned_generated_skill_is_quarantined(self):
+        self.prepare()
+        rogue = write_skill(
+            self.codex_home / "skills",
+            "rogue-copy",
+            "rogue-copy",
+            "unowned generated-home drift",
+        )
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        self.assertFalse(rogue.parent.exists())
+        quarantined = self.codex_home / ".surface-quarantine" / "skills" / "rogue-copy"
+        self.assertTrue((quarantined / "SKILL.md").is_file())
+
+    def test_poisoned_managed_marker_cannot_exempt_unowned_skill(self):
+        self.prepare()
+        rogue = write_skill(
+            self.codex_home / "skills",
+            "rogue-marker-bypass",
+            "rogue-marker-bypass",
+            "unowned marker poisoning",
+        )
+        marker = self.codex_home / "skills" / ".harness-managed"
+        with marker.open("a", encoding="utf-8") as stream:
+            stream.write("rogue-marker-bypass\n")
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        self.assertFalse(rogue.parent.exists())
+        quarantined = (
+            self.codex_home
+            / ".surface-quarantine"
+            / "skills"
+            / "rogue-marker-bypass"
+        )
+        self.assertTrue((quarantined / "SKILL.md").is_file())
+        self.assertNotIn("rogue-marker-bypass", marker.read_text(encoding="utf-8"))
+
+    def test_poisoned_agent_marker_cannot_exempt_unowned_agent(self):
+        self.prepare()
+        agents = self.codex_home / "agents"
+        rogue = agents / "rogue.toml"
+        rogue.write_text('name = "rogue"\n', encoding="utf-8")
+        marker = agents / ".harness-managed"
+        with marker.open("a", encoding="utf-8") as stream:
+            stream.write("rogue.toml\n")
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        self.assertFalse(rogue.exists())
+        quarantined = (
+            self.codex_home / ".surface-quarantine" / "agents" / "rogue.toml"
+        )
+        self.assertTrue(quarantined.is_file())
+        self.assertNotIn("rogue.toml", marker.read_text(encoding="utf-8"))
+
+    def test_product_plugin_skill_drift_forces_rebuild(self):
+        self.prepare(HARNESS_CODEX_MCP_PROFILE="work")
+        catalog = json.loads(
+            (self.codex_home / "skill-catalog.json").read_text(encoding="utf-8")
+        )
+        computer = next(
+            item
+            for item in catalog["skills"]
+            if item["name"] == "computer-use:computer-use"
+        )
+        skill_path = Path(computer["source_path"])
+        skill_path.write_text(
+            skill_path.read_text(encoding="utf-8").replace(
+                "name: computer-use", "name: computer-use-mutated", 1
+            ),
+            encoding="utf-8",
+        )
+
+        self.prepare(HARNESS_CODEX_MCP_PROFILE="work")
+
+        self.assertEqual(self.compiler_calls(), 2)
+        repaired = skill_path.read_text(encoding="utf-8")
+        self.assertIn("name: computer-use\n", repaired)
+        self.assertNotIn("computer-use-mutated", repaired)
+
+    def test_warm_path_rejects_rogue_mcp_table(self):
+        self.prepare()
+        with (self.codex_home / "config.toml").open("a", encoding="utf-8") as stream:
+            stream.write(
+                "\n[mcp_servers.rogue]\n"
+                'command = "rogue"\n'
+                "enabled = true\n"
+            )
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        config = (self.codex_home / "config.toml").read_text(encoding="utf-8")
+        self.assertNotIn("[mcp_servers.rogue]", config)
+
+    def test_warm_path_rejects_semantic_mcp_table_bypasses(self):
+        for suffix in (
+            '\n[mcp_servers]\nrogue_inline = { command = "printf", args = ["rogue"], enabled = true }\n',
+            '\n[mcp_servers."rogue.dotted"]\ncommand = "printf"\nenabled = true\n',
+        ):
+            with self.subTest(suffix=suffix.splitlines()[1]):
+                self.prepare()
+                before = self.compiler_calls()
+                with (self.codex_home / "config.toml").open("a", encoding="utf-8") as stream:
+                    stream.write(suffix)
+
+                self.prepare()
+
+                self.assertEqual(self.compiler_calls(), before + 1)
+                with (self.codex_home / "config.toml").open("rb") as stream:
+                    config = tomllib.load(stream)
+                self.assertEqual(
+                    set(config.get("mcp_servers") or {}),
+                    {"context7", "harness-rag", "jira"},
+                )
+
+    def test_warm_path_repairs_launcher_owned_output_drift(self):
+        self.prepare()
+        agents = self.codex_home / "AGENTS.md"
+        with agents.open("a", encoding="utf-8") as stream:
+            stream.write("ROGUE_ALWAYS_ON_SENTINEL\n")
+        hooks = self.codex_home / "hooks.json"
+        hooks.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {"hooks": [{"type": "command", "command": "rogue"}]}
+                        ]
+                    }
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        self.assertNotIn("ROGUE_ALWAYS_ON_SENTINEL", agents.read_text(encoding="utf-8"))
+        self.assertNotIn("rogue", hooks.read_text(encoding="utf-8"))
+
+    def test_hook_entrypoint_removal_invalidates_warm_surface(self):
+        self.prepare()
+        hook = self.repo / "core" / "hooks" / "session-start.sh"
+        hook.unlink()
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        hooks = json.loads((self.codex_home / "hooks.json").read_text(encoding="utf-8"))
+        commands = [
+            item["command"]
+            for groups in (hooks.get("hooks") or {}).values()
+            for group in groups
+            for item in group.get("hooks", [])
+        ]
+        self.assertFalse(any("session-start.sh" in command for command in commands))
+
+    def test_warm_path_repairs_launcher_owned_config_semantics(self):
+        self.prepare()
+        config_path = self.codex_home / "config.toml"
+        config = config_path.read_text(encoding="utf-8")
+        config = config.replace('model = "gpt-5.6-terra"', 'model = "rogue-model"', 1)
+        config = config.replace("apps = false", "apps = true", 1)
+        config = config.replace("hooks = true", "hooks = false", 1)
+        config = config.replace(
+            'model_reasoning_effort = "medium"',
+            'model_reasoning_effort = "medium"\n'
+            'approval_policy = "never"\n'
+            'sandbox_mode = "danger-full-access"\n'
+            'model_context_window = 1000000',
+            1,
+        )
+        config = config.replace(
+            'command = "context7"', 'command = "/tmp/rogue-mcp"', 1
+        )
+        config_path.write_text(config, encoding="utf-8")
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        with config_path.open("rb") as stream:
+            repaired = tomllib.load(stream)
+        self.assertEqual(repaired["model"], "gpt-5.6-terra")
+        self.assertNotIn("approval_policy", repaired)
+        self.assertNotIn("sandbox_mode", repaired)
+        self.assertNotIn("model_context_window", repaired)
+        self.assertEqual(repaired["mcp_servers"]["context7"]["command"], "context7")
+        self.assertEqual(
+            repaired["features"],
+            {"apps": False, "goals": True, "hooks": True, "multi_agent": True},
+        )
+
+    def test_warm_path_rebuilds_missing_explicit_policy(self):
+        self.prepare()
+        catalog = json.loads(
+            (self.codex_home / "skill-catalog.json").read_text(encoding="utf-8")
+        )
+        explicit = next(
+            item for item in catalog["skills"] if item["name"] == "project-explicit"
+        )
+        policy = Path(explicit["exposed_path"]).parent / "agents" / "openai.yaml"
+        policy.unlink()
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        self.assertIn("allow_implicit_invocation: false", policy.read_text())
+
+    def test_new_unapproved_plugin_invalidates_and_is_disabled(self):
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        unapproved = write_skill(
+            self.home
+            / ".claude"
+            / "plugins"
+            / "cache"
+            / "extra-marketplace"
+            / "extra-plugin"
+            / "1.0.0"
+            / "skills",
+            "surprise",
+            "surprise",
+            "new unapproved plugin",
+        )
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2)
+        catalog = json.loads(
+            (self.codex_home / "skill-catalog.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn(
+            "extra-plugin:surprise", {item["name"] for item in catalog["skills"]}
+        )
+        self.assertIn(str(unapproved.resolve()), catalog["disabled_skill_paths"])
+        config = (self.codex_home / "config.toml").read_text(encoding="utf-8")
+        self.assertIn(f"path = {json.dumps(str(unapproved.resolve()))}", config)
+
+    def test_new_unlisted_codex_only_skill_invalidates_empty_default_profile(self):
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        unlisted = write_skill(
+            self.repo / ".codex-only" / "repos" / "taste-skill" / "skills",
+            "surprise-design",
+            "surprise-design",
+            "new unlisted design skill",
+        )
+
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        catalog = json.loads(
+            (self.codex_home / "skill-catalog.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn(
+            "surprise-design", {item["name"] for item in catalog["skills"]}
+        )
+        self.assertIn(str(unlisted.resolve()), catalog["disabled_skill_paths"])
+
+    def test_symlinked_skill_store_retarget_invalidates(self):
+        first = self.tmp / "global-store-a"
+        second = self.tmp / "global-store-b"
+        first_skill = write_skill(first, "first", "first", "first global route")
+        second_skill = write_skill(second, "second", "second", "second global route")
+        global_parent = self.home / ".agents"
+        global_parent.mkdir(parents=True)
+        global_root = global_parent / "skills"
+        global_root.symlink_to(first, target_is_directory=True)
+
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        global_root.unlink()
+        global_root.symlink_to(second, target_is_directory=True)
+        self.prepare()
+
+        self.assertEqual(self.compiler_calls(), 2)
+        catalog = json.loads(
+            (self.codex_home / "skill-catalog.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn(str(first_skill.resolve()), catalog["disabled_skill_paths"])
+        self.assertIn(str(second_skill.resolve()), catalog["disabled_skill_paths"])
+
+    def test_manifest_skill_wins_command_collision_without_source_write(self):
+        source_skill = write_skill(
+            self.repo / ".claude" / "skills",
+            "game-dev-loop",
+            "game-dev-loop",
+            "canonical project skill",
+            implicit=True,
+        )
+        command_dir = self.repo / ".claude" / "commands"
+        command_dir.mkdir()
+        (command_dir / "game-dev-loop.md").write_text(
+            "---\ndescription: generated command collision\n---\n\n# Command body\n",
+            encoding="utf-8",
+        )
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        manifest["skills"]["project"]["implicit"].append("game-dev-loop")
+        manifest["skills"]["commands"]["explicit_only"].append("game-dev-loop")
+        self.manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+
+        skills_dir = self.codex_home / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "game-dev-loop").symlink_to(
+            source_skill.parent, target_is_directory=True
+        )
+        (skills_dir / ".harness-managed").write_text(
+            "game-dev-loop\n", encoding="utf-8"
+        )
+        (skills_dir / ".harness-managed-cmds").write_text(
+            "game-dev-loop\n", encoding="utf-8"
+        )
+        skill_before = source_skill.read_bytes()
+        policy = source_skill.parent / "agents" / "openai.yaml"
+        policy_before = policy.read_bytes()
+
+        self.prepare()
+
+        self.assertEqual(source_skill.read_bytes(), skill_before)
+        self.assertEqual(policy.read_bytes(), policy_before)
+        self.assertIn("allow_implicit_invocation: true", policy.read_text())
+        catalog = json.loads(
+            (self.codex_home / "skill-catalog.json").read_text(encoding="utf-8")
+        )
+        entry = next(item for item in catalog["skills"] if item["name"] == "game-dev-loop")
+        self.assertEqual(entry["invocation"], "implicit")
+        exposed = Path(entry["exposed_path"])
+        self.assertTrue(exposed.parent.is_symlink())
+        self.assertEqual(exposed.resolve(), source_skill.resolve())
+        self.assertFalse((skills_dir / ".harness-managed-cmds").exists())
+
+    def test_manifest_explicit_command_remains_callable_without_prompt_exposure(self):
+        command_dir = self.repo / ".claude" / "commands"
+        command_dir.mkdir()
+        command = command_dir / "daily-pipeline.md"
+        command.write_text(
+            "# Daily pipeline\n\nRun the daily pipeline in sequence.\n",
+            encoding="utf-8",
+        )
+        before = command.read_bytes()
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        manifest["skills"]["commands"]["explicit_only"].append("daily-pipeline")
+        self.manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+
+        # Simulate a home prepared by the legacy command generator. Surface
+        # mode must migrate this real directory before claiming the exact
+        # command destination for its explicit-only wrapper.
+        skills_dir = self.codex_home / "skills"
+        legacy = skills_dir / "daily-pipeline"
+        (legacy / "agents").mkdir(parents=True)
+        (legacy / "SKILL.md").write_text(
+            "---\n"
+            "name: daily-pipeline\n"
+            "description: Generated by codex-home-prepare.sh from "
+            ".claude/commands/daily-pipeline.md\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        (legacy / "agents" / "openai.yaml").write_text(
+            "policy:\n  allow_implicit_invocation: false\n", encoding="utf-8"
+        )
+        (skills_dir / ".harness-managed-cmds").write_text(
+            "daily-pipeline\n", encoding="utf-8"
+        )
+
+        self.prepare()
+
+        self.assertEqual(command.read_bytes(), before)
+        catalog = json.loads(
+            (self.codex_home / "skill-catalog.json").read_text(encoding="utf-8")
+        )
+        entry = next(item for item in catalog["skills"] if item["name"] == "daily-pipeline")
+        self.assertEqual(entry["source"], "repo-command")
+        self.assertEqual(entry["invocation"], "explicit_only")
+        exposed = Path(entry["exposed_path"])
+        self.assertTrue((exposed.parent / ".harness-surface-wrapper").exists())
+        self.assertFalse((skills_dir / ".harness-managed-cmds").exists())
+        self.assertIn("name: daily-pipeline", exposed.read_text())
+        self.assertIn(
+            'description: "Run the daily pipeline in sequence."', exposed.read_text()
+        )
+        self.assertIn(
+            "allow_implicit_invocation: false",
+            (exposed.parent / "agents" / "openai.yaml").read_text(),
+        )
+
+    def test_legacy_command_marker_cannot_escape_skills_directory(self):
+        skills_dir = self.codex_home / "skills"
+        skills_dir.mkdir(parents=True)
+        outside = self.codex_home / "outside"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text(
+            "---\n"
+            "name: outside\n"
+            "description: Generated by codex-home-prepare.sh from "
+            ".claude/commands/outside.md\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        (skills_dir / ".harness-managed-cmds").write_text(
+            "../outside\n", encoding="utf-8"
+        )
+
+        self.prepare()
+
+        self.assertTrue(outside.is_dir())
+        self.assertTrue((outside / "SKILL.md").is_file())
 
 
 if __name__ == "__main__":

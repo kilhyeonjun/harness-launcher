@@ -26,8 +26,10 @@ jobs:
         # v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: Install current Bash
-        run: brew install bash
+      - name: Install runtime dependencies
+        run: |
+          brew install bash python@3.14
+          echo "$(brew --prefix python@3.14)/libexec/bin" >> "$GITHUB_PATH"
 
       - name: Check shell syntax
         shell: bash

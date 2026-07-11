@@ -1249,6 +1249,7 @@ cat > "$TEST_HARNESS_COMP/.claude/source/runtime-contract.yaml" <<'EOF'
 runtime_contract:
   id: harness-runtime-v1
   source_of_truth: Claude harness source is canonical. Runtime surfaces are generated.
+  codex_response_language: korean
   forbidden_edits:
     - path: .harness/codex/**
       reason: Generated Codex adapter layer.
@@ -1263,7 +1264,7 @@ cat > "$TEST_HARNESS_COMP/.claude/source/budgets.yaml" <<'EOF'
 budgets:
   claude_md_max_lines: 80
   always_on_total_max_lines: 160
-  codex_agents_max_bytes: 32768
+  codex_agents_max_bytes: 8192
   skill_md_max_bytes: 10000
 EOF
 cat > "$TEST_HARNESS_COMP/.claude/rules/cascading-updates.md" <<'EOF'

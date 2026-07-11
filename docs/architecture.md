@@ -123,7 +123,7 @@ On macOS, preparation opens a persistent lock file and acquires `/usr/bin/lockf`
 
 Do not replace this with PID files, mtime-based stale reclamation, or signal cleanup that removes a directory while child work continues.
 
-Manifest-enabled homes also keep an atomic successful-input fingerprint. The warm path validates the fingerprint and every managed skill link before returning. Auth contents, sessions, hook trust state, and generated mtimes remain runtime state and do not invalidate source generation. Any cold rebuild removes its old success stamp before mutation.
+Manifest-enabled homes also keep an atomic successful-input fingerprint plus a source-identity watch snapshot. The lean warm path validates watched file identities, semantic TOML policy, launcher-owned output hashes, product-plugin skill digests, explicit-only policies, skill/plugin directory topology, and every managed skill link before returning; it does not rescan plugin tests/docs/assets. Unexpected generated-home skill routes force a cold rebuild and reversible quarantine, and marker membership alone never proves ownership. Auth contents, sessions, hook trust state, and generated output mtimes remain runtime state and do not invalidate source generation. Any cold rebuild removes its old success stamp before mutation.
 
 ## Browser and plugin trust
 
