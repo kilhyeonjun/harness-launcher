@@ -14,6 +14,25 @@ HARNESS_DIR="${1:?HARNESS_DIR required (positional arg 1)}"
 CODEX_HOME="$HARNESS_DIR/.harness/codex"
 PROJECT_CODEX_DIR="$HARNESS_DIR/.codex"
 
+# Serialize the complete mutation of one generated Codex home. The lock file
+# itself requires the generated directory to exist, but no launcher-managed
+# surface is changed until the kernel advisory lock has been acquired. Keeping
+# the descriptor open in this shell makes process exit and signals release the
+# lock without PID files, stale-owner heuristics, or cleanup traps.
+acquire_codex_home_lock() {
+  local lock_file="$CODEX_HOME/.codex-home-prepare.lock"
+  [[ -x /usr/bin/lockf ]] || {
+    echo "ERROR: /usr/bin/lockf is required for safe Codex home preparation" >&2
+    return 1
+  }
+  mkdir -p "$CODEX_HOME"
+  exec 8>"$lock_file"
+  if ! /usr/bin/lockf -s -t 20 8; then
+    echo "ERROR: timed out waiting for Codex home preparation lock: $lock_file" >&2
+    return 1
+  fi
+}
+
 quarantine_project_codex_dir() {
   [[ -e "$PROJECT_CODEX_DIR" || -L "$PROJECT_CODEX_DIR" ]] || return 0
 
@@ -30,8 +49,8 @@ quarantine_project_codex_dir() {
   echo "WARN: quarantined legacy project .codex to $backup" >&2
 }
 
+acquire_codex_home_lock
 quarantine_project_codex_dir
-mkdir -p "$CODEX_HOME"
 CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/Applications/Codex.app/Contents/Resources/plugins/openai-bundled}"
 
 warn_claude_global_mcp_drift() {
@@ -638,24 +657,55 @@ section_header = re.compile(r"^\[.*\]\s*$")
 hooks_state_header = re.compile(r"^\[hooks\.state(?:\.|\])")
 preserved = []
 current = []
-in_hooks_state = False
+in_preserved_section = False
+
+def first_toml_key(raw):
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if raw[0] in ('"', "'"):
+        quote = raw[0]
+        escaped = False
+        for index in range(1, len(raw)):
+            char = raw[index]
+            if quote == '"' and char == "\\" and not escaped:
+                escaped = True
+                continue
+            if char == quote and not escaped:
+                return raw[1:index]
+            escaped = False
+    return raw.split(".", 1)[0]
+
+def should_preserve(header):
+    header = header.strip()
+    if hooks_state_header.match(header):
+        return True
+    if header == "[[skills.config]]":
+        return True
+    if header.startswith("[marketplaces.") and header.endswith("]") and not header.startswith("[["):
+        key = first_toml_key(header[len("[marketplaces."):-1])
+        return key != "openai-bundled"
+    if header.startswith("[plugins.") and header.endswith("]") and not header.startswith("[["):
+        key = first_toml_key(header[len("[plugins."):-1])
+        return not key.endswith("@openai-bundled")
+    return False
 
 with open(path, encoding="utf-8") as f:
     for line in f:
         if section_header.match(line):
-            if in_hooks_state and current:
+            if in_preserved_section and current:
                 preserved.extend(current)
             current = []
-            in_hooks_state = bool(hooks_state_header.match(line))
-        if in_hooks_state:
+            in_preserved_section = should_preserve(line)
+        if in_preserved_section:
             current.append(line)
 
-if in_hooks_state and current:
+if in_preserved_section and current:
     preserved.extend(current)
 
 if preserved:
     print()
-    print("# Preserved Codex runtime hook trust state.")
+    print("# Preserved Codex runtime state (hooks, skill choices, external plugins).")
     for line in preserved:
         print(line, end="")
 PY
