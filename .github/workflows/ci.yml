@@ -28,8 +28,8 @@ jobs:
 
       - name: Install runtime dependencies
         run: |
-          brew install bash python@3.14
-          echo "$(brew --prefix python@3.14)/libexec/bin" >> "$GITHUB_PATH"
+          brew install bash python@3.13
+          echo "$(brew --prefix python@3.13)/libexec/bin" >> "$GITHUB_PATH"
 
       - name: Check shell syntax
         shell: bash

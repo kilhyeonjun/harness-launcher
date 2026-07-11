@@ -42,7 +42,12 @@ grep -q "Installed to $SHARE" "$TEMP_DIR/install.log"
 
 EXPLICIT_PREFIX="$TEMP_DIR/explicit-python-prefix"
 GOOD_PYTHON=""
-for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 "$(command -v python3)"; do
+for candidate in \
+  /opt/homebrew/opt/python@3.13/libexec/bin/python3 \
+  /usr/local/opt/python@3.13/libexec/bin/python3 \
+  /opt/homebrew/bin/python3 \
+  /usr/local/bin/python3 \
+  "$(command -v python3)"; do
   [[ -x "$candidate" ]] || continue
   if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
     GOOD_PYTHON="$candidate"

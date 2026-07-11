@@ -14,9 +14,11 @@ select_harness_python3() {
     candidates=("$HARNESS_PYTHON_BIN")
   else
     candidates=(
-      "$(command -v python3 2>/dev/null || true)"
+      "/opt/homebrew/opt/python@3.13/libexec/bin/python3"
+      "/usr/local/opt/python@3.13/libexec/bin/python3"
       "/opt/homebrew/bin/python3"
       "/usr/local/bin/python3"
+      "$(command -v python3 2>/dev/null || true)"
     )
   fi
   for candidate in "${candidates[@]}"; do

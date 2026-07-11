@@ -4,6 +4,12 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-07-11
+
+### Fixed
+
+- Pin the Homebrew runtime to Python 3.13 and prefer its versioned path, avoiding a Python 3.14 `pyexpat` bottle incompatibility observed on a supported macOS/Xcode combination.
+
 ## [0.10.0] — 2026-07-11
 
 ### Added
@@ -76,7 +82,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.9.5...v0.10.0
 [0.9.5]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.9.3...v0.9.4

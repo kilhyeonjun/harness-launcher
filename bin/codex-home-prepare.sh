@@ -26,7 +26,11 @@ select_harness_python3() {
   fi
   # Homebrew is the supported installation path and the Formula pins a modern
   # Python. Avoid a second interpreter startup on every warm Codex launch.
-  for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+  for candidate in \
+    /opt/homebrew/opt/python@3.13/libexec/bin/python3 \
+    /usr/local/opt/python@3.13/libexec/bin/python3 \
+    /opt/homebrew/bin/python3 \
+    /usr/local/bin/python3; do
     if [[ -x "$candidate" ]]; then
       printf '%s\n' "$candidate"
       return 0
