@@ -582,13 +582,54 @@ out.mkdir(parents=True, exist_ok=True)
         )
 
     def test_nonlogin_system_python_path_falls_back_to_homebrew_python(self):
-        if not Path("/opt/homebrew/bin/python3").is_file():
+        if not any(
+            path.is_file()
+            for path in (
+                Path("/opt/homebrew/opt/python@3.13/libexec/bin/python3"),
+                Path("/usr/local/opt/python@3.13/libexec/bin/python3"),
+            )
+        ):
             self.skipTest("Homebrew Python path is not present")
 
         self.prepare(PATH="/usr/bin:/bin")
 
         self.assertEqual(self.compiler_calls(), 1)
         self.assertTrue((self.codex_home / ".surface-success.json").is_file())
+
+    def test_curated_metadata_rewrite_stays_warm_but_new_version_invalidates(self):
+        curated = (
+            self.codex_home
+            / "plugins"
+            / "cache"
+            / "openai-curated-remote"
+            / "superpowers"
+        )
+        write_skill(
+            curated / "1.0.0" / "skills",
+            "curated-one",
+            "superpowers:curated-one",
+            "curated v1",
+        )
+        metadata = curated / ".codex-remote-plugin-install.json"
+        metadata.write_text('{"schema_version":1}\n', encoding="utf-8")
+        self.prepare()
+
+        metadata.write_text('{"schema_version":1}\n', encoding="utf-8")
+        self.prepare()
+        self.assertEqual(
+            self.compiler_calls(),
+            1,
+            "curated metadata-only rewrite invalidated the warm surface",
+        )
+
+        write_skill(
+            curated / "2.0.0" / "skills",
+            "curated-two",
+            "superpowers:curated-two",
+            "curated v2",
+        )
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2)
 
     def test_failed_rebuild_leaves_no_success_stamp(self):
         self.prepare()

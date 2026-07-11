@@ -299,7 +299,13 @@ def main():
     manifest = load_object(manifest_path)
     fingerprint = cache.get("fingerprint")
     watch = cache.get("watch")
-    if cache.get("schema_version") != 2 or not isinstance(fingerprint, dict) or not isinstance(watch, dict):
+    directory_entries = cache.get("directory_entries")
+    if (
+        cache.get("schema_version") != 3
+        or not isinstance(fingerprint, dict)
+        or not isinstance(watch, dict)
+        or not isinstance(directory_entries, dict)
+    ):
         cold()
     expected_mcp = mcp_profile or (manifest.get("mcp") or {}).get("default_profile")
     if fingerprint.get("skill_profile") != skill_profile or fingerprint.get("mcp_profile") != expected_mcp:
@@ -309,6 +315,19 @@ def main():
             cold()
     for path, expected in watch.items():
         if identity(path) != expected:
+            cold()
+    for path, expected in directory_entries.items():
+        try:
+            actual = sorted(
+                name
+                for name in os.listdir(path)
+                if os.path.isdir(os.path.join(path, name))
+            )
+        except FileNotFoundError:
+            actual = None
+        except OSError:
+            cold()
+        if actual != expected:
             cold()
 
     required = [

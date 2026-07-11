@@ -117,17 +117,21 @@ class FingerprintHashCache:
         self.used: dict[str, dict] = {}
         self.loaded_watch: dict[str, list | None] = {}
         self.watched: dict[str, list | None] = {}
+        self.loaded_directory_entries: dict[str, list[str] | None] = {}
+        self.directory_entries: dict[str, list[str] | None] = {}
         self.loaded_fingerprint: dict | None = None
         self.fingerprint: dict | None = None
         if path and path.is_file():
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
-                if value.get("schema_version") in {1, 2} and isinstance(value.get("files"), dict):
+                if value.get("schema_version") in {1, 2, 3} and isinstance(value.get("files"), dict):
                     self.loaded = value["files"]
                     if isinstance(value.get("watch"), dict):
                         self.loaded_watch = value["watch"]
                     if isinstance(value.get("fingerprint"), dict):
                         self.loaded_fingerprint = value["fingerprint"]
+                    if isinstance(value.get("directory_entries"), dict):
+                        self.loaded_directory_entries = value["directory_entries"]
             except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
                 self.loaded = {}
 
@@ -171,12 +175,22 @@ class FingerprintHashCache:
         self.used[key] = entry
         return entry["sha256"]
 
+    def watch_directory_entries(self, path: Path) -> list[str] | None:
+        key = os.path.realpath(path)
+        try:
+            entries = sorted(entry.name for entry in path.iterdir() if entry.is_dir())
+        except FileNotFoundError:
+            entries = None
+        self.directory_entries[key] = entries
+        return entries
+
     def save(self) -> None:
         if not self.path:
             return
         if (
             self.used == self.loaded
             and self.watched == self.loaded_watch
+            and self.directory_entries == self.loaded_directory_entries
             and self.fingerprint == self.loaded_fingerprint
             and self.path.is_file()
         ):
@@ -185,7 +199,8 @@ class FingerprintHashCache:
             self.path,
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
+                    "directory_entries": self.directory_entries,
                     "files": self.used,
                     "watch": self.watched,
                     "fingerprint": self.fingerprint,
@@ -212,6 +227,14 @@ def fingerprint_sha256(path: Path) -> str:
 def fingerprint_watch(path: Path) -> None:
     if ACTIVE_FINGERPRINT_CACHE is not None:
         ACTIVE_FINGERPRINT_CACHE.watch(path)
+
+
+def fingerprint_watch_directory_entries(path: Path) -> list[str] | None:
+    if ACTIVE_FINGERPRINT_CACHE is None:
+        if not path.is_dir():
+            return None
+        return sorted(entry.name for entry in path.iterdir() if entry.is_dir())
+    return ACTIVE_FINGERPRINT_CACHE.watch_directory_entries(path)
 
 
 def scan_skill_root(
@@ -1136,24 +1159,31 @@ def add_skill_signature(digest, root: Path, label: str) -> None:
         digest.update(bytes.fromhex(fingerprint_sha256(path)))
 
 
-def add_skill_topology_signature(digest, root: Path, label: str) -> None:
+def add_skill_topology_signature(
+    digest, root: Path, label: str, *, watch_root_identity: bool = True
+) -> None:
     """Track skill route additions/removals without hashing disabled content."""
     digest.update(
         f"SKILL_TOPOLOGY\0{label}\0{os.path.abspath(root)}\0{os.path.realpath(root)}\0".encode()
     )
-    fingerprint_watch(root)
+    if watch_root_identity:
+        fingerprint_watch(root)
+    else:
+        fingerprint_watch_directory_entries(root)
     if not root.exists() and not root.is_symlink():
         digest.update(b"MISSING\0")
         return
 
     routes: list[tuple[str, bool]] = []
 
-    def add_skill_dir(directory: Path) -> None:
-        fingerprint_watch(directory)
+    def add_skill_dir(directory: Path, *, watch_identity: bool = True) -> None:
+        if watch_identity:
+            fingerprint_watch(directory)
         routes.append((os.path.abspath(directory), (directory / "SKILL.md").is_file()))
 
-    def add_container(container: Path) -> None:
-        fingerprint_watch(container)
+    def add_container(container: Path, *, watch_identity: bool = True) -> None:
+        if watch_identity:
+            fingerprint_watch(container)
         if not container.is_dir():
             return
         try:
@@ -1164,16 +1194,16 @@ def add_skill_topology_signature(digest, root: Path, label: str) -> None:
             if entry.is_dir():
                 add_skill_dir(entry)
 
-    add_skill_dir(root)
-    add_container(root)
+    add_skill_dir(root, watch_identity=watch_root_identity)
+    add_container(root, watch_identity=watch_root_identity)
     add_container(root / "skills")
     try:
         children = sorted(root.iterdir(), key=lambda path: path.name) if root.is_dir() else []
     except OSError:
         children = []
     for child in children:
-        fingerprint_watch(child)
         if child.is_dir():
+            fingerprint_watch(child)
             add_container(child / "skills")
     for path, has_skill in sorted(set(routes)):
         digest.update(f"{path}\0{int(has_skill)}\0".encode())
@@ -1303,7 +1333,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
             (
                 "generated-curated-superpowers",
                 codex_home / "plugins" / "cache" / "openai-curated-remote" / "superpowers",
-                "skills-topology",
+                "curated-skills-topology",
             ),
         ]
     )
@@ -1355,6 +1385,10 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
             add_skill_signature(digest, root, label)
         elif mode == "skills-topology":
             add_skill_topology_signature(digest, root, label)
+        elif mode == "curated-skills-topology":
+            add_skill_topology_signature(
+                digest, root, label, watch_root_identity=False
+            )
         elif mode == "plugin-cache":
             add_plugin_cache_signature(
                 digest,
