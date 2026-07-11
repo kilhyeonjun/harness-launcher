@@ -74,6 +74,7 @@ User-authored sources live outside `.harness`:
 
 ```text
 config/launcher.env
+config/codex-surface.json
 .mcp.json
 .mcp.local.json
 mcp.local.json
@@ -84,6 +85,8 @@ config/.local/
 ```
 
 Preparation is idempotent. Re-running a launcher command converges generated files to the current source configuration.
+
+When `config/codex-surface.json` is present, it is the membership boundary for generated Codex skills, imported Claude plugins, Codex-only profiles, and enabled MCP servers. Host tokens are expanded at preparation time. The generated catalog records exact source paths and hashes; it is evidence, not source.
 
 ## MCP configuration
 
@@ -119,6 +122,8 @@ Most Codex state is project-scoped, but bundled plugin caches and the Chrome nat
 On macOS, preparation opens a persistent lock file and acquires `/usr/bin/lockf` on an inherited descriptor. The kernel holds the lock for the protected subshell lifetime, including signal and child-process cases. The lock file can remain on disk after release; successful reacquisition proves that no process still owns it.
 
 Do not replace this with PID files, mtime-based stale reclamation, or signal cleanup that removes a directory while child work continues.
+
+Manifest-enabled homes also keep an atomic successful-input fingerprint. The warm path validates the fingerprint and every managed skill link before returning. Auth contents, sessions, hook trust state, and generated mtimes remain runtime state and do not invalidate source generation. Any cold rebuild removes its old success stamp before mutation.
 
 ## Browser and plugin trust
 

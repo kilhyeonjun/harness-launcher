@@ -116,6 +116,14 @@ mv .harness/codex ".harness/codex.backup.$(date +%s)"
 
 Run the launcher again and compare the regenerated result. Keep the backup until sessions and auth links are verified.
 
+For a project with `config/codex-surface.json`, inspect `.harness/codex/skill-catalog.json` to see the selected source path, hash, invocation policy, and MCP profile. A divergent duplicate without `duplicate_choices`, a missing profile-only skill, or an undeclared MCP server is a source error; editing generated TOML does not fix it.
+
+To force one safe rebuild without deleting sessions, remove only the success stamp:
+
+```bash
+rm .harness/codex/.surface-success.json
+```
+
 ## Lock file remains under `~/.codex`
 
 This file is expected:

@@ -4,6 +4,16 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+### Added
+
+- Schema-v1 `config/codex-surface.json` resolution for exact skill, Claude-plugin, Codex-only, and MCP profile membership.
+- Atomic skill catalogs and successful-input fingerprints for validated warm Codex-home preparation.
+
+### Changed
+
+- Manifest-enabled homes collapse duplicate skill routes, keep explicit-only skills out of implicit prompt matching, and disable unselected routes by exact `SKILL.md` path.
+- Manifest MCP profiles render explicit enabled flags and gate bundled Computer Use; warm no-op preparation now avoids compiler and plugin work.
+
 ## [0.9.5] — 2026-07-10
 
 ### Added

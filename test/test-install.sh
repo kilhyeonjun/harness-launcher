@@ -13,6 +13,7 @@ for file in \
   aliases.zsh \
   launcher.sh \
   codex-home-prepare.sh \
+  codex-surface.py \
   codex-hook-adapter.sh \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh; do
@@ -25,6 +26,7 @@ done
 for file in \
   launcher.sh \
   codex-home-prepare.sh \
+  codex-surface.py \
   codex-hook-adapter.sh \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh; do

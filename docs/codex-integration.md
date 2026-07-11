@@ -39,6 +39,8 @@ Before launch, `codex-home-prepare.sh` converges:
 ├── AGENTS.md
 ├── auth.json -> ~/.codex/auth.json
 ├── hooks.json
+├── skill-catalog.json
+├── surface.config.toml
 ├── skills/
 ├── agents/
 ├── plugins/
@@ -47,6 +49,8 @@ Before launch, `codex-home-prepare.sh` converges:
 ```
 
 The exact set depends on available source files and installed Codex features. The directory is generated runtime state and should be ignored by Git.
+
+When `config/codex-surface.json` exists, preparation uses its exact skill, Claude-plugin, Codex-only, and MCP allowlists instead of importing every available source. See [Codex surface manifests](codex-surface.md) for schema version `1`, profile selection, and warm-path invalidation.
 
 ## Profiles
 
@@ -126,7 +130,7 @@ Legacy project-root `.codex` directories can conflict with generated state. The 
 
 ## Skills and generated agents
 
-`CODEX_HOME/skills` is a per-skill merge from available sources:
+Without a surface manifest, `CODEX_HOME/skills` is a per-skill merge from available sources:
 
 ```text
 ~/.codex/skills
@@ -136,6 +140,8 @@ Legacy project-root `.codex` directories can conflict with generated state. The 
 ```
 
 Use `.codex-only/skills` when a skill should not appear in Claude Code.
+
+With a surface manifest, only selected routes are linked. Explicit-only skills remain callable but are excluded from implicit prompt matching. Divergent duplicate hashes require an explicit source choice; unselected routes are disabled by exact `SKILL.md` path without deleting their installation.
 
 Portable Claude agent definitions can be converted into Codex agent TOML. Model tiers map by capability:
 

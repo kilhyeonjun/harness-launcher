@@ -145,6 +145,7 @@ A typical registered project looks like this:
 work-harness/
 ├── config/
 │   ├── launcher.env
+│   ├── codex-surface.json      # optional exact Codex runtime allowlists
 │   └── .local/                 # optional, never commit secrets
 ├── .claude/
 │   ├── skills/                 # shared Claude/Codex-compatible skills
@@ -165,7 +166,7 @@ Before each native Codex launch, `bin/codex-home-prepare.sh` prepares an isolate
 - `config.toml` with project MCP servers and the default Terra/medium route
 - `fast.config.toml`, `base.config.toml`, `plan.config.toml`, and `rich.config.toml`
 - generated `AGENTS.md`
-- merged skill links from global, shared project, and `.codex-only` sources
+- exact manifest-selected skills and MCP flags, or legacy merged links when no surface manifest exists
 - project-scoped sessions and history
 - an `auth.json` symlink to the active native Codex login
 
@@ -174,6 +175,7 @@ The terminal `codex` from `PATH` is preferred. Set `HARNESS_CODEX_BIN` for an ex
 Browser support keeps the terminal-safe `browser-harness` path, materializes supported bundled plugins, and uses an exact browser-client SHA allowlist for `node_repl`. Shared plugin cache updates use the macOS kernel lock (`lockf`) so concurrent project launches cannot corrupt global cache state.
 
 See [Codex integration](docs/codex-integration.md) for the generated layout, configuration translation, plugin policy, and compatibility notes.
+For large installations, see [Codex surface manifests](docs/codex-surface.md) for duplicate collapse, explicit-only skills, exact MCP profiles, and the warm prepare path.
 
 ## Local configuration and secrets
 
