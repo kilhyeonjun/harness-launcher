@@ -227,6 +227,78 @@ for path in sys.argv[1:]:
 PY
 }
 
+# --- MCP surface (light) ----------------------------------------------------------
+# The "light" surface drops SSH-backed MCP servers — the heavy class that
+# opens remote connections per session — and keeps everything else. Two shapes
+# identify that class:
+#   1. stdio wrappers: command "bash" + args[0] containing start-ssh-mcp.sh
+#   2. loopback HTTP on the SSH-tunnel port band 38200–38299 (RAG/KG tunnels;
+#      documented in domains/knowledge/tools/mcp/ssh-backed-mcp.md)
+# Local non-SSH services (e.g. 381xx) and remote https servers stay.
+# Used by Claude (--strict-mcp-config) and Kiro (HARNESS_KIRO_MCP_PROFILE=light
+# in kiro-home-prepare.sh).
+#
+# harness_claude_light_mcp_config <harness-dir> → prints generated file path.
+# Merges .mcp.json + local overlays, filters the SSH class, writes the result
+# under .harness/claude/. Fails (rc 1) on duplicate server names.
+harness_claude_light_mcp_config() {
+  local harness_dir="$1"
+  local out="$harness_dir/.harness/claude/mcp-light.json"
+  mkdir -p "$harness_dir/.harness/claude"
+  python3 - "$harness_dir" "$out" <<'PY' || return 1
+import json, os, re, sys
+
+harness_dir, out = sys.argv[1], sys.argv[2]
+
+def is_ssh_backed(spec):
+    args = spec.get("args") or []
+    if spec.get("command") == "bash" and args and "start-ssh-mcp.sh" in str(args[0]):
+        return True
+    m = re.match(r"https?://(127\.0\.0\.1|localhost):(\d+)(/|$)", str(spec.get("url") or ""))
+    return bool(m) and 38200 <= int(m.group(2)) <= 38299
+
+merged, seen = {}, {}
+for name in (".mcp.json", ".mcp.local.json", "mcp.local.json"):
+    path = os.path.join(harness_dir, name)
+    if not os.path.isfile(path):
+        continue
+    with open(path, encoding="utf-8") as f:
+        servers = (json.load(f).get("mcpServers") or {})
+    for srv, spec in servers.items():
+        if srv in seen:
+            print(
+                f"ERROR: duplicate MCP server '{srv}' in {seen[srv]} and {path}; "
+                "rename the local server instead of overriding committed .mcp.json",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        seen[srv] = path
+        if is_ssh_backed(spec):
+            continue  # SSH-backed heavy class — excluded from the light surface
+        merged[srv] = spec
+
+# --strict-mcp-config also drops user-scope servers (~/.claude.json), so the
+# generated file must carry every non-SSH server the session would otherwise
+# have. Harness scope wins on name collisions (mirrors claude's precedence).
+user_cfg = os.path.expanduser("~/.claude.json")
+if os.path.isfile(user_cfg):
+    try:
+        with open(user_cfg, encoding="utf-8") as f:
+            user_servers = json.load(f).get("mcpServers") or {}
+    except (OSError, ValueError):
+        user_servers = {}
+    for srv, spec in user_servers.items():
+        if srv not in seen and not is_ssh_backed(spec):
+            merged[srv] = spec
+
+tmp = f"{out}.tmp.{os.getpid()}"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump({"mcpServers": merged}, f, indent=2)
+os.replace(tmp, out)
+print(out)
+PY
+}
+
 # --- shared user-facing strings ---------------------------------------------------
 harness_ultracode_hint() {
   printf '💡 ultracode는 세션 전용입니다 — 시작 후 /effort 에서 ultracode를 선택하면 워크플로우 오케스트레이션이 켜집니다 (지금은 opus[1m] + xhigh로 시작).\n' >&2

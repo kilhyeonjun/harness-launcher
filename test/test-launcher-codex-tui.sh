@@ -85,7 +85,7 @@ printf 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNE
 
 run_tui() {
   local input="$1" stub_file="$2" extra_path="${3:-}"
-  rm -f "$TEST_HARNESS/.harness/launcher-last"
+  rm -f "$TEST_HARNESS/.harness/launcher-last" "$TEST_HARNESS/.harness/launcher-history"
   local path_value="$TEST_BIN:/usr/bin:/bin"
   [[ -n "$extra_path" ]] && path_value="$extra_path:$path_value"
   TEST_STUB_FILE="$stub_file" \
@@ -222,7 +222,7 @@ chmod +x "$NO_CODEX_BIN/claude"
 
 STUB4="$TEST_TEMP/out4-claude-only.txt"
 : > "$STUB4"
-rm -f "$TEST_HARNESS/.harness/launcher-last"
+rm -f "$TEST_HARNESS/.harness/launcher-last" "$TEST_HARNESS/.harness/launcher-history"
 TEST_STUB_FILE="$STUB4" \
 PATH="$NO_CODEX_BIN:/usr/bin:/bin" \
 HARNESS_CODEX_BIN="$TEST_TEMP/missing-codex" \

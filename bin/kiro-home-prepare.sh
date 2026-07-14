@@ -39,7 +39,7 @@ mcp_out="$KIRO_HOME/settings/mcp.json"
 tmp_mcp="$STAGING_DIR/mcp.json"
 
 python3 - "$HARNESS_DIR" > "$tmp_mcp" <<'PY'
-import json, os, sys
+import json, os, re, sys
 
 harness = sys.argv[1]
 merged = {}
@@ -61,6 +61,19 @@ for name in (".mcp.json", ".mcp.local.json", "mcp.local.json"):
             raise SystemExit(1)
         seen[srv_name] = path
         merged[srv_name] = spec
+
+# Light MCP surface: drop SSH-backed servers — stdio start-ssh-mcp.sh wrappers
+# and loopback HTTP on the SSH-tunnel port band 38200–38299. Same rule as the
+# Claude light surface in harness-common.sh.
+def _is_ssh_backed(spec):
+    args = spec.get("args") or []
+    if spec.get("command") == "bash" and args and "start-ssh-mcp.sh" in str(args[0]):
+        return True
+    m = re.match(r"https?://(127\.0\.0\.1|localhost):(\d+)(/|$)", str(spec.get("url") or ""))
+    return bool(m) and 38200 <= int(m.group(2)) <= 38299
+
+if os.environ.get("HARNESS_KIRO_MCP_PROFILE") == "light":
+    merged = {name: spec for name, spec in merged.items() if not _is_ssh_backed(spec)}
 
 # Convert to kiro-cli format: ensure "type" field
 output = {}

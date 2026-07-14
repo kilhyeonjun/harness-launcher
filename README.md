@@ -117,6 +117,7 @@ The same command shape works for every registered prefix:
 <prefix> fast|base|plan|rich     Claude Code preset
 <prefix> ultracode               Claude Code opus[1m] + xhigh (direct only)
 <prefix> continue|resume         Claude Code session shortcut
+<prefix> light                   Claude Code with the light MCP surface (SSH-backed servers excluded)
 <prefix> codex [profile]         native Codex CLI (fast|base|sol|plan|rich)
 <prefix> codex work              native Codex CLI with the base profile and work MCP surface
 <prefix> codex continue          Codex `resume --last`
@@ -124,18 +125,23 @@ The same command shape works for every registered prefix:
 <prefix> codex fork              Codex `fork --last`
 <prefix> codex full-auto|never|bypass   Codex safety level (bypass disables sandbox — dangerous)
 <prefix> kiro-cli [mode]         native Kiro CLI
+<prefix> kiro-cli light          native Kiro CLI with the light MCP surface
 <prefix> kiro [mode]             Claude Code through a Kiro gateway
 <prefix> codex-gateway [mode]    Claude Code through a Codex gateway
 ```
 
 Extra arguments pass through to the selected runtime.
 
-Run the prefix without arguments for the TUI: pick a runtime, session, and mode,
-then review everything on a single summary screen where permission mode, Chrome,
-and the Happy wrapper are toggles. The first menu offers **Repeat last** to relaunch
-your previous configuration in one keypress (stored per harness in
-`.harness/launcher-last`; gateways, generated homes, and MCP configs are revalidated
-on every replay). Esc (or `q`/invalid-then-`q` in the no-gum fallback) goes one step back; at the top menu it exits.
+Run the prefix without arguments for the TUI. The top screen is a **launchpad**:
+your recent launch configurations (up to 8, newest first, deduped per harness in
+`.harness/launcher-history`) plus one "New …" composer entry per installed
+runtime, fuzzy-searchable under gum — type to filter, Enter to launch. Picking a
+history row relaunches that exact configuration; gateways, generated homes, and
+MCP configs are revalidated on every replay. The composer collects session and
+mode, then shows a single summary screen where permission mode, Chrome, the MCP
+surface (`full`/`light` — light drops SSH-backed servers: `start-ssh-mcp.sh`
+stdio wrappers and loopback HTTP on ports 38200–38299), and the Happy wrapper
+are toggles. Esc (or `q`/invalid-then-`q` in the no-gum fallback) goes one step back; at the launchpad it exits.
 Menu labels are generated from the same mode table the shortcuts use, and the
 native-Codex profile labels read the generated profile configs, so what a label
 says is what launches. Native Codex offers the `work` MCP surface as a profile

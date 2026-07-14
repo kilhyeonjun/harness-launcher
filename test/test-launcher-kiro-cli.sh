@@ -47,7 +47,10 @@ chmod +x "$KIRO_STUB"
 PREPARE_STUB="$TEST_BIN/kiro-home-prepare.sh"
 cat > "$PREPARE_STUB" <<'EOF'
 #!/usr/bin/env bash
-echo "PREPARE_ARGV:$*" >> "$TEST_STUB_FILE"
+{
+  echo "PREPARE_ARGV:$*"
+  echo "PREPARE_PROFILE:${HARNESS_KIRO_MCP_PROFILE:-}"
+} >> "$TEST_STUB_FILE"
 mkdir -p "$1/.harness/kiro"
 exit 0
 EOF
@@ -207,6 +210,41 @@ run_kiro_cli "$stub" fast
 
 prepare_call=$(get_field "PREPARE_ARGV" "$stub")
 assert_eq "prepare called with harness dir" "$TEST_HARNESS" "$prepare_call"
+assert_eq "full surface: no MCP profile env" "" "$(get_field "PREPARE_PROFILE" "$stub")"
+
+# ─── Test: light MCP surface ─────────────────────────────────────────────────
+echo "Test: kiro-cli light"
+stub="$TEST_TEMP/out-light.txt"
+run_kiro_cli "$stub" base light
+
+assert_eq "light surface: prepare sees profile" "light" "$(get_field "PREPARE_PROFILE" "$stub")"
+assert_eq "model still applies with light" "claude-sonnet-4.6" "$(get_flag_value "--model" "$stub")"
+
+# light must not leak HARNESS_KIRO_MCP_PROFILE into the calling shell
+leak=$(
+  export TEST_STUB_FILE="$TEST_TEMP/out-light-leak.txt"
+  export PATH="$TEST_BIN:$PATH"
+  export HARNESS_KIRO_BIN="$KIRO_STUB"
+  export _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  _harness_launcher_run "$TEST_HARNESS" 'kiro-cli' base light >/dev/null 2>&1
+  echo "${HARNESS_KIRO_MCP_PROFILE:-unset}"
+)
+assert_eq "light surface: env unset after launch" "unset" "$leak"
+
+# light must not leak even when the kiro binary cannot be resolved (early return)
+leak_missing=$(
+  export TEST_STUB_FILE="$TEST_TEMP/out-light-missing.txt"
+  export PATH="/usr/bin:/bin"
+  export HARNESS_KIRO_BIN="$TEST_TEMP/nonexistent-kiro"
+  export _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  _harness_launcher_run "$TEST_HARNESS" 'kiro-cli' base light >/dev/null 2>&1 && rc=0 || rc=$?
+  echo "rc=$rc profile=${HARNESS_KIRO_MCP_PROFILE:-unset}"
+)
+assert_eq "light surface: no leak when kiro bin missing" "rc=1 profile=unset" "$leak_missing"
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo ""

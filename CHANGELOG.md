@@ -4,6 +4,34 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-07-15
+
+### Added
+
+- **Light MCP surface for Claude Code and Kiro CLI.** `light` drops SSH-backed
+  MCP servers — `core/bin/start-ssh-mcp.sh` stdio wrappers and loopback HTTP
+  servers on the SSH-tunnel port band 38200–38299 — and keeps everything else,
+  unifying the MCP-surface concept across all three runtimes (Codex keeps its
+  `work` profile):
+  - TUI: a `🔌 MCP surface: full|light` toggle on the Claude and Kiro summary
+    screens.
+  - Shortcuts: `<prefix> light` (Claude, via `--strict-mcp-config` + a
+    generated `.harness/claude/mcp-light.json`) and `<prefix> kiro-cli light`
+    (via `HARNESS_KIRO_MCP_PROFILE=light` at home preparation).
+  - The generated light config revalidates duplicate server names on every
+    launch, matching the full-surface validation.
+
+### Changed
+
+- **Launchpad TUI.** The top screen now lists your recent launch configurations
+  (up to 8, newest first, per-harness `.harness/launcher-history`) plus one
+  "New …" composer entry per installed runtime, fuzzy-searchable under gum
+  (type to filter, Enter to launch). Picking a history row replays that exact
+  configuration through the same assembly path as a fresh config. Entries are
+  deduped by config identity — relaunching an old row moves it to the top
+  instead of duplicating it. The previous single-entry "Repeat last"
+  (`.harness/launcher-last`) is migrated into the history automatically.
+
 ## [0.11.0] — 2026-07-15
 
 ### Added
@@ -143,7 +171,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.0...v0.10.1

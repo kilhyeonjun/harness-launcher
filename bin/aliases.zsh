@@ -160,7 +160,7 @@ _harness_launcher_run() {
 
   local -a claude_args=()
   local session_flag="" skip_tui=false env_effort="" provider_url="" gateway_api_key="" provider_name=""
-  local mode_applied=false
+  local mode_applied=false mcp_surface="full"
 
   # Optional provider prefix (must be first arg)
   case "${1:-}" in
@@ -231,6 +231,7 @@ _harness_launcher_run() {
           esac
         fi
         skip_tui=true; shift ;;
+      light)    mcp_surface="light"; skip_tui=true; shift ;;
       continue) session_flag="--continue"; skip_tui=true; shift ;;
       resume)   session_flag="--resume"; skip_tui=true; shift ;;
       bypass)       claude_args+=(--permission-mode bypassPermissions); skip_tui=true; shift ;;
@@ -266,7 +267,13 @@ _harness_launcher_run() {
     # Plain invocation (not exec) so the user's interactive shell survives
     # the launched process — Ctrl+C returns to the prompt instead of closing
     # the terminal window.
-    _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}"
+    if [[ "$mcp_surface" == "light" ]]; then
+      local _light_file
+      _light_file="$(harness_claude_light_mcp_config "$HARNESS_DIR")" || return $?
+      claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}"
+    else
+      _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}"
+    fi
     return $?
   else
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" \
@@ -376,7 +383,7 @@ _harness_launcher_run_codex_cli() {
 #   Sessions: resume → --resume-picker, continue → -r
 _harness_launcher_run_kiro_cli() {
   local HARNESS_DIR="$1"; shift
-  local model="" effort="" agent="harness"
+  local model="" effort="" agent="harness" mcp_surface="full"
   local -a kiro_args=()
   local session_flag=""
 
@@ -388,6 +395,7 @@ _harness_launcher_run_kiro_cli() {
       resume)   session_flag="--resume-picker"; shift ;;
       continue) session_flag="-r"; shift ;;
       bypass)   kiro_args+=(-a); shift ;;
+      light)    mcp_surface="light"; shift ;;
       *)        kiro_args+=("$1"); shift ;;
     esac
   done
@@ -397,12 +405,23 @@ _harness_launcher_run_kiro_cli() {
     model="$HARNESS_KIRO_MODEL"; effort="$HARNESS_KIRO_EFFORT"
   fi
 
-  _harness_launcher_export_kiro_runtime_env "$HARNESS_DIR" || return $?
-
+  # Resolve the binary before exporting the surface profile: an early failure
+  # return here must not leave HARNESS_KIRO_MCP_PROFILE in the user's shell.
   local kiro_bin
   kiro_bin="$(_harness_launcher_kiro_bin)" || {
     echo "❌ kiro-cli not found in PATH" >&2
     return 1
+  }
+
+  if [[ "$mcp_surface" == "light" ]]; then
+    export HARNESS_KIRO_MCP_PROFILE="light"
+  else
+    unset HARNESS_KIRO_MCP_PROFILE
+  fi
+  _harness_launcher_export_kiro_runtime_env "$HARNESS_DIR" || {
+    local rc=$?
+    unset HARNESS_KIRO_MCP_PROFILE
+    return $rc
   }
 
   local -a launch_cmd=("$kiro_bin" chat)
@@ -412,7 +431,9 @@ _harness_launcher_run_kiro_cli() {
   unset HARNESS_KIRO_MODEL HARNESS_KIRO_EFFORT
 
   (cd "$HARNESS_DIR" && "${launch_cmd[@]}")
-  return $?
+  local rc=$?
+  unset HARNESS_KIRO_MCP_PROFILE
+  return $rc
 }
 
 # _harness_launcher_complete <harness-dir>
@@ -431,6 +452,7 @@ _harness_launcher_complete() {
   desc="$( harness_mode_resolve ultracode direct; printf '%s · %s' "$HARNESS_MODE_MODEL" "$HARNESS_MODE_EFFORT" )"
   shortcuts+=(
     "ultracode:$desc now · /effort→ultracode for workflows (direct only)"
+    'light:Light MCP surface — SSH-backed servers excluded (claude/kiro-cli)'
     'continue:Continue last session'
     'resume:Resume from list'
     'bypass:Skip all permission prompts'

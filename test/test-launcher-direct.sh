@@ -169,4 +169,69 @@ if [[ -s "$dup_stub_file" ]]; then
 fi
 echo "PASS: Claude launcher rejects duplicate MCP server names before launch"
 
+# Light MCP surface shortcut: `<prefix> base light` generates a filtered config
+# and launches with --strict-mcp-config; SSH-backed servers are excluded.
+cat > "$TEST_HARNESS/.mcp.local.json" <<'EOF'
+{ "mcpServers": {
+  "ssh_rag": { "command": "bash", "args": ["core/bin/start-ssh-mcp.sh", "rag"] },
+  "tunnel_rag": { "type": "http", "url": "http://127.0.0.1:38206/mcp" }
+} }
+EOF
+light_stub_file="$TEST_TEMP/output-light.txt"
+mkdir -p "$TEST_TEMP/home"
+(
+  export TEST_STUB_FILE="$light_stub_file"
+  export PATH="$TEST_TEMP:$PATH"
+  export HOME="$TEST_TEMP/home"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _harness_launcher_run "$TEST_HARNESS" base light
+) 2>/dev/null || true
+args_line=$(grep "^ARGS:" "$light_stub_file" | head -1 | cut -d: -f2-)
+LIGHT_FILE="$TEST_HARNESS/.harness/claude/mcp-light.json"
+case "$args_line" in
+  *"--strict-mcp-config --mcp-config $LIGHT_FILE"*) ;;
+  *)
+    echo "FAIL: light shortcut should pass --strict-mcp-config + generated file"
+    echo "  Full args: $args_line"
+    exit 1 ;;
+esac
+case "$args_line" in
+  *".mcp.local.json"*)
+    echo "FAIL: light shortcut must not also append raw local overlay files"
+    echo "  Full args: $args_line"
+    exit 1 ;;
+esac
+grep -q "ssh_rag" "$LIGHT_FILE" && { echo "FAIL: light surface must exclude SSH stdio wrappers"; exit 1; }
+grep -q "tunnel_rag" "$LIGHT_FILE" && { echo "FAIL: light surface must exclude 382xx tunnel servers"; exit 1; }
+grep -q "committed" "$LIGHT_FILE" || { echo "FAIL: light surface must keep committed non-SSH servers"; exit 1; }
+grep -q "legacy_local" "$LIGHT_FILE" || { echo "FAIL: light surface must keep local non-SSH servers"; exit 1; }
+echo "PASS: light shortcut filters SSH servers with --strict-mcp-config"
+
+# Light shortcut must fail closed on duplicate server names (no launch).
+cat > "$TEST_HARNESS/.mcp.local.json" <<'EOF'
+{ "mcpServers": { "committed": { "type": "http", "url": "https://local.test/mcp" } } }
+EOF
+light_dup_stub="$TEST_TEMP/output-light-dup.txt"
+light_dup_err="$TEST_TEMP/output-light-dup.err"
+if (
+  export TEST_STUB_FILE="$light_dup_stub"
+  export PATH="$TEST_TEMP:$PATH"
+  export HOME="$TEST_TEMP/home"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _harness_launcher_run "$TEST_HARNESS" base light
+) 2> "$light_dup_err"; then
+  echo "FAIL: light shortcut must fail on duplicate server names"
+  exit 1
+fi
+grep -q "duplicate MCP server 'committed'" "$light_dup_err" || {
+  echo "FAIL: light duplicate error message missing"
+  cat "$light_dup_err"
+  exit 1
+}
+if [[ -s "$light_dup_stub" ]]; then
+  echo "FAIL: claude must not launch when light generation fails"
+  exit 1
+fi
+echo "PASS: light shortcut fails closed on duplicate server names"
+
 echo "✓ All direct OAuth tests passed"

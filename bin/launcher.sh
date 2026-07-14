@@ -3,14 +3,16 @@
 # Invoked by bin/aliases.zsh when user runs `<prefix>` with no shortcut args.
 # Required env: HARNESS_DIR, HARNESS_NAME
 #
-# Design (v2):
+# Design (v3, launchpad):
+#   - The top screen is a launchpad: recent complete launch configs (history)
+#     plus one "New …" composer entry per installed runtime, fuzzy-searchable
+#     under gum. Picking a history row replays it through the same assembly
+#     path as a fresh config, so every launch revalidates gateways/homes/MCP.
 #   - Choice collection and command assembly are separate: menus only fill
 #     CHOICE_* variables; assembly/exec reads them in one place per runtime.
-#     "Repeat last" replays saved choices through the same assembly path, so
-#     every launch revalidates gateways/homes/MCP configs.
 #   - Model/effort/labels come from harness-common.sh (harness_mode_*), the
 #     same table the shortcut path uses — labels cannot drift from behavior.
-#   - Esc/cancel = one step back everywhere; at the top menu it exits.
+#   - Esc/cancel = one step back everywhere; at the launchpad it exits.
 #     Ctrl-C exits anywhere.
 
 HARNESS_DIR="${HARNESS_DIR:?HARNESS_DIR required}"
@@ -21,7 +23,12 @@ LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=harness-common.sh
 . "$LAUNCHER_BIN_DIR/harness-common.sh"
 
-PLAN_FILE="$HARNESS_DIR/.harness/launcher-last"
+# Launch history (launchpad rows): one tab-separated KEY=VALUE line per entry,
+# newest first, deduped by config identity (TS/SUMMARY excluded).
+HISTORY_FILE="$HARNESS_DIR/.harness/launcher-history"
+HISTORY_MAX=8
+# Pre-0.12 single-entry plan file — migrated into the history on startup.
+LEGACY_PLAN_FILE="$HARNESS_DIR/.harness/launcher-last"
 PROBE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/harness-launcher-probe.XXXXXX")"
 trap 'rm -rf "$PROBE_DIR"' EXIT
 
@@ -71,6 +78,29 @@ menu() {
   done
 }
 
+# menu_filter <header> <option>...
+#   Launchpad top screen: fuzzy-searchable under gum (type to filter, Enter to
+#   launch). No-gum fallback is the same numbered menu as everywhere else.
+menu_filter() {
+  local header="$1"; shift
+  local options=("$@")
+  MENU_RESULT=""
+  if command -v gum >/dev/null 2>&1 && : </dev/tty 2>/dev/null; then
+    local result rc
+    result=$(printf '%s\n' "${options[@]}" | gum filter \
+      --header "$header" \
+      --placeholder "타이핑해서 검색 · Enter 실행" \
+      --indicator "❯" \
+      --height $(( ${#options[@]} + 2 )))
+    rc=$?
+    [ $rc -eq 130 ] && exit 0
+    [ $rc -ne 0 ] && return 1
+    MENU_RESULT="$result"
+    return 0
+  fi
+  menu "$header" "${options[@]}"
+}
+
 # ---------------------------------------------------------------------------
 # Gateway probes — fired in the background at startup so the provider menu
 # never blocks on them; results are read from status files when needed.
@@ -113,66 +143,119 @@ probe_mark() {
 }
 
 # ---------------------------------------------------------------------------
-# Launch-plan persistence ("Repeat last").
-plan_save() {
-  mkdir -p "$HARNESS_DIR/.harness"
-  {
-    echo "RUNTIME=$CHOICE_RUNTIME"
-    echo "SUMMARY=$PLAN_SUMMARY"
-    echo "PROVIDER=$CHOICE_PROVIDER"
-    echo "SESSION=$CHOICE_SESSION"
-    echo "MODE=$CHOICE_MODE"
-    echo "C_MODEL=$CHOICE_C_MODEL"
-    echo "C_EFFORT=$CHOICE_C_EFFORT"
-    echo "PERM=$CHOICE_PERM"
-    echo "CHROME=$CHOICE_CHROME"
-    echo "HAPPY=$CHOICE_HAPPY"
-    echo "CODEX_PROFILE=$CHOICE_CODEX_PROFILE"
-    echo "CODEX_SURFACE=$CHOICE_CODEX_SURFACE"
-    echo "CODEX_SAFETY=$CHOICE_CODEX_SAFETY"
-    echo "KIRO_TRUST=$CHOICE_KIRO_TRUST"
-  } > "$PLAN_FILE"
+# Launch-history persistence (launchpad rows).
+
+# plan_apply_field <key> <value> — one field into its CHOICE_* variable.
+plan_apply_field() {
+  case "$1" in
+    RUNTIME)       CHOICE_RUNTIME="$2" ;;
+    SUMMARY)       PLAN_SUMMARY="$2" ;;
+    PROVIDER)      CHOICE_PROVIDER="$2" ;;
+    SESSION)       CHOICE_SESSION="$2" ;;
+    MODE)          CHOICE_MODE="$2" ;;
+    C_MODEL)       CHOICE_C_MODEL="$2" ;;
+    C_EFFORT)      CHOICE_C_EFFORT="$2" ;;
+    PERM)          CHOICE_PERM="$2" ;;
+    MCP_SURFACE)   CHOICE_MCP_SURFACE="$2" ;;
+    CHROME)        CHOICE_CHROME="$2" ;;
+    HAPPY)         CHOICE_HAPPY="$2" ;;
+    CODEX_PROFILE) CHOICE_CODEX_PROFILE="$2" ;;
+    CODEX_SURFACE) CHOICE_CODEX_SURFACE="$2" ;;
+    CODEX_SAFETY)  CHOICE_CODEX_SAFETY="$2" ;;
+    KIRO_TRUST)    CHOICE_KIRO_TRUST="$2" ;;
+  esac
 }
 
-plan_load() {
-  [ -f "$PLAN_FILE" ] || return 1
-  local line key val
-  while IFS= read -r line; do
-    key="${line%%=*}"; val="${line#*=}"
-    case "$key" in
-      RUNTIME)       CHOICE_RUNTIME="$val" ;;
-      SUMMARY)       PLAN_SUMMARY="$val" ;;
-      PROVIDER)      CHOICE_PROVIDER="$val" ;;
-      SESSION)       CHOICE_SESSION="$val" ;;
-      MODE)          CHOICE_MODE="$val" ;;
-      C_MODEL)       CHOICE_C_MODEL="$val" ;;
-      C_EFFORT)      CHOICE_C_EFFORT="$val" ;;
-      PERM)          CHOICE_PERM="$val" ;;
-      CHROME)        CHOICE_CHROME="$val" ;;
-      HAPPY)         CHOICE_HAPPY="$val" ;;
-      CODEX_PROFILE) CHOICE_CODEX_PROFILE="$val" ;;
-      CODEX_SURFACE) CHOICE_CODEX_SURFACE="$val" ;;
-      CODEX_SAFETY)  CHOICE_CODEX_SAFETY="$val" ;;
-      KIRO_TRUST)    CHOICE_KIRO_TRUST="$val" ;;
-    esac
-  done < "$PLAN_FILE"
+# history_ident <line> — config identity: every field except TS/SUMMARY.
+history_ident() {
+  printf '%s\n' "$1" | awk -F'\t' \
+    '{out=""; for (i=1; i<=NF; i++) if ($i !~ /^TS=/ && $i !~ /^SUMMARY=/) out = out $i "\t"; print out}'
+}
+
+# history_save [ts] — prepend the current CHOICE_* config; an existing entry
+# with the same identity moves to the top instead of duplicating.
+history_save() {
+  mkdir -p "$HARNESS_DIR/.harness"
+  local ts="${1:-$(date +%s)}" line ident old tmp
+  local fields=(
+    "TS=$ts" "SUMMARY=$PLAN_SUMMARY" "RUNTIME=$CHOICE_RUNTIME"
+    "PROVIDER=$CHOICE_PROVIDER" "SESSION=$CHOICE_SESSION" "MODE=$CHOICE_MODE"
+    "C_MODEL=$CHOICE_C_MODEL" "C_EFFORT=$CHOICE_C_EFFORT" "PERM=$CHOICE_PERM"
+    "MCP_SURFACE=$CHOICE_MCP_SURFACE" "CHROME=$CHOICE_CHROME" "HAPPY=$CHOICE_HAPPY"
+    "CODEX_PROFILE=$CHOICE_CODEX_PROFILE" "CODEX_SURFACE=$CHOICE_CODEX_SURFACE"
+    "CODEX_SAFETY=$CHOICE_CODEX_SAFETY" "KIRO_TRUST=$CHOICE_KIRO_TRUST"
+  )
+  line=$(printf '%s\t' "${fields[@]}"); line="${line%$'\t'}"
+  ident=$(history_ident "$line")
+  tmp="$HISTORY_FILE.tmp.$$"
+  {
+    printf '%s\n' "$line"
+    if [ -f "$HISTORY_FILE" ]; then
+      while IFS= read -r old; do
+        [ -n "$old" ] || continue
+        [ "$(history_ident "$old")" = "$ident" ] && continue
+        printf '%s\n' "$old"
+      done < "$HISTORY_FILE"
+    fi
+  } | head -n "$HISTORY_MAX" > "$tmp"
+  mv "$tmp" "$HISTORY_FILE"
+}
+
+# history_field <line> <key> — extract one KEY=VALUE field's value.
+history_field() {
+  printf '%s\n' "$1" | tr '\t' '\n' | sed -n "s/^$2=//p" | head -1
+}
+
+# history_load_line <line> — fill CHOICE_* from one history entry. The line is
+# captured when the launchpad menu is built, so a concurrent launcher rewriting
+# the file while the menu is open cannot shift which config gets replayed.
+history_load_line() {
+  local line="$1" field key
+  [ -n "$line" ] || return 1
+  local fields=()
+  IFS=$'\t' read -ra fields <<< "$line"
+  for field in "${fields[@]}"; do
+    key="${field%%=*}"
+    plan_apply_field "$key" "${field#*=}"
+  done
   [ -n "$CHOICE_RUNTIME" ]
 }
 
 plan_reset() {
   CHOICE_RUNTIME=""; CHOICE_PROVIDER="direct"; CHOICE_SESSION="new"
   CHOICE_MODE=""; CHOICE_C_MODEL=""; CHOICE_C_EFFORT=""
-  CHOICE_PERM="default"; CHOICE_CHROME=0; CHOICE_HAPPY=0
+  CHOICE_PERM="default"; CHOICE_CHROME=0; CHOICE_HAPPY=0; CHOICE_MCP_SURFACE="full"
   CHOICE_CODEX_PROFILE="base"; CHOICE_CODEX_SURFACE="default"; CHOICE_CODEX_SAFETY="default"
   CHOICE_KIRO_TRUST=0
   PLAN_SUMMARY=""
 }
 
-LAST_SUMMARY=""
-plan_available() {
-  [ -f "$PLAN_FILE" ] || return 1
-  LAST_SUMMARY=$(sed -n 's/^SUMMARY=//p' "$PLAN_FILE" | head -1)
-  [ -n "$LAST_SUMMARY" ]
+# Pre-0.12 `launcher-last` (multi-line KEY=VALUE) → one history entry, stamped
+# with the old file's mtime so its relative age stays honest.
+migrate_legacy_plan() {
+  [ -f "$LEGACY_PLAN_FILE" ] || return 0
+  if [ ! -f "$HISTORY_FILE" ]; then
+    plan_reset
+    local line ts
+    while IFS= read -r line; do
+      plan_apply_field "${line%%=*}" "${line#*=}"
+    done < "$LEGACY_PLAN_FILE"
+    if [ -n "$CHOICE_RUNTIME" ]; then
+      ts=$(stat -f %m "$LEGACY_PLAN_FILE" 2>/dev/null || stat -c %Y "$LEGACY_PLAN_FILE" 2>/dev/null || date +%s)
+      history_save "$ts"
+    fi
+    plan_reset
+  fi
+  rm -f "$LEGACY_PLAN_FILE"
+}
+
+# rel_time <epoch> — compact relative age for launchpad rows.
+rel_time() {
+  local diff=$(( $(date +%s) - ${1:-0} ))
+  if [ "$diff" -lt 60 ]; then echo "방금 전"
+  elif [ "$diff" -lt 3600 ]; then echo "$(( diff / 60 ))분 전"
+  elif [ "$diff" -lt 86400 ]; then echo "$(( diff / 3600 ))시간 전"
+  else echo "$(( diff / 86400 ))일 전"; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -215,6 +298,7 @@ KIRO_BIN=""
 if KIRO_BIN="$(harness_kiro_bin_resolve)"; then HAS_KIRO=true; fi
 
 prewarm_probes
+migrate_legacy_plan
 plan_reset
 REPLAY=false
 
@@ -223,25 +307,43 @@ REPLAY=false
 ORIG_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY-__HARNESS_UNSET__}"
 
 # ===========================================================================
-# Choice collection (interactive) — fills CHOICE_*; plan_load fills the same
-# variables for "Repeat last".
+# Choice collection (interactive) — fills CHOICE_*; history_load fills the
+# same variables when a launchpad history row is picked.
 # ===========================================================================
 
 AUTO_RUNTIME=false
-collect_runtime() {
-  local opts=() labels=()
+collect_launchpad() {
+  local opts=() labels=() hist_lines=() i line ts summary runtime
   AUTO_RUNTIME=false
   if ! $HAS_CLAUDE && ! $HAS_CODEX && ! $HAS_KIRO; then
     echo "Error: no runtime found (claude / codex / kiro-cli not in PATH)" >&2
     echo "  claude 설치 여부 또는 HARNESS_CODEX_BIN / HARNESS_KIRO_BIN 설정을 확인하세요." >&2
     exit 1
   fi
-  if plan_available; then
-    opts+=("repeat"); labels+=("↩ Repeat last — $LAST_SUMMARY")
+  # History rows — complete configs, newest first. Rows whose runtime is no
+  # longer installed are hidden (the entry stays in the file). The full line is
+  # captured per row so replay does not depend on the file staying unchanged
+  # while the menu is open.
+  if [ -f "$HISTORY_FILE" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      summary=$(history_field "$line" SUMMARY)
+      runtime=$(history_field "$line" RUNTIME)
+      [ -n "$summary" ] || continue
+      case "$runtime" in
+        claude) $HAS_CLAUDE || continue ;;
+        codex)  $HAS_CODEX || continue ;;
+        kiro)   $HAS_KIRO || continue ;;
+        *) continue ;;
+      esac
+      ts=$(history_field "$line" TS)
+      opts+=("hist:${#hist_lines[@]}"); labels+=("↩ $summary · $(rel_time "$ts")")
+      hist_lines+=("$line")
+    done < "$HISTORY_FILE"
   fi
-  $HAS_CLAUDE && { opts+=("claude"); labels+=("☁️  Claude Code"); }
-  $HAS_CODEX && { opts+=("codex"); labels+=("⚡ Codex CLI — native"); }
-  $HAS_KIRO && { opts+=("kiro"); labels+=("🦜 Kiro CLI — native"); }
+  $HAS_CLAUDE && { opts+=("claude"); labels+=("☁️  New — Claude Code 구성…"); }
+  $HAS_CODEX && { opts+=("codex"); labels+=("⚡ New — Codex CLI 구성…"); }
+  $HAS_KIRO && { opts+=("kiro"); labels+=("🦜 New — Kiro CLI 구성…"); }
 
   if [ ${#opts[@]} -eq 1 ]; then
     CHOICE_RUNTIME="${opts[0]}"
@@ -250,18 +352,18 @@ collect_runtime() {
   fi
 
   BREADCRUMB=""
-  menu "$HARNESS_NAME" "${labels[@]}" || return 1
-  local i
+  menu_filter "$HARNESS_NAME" "${labels[@]}" || return 1
   for i in "${!labels[@]}"; do
     if [ "$MENU_RESULT" = "${labels[$i]}" ]; then
       CHOICE_RUNTIME="${opts[$i]}"
       break
     fi
   done
-  if [ "$CHOICE_RUNTIME" = "repeat" ]; then
-    plan_load || return 1
-    REPLAY=true
-  fi
+  case "$CHOICE_RUNTIME" in
+    hist:*)
+      history_load_line "${hist_lines[${CHOICE_RUNTIME#hist:}]}" || return 1
+      REPLAY=true ;;
+  esac
   return 0
 }
 
@@ -276,6 +378,7 @@ claude_summary() {
   fi
   PLAN_SUMMARY="Claude · $CHOICE_PROVIDER · $CHOICE_SESSION · $model · $effort"
   [ "$CHOICE_PERM" != "default" ] && PLAN_SUMMARY="$PLAN_SUMMARY · $CHOICE_PERM"
+  [ "$CHOICE_MCP_SURFACE" = "light" ] && PLAN_SUMMARY="$PLAN_SUMMARY · mcp-light"
   [ "$CHOICE_CHROME" = 1 ] && PLAN_SUMMARY="$PLAN_SUMMARY · chrome"
   [ "$CHOICE_HAPPY" = 1 ] && PLAN_SUMMARY="$PLAN_SUMMARY · happy"
 }
@@ -367,6 +470,7 @@ collect_claude() {
         BREADCRUMB=""
         local fopts=("🚀 Start now" "🔐 Permission: $CHOICE_PERM")
         fopts+=("🌐 Chrome: $( [ "$CHOICE_CHROME" = 1 ] && echo on || echo off )")
+        fopts+=("🔌 MCP surface: $CHOICE_MCP_SURFACE")
         $HAS_HAPPY && fopts+=("📱 Happy wrapper: $( [ "$CHOICE_HAPPY" = 1 ] && echo on || echo off )")
         fopts+=("↩ Back")
         menu "$PLAN_SUMMARY" "${fopts[@]}" || {
@@ -384,8 +488,22 @@ collect_claude() {
             CHOICE_PERM="${MENU_RESULT%% *}" ;;
           *Chrome*)
             if [ "$CHOICE_CHROME" = 1 ]; then CHOICE_CHROME=0; else CHOICE_CHROME=1; fi ;;
+          *"MCP surface"*)
+            # light rides on --mcp-config, which the happy wrapper does not
+            # accept — the two toggles are mutually exclusive (last one wins).
+            if [ "$CHOICE_MCP_SURFACE" = "light" ]; then
+              CHOICE_MCP_SURFACE="full"
+            else
+              CHOICE_MCP_SURFACE="light"
+              [ "$CHOICE_HAPPY" = 1 ] && { CHOICE_HAPPY=0; echo "ℹ️  light MCP surface는 Happy와 함께 쓸 수 없어 Happy를 껐습니다." >&2; }
+            fi ;;
           *Happy*)
-            if [ "$CHOICE_HAPPY" = 1 ]; then CHOICE_HAPPY=0; else CHOICE_HAPPY=1; fi ;;
+            if [ "$CHOICE_HAPPY" = 1 ]; then
+              CHOICE_HAPPY=0
+            else
+              CHOICE_HAPPY=1
+              [ "$CHOICE_MCP_SURFACE" = "light" ] && { CHOICE_MCP_SURFACE="full"; echo "ℹ️  Happy는 light MCP surface를 지원하지 않아 full로 되돌렸습니다." >&2; }
+            fi ;;
           *Back*)
             if [ "$CHOICE_MODE" = "custom" ]; then step=custom_effort; else step=mode; fi ;;
         esac ;;
@@ -490,6 +608,7 @@ collect_codex() {
 kiro_summary() {
   harness_kiro_mode_resolve "${CHOICE_MODE:-base}"
   PLAN_SUMMARY="Kiro · $CHOICE_SESSION · $HARNESS_KIRO_MODEL · $HARNESS_KIRO_EFFORT"
+  [ "$CHOICE_MCP_SURFACE" = "light" ] && PLAN_SUMMARY="$PLAN_SUMMARY · mcp-light"
   [ "$CHOICE_KIRO_TRUST" = 1 ] && PLAN_SUMMARY="$PLAN_SUMMARY · trust-all"
 }
 
@@ -529,11 +648,14 @@ collect_kiro() {
         menu "$PLAN_SUMMARY" \
           "🚀 Start now" \
           "🔓 Trust all tools: $( [ "$CHOICE_KIRO_TRUST" = 1 ] && echo on || echo off )" \
+          "🔌 MCP surface: $CHOICE_MCP_SURFACE" \
           "↩ Back" || { step=mode; continue; }
         case "$MENU_RESULT" in
           *Start*) return 0 ;;
           *Trust*)
             if [ "$CHOICE_KIRO_TRUST" = 1 ]; then CHOICE_KIRO_TRUST=0; else CHOICE_KIRO_TRUST=1; fi ;;
+          *"MCP surface"*)
+            if [ "$CHOICE_MCP_SURFACE" = "light" ]; then CHOICE_MCP_SURFACE="full"; else CHOICE_MCP_SURFACE="light"; fi ;;
           *Back*) step=mode ;;
         esac ;;
     esac
@@ -608,18 +730,35 @@ launch_claude() {
   [ "$CHOICE_HAPPY" = 1 ] && exe="happy"
   command -v "$exe" >/dev/null 2>&1 || { echo "Error: $exe not found in PATH" >&2; return 1; }
 
-  harness_validate_mcp_local_configs "$HARNESS_DIR" || return 1
-  # --mcp-config is a claude flag; happy does not accept it.
-  if [ "$exe" = "claude" ]; then
-    local f
-    while IFS= read -r f; do
-      [ -n "$f" ] && args+=(--mcp-config "$f")
-    done < <(harness_mcp_local_configs "$HARNESS_DIR")
+  # Replay-path guard: history rows predating the toggle exclusivity (or a
+  # hand-edited history file) must not silently launch the full surface.
+  if [ "$CHOICE_MCP_SURFACE" = "light" ] && [ "$CHOICE_HAPPY" = 1 ]; then
+    echo "❌ Happy 래퍼는 light MCP surface를 지원하지 않습니다 (--mcp-config 미지원)" >&2
+    return 1
+  fi
+
+  if [ "$CHOICE_MCP_SURFACE" = "light" ]; then
+    # Light surface: SSH-backed servers filtered out. The generated file is the
+    # complete surface (its merge step already validates duplicates).
+    local light_file
+    light_file=$(harness_claude_light_mcp_config "$HARNESS_DIR") || return 1
+    if [ "$exe" = "claude" ]; then
+      args+=(--strict-mcp-config --mcp-config "$light_file")
+    fi
+  else
+    harness_validate_mcp_local_configs "$HARNESS_DIR" || return 1
+    # --mcp-config is a claude flag; happy does not accept it.
+    if [ "$exe" = "claude" ]; then
+      local f
+      while IFS= read -r f; do
+        [ -n "$f" ] && args+=(--mcp-config "$f")
+      done < <(harness_mcp_local_configs "$HARNESS_DIR")
+    fi
   fi
 
   [ "$CHOICE_MODE" = "ultracode" ] && harness_ultracode_hint
 
-  plan_save
+  history_save
   launch_banner "$PLAN_SUMMARY" "$exe" "${args[@]}"
   exec "$exe" "${args[@]}"
 }
@@ -640,7 +779,7 @@ launch_codex() {
   if [ "$CHOICE_HAPPY" = 1 ]; then
     command -v happy >/dev/null 2>&1 || { echo "❌ happy not found in PATH" >&2; return 1; }
     codex_happy_compatible || { echo "❌ Happy는 base 프로필 새 세션에서만 사용할 수 있습니다" >&2; return 1; }
-    plan_save
+    history_save
     launch_banner "$PLAN_SUMMARY" happy codex
     cd "$HARNESS_DIR" && exec happy codex
   fi
@@ -659,12 +798,17 @@ launch_codex() {
     bypass)    cmd+=(--dangerously-bypass-approvals-and-sandbox) ;;
   esac
 
-  plan_save
+  history_save
   launch_banner "$PLAN_SUMMARY" "${cmd[@]}"
   exec "${cmd[@]}"
 }
 
 launch_kiro() {
+  if [ "$CHOICE_MCP_SURFACE" = "light" ]; then
+    export HARNESS_KIRO_MCP_PROFILE="light"
+  else
+    unset HARNESS_KIRO_MCP_PROFILE
+  fi
   if [ -x "$LAUNCHER_BIN_DIR/kiro-home-prepare.sh" ]; then
     "$LAUNCHER_BIN_DIR/kiro-home-prepare.sh" "$HARNESS_DIR" || return $?
   fi
@@ -681,7 +825,7 @@ launch_kiro() {
   cmd+=(--model "$HARNESS_KIRO_MODEL" --effort "$HARNESS_KIRO_EFFORT" --agent harness)
   [ "$CHOICE_KIRO_TRUST" = 1 ] && cmd+=(-a)
 
-  plan_save
+  history_save
   launch_banner "$PLAN_SUMMARY" "${cmd[@]}"
   exec "${cmd[@]}"
 }
@@ -694,14 +838,14 @@ while true; do
   REPLAY=false
   plan_reset
   # A failed previous attempt must not leak provider env into the next one.
-  unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_AUTOCOMPACT_PCT_OVERRIDE HARNESS_CODEX_MCP_PROFILE
+  unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_AUTOCOMPACT_PCT_OVERRIDE HARNESS_CODEX_MCP_PROFILE HARNESS_KIRO_MCP_PROFILE
   unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
   if [ "$ORIG_ANTHROPIC_API_KEY" = "__HARNESS_UNSET__" ]; then
     unset ANTHROPIC_API_KEY
   else
     export ANTHROPIC_API_KEY="$ORIG_ANTHROPIC_API_KEY"
   fi
-  collect_runtime || exit 0
+  collect_launchpad || exit 0
 
   if ! $REPLAY; then
     case "$CHOICE_RUNTIME" in

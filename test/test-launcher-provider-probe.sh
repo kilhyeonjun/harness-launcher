@@ -147,7 +147,7 @@ EOF
 
 NEGATIVE_OUTPUT_FILE="$TEST_TEMP/output-negative.txt"
 NEGATIVE_STUB="$TEST_TEMP/negative.stub"
-rm -f "$TEST_HARNESS/.harness/launcher-last"
+rm -f "$TEST_HARNESS/.harness/launcher-last" "$TEST_HARNESS/.harness/launcher-history"
 # Select the unreachable Codex gateway (3) → New session → Base → Start.
 # The launch gate must re-probe, fail closed, and never exec claude.
 TEST_STUB_FILE="$NEGATIVE_STUB" \
