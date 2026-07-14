@@ -117,6 +117,7 @@ The same command shape works for every registered prefix:
 <prefix> fast|base|plan|rich     Claude Code preset
 <prefix> continue|resume         Claude Code session shortcut
 <prefix> codex [profile]         native Codex CLI
+<prefix> codex work              native Codex CLI with the base profile and work MCP surface
 <prefix> codex continue          Codex `resume --last`
 <prefix> codex resume            Codex resume picker
 <prefix> kiro-cli [mode]         native Kiro CLI

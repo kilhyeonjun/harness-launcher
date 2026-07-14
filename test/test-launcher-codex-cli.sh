@@ -36,6 +36,7 @@ cat > "$CODEX_STUB" <<'EOF'
 {
   echo "ARGV:$*"
   echo "CODEX_HOME:${CODEX_HOME:-}"
+  echo "MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}"
   echo "PWD:$PWD"
   echo "MCP_KEY:${HYPERDX_API_KEY:-<UNSET>}"
 } >> "$TEST_STUB_FILE"
@@ -68,6 +69,7 @@ PREPARE_STUB="$TEST_BIN/codex-home-prepare.sh"
 cat > "$PREPARE_STUB" <<'EOF'
 #!/usr/bin/env bash
 echo "PREPARE_ARGV:$*" >> "$TEST_STUB_FILE"
+echo "PREPARE_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}" >> "$TEST_STUB_FILE"
 mkdir -p "$1/.harness/codex"
 exit 0
 EOF
@@ -85,6 +87,7 @@ run_codex() {
     export TEST_STUB_FILE="$stub_file"
     export PATH="$TEST_BIN:$PATH"
     export HARNESS_CODEX_BIN="$CODEX_STUB"
+    unset HARNESS_CODEX_MCP_PROFILE
     source "$LAUNCHER_DIR/bin/aliases.zsh"
     # Redirect prepare-script lookup to test bin
     _HARNESS_LAUNCHER_BIN="$TEST_BIN"
@@ -118,9 +121,11 @@ run_mode() {
     return 1
   fi
 
-  local argv codex_home
+  local argv codex_home prepare_mcp_profile codex_mcp_profile
   argv="$(get_field ARGV "$stub_file")"
   codex_home="$(get_field CODEX_HOME "$stub_file")"
+  prepare_mcp_profile="$(get_field PREPARE_MCP_PROFILE "$stub_file")"
+  codex_mcp_profile="$(get_field MCP_PROFILE "$stub_file")"
 
   if ! grep -q "^PREPARE_ARGV:$TEST_HARNESS\$" "$stub_file"; then
     echo "FAIL: codex CLI $mode — codex-home-prepare.sh not called with harness dir"
@@ -146,6 +151,11 @@ run_mode() {
     *"-p $expected_profile"* | *"--profile $expected_profile"*) ;;
     *) echo "FAIL: codex CLI $mode — expected profile $expected_profile in argv, got '$argv'"; return 1 ;;
   esac
+
+  if [[ "$prepare_mcp_profile" != "<UNSET>" || "$codex_mcp_profile" != "<UNSET>" ]]; then
+    echo "FAIL: codex CLI $mode — must preserve the default MCP surface, got prepare='$prepare_mcp_profile' codex='$codex_mcp_profile'"
+    return 1
+  fi
 
   echo "PASS: codex CLI $mode → direct TUI + -p $expected_profile + --cd $TEST_HARNESS + CODEX_HOME"
   return 0
@@ -190,6 +200,30 @@ run_mode "fast" "fast" || exit 1
 run_mode "base" "base" || exit 1
 run_mode "plan" "plan" || exit 1
 run_mode "rich" "rich" || exit 1
+
+# `work` is an MCP surface selector, not a Codex model profile. It must select
+# the base Codex profile while exporting the exact MCP profile before prepare.
+STUB_WORK="$TEST_TEMP/output-codex-cli-work.txt"
+: > "$STUB_WORK"
+run_codex "$STUB_WORK" "work"
+work_argv="$(get_field ARGV "$STUB_WORK")"
+work_prepare_mcp_profile="$(get_field PREPARE_MCP_PROFILE "$STUB_WORK")"
+work_mcp_profile="$(get_field MCP_PROFILE "$STUB_WORK")"
+if ! grep -q "^PREPARE_ARGV:$TEST_HARNESS$" "$STUB_WORK"; then
+  echo "FAIL: codex CLI work — codex-home-prepare.sh not called with harness dir"
+  sed 's/^/    /' "$STUB_WORK"
+  exit 1
+fi
+case "$work_argv" in
+  *"-p base"* | *"--profile base"*) ;;
+  *) echo "FAIL: codex CLI work — expected base Codex profile, got '$work_argv'"; exit 1 ;;
+esac
+if [[ "$work_prepare_mcp_profile" != "work" || "$work_mcp_profile" != "work" ]]; then
+  echo "FAIL: codex CLI work — expected HARNESS_CODEX_MCP_PROFILE=work before prepare and Codex, got prepare='$work_prepare_mcp_profile' codex='$work_mcp_profile'"
+  sed 's/^/    /' "$STUB_WORK"
+  exit 1
+fi
+echo "PASS: codex CLI work → base profile + work MCP surface before prepare"
 
 # Session shortcuts
 run_session "resume"   "resume"           ""        || exit 1

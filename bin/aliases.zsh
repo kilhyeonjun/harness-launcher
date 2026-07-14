@@ -397,6 +397,7 @@ _harness_launcher_run() {
 # _harness_launcher_run_codex_cli <harness-dir> [args...]
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
 #   Modes:    fast | base | plan | rich  → -p <profile>
+#   Surface:  work → base profile + work MCP surface
 #   Wrapper:  happy → `happy codex ...`
 #   Sessions: resume → `codex resume`,  continue → `codex resume --last`,
 #             fork   → `codex fork`
@@ -404,6 +405,7 @@ _harness_launcher_run_codex_cli() {
   local HARNESS_DIR="$1"; shift
   local profile=""
   local profile_explicit=false
+  local mcp_profile=""
   local subcmd=""
   local use_happy=false
   local -a codex_args=()
@@ -411,6 +413,7 @@ _harness_launcher_run_codex_cli() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       fast|base|plan|rich) profile="$1"; profile_explicit=true; shift ;;
+      work)               profile="base"; profile_explicit=true; mcp_profile="work"; shift ;;
       resume)              subcmd="resume"; shift ;;
       continue)            subcmd="resume"; codex_args+=(--last); shift ;;
       fork)                subcmd="fork"; shift ;;
@@ -421,7 +424,13 @@ _harness_launcher_run_codex_cli() {
 
   [[ -z "$profile" ]] && profile="base"
 
-  _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
+  if [[ -n "$mcp_profile" ]]; then
+    local HARNESS_CODEX_MCP_PROFILE="$mcp_profile"
+    export HARNESS_CODEX_MCP_PROFILE
+    _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
+  else
+    _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
+  fi
 
   if $use_happy; then
     command -v happy >/dev/null 2>&1 || {

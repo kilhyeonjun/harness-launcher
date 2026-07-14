@@ -74,7 +74,7 @@ Membership accepts either a skill directory name or the effective `name` in `SKI
 
 ## Profiles
 
-The default profiles come from the manifest. Select another profile for one launch:
+The default profiles come from the manifest. `wh codex work` selects the `work` MCP profile with Codex's base model profile. Select another profile explicitly for one launch:
 
 ```bash
 HARNESS_CODEX_MCP_PROFILE=work wh codex base
