@@ -261,6 +261,8 @@ _harness_launcher_run() {
     [[ -n "$env_effort" ]] && claude_args+=(--effort "$env_effort")
     claude_args+=(--exclude-dynamic-system-prompt-sections)
     harness_autocompact_pct "${provider_name:-direct}" "${claude_args[@]}"
+    # Shared-table globals must not linger in the interactive shell.
+    unset HARNESS_MODE_MODEL HARNESS_MODE_EFFORT
     # Plain invocation (not exec) so the user's interactive shell survives
     # the launched process — Ctrl+C returns to the prompt instead of closing
     # the terminal window.
@@ -407,6 +409,7 @@ _harness_launcher_run_kiro_cli() {
   [[ -n "$session_flag" ]] && launch_cmd+=("$session_flag")
   launch_cmd+=(--model "$model" --effort "$effort" --agent "$agent")
   [[ ${#kiro_args[@]} -gt 0 ]] && launch_cmd+=("${kiro_args[@]}")
+  unset HARNESS_KIRO_MODEL HARNESS_KIRO_EFFORT
 
   (cd "$HARNESS_DIR" && "${launch_cmd[@]}")
   return $?

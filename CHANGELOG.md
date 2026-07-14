@@ -31,6 +31,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
   export, and auto-compact PCT. Menu labels and completion descriptions are
   generated from the table, so they can no longer disagree with what launches.
   Native-Codex profile labels are read from the generated profile configs.
+- TUI work MCP surface is now base-profile-only (a Profile-menu entry), matching
+  the shortcut path; the old separate surface menu that allowed rich/plan + work
+  combinations is removed.
 - Shortcut parity: `codex fork` now forks the last session like the TUI, and
   `codex full-auto|never|bypass` map to the Codex safety flags instead of
   passing through as prompt text.

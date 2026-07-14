@@ -246,4 +246,24 @@ if grep -q "^EXEC:codex" "$STUB5"; then
 fi
 echo "PASS: case5 — runtime=Claude routes to Claude exec"
 
+# Case 6: Happy toggled on, then Back → safety changed to full-auto.
+# Compatibility is broken, so the hidden toggle must auto-clear and Start
+# must launch native codex with --full-auto (not fail into plan_reset).
+STUB6="$TEST_TEMP/out6-happy-residue.txt"
+: > "$STUB6"
+run_tui $'2\n1\n2\n1\n2\n3\n2\n1\n' "$STUB6" "$HAPPY_BIN"
+grep -q "^EXEC:codex" "$STUB6" || {
+  echo "FAIL: case6 — expected native codex exec after happy auto-clear"; cat "$STUB6"; cat "$STUB6.tui.log"; exit 1;
+}
+grep -qE "^ARGS:.*--full-auto" "$STUB6" || {
+  echo "FAIL: case6 — expected --full-auto"; cat "$STUB6"; exit 1;
+}
+if grep -q "^EXEC:happy" "$STUB6"; then
+  echo "FAIL: case6 — happy must auto-clear when compatibility breaks"; cat "$STUB6"; exit 1;
+fi
+if grep -q "시작 실패" "$STUB6.tui.log"; then
+  echo "FAIL: case6 — start must succeed, not fail into plan reset"; cat "$STUB6.tui.log"; exit 1;
+fi
+echo "PASS: case6 — stale Happy toggle auto-clears when compatibility breaks"
+
 echo "✓ All codex TUI tests passed"

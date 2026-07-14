@@ -135,7 +135,7 @@ then review everything on a single summary screen where permission mode, Chrome,
 and the Happy wrapper are toggles. The first menu offers **Repeat last** to relaunch
 your previous configuration in one keypress (stored per harness in
 `.harness/launcher-last`; gateways, generated homes, and MCP configs are revalidated
-on every replay). Esc/`q` always goes one step back; at the top menu it exits.
+on every replay). Esc (or `q`/invalid-then-`q` in the no-gum fallback) goes one step back; at the top menu it exits.
 Menu labels are generated from the same mode table the shortcuts use, and the
 native-Codex profile labels read the generated profile configs, so what a label
 says is what launches. Native Codex offers the `work` MCP surface as a profile

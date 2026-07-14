@@ -218,6 +218,10 @@ prewarm_probes
 plan_reset
 REPLAY=false
 
+# Original credential state — a failed gateway attempt unsets/overrides these,
+# and the retry loop must hand the next attempt a clean slate.
+ORIG_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY-__HARNESS_UNSET__}"
+
 # ===========================================================================
 # Choice collection (interactive) — fills CHOICE_*; plan_load fills the same
 # variables for "Repeat last".
@@ -227,6 +231,11 @@ AUTO_RUNTIME=false
 collect_runtime() {
   local opts=() labels=()
   AUTO_RUNTIME=false
+  if ! $HAS_CLAUDE && ! $HAS_CODEX && ! $HAS_KIRO; then
+    echo "Error: no runtime found (claude / codex / kiro-cli not in PATH)" >&2
+    echo "  claude 설치 여부 또는 HARNESS_CODEX_BIN / HARNESS_KIRO_BIN 설정을 확인하세요." >&2
+    exit 1
+  fi
   if plan_available; then
     opts+=("repeat"); labels+=("↩ Repeat last — $LAST_SUMMARY")
   fi
@@ -234,11 +243,6 @@ collect_runtime() {
   $HAS_CODEX && { opts+=("codex"); labels+=("⚡ Codex CLI — native"); }
   $HAS_KIRO && { opts+=("kiro"); labels+=("🦜 Kiro CLI — native"); }
 
-  if [ ${#opts[@]} -eq 0 ]; then
-    echo "Error: no runtime found (claude / codex / kiro-cli not in PATH)" >&2
-    echo "  claude 설치 여부 또는 HARNESS_CODEX_BIN / HARNESS_KIRO_BIN 설정을 확인하세요." >&2
-    exit 1
-  fi
   if [ ${#opts[@]} -eq 1 ]; then
     CHOICE_RUNTIME="${opts[0]}"
     AUTO_RUNTIME=true
@@ -296,6 +300,12 @@ collect_claude() {
           *Kiro*)  CHOICE_PROVIDER="kiro" ;;
           *Codex*) CHOICE_PROVIDER="codex" ;;
           *)       CHOICE_PROVIDER="direct" ;;
+        esac
+        # Load the gateway env now so mode labels/summary see the same
+        # CODEX_CONTEXT_SUFFIX / model overrides the launch will use.
+        case "$CHOICE_PROVIDER" in
+          kiro)  [ -f "$HARNESS_DIR/config/.local/kiro-gateway.env" ] && . "$HARNESS_DIR/config/.local/kiro-gateway.env" ;;
+          codex) [ -f "$HARNESS_DIR/config/.local/codex-gateway.env" ] && . "$HARNESS_DIR/config/.local/codex-gateway.env" ;;
         esac
         step=session ;;
 
@@ -454,6 +464,10 @@ collect_codex() {
         step=final ;;
 
       final)
+        # Happy only works for a base-profile new session; if back-navigation
+        # broke compatibility, the toggle silently staying on would make Start
+        # fail with no way to turn it off (the toggle is hidden).
+        codex_happy_compatible || CHOICE_HAPPY=0
         codex_summary
         BREADCRUMB=""
         local fopts=("🚀 Start now")
@@ -595,10 +609,13 @@ launch_claude() {
   command -v "$exe" >/dev/null 2>&1 || { echo "Error: $exe not found in PATH" >&2; return 1; }
 
   harness_validate_mcp_local_configs "$HARNESS_DIR" || return 1
-  local f
-  while IFS= read -r f; do
-    [ -n "$f" ] && args+=(--mcp-config "$f")
-  done < <(harness_mcp_local_configs "$HARNESS_DIR")
+  # --mcp-config is a claude flag; happy does not accept it.
+  if [ "$exe" = "claude" ]; then
+    local f
+    while IFS= read -r f; do
+      [ -n "$f" ] && args+=(--mcp-config "$f")
+    done < <(harness_mcp_local_configs "$HARNESS_DIR")
+  fi
 
   [ "$CHOICE_MODE" = "ultracode" ] && harness_ultracode_hint
 
@@ -678,6 +695,12 @@ while true; do
   plan_reset
   # A failed previous attempt must not leak provider env into the next one.
   unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_AUTOCOMPACT_PCT_OVERRIDE HARNESS_CODEX_MCP_PROFILE
+  unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
+  if [ "$ORIG_ANTHROPIC_API_KEY" = "__HARNESS_UNSET__" ]; then
+    unset ANTHROPIC_API_KEY
+  else
+    export ANTHROPIC_API_KEY="$ORIG_ANTHROPIC_API_KEY"
+  fi
   collect_runtime || exit 0
 
   if ! $REPLAY; then

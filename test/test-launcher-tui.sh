@@ -207,4 +207,16 @@ grep -q 'BASE_URL:$' "$STUB" || fail 'after backing out, direct provider should 
 rm -rf "$TEST_HARNESS/config/.local"
 echo 'PASS: session back-nav returns to provider menu'
 
+# --- 16. plan file alone (no runtimes) → clear no-runtime error, no crash ------
+OUT="$TEST_TEMP/16.out"; STUB="$TEST_TEMP/16.stub"
+mkdir -p "$TEST_HARNESS/.harness"
+printf 'RUNTIME=claude\nSUMMARY=Claude · direct · new · sonnet · high\n' > "$TEST_HARNESS/.harness/launcher-last"
+rm -f "$TEST_BIN/claude" "$TEST_BIN/happy"
+run_tui $'1\n' "$OUT" "$STUB"
+grep -q 'no runtime found' "$OUT" || fail 'plan-only + no runtimes should print the no-runtime error' "$OUT"
+grep -q "unknown runtime 'repeat'" "$OUT" && fail 'repeat must never surface as an unknown runtime' "$OUT"
+write_stub claude
+reset_plan
+echo 'PASS: plan-only with zero runtimes fails with a clear error'
+
 echo 'ALL launcher TUI tests passed'
