@@ -79,6 +79,7 @@ chmod +x "$HAPPY_BIN/happy"
 mkdir -p "$TEST_HARNESS/.harness/codex"
 printf 'model = "gpt-5.6-luna"\nmodel_reasoning_effort = "low"\n' > "$TEST_HARNESS/.harness/codex/fast.config.toml"
 printf 'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/base.config.toml"
+printf 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/sol.config.toml"
 printf 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/plan.config.toml"
 printf 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/rich.config.toml"
 
@@ -130,6 +131,7 @@ echo "PASS: case1 — runtime=Codex base → direct TUI + codex --cd ... -p base
 for expected in \
   "fast — gpt-5.6-luna · low" \
   "base — gpt-5.6-terra · medium" \
+  "sol — gpt-5.6-sol · medium" \
   "plan — gpt-5.6-sol · high" \
   "rich — gpt-5.6-sol · high"
 do
@@ -143,7 +145,7 @@ echo "PASS: Codex TUI mode labels match GPT-5.6 routing"
 # The surface must be selected before Codex home preparation and execution.
 STUB1B="$TEST_TEMP/out1b-codex-work-surface.txt"
 : > "$STUB1B"
-run_tui $'2\n1\n5\n1\n1\n' "$STUB1B"
+run_tui $'2\n1\n6\n1\n1\n' "$STUB1B"
 grep -q '^EXEC:codex' "$STUB1B" || {
   echo "FAIL: case1b — expected codex exec; got:"; cat "$STUB1B"; cat "$STUB1B.tui.log"; exit 1;
 }
@@ -161,7 +163,7 @@ echo "PASS: case1b — Codex work MCP surface is exported before execution"
 # Case 2: runtime=Codex, session=Continue last, mode=Plan, safety=Default
 STUB2="$TEST_TEMP/out2-codex-continue.txt"
 : > "$STUB2"
-run_tui $'2\n2\n3\n1\n1\n' "$STUB2"
+run_tui $'2\n2\n4\n1\n1\n' "$STUB2"
 grep -qE "^ARGS:resume( |.*--cd)" "$STUB2" || {
   echo "FAIL: case2 — expected 'resume' as first codex arg"; cat "$STUB2"; exit 1;
 }
@@ -200,7 +202,7 @@ echo "PASS: case3b — runtime=Codex + Happy=yes → exec happy codex"
 # Case 3c: Happy installed, but non-base Codex mode must not offer Happy prompt
 STUB3C="$TEST_TEMP/out3c-codex-rich-happy-installed.txt"
 : > "$STUB3C"
-run_tui $'2\n1\n4\n1\n1\n' "$STUB3C" "$HAPPY_BIN"
+run_tui $'2\n1\n5\n1\n1\n' "$STUB3C" "$HAPPY_BIN"
 grep -q "^EXEC:codex" "$STUB3C" || {
   echo "FAIL: case3c — expected native codex exec; got:"; cat "$STUB3C"; cat "$STUB3C.tui.log"; exit 1;
 }

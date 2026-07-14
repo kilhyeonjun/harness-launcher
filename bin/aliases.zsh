@@ -291,7 +291,7 @@ _harness_launcher_run_codex_cli() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      fast|base|plan|rich)
+      fast|base|sol|plan|rich)
         [[ -z "$mcp_profile" ]] || {
           echo "❌ Codex work MCP surface cannot be combined with the $1 model profile" >&2
           return 1
@@ -435,7 +435,7 @@ _harness_launcher_complete() {
     'dontAsk:Auto-approve most actions'
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
-    'codex:Codex CLI native (fast/base/plan/rich/work · fork · full-auto/never/bypass)'
+    'codex:Codex CLI native (fast/base/sol/plan/rich/work · fork · full-auto/never/bypass)'
     'kiro-cli:Kiro CLI native'
     'happy:Use Happy mobile wrapper for Codex CLI'
   )

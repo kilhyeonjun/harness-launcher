@@ -964,6 +964,9 @@ write_profile fast \
 write_profile base \
   'model = "gpt-5.6-terra"' \
   'model_reasoning_effort = "medium"'
+write_profile sol \
+  'model = "gpt-5.6-sol"' \
+  'model_reasoning_effort = "medium"'
 write_profile plan \
   'model = "gpt-5.6-sol"' \
   'model_reasoning_effort = "high"' \

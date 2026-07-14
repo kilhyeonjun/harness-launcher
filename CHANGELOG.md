@@ -4,6 +4,11 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+### Added
+
+- Codex `sol` profile shortcut (`<prefix> codex sol`, TUI Profile menu):
+  GPT-5.6 Sol at medium effort — the stronger model at everyday effort.
+
 ### Changed
 
 - Label Codex Fast/Base/Plan/Rich routes as operational speed, balanced, or deep presets and document how they differ from general model starting effort; generated routing remains unchanged. (In the TUI these labels are now generated from the profile configs.)

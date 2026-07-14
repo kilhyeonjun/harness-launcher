@@ -424,11 +424,13 @@ collect_codex() {
         menu "Profile" \
           "⚡ $(codex_profile_label fast)" \
           "⚖️  $(codex_profile_label base)" \
+          "🌞 $(codex_profile_label sol)" \
           "🗺️  $(codex_profile_label plan)" \
           "🧠 $(codex_profile_label rich)" \
           "💼 work — base 프로필 + work MCP (Slack/Jira/Notion)" || { step=session; continue; }
         case "$MENU_RESULT" in
           "⚡"*) CHOICE_CODEX_PROFILE="fast"; CHOICE_CODEX_SURFACE="default" ;;
+          "🌞"*) CHOICE_CODEX_PROFILE="sol"; CHOICE_CODEX_SURFACE="default" ;;
           "🗺"*) CHOICE_CODEX_PROFILE="plan"; CHOICE_CODEX_SURFACE="default" ;;
           "🧠"*) CHOICE_CODEX_PROFILE="rich"; CHOICE_CODEX_SURFACE="default" ;;
           "💼"*) CHOICE_CODEX_PROFILE="base"; CHOICE_CODEX_SURFACE="work" ;;

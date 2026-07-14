@@ -117,7 +117,7 @@ The same command shape works for every registered prefix:
 <prefix> fast|base|plan|rich     Claude Code preset
 <prefix> ultracode               Claude Code opus[1m] + xhigh (direct only)
 <prefix> continue|resume         Claude Code session shortcut
-<prefix> codex [profile]         native Codex CLI
+<prefix> codex [profile]         native Codex CLI (fast|base|sol|plan|rich)
 <prefix> codex work              native Codex CLI with the base profile and work MCP surface
 <prefix> codex continue          Codex `resume --last`
 <prefix> codex resume            Codex resume picker
@@ -148,6 +148,7 @@ profile with only the approved work MCPs declared by `config/codex-surface.json`
 | --- | --- | --- | --- |
 | `fast` | Haiku, low effort | GPT-5.6 Luna, low effort | Small edits and quick checks |
 | `base` | Sonnet | GPT-5.6 Terra, medium effort | General implementation work |
+| `sol` (Codex only) | — | GPT-5.6 Sol, medium effort | Stronger model at everyday effort |
 | `plan` | Opus Plan | GPT-5.6 Sol, high effort, read-only | Investigation and planning |
 | `rich` | Opus | GPT-5.6 Sol, high effort | Difficult implementation and review |
 

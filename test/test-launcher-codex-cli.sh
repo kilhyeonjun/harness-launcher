@@ -211,6 +211,7 @@ run_session() {
 # Mode → profile mapping
 run_mode "fast" "fast" || exit 1
 run_mode "base" "base" || exit 1
+run_mode "sol" "sol" || exit 1
 run_mode "plan" "plan" || exit 1
 run_mode "rich" "rich" || exit 1
 
@@ -254,7 +255,7 @@ if [[ "$(get_field MCP_PROFILE "$STUB_EXEC_WORK")" != "<UNSET>" ]]; then
 fi
 echo "PASS: codex exec work → prompt preserved without work MCP surface"
 
-for incompatible_args in "work rich" "rich work"; do
+for incompatible_args in "work rich" "rich work" "work sol" "sol work"; do
   failure_output="$TEST_TEMP/output-codex-cli-incompatible-${incompatible_args// /-}.txt"
   : > "$TEST_TEMP/output-codex-cli-failure-stub.txt"
   if run_codex_failure "$failure_output" ${(z)incompatible_args}; then
