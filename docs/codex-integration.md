@@ -188,6 +188,21 @@ The launcher never copies refresh tokens between auth stores. Login and account 
 
 ## Session commands
 
+Generated homes expose the saved Codex thread name on both native TUI title
+surfaces:
+
+```toml
+[tui]
+terminal_title = ["activity", "project-name", "thread-title"]
+status_line = ["thread-title", "model-with-reasoning", "git-branch", "branch-changes", "run-state", "context-remaining", "five-hour-limit", "weekly-limit"]
+```
+
+After `/rename <name>`, Codex refreshes the footer and emits the configured
+terminal title through OSC 0. Terminals such as cmux use that value as the tab
+title. Before a rename, `thread-title` can fall back to the thread ID;
+`project-name` keeps the terminal tab recognizable. Change these defaults in
+`codex-home-prepare.sh`, not in a generated project `config.toml`.
+
 ```text
 <prefix> codex                 new session with base profile
 <prefix> codex fast            new session with fast profile

@@ -108,9 +108,14 @@ def config_matches(codex_home, catalog):
     }:
         return False
     if config.get("tui") != {
+        "terminal_title": [
+            "activity",
+            "project-name",
+            "thread-title",
+        ],
         "status_line": [
+            "thread-title",
             "model-with-reasoning",
-            "current-dir",
             "git-branch",
             "branch-changes",
             "run-state",
