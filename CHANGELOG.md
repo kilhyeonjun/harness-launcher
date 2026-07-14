@@ -4,6 +4,18 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-07-15
+
+### Added
+
+- Surface Codex `/rename` thread names in the TUI status line and propagate
+  project/thread terminal titles to compatible terminals such as cmux.
+
+### Fixed
+
+- Rebuild warm generated Codex homes when launcher-owned terminal-title or
+  status-line settings drift from the current defaults.
+
 ## [0.11.0] — 2026-07-15
 
 ### Added
@@ -143,7 +155,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.0...v0.10.1
