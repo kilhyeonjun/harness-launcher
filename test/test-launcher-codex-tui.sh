@@ -54,6 +54,7 @@ cat > "$TEST_BIN/codex" <<'EOF'
   echo "EXEC:codex"
   echo "ARGS:$*"
   echo "CODEX_HOME:${CODEX_HOME:-}"
+  echo "MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}"
 } >> "$TEST_STUB_FILE"
 exit 0
 EOF
@@ -121,6 +122,22 @@ do
   }
 done
 echo "PASS: Codex TUI mode labels match GPT-5.6 routing"
+
+# Case 1b: runtime=Codex, base mode, work MCP surface, safety=Default.
+# The surface must be selected before Codex home preparation and execution.
+STUB1B="$TEST_TEMP/out1b-codex-work-surface.txt"
+: > "$STUB1B"
+run_tui $'2\n1\n2\n2\n1\n' "$STUB1B"
+grep -q '^EXEC:codex' "$STUB1B" || {
+  echo "FAIL: case1b — expected codex exec; got:"; cat "$STUB1B"; cat "$STUB1B.tui.log"; exit 1;
+}
+grep -q '^MCP_PROFILE:work$' "$STUB1B" || {
+  echo "FAIL: case1b — expected work MCP surface before Codex exec"; cat "$STUB1B"; cat "$STUB1B.tui.log"; exit 1;
+}
+grep -q 'MCP surface' "$STUB1B.tui.log" || {
+  echo "FAIL: case1b — MCP surface picker was not shown"; cat "$STUB1B.tui.log"; exit 1;
+}
+echo "PASS: case1b — Codex work MCP surface is exported before execution"
 
 # Case 2: runtime=Codex, session=Continue last, mode=Plan, safety=Default
 STUB2="$TEST_TEMP/out2-codex-continue.txt"
