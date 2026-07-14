@@ -729,7 +729,7 @@ for h in session-start user-prompt-session-end-detect prompt-keyword-routing \
          pre-tool-budget-guard pre-tool-opus-guard pre-edit-config-protection \
          pre-edit-codex-output-guard pre-write-memory-block pre-tool-scoped-context \
          post-edit-codex-resync suggest-compact post-bash-audit post-bash-commit-detect \
-         post-tool-auto-pilot-reinject session-end; do
+         post-tool-auto-pilot-reinject session-end codex-subagent-status; do
   : > "$TEST_HARNESS3/core/hooks/$h.sh"
 done
 cat > "$TEST_HARNESS3/.claude/source/hooks.yaml" <<'EOF'
@@ -942,7 +942,7 @@ grep -A1 '^\[plugins\."chrome@openai-bundled"\]' "$config3" | grep -q '^enabled 
 echo "PASS: terminal Codex enables Computer Use and Chrome; Browser omitted"
 
 grep -q '^\[tui\]' "$config3" || { echo "FAIL: [tui] section missing"; exit 1; }
-grep -q '^status_line = \["model-with-reasoning", "current-dir", "git-branch", "run-state", "context-remaining", "context-used"\]' "$config3" || {
+grep -q '^status_line = \["model-with-reasoning", "current-dir", "git-branch", "branch-changes", "run-state", "context-remaining", "five-hour-limit", "weekly-limit"\]' "$config3" || {
   echo "FAIL: [tui].status_line missing expected harness defaults"; exit 1;
 }
 echo "PASS: [tui].status_line configured in config.toml"
@@ -973,7 +973,9 @@ path, harness = sys.argv[1], sys.argv[2]
 with open(path) as f: data = json.load(f)
 hooks = data.get("hooks", {})
 expected = {
-    "SessionStart": ["session-start.sh"],
+    "SessionStart": ["session-start.sh", "codex-subagent-status.sh"],
+    "SubagentStart": ["codex-subagent-status.sh"],
+    "SubagentStop": ["codex-subagent-status.sh"],
     "UserPromptSubmit": ["user-prompt-session-end-detect.sh", "prompt-keyword-routing.sh"],
     "PreToolUse": ["pre-bash-irreversible-guard.sh", "pre-bash-gh-auth.sh",
                    "pre-bash-pr-gate.sh", "pre-bash-worktree-gate.sh",

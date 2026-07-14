@@ -713,7 +713,7 @@ enabled = $COMPUTER_USE_PLUGIN_ENABLED
 enabled = $CHROME_PLUGIN_ENABLED
 
 [tui]
-status_line = ["model-with-reasoning", "current-dir", "git-branch", "run-state", "context-remaining", "context-used"]
+status_line = ["model-with-reasoning", "current-dir", "git-branch", "branch-changes", "run-state", "context-remaining", "five-hour-limit", "weekly-limit"]
 
 TOML
 
@@ -1452,6 +1452,17 @@ def legacy_config():
 
 exclusions = load_exclusions()
 config = settings_driven_config(exclusions) or legacy_config()
+
+# Codex-only lifecycle events (no Claude settings.json counterpart).
+# SubagentStart/SubagentStop drive the cmux sidebar running-agents indicator;
+# SessionStart clears stale state from a previous crash.
+codex_subagent = "codex-subagent-status.sh"
+if has(codex_subagent) and codex_subagent not in exclusions:
+    for event in ("SessionStart", "SubagentStart", "SubagentStop"):
+        config["hooks"].setdefault(event, []).extend(
+            group([codex_subagent], event=event,
+                  timeouts={codex_subagent: 3000})
+        )
 
 # Stop intentionally NOT wired for Codex. The Claude harness's session-end.sh
 # emits a session-termination checklist (delivery-required, instinct-gap,
