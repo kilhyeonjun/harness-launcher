@@ -29,6 +29,7 @@ cat > "$TEST_LAUNCHER_BIN/codex-home-prepare.sh" <<'EOF'
 set -e
 mkdir -p "$1/.harness/codex"
 printf '# prepared by test stub\n' > "$1/.harness/codex/AGENTS.md"
+echo "PREPARE_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}" >> "$TEST_STUB_FILE"
 EOF
 chmod +x "$TEST_LAUNCHER_BIN/launcher.sh" "$TEST_LAUNCHER_BIN/codex-home-prepare.sh"
 
@@ -88,7 +89,7 @@ run_tui() {
 # Case 1: runtime=Codex, session=New, mode=Base, safety=Default
 STUB1="$TEST_TEMP/out1-codex-base.txt"
 : > "$STUB1"
-run_tui $'2\n1\n2\n1\n' "$STUB1"
+run_tui $'2\n1\n2\n1\n1\n' "$STUB1"
 grep -q "^EXEC:codex" "$STUB1" || {
   echo "FAIL: case1 — expected codex exec; got:"; cat "$STUB1"; cat "$STUB1.tui.log"; exit 1;
 }
@@ -134,6 +135,9 @@ grep -q '^EXEC:codex' "$STUB1B" || {
 grep -q '^MCP_PROFILE:work$' "$STUB1B" || {
   echo "FAIL: case1b — expected work MCP surface before Codex exec"; cat "$STUB1B"; cat "$STUB1B.tui.log"; exit 1;
 }
+grep -q '^PREPARE_MCP_PROFILE:work$' "$STUB1B" || {
+  echo "FAIL: case1b — expected work MCP surface before Codex preparation"; cat "$STUB1B"; cat "$STUB1B.tui.log"; exit 1;
+}
 grep -q 'MCP surface' "$STUB1B.tui.log" || {
   echo "FAIL: case1b — MCP surface picker was not shown"; cat "$STUB1B.tui.log"; exit 1;
 }
@@ -142,7 +146,7 @@ echo "PASS: case1b — Codex work MCP surface is exported before execution"
 # Case 2: runtime=Codex, session=Continue last, mode=Plan, safety=Default
 STUB2="$TEST_TEMP/out2-codex-continue.txt"
 : > "$STUB2"
-run_tui $'2\n2\n3\n1\n' "$STUB2"
+run_tui $'2\n2\n3\n1\n1\n' "$STUB2"
 grep -qE "^ARGS:resume( |.*--cd)" "$STUB2" || {
   echo "FAIL: case2 — expected 'resume' as first codex arg"; cat "$STUB2"; exit 1;
 }
@@ -157,7 +161,7 @@ echo "PASS: case2 — Codex continue + plan → codex resume --last -p plan"
 # Case 3: runtime=Codex, safety=Full auto
 STUB3="$TEST_TEMP/out3-codex-fullauto.txt"
 : > "$STUB3"
-run_tui $'2\n1\n2\n2\n' "$STUB3"
+run_tui $'2\n1\n2\n1\n2\n' "$STUB3"
 grep -qE "^ARGS:.*--full-auto" "$STUB3" || {
   echo "FAIL: case3 — expected --full-auto"; cat "$STUB3"; exit 1;
 }
@@ -166,7 +170,7 @@ echo "PASS: case3 — Safety=Full auto → --full-auto flag"
 # Case 3b: runtime=Codex, Happy=yes → exec happy codex with same Codex args
 STUB3B="$TEST_TEMP/out3b-codex-happy.txt"
 : > "$STUB3B"
-run_tui $'2\n1\n2\n1\n2\n' "$STUB3B" "$HAPPY_BIN"
+run_tui $'2\n1\n2\n1\n1\n2\n' "$STUB3B" "$HAPPY_BIN"
 grep -q "^EXEC:happy" "$STUB3B" || {
   echo "FAIL: case3b — expected happy exec; got:"; cat "$STUB3B"; cat "$STUB3B.tui.log"; exit 1;
 }
@@ -181,7 +185,7 @@ echo "PASS: case3b — runtime=Codex + Happy=yes → exec happy codex"
 # Case 3c: Happy installed, but non-base Codex mode must not offer Happy prompt
 STUB3C="$TEST_TEMP/out3c-codex-rich-happy-installed.txt"
 : > "$STUB3C"
-run_tui $'2\n1\n4\n1\n' "$STUB3C" "$HAPPY_BIN"
+run_tui $'2\n1\n4\n1\n1\n' "$STUB3C" "$HAPPY_BIN"
 grep -q "^EXEC:codex" "$STUB3C" || {
   echo "FAIL: case3c — expected native codex exec; got:"; cat "$STUB3C"; cat "$STUB3C.tui.log"; exit 1;
 }

@@ -256,6 +256,14 @@ if [[ "$RUNTIME" == "codex" ]]; then
     *)      CODEX_PROFILE="base" ;;
   esac
 
+  CODEX_MCP_PROFILE=""
+  menu "MCP surface" \
+    "1. Default — minimal project MCPs" \
+    "2. Work — approved work MCPs (Slack, Jira, Notion where configured)" || exit 0
+  case "$MENU_RESULT" in
+    *Work*) CODEX_MCP_PROFILE="work" ;;
+  esac
+
   CODEX_SAFETY_ARGS=()
   menu "Safety" \
     "1. Default (sandboxed, ask on request)" \
@@ -280,6 +288,12 @@ if [[ "$RUNTIME" == "codex" ]]; then
     case "$MENU_RESULT" in
       2*) CODEX_USE_HAPPY=true ;;
     esac
+  fi
+
+  if [[ -n "$CODEX_MCP_PROFILE" ]]; then
+    export HARNESS_CODEX_MCP_PROFILE="$CODEX_MCP_PROFILE"
+  else
+    unset HARNESS_CODEX_MCP_PROFILE
   fi
 
   if [[ -x "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" ]]; then
