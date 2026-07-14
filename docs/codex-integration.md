@@ -82,6 +82,8 @@ Current routing:
 | plan | GPT-5.6 Sol | high | read-only, on-request |
 | rich | GPT-5.6 Sol | high | Runtime defaults |
 
+These profiles are task-oriented operational presets, not OpenAI default-effort claims. This launcher deliberately uses Luna/low for the speed preset and Sol/high for the deep plan and rich presets; an unscoped model picker may use a different general starting effort. Effort can still be overridden independently in native Codex. Reserve max or multi-agent ultra execution for exceptional workloads rather than normal profile defaults.
+
 Context-window and auto-compaction values are not pinned. Codex model metadata controls them.
 
 ## MCP translation

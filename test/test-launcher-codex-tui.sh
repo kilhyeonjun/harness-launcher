@@ -119,10 +119,10 @@ grep -q '^MCP_PROFILE:<UNSET>$' "$STUB1" || {
 }
 echo "PASS: case1 — runtime=Codex base → direct TUI + codex --cd ... -p base + CODEX_HOME prepared"
 for expected in \
-  "Fast — gpt-5.6-luna, low effort" \
-  "Base — gpt-5.6-terra, medium effort" \
-  "Plan — gpt-5.6-sol, high + read-only sandbox" \
-  "Rich — gpt-5.6-sol, high effort"
+  "Fast — gpt-5.6-luna, low effort (speed preset)" \
+  "Base — gpt-5.6-terra, medium effort (balanced preset)" \
+  "Plan — gpt-5.6-sol, high + read-only sandbox (deep preset)" \
+  "Rich — gpt-5.6-sol, high effort (deep preset)"
 do
   grep -q "$expected" "$STUB1.tui.log" || {
     echo "FAIL: Codex mode menu missing current routing label: $expected"; exit 1;

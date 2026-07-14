@@ -112,9 +112,11 @@ def config_matches(codex_home, catalog):
             "model-with-reasoning",
             "current-dir",
             "git-branch",
+            "branch-changes",
             "run-state",
             "context-remaining",
-            "context-used",
+            "five-hour-limit",
+            "weekly-limit",
         ]
     }:
         return False

@@ -136,7 +136,7 @@ Extra arguments pass through to the selected runtime. Run the prefix without arg
 | `plan` | Opus Plan | GPT-5.6 Sol, high effort, read-only | Investigation and planning |
 | `rich` | Opus | GPT-5.6 Sol, high effort | Difficult implementation and review |
 
-Model names follow the capabilities exposed by the installed runtime. The launcher does not pin Codex context-window or auto-compaction values; Codex model metadata remains the source of truth.
+These are task-oriented operational presets, not claims about OpenAI's model defaults. The launcher deliberately lowers `fast` for speed and raises `plan`/`rich` for deeper work; an unscoped model picker may use a different general starting effort. Model names follow the capabilities exposed by the installed runtime. The launcher does not pin Codex context-window or auto-compaction values; Codex model metadata remains the source of truth.
 
 ## Project layout
 
