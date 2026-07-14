@@ -105,6 +105,12 @@ grep -qE "^ARGS:.*-p base" "$STUB1" || {
 grep -q "^CODEX_HOME:$TEST_HARNESS/.harness/codex\$" "$STUB1" || {
   echo "FAIL: case1 — CODEX_HOME mismatch"; cat "$STUB1"; exit 1;
 }
+grep -q '^PREPARE_MCP_PROFILE:<UNSET>$' "$STUB1" || {
+  echo "FAIL: case1 — default MCP surface leaked into Codex preparation"; cat "$STUB1"; exit 1;
+}
+grep -q '^MCP_PROFILE:<UNSET>$' "$STUB1" || {
+  echo "FAIL: case1 — default MCP surface leaked into Codex execution"; cat "$STUB1"; exit 1;
+}
 [[ -d "$TEST_HARNESS/.harness/codex" ]] || {
   echo "FAIL: case1 — CODEX_HOME directory not prepared"; exit 1;
 }
