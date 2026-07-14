@@ -5,71 +5,19 @@
 #   harness_register /path/to/some-harness
 
 _HARNESS_LAUNCHER_BIN="$(cd "$(dirname "${(%):-%x}")" 2>/dev/null && pwd)"
-_HARNESS_CODEX_APP_BIN="/Applications/Codex.app/Contents/Resources/codex"
 typeset -ga _HARNESS_LAUNCHER_REGISTERED_DIRS=()
 
-_harness_launcher_codex_bin() {
-  local configured="${HARNESS_CODEX_BIN:-}"
-  if [[ -n "$configured" ]]; then
-    if [[ -x "$configured" ]]; then
-      print -r -- "$configured"
-      return 0
-    fi
-    whence -p -- "$configured" 2>/dev/null
-    return $?
-  fi
-  if whence -p -- codex >/dev/null 2>&1; then
-    whence -p -- codex
-    return 0
-  fi
-  if [[ "${HARNESS_CODEX_ALLOW_APP_FALLBACK:-0}" == "1" && -x "$_HARNESS_CODEX_APP_BIN" ]]; then
-    print -r -- "$_HARNESS_CODEX_APP_BIN"
-    return 0
-  fi
-  return 1
-}
+# Single source of truth for mode tables, bin resolution, probes, MCP config
+# validation, secrets export, and autocompact PCT — shared with launcher.sh.
+source "$_HARNESS_LAUNCHER_BIN/harness-common.sh"
 
-_harness_launcher_probe_provider_health() {
-  local provider_url="$1"
-  [[ -z "$provider_url" ]] && return 1
-  PROBE_PROVIDER_URL="$provider_url" \
-    node -e 'const baseUrl = process.env.PROBE_PROVIDER_URL; const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000); fetch(`${baseUrl}/health`, { signal: controller.signal }).then(() => { clearTimeout(timer); process.exit(0); }).catch(() => { clearTimeout(timer); process.exit(1); });' >/dev/null 2>&1
-}
+_harness_launcher_codex_bin() { harness_codex_bin_resolve "$@"; }
 
-_harness_launcher_mcp_local_configs() {
-  local HARNESS_DIR="$1"
-  [[ -f "$HARNESS_DIR/.mcp.local.json" ]] && print -r -- "$HARNESS_DIR/.mcp.local.json"
-  [[ -f "$HARNESS_DIR/mcp.local.json" ]] && print -r -- "$HARNESS_DIR/mcp.local.json"
-}
+_harness_launcher_probe_provider_health() { harness_probe_health "$@"; }
 
-_harness_launcher_validate_mcp_local_configs() {
-  local HARNESS_DIR="$1"
-  local -a mcp_files=("$HARNESS_DIR/.mcp.json")
-  [[ -f "$HARNESS_DIR/.mcp.local.json" ]] && mcp_files+=("$HARNESS_DIR/.mcp.local.json")
-  [[ -f "$HARNESS_DIR/mcp.local.json" ]] && mcp_files+=("$HARNESS_DIR/mcp.local.json")
-  [[ ${#mcp_files[@]} -gt 1 ]] || return 0
+_harness_launcher_mcp_local_configs() { harness_mcp_local_configs "$@"; }
 
-  python3 - "${mcp_files[@]}" <<'PY'
-import json, sys
-
-seen = {}
-for path in sys.argv[1:]:
-    try:
-        with open(path, encoding="utf-8") as f:
-            servers = (json.load(f).get("mcpServers") or {})
-    except FileNotFoundError:
-        continue
-    for name in servers:
-        if name in seen:
-            print(
-                f"ERROR: duplicate MCP server '{name}' in {seen[name]} and {path}; "
-                "rename the local server instead of overriding committed .mcp.json",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        seen[name] = path
-PY
-}
+_harness_launcher_validate_mcp_local_configs() { harness_validate_mcp_local_configs "$@"; }
 
 _harness_launcher_add_claude_mcp_local_args() {
   local HARNESS_DIR="$1"; shift
@@ -97,34 +45,12 @@ _harness_launcher_export_codex_runtime_env() {
 
   export CODEX_HOME="$HARNESS_DIR/.harness/codex"
 
-  # Export MCP secrets from settings.local.json env so codex streamable_http
+  # MCP secrets from settings.local.json env so codex streamable_http
   # bearer_token_env_var resolves (native codex inherits no other harness env).
-  if [[ -f "$HARNESS_DIR/.claude/settings.local.json" ]]; then
-    while IFS=$'\t' read -r _mk _mv; do
-      [[ -n "$_mk" ]] && export "$_mk=$_mv"
-    done < <(python3 - "$HARNESS_DIR/.claude/settings.local.json" 2>/dev/null <<'PY'
-import json, sys
-with open(sys.argv[1]) as f:
-    env = (json.load(f).get("env") or {})
-for k, v in env.items():
-    print(k + "\t" + str(v))
-PY
-)
-  fi
+  harness_export_local_env "$HARNESS_DIR"
 }
 
-_harness_launcher_kiro_bin() {
-  local configured="${HARNESS_KIRO_BIN:-}"
-  if [[ -n "$configured" ]]; then
-    if [[ -x "$configured" ]]; then
-      print -r -- "$configured"
-      return 0
-    fi
-    whence -p -- "$configured" 2>/dev/null
-    return $?
-  fi
-  whence -p -- kiro-cli 2>/dev/null
-}
+_harness_launcher_kiro_bin() { harness_kiro_bin_resolve "$@"; }
 
 _harness_launcher_export_kiro_runtime_env() {
   local HARNESS_DIR="$1"
@@ -133,19 +59,7 @@ _harness_launcher_export_kiro_runtime_env() {
     "$prepare" "$HARNESS_DIR" || return $?
   fi
   export KIRO_HOME="$HARNESS_DIR/.harness/kiro"
-
-  if [[ -f "$HARNESS_DIR/.claude/settings.local.json" ]]; then
-    while IFS=$'\t' read -r _mk _mv; do
-      [[ -n "$_mk" ]] && export "$_mk=$_mv"
-    done < <(python3 - "$HARNESS_DIR/.claude/settings.local.json" 2>/dev/null <<'PY'
-import json, sys
-with open(sys.argv[1]) as f:
-    env = (json.load(f).get("env") or {})
-for k, v in env.items():
-    print(k + "\t" + str(v))
-PY
-)
-  fi
+  harness_export_local_env "$HARNESS_DIR"
 }
 
 _harness_launcher_codex_cd_arg() {
@@ -288,29 +202,10 @@ _harness_launcher_run() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      fast)
-        claude_args+=(--model haiku)
-        env_effort=low; skip_tui=true; mode_applied=true; shift ;;
-      base)
-        case "$provider_name" in
-          kiro)  claude_args+=(--model 'sonnet[1m]') ;; # kiro gateway supports 1M
-          codex) claude_args+=(--model "sonnet${CODEX_CONTEXT_SUFFIX:-}") ;; # codex proxy supports 1M
-          *)     claude_args+=(--model sonnet) ;;       # direct OAuth: sonnet[1m] needs API plan
-        esac
-        env_effort=high; skip_tui=true; mode_applied=true; shift ;;
-      plan)
-        case "$provider_name" in
-          kiro)  claude_args+=(--model 'opusplan[1m]'); env_effort=high ;;
-          codex) claude_args+=(--model "opusplan${CODEX_CONTEXT_SUFFIX:-}"); env_effort=high ;;
-          *)     claude_args+=(--model opusplan); env_effort=high ;;
-        esac
-        skip_tui=true; mode_applied=true; shift ;;
-      rich)
-        case "$provider_name" in
-          kiro)  claude_args+=(--model 'claude-opus-4-6[1m]'); env_effort=max ;;
-          codex) claude_args+=(--model "opus${CODEX_CONTEXT_SUFFIX:-}"); env_effort=high ;;
-          *)     claude_args+=(--model 'opus[1m]'); env_effort=xhigh ;;
-        esac
+      fast|base|plan|rich)
+        harness_mode_resolve "$1" "${provider_name:-direct}"
+        claude_args+=(--model "$HARNESS_MODE_MODEL")
+        env_effort="$HARNESS_MODE_EFFORT"
         skip_tui=true; mode_applied=true; shift ;;
       ultracode)
         # ultracode = xhigh + dynamic workflow orchestration. The orchestration
@@ -319,12 +214,12 @@ _harness_launcher_run() {
         # max), so it cannot be set at launch. Launch as rich (opus[1m] + xhigh)
         # and remind the user to flip it on in-session via /effort.
         # Anthropic direct only — kiro/codex gateways don't support it at all.
-        if [[ "$provider_name" == "kiro" || "$provider_name" == "codex" ]]; then
+        if ! harness_mode_resolve ultracode "${provider_name:-direct}"; then
           echo "❌ ultracode는 Anthropic direct 전용입니다 (codex/kiro 미지원)" >&2
           return 1
         fi
-        claude_args+=(--model 'opus[1m]'); env_effort=xhigh
-        print -u2 "💡 ultracode는 세션 전용입니다 — 시작 후 /effort 에서 ultracode를 선택하면 워크플로우 오케스트레이션이 켜집니다 (지금은 opus[1m] + xhigh로 시작)."
+        claude_args+=(--model "$HARNESS_MODE_MODEL"); env_effort="$HARNESS_MODE_EFFORT"
+        harness_ultracode_hint
         skip_tui=true; mode_applied=true; shift ;;
       low|medium|high|xhigh|max)
         env_effort="$1"
@@ -365,23 +260,7 @@ _harness_launcher_run() {
     fi
     [[ -n "$env_effort" ]] && claude_args+=(--effort "$env_effort")
     claude_args+=(--exclude-dynamic-system-prompt-sections)
-    # Auto-compact PCT by detected context size + provider + model:
-    #   [1m] + codex + (opus|sonnet contains "5.5") → PCT=35 (real GPT-5.5/Codex
-    #                  limit is 400K, not 1M; 35% of fake 1M = 350K fits 400K)
-    #   [1m] otherwise (direct Anthropic, or codex with non-5.5 model) → PCT=50
-    #   200K (no [1m])                          → settings.json fallback applies
-    for _arg in "${claude_args[@]}"; do
-      if [[ "$_arg" == *"[1m]"* ]]; then
-        if [[ "$provider_name" == "codex" ]] && {
-             [[ "${CODEX_OPUS_MODEL:-}" == *"5.5"* ]] || [[ "${CODEX_SONNET_MODEL:-}" == *"5.5"* ]]
-           }; then
-          export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=35
-        else
-          export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
-        fi
-        break
-      fi
-    done
+    harness_autocompact_pct "${provider_name:-direct}" "${claude_args[@]}"
     # Plain invocation (not exec) so the user's interactive shell survives
     # the launched process — Ctrl+C returns to the prompt instead of closing
     # the terminal window.
@@ -431,8 +310,11 @@ _harness_launcher_run_codex_cli() {
         ;;
       resume)              subcmd="resume"; shift ;;
       continue)            subcmd="resume"; codex_args+=(--last); shift ;;
-      fork)                subcmd="fork"; shift ;;
+      fork)                subcmd="fork"; codex_args+=(--last); shift ;;
       happy)               use_happy=true; shift ;;
+      full-auto)           codex_args+=(--full-auto); shift ;;
+      never)               codex_args+=(-a never); shift ;;
+      bypass)              codex_args+=(--dangerously-bypass-approvals-and-sandbox); shift ;;
       *)                   codex_args+=("$1"); shift ;;
     esac
   done
@@ -498,10 +380,9 @@ _harness_launcher_run_kiro_cli() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      fast)     model="claude-haiku-4.5"; effort="low"; shift ;;
-      base)     model="claude-sonnet-4.6"; effort="high"; shift ;;
-      plan)     model="claude-opus-4.6"; effort="high"; shift ;;
-      rich)     model="claude-opus-4.6"; effort="max"; shift ;;
+      fast|base|plan|rich)
+        harness_kiro_mode_resolve "$1"
+        model="$HARNESS_KIRO_MODEL"; effort="$HARNESS_KIRO_EFFORT"; shift ;;
       resume)   session_flag="--resume-picker"; shift ;;
       continue) session_flag="-r"; shift ;;
       bypass)   kiro_args+=(-a); shift ;;
@@ -509,7 +390,10 @@ _harness_launcher_run_kiro_cli() {
     esac
   done
 
-  [[ -z "$model" ]] && model="claude-sonnet-4.6" && effort="high"
+  if [[ -z "$model" ]]; then
+    harness_kiro_mode_resolve base
+    model="$HARNESS_KIRO_MODEL"; effort="$HARNESS_KIRO_EFFORT"
+  fi
 
   _harness_launcher_export_kiro_runtime_env "$HARNESS_DIR" || return $?
 
@@ -532,16 +416,17 @@ _harness_launcher_run_kiro_cli() {
 _harness_launcher_complete() {
   local dir="$1"
   local -a shortcuts
-  local _kiro_url="${KIRO_GATEWAY_URL:-}"
-  local _kiro_env="$dir/config/.local/kiro-gateway.env"
-  local _codex_url="${CODEX_GATEWAY_URL:-}"
-  local _codex_env="$dir/config/.local/codex-gateway.env"
-  shortcuts=(
-    'fast:Sonnet low effort'
-    'base:Sonnet high effort'
-    'plan:Opusplan — Opus plan, Sonnet exec, high effort'
-    'rich:Opus 1M max effort'
-    'ultracode:Opus 1M xhigh now · /effort→ultracode for workflows (direct only)'
+  local m
+  # Mode descriptions come from the shared table so completion text cannot
+  # drift from the launched model/effort.
+  shortcuts=()
+  for m in fast base plan rich; do
+    harness_mode_resolve "$m" direct
+    shortcuts+=("$m:$HARNESS_MODE_MODEL · $HARNESS_MODE_EFFORT")
+  done
+  harness_mode_resolve ultracode direct
+  shortcuts+=(
+    "ultracode:$HARNESS_MODE_MODEL · $HARNESS_MODE_EFFORT now · /effort→ultracode for workflows (direct only)"
     'continue:Continue last session'
     'resume:Resume from list'
     'bypass:Skip all permission prompts'
@@ -549,16 +434,19 @@ _harness_launcher_complete() {
     'dontAsk:Auto-approve most actions'
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
-    'codex:Codex CLI native'
+    'codex:Codex CLI native (fast/base/plan/rich/work · fork · full-auto/never/bypass)'
     'kiro-cli:Kiro CLI native'
     'happy:Use Happy mobile wrapper for Codex CLI'
   )
-  if [[ -z "$_kiro_url" && -f "$_kiro_env" ]]; then
-    source "$_kiro_env"; _kiro_url="${KIRO_GATEWAY_URL:-}"
-  fi
-  if [[ -z "$_codex_url" && -f "$_codex_env" ]]; then
-    source "$_codex_env"; _codex_url="${CODEX_GATEWAY_URL:-}"
-  fi
+  # Gateway env files are sourced in subshells so API keys never leak into
+  # the interactive shell's variables.
+  local _kiro_url _codex_url
+  _kiro_url="${KIRO_GATEWAY_URL:-}"
+  [[ -z "$_kiro_url" && -f "$dir/config/.local/kiro-gateway.env" ]] && \
+    _kiro_url="$( source "$dir/config/.local/kiro-gateway.env" 2>/dev/null; printf '%s' "${KIRO_GATEWAY_URL:-}" )"
+  _codex_url="${CODEX_GATEWAY_URL:-}"
+  [[ -z "$_codex_url" && -f "$dir/config/.local/codex-gateway.env" ]] && \
+    _codex_url="$( source "$dir/config/.local/codex-gateway.env" 2>/dev/null; printf '%s' "${CODEX_GATEWAY_URL:-}" )"
   [[ -n "$_kiro_url" ]]  && shortcuts+=('kiro:Kiro via gateway')
   [[ -n "$_codex_url" ]] && shortcuts+=('codex-gateway:Claude Code via Codex gateway (legacy)')
   _describe 'harness shortcuts' shortcuts
