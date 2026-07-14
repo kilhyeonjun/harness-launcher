@@ -4,6 +4,14 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+### Changed
+
+- Label Codex Fast/Base/Plan/Rich routes as operational speed, balanced, or deep presets and document how they differ from general model starting effort; generated routing remains unchanged.
+
+### Fixed
+
+- Keep the manifest warm-path validator aligned with the Codex 0.144 status-line fields so unchanged homes no longer rebuild on every launch.
+
 ## [0.10.2] — 2026-07-11
 
 ### Fixed
