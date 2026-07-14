@@ -125,7 +125,7 @@ The same command shape works for every registered prefix:
 <prefix> codex-gateway [mode]    Claude Code through a Codex gateway
 ```
 
-Extra arguments pass through to the selected runtime. Run the prefix without arguments to choose the runtime, session, mode, and safety level interactively.
+Extra arguments pass through to the selected runtime. Run the prefix without arguments to choose the runtime, session, mode, and safety level interactively. Native Codex also asks for an MCP surface: `Default` keeps the minimal project surface, while `Work` enables only the approved work MCPs declared by `config/codex-surface.json`.
 
 ### Presets
 

@@ -196,6 +196,13 @@ The launcher never copies refresh tokens between auth stores. Login and account 
 
 The interactive launcher also supports forking the last Codex session. Extra runtime arguments pass through after launcher parsing.
 
+When native Codex is selected interactively, the launcher asks for an MCP
+surface after model selection. `Default` leaves `HARNESS_CODEX_MCP_PROFILE`
+unset and uses the manifest's minimal default surface. `Work` exports
+`HARNESS_CODEX_MCP_PROFILE=work` before preparing `CODEX_HOME`, so preparation
+and the launched process use the same approved work integrations. Cancelling
+exits without launching; it never silently upgrades the surface.
+
 ## Verification
 
 Generated TOML proves what the launcher intended, but a real session proves what Codex loaded. For model-routing changes:
