@@ -11,6 +11,7 @@ SHARE="$PREFIX/share/harness-launcher"
 
 for file in \
   aliases.zsh \
+  harness-common.sh \
   launcher.sh \
   codex-home-prepare.sh \
   codex-surface.py \

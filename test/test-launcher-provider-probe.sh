@@ -77,6 +77,13 @@ CODEX_GATEWAY_URL="$HTTP_URL"
 CODEX_GATEWAY_API_KEY="codex-test-key"
 EOF
 
+cat > "$TEST_BIN/claude" <<'CEOF'
+#!/usr/bin/env bash
+{ echo "EXEC:claude"; echo "ARGS:$*"; } >> "${TEST_STUB_FILE:-/dev/null}"
+exit 0
+CEOF
+chmod +x "$TEST_BIN/claude"
+
 cat > "$TEST_BIN/node" <<EOF
 #!/usr/bin/env bash
 exec "$REAL_NODE_PATH" "\$@"
@@ -88,22 +95,28 @@ PATH="$TEST_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
 HARNESS_CODEX_BIN="$TEST_TEMP/no-codex" \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
-bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'9\n' > "$OUTPUT_FILE" 2>&1 || true
+bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'9\nq\n' > "$OUTPUT_FILE" 2>&1 || true
 
-grep -q 'Select provider' "$OUTPUT_FILE" || {
-  echo 'FAIL: expected provider selection menu when /health returns HTTP 404'
+grep -q 'Provider' "$OUTPUT_FILE" || {
+  echo 'FAIL: expected provider menu when gateways are configured (HTTP 404 /health)'
   cat "$OUTPUT_FILE"
   exit 1
 }
 
-grep -q '2. 🔀 Kiro (via gateway)' "$OUTPUT_FILE" || {
-  echo 'FAIL: expected Kiro provider to remain visible on HTTP 404 /health'
+grep -q 'Kiro gateway' "$OUTPUT_FILE" || {
+  echo 'FAIL: expected Kiro gateway listed on HTTP 404 /health'
   cat "$OUTPUT_FILE"
   exit 1
 }
 
-grep -q '3. ⚡ Codex (via gateway)' "$OUTPUT_FILE" || {
-  echo 'FAIL: expected Codex provider to remain visible on HTTP 404 /health'
+grep -q 'Codex gateway' "$OUTPUT_FILE" || {
+  echo 'FAIL: expected Codex gateway listed on HTTP 404 /health'
+  cat "$OUTPUT_FILE"
+  exit 1
+}
+
+grep -q '(1-' "$OUTPUT_FILE" || {
+  echo 'FAIL: invalid provider input should reprompt with guidance'
   cat "$OUTPUT_FILE"
   exit 1
 }
@@ -133,16 +146,31 @@ CODEX_GATEWAY_API_KEY="codex-test-key"
 EOF
 
 NEGATIVE_OUTPUT_FILE="$TEST_TEMP/output-negative.txt"
+NEGATIVE_STUB="$TEST_TEMP/negative.stub"
+rm -f "$TEST_HARNESS/.harness/launcher-last"
+# Select the unreachable Codex gateway (3) → New session → Base → Start.
+# The launch gate must re-probe, fail closed, and never exec claude.
+TEST_STUB_FILE="$NEGATIVE_STUB" \
 PATH="$TEST_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
 HARNESS_CODEX_BIN="$TEST_TEMP/no-codex" \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
-bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'9\n' > "$NEGATIVE_OUTPUT_FILE" 2>&1 || true
+bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'3\n1\n2\n1\n' > "$NEGATIVE_OUTPUT_FILE" 2>&1 || true
 
-if grep -q 'Select provider' "$NEGATIVE_OUTPUT_FILE"; then
-  echo 'FAIL: did not expect provider selection menu when both gateways are unreachable'
+grep -q 'Provider' "$NEGATIVE_OUTPUT_FILE" || {
+  echo 'FAIL: provider menu must still be shown when gateways are unreachable (marks show state)'
   cat "$NEGATIVE_OUTPUT_FILE"
+  exit 1
+}
+grep -q '연결할 수 없습니다' "$NEGATIVE_OUTPUT_FILE" || {
+  echo 'FAIL: selecting an unreachable gateway should fail closed with a clear error'
+  cat "$NEGATIVE_OUTPUT_FILE"
+  exit 1
+}
+if [[ -f "$NEGATIVE_STUB" ]] && grep -q '^EXEC:claude' "$NEGATIVE_STUB"; then
+  echo 'FAIL: unreachable gateway must not launch claude'
+  cat "$NEGATIVE_STUB"
   exit 1
 fi
 
-echo 'PASS: provider probe treats HTTP 404 as reachable and hides unreachable gateways'
+echo 'PASS: provider menu lists configured gateways; unreachable gateway fails closed at launch'

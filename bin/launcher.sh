@@ -178,7 +178,10 @@ plan_available() {
 # ---------------------------------------------------------------------------
 launch_banner() {
   # launch_banner <summary> <cmd>...
+  # Also the last stop before exec: the EXIT trap dies with exec, so the
+  # probe scratch dir must be removed here.
   local summary="$1"; shift
+  rm -rf "$PROBE_DIR"
   stty sane 2>/dev/null
   echo ""
   echo "▶ $HARNESS_NAME · $summary"

@@ -24,6 +24,7 @@ TEST_BIN="$TEST_TEMP/bin"
 TEST_LAUNCHER_BIN="$TEST_TEMP/launcher-bin"
 mkdir -p "$TEST_HARNESS/config" "$TEST_BIN" "$TEST_LAUNCHER_BIN"
 cp "$LAUNCHER_DIR/bin/launcher.sh" "$TEST_LAUNCHER_BIN/launcher.sh"
+cp "$LAUNCHER_DIR/bin/harness-common.sh" "$TEST_LAUNCHER_BIN/harness-common.sh"
 cat > "$TEST_LAUNCHER_BIN/codex-home-prepare.sh" <<'EOF'
 #!/usr/bin/env bash
 set -e
@@ -74,8 +75,16 @@ exit 0
 EOF
 chmod +x "$HAPPY_BIN/happy"
 
+# Profile configs drive the drift-proof TUI labels.
+mkdir -p "$TEST_HARNESS/.harness/codex"
+printf 'model = "gpt-5.6-luna"\nmodel_reasoning_effort = "low"\n' > "$TEST_HARNESS/.harness/codex/fast.config.toml"
+printf 'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/base.config.toml"
+printf 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/plan.config.toml"
+printf 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/rich.config.toml"
+
 run_tui() {
   local input="$1" stub_file="$2" extra_path="${3:-}"
+  rm -f "$TEST_HARNESS/.harness/launcher-last"
   local path_value="$TEST_BIN:/usr/bin:/bin"
   [[ -n "$extra_path" ]] && path_value="$extra_path:$path_value"
   TEST_STUB_FILE="$stub_file" \
@@ -119,10 +128,10 @@ grep -q '^MCP_PROFILE:<UNSET>$' "$STUB1" || {
 }
 echo "PASS: case1 — runtime=Codex base → direct TUI + codex --cd ... -p base + CODEX_HOME prepared"
 for expected in \
-  "Fast — gpt-5.6-luna, low effort (speed preset)" \
-  "Base — gpt-5.6-terra, medium effort (balanced preset)" \
-  "Plan — gpt-5.6-sol, high + read-only sandbox (deep preset)" \
-  "Rich — gpt-5.6-sol, high effort (deep preset)"
+  "fast — gpt-5.6-luna · low" \
+  "base — gpt-5.6-terra · medium" \
+  "plan — gpt-5.6-sol · high" \
+  "rich — gpt-5.6-sol · high"
 do
   grep -q "$expected" "$STUB1.tui.log" || {
     echo "FAIL: Codex mode menu missing current routing label: $expected"; exit 1;
@@ -134,7 +143,7 @@ echo "PASS: Codex TUI mode labels match GPT-5.6 routing"
 # The surface must be selected before Codex home preparation and execution.
 STUB1B="$TEST_TEMP/out1b-codex-work-surface.txt"
 : > "$STUB1B"
-run_tui $'2\n1\n2\n2\n1\n' "$STUB1B"
+run_tui $'2\n1\n5\n1\n1\n' "$STUB1B"
 grep -q '^EXEC:codex' "$STUB1B" || {
   echo "FAIL: case1b — expected codex exec; got:"; cat "$STUB1B"; cat "$STUB1B.tui.log"; exit 1;
 }
@@ -144,8 +153,8 @@ grep -q '^MCP_PROFILE:work$' "$STUB1B" || {
 grep -q '^PREPARE_MCP_PROFILE:work$' "$STUB1B" || {
   echo "FAIL: case1b — expected work MCP surface before Codex preparation"; cat "$STUB1B"; cat "$STUB1B.tui.log"; exit 1;
 }
-grep -q 'MCP surface' "$STUB1B.tui.log" || {
-  echo "FAIL: case1b — MCP surface picker was not shown"; cat "$STUB1B.tui.log"; exit 1;
+grep -q 'work — base' "$STUB1B.tui.log" || {
+  echo "FAIL: case1b — work MCP surface option was not shown"; cat "$STUB1B.tui.log"; exit 1;
 }
 echo "PASS: case1b — Codex work MCP surface is exported before execution"
 
@@ -167,7 +176,7 @@ echo "PASS: case2 — Codex continue + plan → codex resume --last -p plan"
 # Case 3: runtime=Codex, safety=Full auto
 STUB3="$TEST_TEMP/out3-codex-fullauto.txt"
 : > "$STUB3"
-run_tui $'2\n1\n2\n1\n2\n' "$STUB3"
+run_tui $'2\n1\n2\n2\n1\n' "$STUB3"
 grep -qE "^ARGS:.*--full-auto" "$STUB3" || {
   echo "FAIL: case3 — expected --full-auto"; cat "$STUB3"; exit 1;
 }
@@ -176,7 +185,7 @@ echo "PASS: case3 — Safety=Full auto → --full-auto flag"
 # Case 3b: runtime=Codex, Happy=yes → exec happy codex with same Codex args
 STUB3B="$TEST_TEMP/out3b-codex-happy.txt"
 : > "$STUB3B"
-run_tui $'2\n1\n2\n1\n1\n2\n' "$STUB3B" "$HAPPY_BIN"
+run_tui $'2\n1\n2\n1\n2\n1\n' "$STUB3B" "$HAPPY_BIN"
 grep -q "^EXEC:happy" "$STUB3B" || {
   echo "FAIL: case3b — expected happy exec; got:"; cat "$STUB3B"; cat "$STUB3B.tui.log"; exit 1;
 }
@@ -211,12 +220,13 @@ chmod +x "$NO_CODEX_BIN/claude"
 
 STUB4="$TEST_TEMP/out4-claude-only.txt"
 : > "$STUB4"
+rm -f "$TEST_HARNESS/.harness/launcher-last"
 TEST_STUB_FILE="$STUB4" \
 PATH="$NO_CODEX_BIN:/usr/bin:/bin" \
 HARNESS_CODEX_BIN="$TEST_TEMP/missing-codex" \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
-bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< $'1\n2\n2\n' >/dev/null 2>&1 || true
+bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< $'1\n2\n1\n' >/dev/null 2>&1 || true
 grep -q "^EXEC:claude" "$STUB4" || {
   echo "FAIL: case4 — runtime auto-skip didn't reach Claude exec"; cat "$STUB4"; exit 1;
 }
@@ -225,7 +235,7 @@ echo "PASS: case4 — codex absent → runtime menu auto-skips to Claude flow"
 # Case 5: runtime=Claude (with both runtimes available) routes to Claude
 STUB5="$TEST_TEMP/out5-claude-via-tui.txt"
 : > "$STUB5"
-run_tui $'1\n1\n2\n2\n' "$STUB5"
+run_tui $'1\n1\n2\n1\n' "$STUB5"
 grep -q "^EXEC:claude" "$STUB5" || {
   echo "FAIL: case5 — expected claude exec when runtime=Claude"; cat "$STUB5"; exit 1;
 }

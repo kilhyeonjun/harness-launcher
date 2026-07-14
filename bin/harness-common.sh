@@ -98,6 +98,17 @@ harness_kiro_mode_label() {
 }
 
 # --- binary resolution ----------------------------------------------------------
+# Path-only lookup: `command -v` in zsh reports shell functions too, and
+# aliases.zsh defines a codex() wrapper — resolving through it would recurse
+# forever. whence -p (zsh) / type -P (bash) only ever return filesystem paths.
+harness_path_lookup() {
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    whence -p "$1" 2>/dev/null
+  else
+    type -P "$1" 2>/dev/null
+  fi
+}
+
 harness_codex_bin_resolve() {
   local configured="${HARNESS_CODEX_BIN:-}"
   if [ -n "$configured" ]; then
@@ -105,15 +116,15 @@ harness_codex_bin_resolve() {
       printf '%s\n' "$configured"
       return 0
     fi
-    command -v "$configured" 2>/dev/null
+    harness_path_lookup "$configured"
     return $?
   fi
-  if command -v codex >/dev/null 2>&1; then
-    command -v codex
+  if harness_path_lookup codex; then
     return 0
   fi
-  if [ "${HARNESS_CODEX_ALLOW_APP_FALLBACK:-0}" = "1" ] && [ -x "$HARNESS_CODEX_APP_BIN_DEFAULT" ]; then
-    printf '%s\n' "$HARNESS_CODEX_APP_BIN_DEFAULT"
+  local app_bin="${_HARNESS_CODEX_APP_BIN:-$HARNESS_CODEX_APP_BIN_DEFAULT}"
+  if [ "${HARNESS_CODEX_ALLOW_APP_FALLBACK:-0}" = "1" ] && [ -x "$app_bin" ]; then
+    printf '%s\n' "$app_bin"
     return 0
   fi
   return 1
@@ -126,10 +137,10 @@ harness_kiro_bin_resolve() {
       printf '%s\n' "$configured"
       return 0
     fi
-    command -v "$configured" 2>/dev/null
+    harness_path_lookup "$configured"
     return $?
   fi
-  command -v kiro-cli 2>/dev/null
+  harness_path_lookup kiro-cli
 }
 
 # --- gateway health -------------------------------------------------------------

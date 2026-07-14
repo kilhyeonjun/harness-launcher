@@ -416,17 +416,18 @@ _harness_launcher_run_kiro_cli() {
 _harness_launcher_complete() {
   local dir="$1"
   local -a shortcuts
-  local m
+  local m desc
   # Mode descriptions come from the shared table so completion text cannot
-  # drift from the launched model/effort.
+  # drift from the launched model/effort. Resolution runs in subshells so the
+  # HARNESS_MODE_* globals never touch the interactive shell.
   shortcuts=()
   for m in fast base plan rich; do
-    harness_mode_resolve "$m" direct
-    shortcuts+=("$m:$HARNESS_MODE_MODEL · $HARNESS_MODE_EFFORT")
+    desc="$( harness_mode_resolve "$m" direct; printf '%s · %s' "$HARNESS_MODE_MODEL" "$HARNESS_MODE_EFFORT" )"
+    shortcuts+=("$m:$desc")
   done
-  harness_mode_resolve ultracode direct
+  desc="$( harness_mode_resolve ultracode direct; printf '%s · %s' "$HARNESS_MODE_MODEL" "$HARNESS_MODE_EFFORT" )"
   shortcuts+=(
-    "ultracode:$HARNESS_MODE_MODEL · $HARNESS_MODE_EFFORT now · /effort→ultracode for workflows (direct only)"
+    "ultracode:$desc now · /effort→ultracode for workflows (direct only)"
     'continue:Continue last session'
     'resume:Resume from list'
     'bypass:Skip all permission prompts'
