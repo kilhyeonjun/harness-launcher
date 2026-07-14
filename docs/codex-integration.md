@@ -189,6 +189,7 @@ The launcher never copies refresh tokens between auth stores. Login and account 
 ```text
 <prefix> codex                 new session with base profile
 <prefix> codex fast            new session with fast profile
+<prefix> codex work            new session with base profile and the work MCP surface
 <prefix> codex continue        resume --last
 <prefix> codex resume          resume picker
 ```

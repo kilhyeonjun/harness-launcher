@@ -95,6 +95,19 @@ run_codex() {
   ) 2>/dev/null || true
 }
 
+run_codex_failure() {
+  local output_file="$1"; shift
+  (
+    export TEST_STUB_FILE="$TEST_TEMP/output-codex-cli-failure-stub.txt"
+    export PATH="$TEST_BIN:$PATH"
+    export HARNESS_CODEX_BIN="$CODEX_STUB"
+    unset HARNESS_CODEX_MCP_PROFILE
+    source "$LAUNCHER_DIR/bin/aliases.zsh"
+    _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+    _harness_launcher_run "$TEST_HARNESS" 'codex' "$@"
+  ) >"$output_file" 2>&1
+}
+
 run_raw_codex() {
   local stub_file="$1"; shift
   (
@@ -224,6 +237,42 @@ if [[ "$work_prepare_mcp_profile" != "work" || "$work_mcp_profile" != "work" ]];
   exit 1
 fi
 echo "PASS: codex CLI work → base profile + work MCP surface before prepare"
+
+# `work` is a launcher surface selector only when it is the first token after
+# `codex`. It must not consume a raw Codex subcommand prompt.
+STUB_EXEC_WORK="$TEST_TEMP/output-codex-cli-exec-work.txt"
+: > "$STUB_EXEC_WORK"
+run_codex "$STUB_EXEC_WORK" exec work
+exec_work_argv="$(get_field ARGV "$STUB_EXEC_WORK")"
+case "$exec_work_argv" in
+  *"exec work"*) ;;
+  *) echo "FAIL: codex exec work — prompt 'work' was not preserved, got '$exec_work_argv'"; exit 1 ;;
+esac
+if [[ "$(get_field MCP_PROFILE "$STUB_EXEC_WORK")" != "<UNSET>" ]]; then
+  echo "FAIL: codex exec work — must not activate the work MCP surface"
+  exit 1
+fi
+echo "PASS: codex exec work → prompt preserved without work MCP surface"
+
+for incompatible_args in "work rich" "rich work"; do
+  failure_output="$TEST_TEMP/output-codex-cli-incompatible-${incompatible_args// /-}.txt"
+  : > "$TEST_TEMP/output-codex-cli-failure-stub.txt"
+  if run_codex_failure "$failure_output" ${(z)incompatible_args}; then
+    echo "FAIL: codex CLI $incompatible_args — incompatible mode/profile combination must fail"
+    exit 1
+  fi
+  if [[ -s "$TEST_TEMP/output-codex-cli-failure-stub.txt" ]]; then
+    echo "FAIL: codex CLI $incompatible_args — must fail before Codex starts"
+    cat "$TEST_TEMP/output-codex-cli-failure-stub.txt"
+    exit 1
+  fi
+  if ! grep -qi 'cannot be combined' "$failure_output"; then
+    echo "FAIL: codex CLI $incompatible_args — expected clear incompatibility error"
+    cat "$failure_output"
+    exit 1
+  fi
+done
+echo "PASS: codex CLI work rejects incompatible model profiles"
 
 # Session shortcuts
 run_session "resume"   "resume"           ""        || exit 1

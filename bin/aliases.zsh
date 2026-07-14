@@ -412,8 +412,23 @@ _harness_launcher_run_codex_cli() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      fast|base|plan|rich) profile="$1"; profile_explicit=true; shift ;;
-      work)               profile="base"; profile_explicit=true; mcp_profile="work"; shift ;;
+      fast|base|plan|rich)
+        [[ -z "$mcp_profile" ]] || {
+          echo "❌ Codex work MCP surface cannot be combined with the $1 model profile" >&2
+          return 1
+        }
+        profile="$1"; profile_explicit=true; shift ;;
+      work)
+        if [[ -n "$profile" ]]; then
+          echo "❌ Codex work MCP surface cannot be combined with the $profile model profile" >&2
+          return 1
+        fi
+        if [[ -z "$subcmd" && ${#codex_args[@]} -eq 0 && $use_happy == false ]]; then
+          profile="base"; profile_explicit=true; mcp_profile="work"; shift
+        else
+          codex_args+=("$1"); shift
+        fi
+        ;;
       resume)              subcmd="resume"; shift ;;
       continue)            subcmd="resume"; codex_args+=(--last); shift ;;
       fork)                subcmd="fork"; shift ;;
