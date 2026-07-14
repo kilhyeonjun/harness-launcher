@@ -115,17 +115,32 @@ The same command shape works for every registered prefix:
 ```text
 <prefix>                         interactive TUI
 <prefix> fast|base|plan|rich     Claude Code preset
+<prefix> ultracode               Claude Code opus[1m] + xhigh (direct only)
 <prefix> continue|resume         Claude Code session shortcut
 <prefix> codex [profile]         native Codex CLI
 <prefix> codex work              native Codex CLI with the base profile and work MCP surface
 <prefix> codex continue          Codex `resume --last`
 <prefix> codex resume            Codex resume picker
+<prefix> codex fork              Codex `fork --last`
+<prefix> codex full-auto|never|bypass   Codex safety level (bypass disables sandbox — dangerous)
 <prefix> kiro-cli [mode]         native Kiro CLI
 <prefix> kiro [mode]             Claude Code through a Kiro gateway
 <prefix> codex-gateway [mode]    Claude Code through a Codex gateway
 ```
 
-Extra arguments pass through to the selected runtime. Run the prefix without arguments to choose the runtime, session, mode, and safety level interactively. Native Codex also asks for an MCP surface: `Default` keeps the minimal project surface, while `Work` enables only the approved work MCPs declared by `config/codex-surface.json`.
+Extra arguments pass through to the selected runtime.
+
+Run the prefix without arguments for the TUI: pick a runtime, session, and mode,
+then review everything on a single summary screen where permission mode, Chrome,
+and the Happy wrapper are toggles. The first menu offers **Repeat last** to relaunch
+your previous configuration in one keypress (stored per harness in
+`.harness/launcher-last`; gateways, generated homes, and MCP configs are revalidated
+on every replay). Esc/`q` always goes one step back; at the top menu it exits.
+Menu labels are generated from the same mode table the shortcuts use, and the
+native-Codex profile labels read the generated profile configs, so what a label
+says is what launches. Native Codex offers the `work` MCP surface as a profile
+choice: `Default` keeps the minimal project surface, while `work` runs the base
+profile with only the approved work MCPs declared by `config/codex-surface.json`.
 
 ### Presets
 
