@@ -37,6 +37,7 @@ cat > "$CODEX_STUB" <<'EOF'
   echo "ARGV:$*"
   echo "CODEX_HOME:${CODEX_HOME:-}"
   echo "MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}"
+  echo "HARNESS_PREFIX:${HARNESS_PREFIX:-<UNSET>}"
   echo "PWD:$PWD"
   echo "MCP_KEY:${HYPERDX_API_KEY:-<UNSET>}"
 } >> "$TEST_STUB_FILE"
@@ -59,6 +60,7 @@ cat > "$HAPPY_STUB" <<'EOF'
 {
   echo "HAPPY_ARGV:$*"
   echo "HAPPY_CODEX_HOME:${CODEX_HOME:-}"
+  echo "HAPPY_HARNESS_PREFIX:${HARNESS_PREFIX:-<UNSET>}"
 } >> "$TEST_STUB_FILE"
 exit 0
 EOF
@@ -134,11 +136,12 @@ run_mode() {
     return 1
   fi
 
-  local argv codex_home prepare_mcp_profile codex_mcp_profile
+  local argv codex_home prepare_mcp_profile codex_mcp_profile harness_prefix
   argv="$(get_field ARGV "$stub_file")"
   codex_home="$(get_field CODEX_HOME "$stub_file")"
   prepare_mcp_profile="$(get_field PREPARE_MCP_PROFILE "$stub_file")"
   codex_mcp_profile="$(get_field MCP_PROFILE "$stub_file")"
+  harness_prefix="$(get_field HARNESS_PREFIX "$stub_file")"
 
   if ! grep -q "^PREPARE_ARGV:$TEST_HARNESS\$" "$stub_file"; then
     echo "FAIL: codex CLI $mode — codex-home-prepare.sh not called with harness dir"
@@ -167,6 +170,11 @@ run_mode() {
 
   if [[ "$prepare_mcp_profile" != "<UNSET>" || "$codex_mcp_profile" != "<UNSET>" ]]; then
     echo "FAIL: codex CLI $mode — must preserve the default MCP surface, got prepare='$prepare_mcp_profile' codex='$codex_mcp_profile'"
+    return 1
+  fi
+
+  if [[ "$harness_prefix" != "test" ]]; then
+    echo "FAIL: codex CLI $mode — expected exported HARNESS_PREFIX=test, got '$harness_prefix'"
     return 1
   fi
 
@@ -214,6 +222,23 @@ run_mode "base" "base" || exit 1
 run_mode "sol" "sol" || exit 1
 run_mode "plan" "plan" || exit 1
 run_mode "rich" "rich" || exit 1
+
+# The dynamically scoped prefix is exported only for the native launch. It
+# must not create a global parameter after the launcher function returns.
+(
+  export TEST_STUB_FILE="$TEST_TEMP/output-codex-cli-prefix-scope.txt"
+  export PATH="$TEST_BIN:$PATH"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  unset HARNESS_PREFIX
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  _harness_launcher_run "$TEST_HARNESS" codex base
+  if (( ${+HARNESS_PREFIX} )); then
+    echo "FAIL: codex CLI prefix — HARNESS_PREFIX leaked after launcher return"
+    exit 1
+  fi
+)
+echo "PASS: native Codex prefix export remains dynamically scoped"
 
 # `work` is an MCP surface selector, not a Codex model profile. It must select
 # the base Codex profile while exporting the exact MCP profile before prepare.
@@ -406,12 +431,17 @@ STUB_HAPPY="$TEST_TEMP/output-codex-cli-happy.txt"
 run_codex "$STUB_HAPPY" "happy"
 happy_argv="$(get_field HAPPY_ARGV "$STUB_HAPPY")"
 happy_codex_home="$(get_field HAPPY_CODEX_HOME "$STUB_HAPPY")"
+happy_harness_prefix="$(get_field HAPPY_HARNESS_PREFIX "$STUB_HAPPY")"
 
 [[ "$happy_argv" == "codex" ]] || {
   echo "FAIL: codex CLI happy — expected happy argv 'codex', got '$happy_argv'"; exit 1;
 }
 if [[ "$happy_codex_home" != "$TEST_HARNESS/.harness/codex" ]]; then
   echo "FAIL: codex CLI happy — expected CODEX_HOME=$TEST_HARNESS/.harness/codex, got '$happy_codex_home'"
+  exit 1
+fi
+if [[ "$happy_harness_prefix" != "test" ]]; then
+  echo "FAIL: codex CLI happy — expected exported HARNESS_PREFIX=test, got '$happy_harness_prefix'"
   exit 1
 fi
 echo "PASS: codex CLI happy → happy codex + CODEX_HOME"

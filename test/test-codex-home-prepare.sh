@@ -971,6 +971,47 @@ python3 -c "import json; json.load(open('$hooks_json'))" 2>/dev/null \
   || { echo "FAIL: hooks.json is not valid JSON"; exit 1; }
 echo "PASS: hooks.json generated and valid JSON"
 
+# The launcher-owned cmux title helper is one direct SessionStart hook. It is
+# installed beside codex-home-prepare.sh and runs under the selected Python,
+# without the Claude-output adapter because it intentionally emits no output.
+python3 - "$hooks_json" "$TEST_HARNESS3" "$PREPARE" <<'PY' || exit 1
+import json
+import os
+import shlex
+import sys
+
+path, harness, prepare = sys.argv[1:4]
+with open(path, encoding="utf-8") as stream:
+    hooks = json.load(stream).get("hooks", {})
+title_hooks = [
+    hook
+    for entry in hooks.get("SessionStart", [])
+    for hook in entry.get("hooks", [])
+    if "codex-cmux-title-sync.py" in hook.get("command", "")
+]
+if len(title_hooks) != 1:
+    print(f"FAIL: expected one cmux title SessionStart hook, got {title_hooks}")
+    sys.exit(1)
+hook = title_hooks[0]
+command = hook["command"]
+expected_helper = os.path.join(os.path.dirname(prepare), "codex-cmux-title-sync.py")
+parts = shlex.split(command)
+if len(parts) != 2 or parts[1] != expected_helper:
+    print(f"FAIL: cmux title hook must use installed sibling {expected_helper}: {command}")
+    sys.exit(1)
+if not os.path.isabs(parts[0]) or not os.access(parts[0], os.X_OK):
+    print(f"FAIL: cmux title hook must use the selected absolute Python executable: {command}")
+    sys.exit(1)
+if hook.get("timeout") != 3000:
+    print(f"FAIL: cmux title hook must use a 3000ms startup timeout: {hook}")
+    sys.exit(1)
+if "codex-hook-adapter.sh" in command:
+    print(f"FAIL: cmux title hook must be direct, not adapter-wrapped: {command}")
+    sys.exit(1)
+print("OK")
+PY
+echo "PASS: SessionStart wires one direct installed cmux title synchronizer"
+
 # Verify each event has the expected hook entries
 python3 - "$hooks_json" "$TEST_HARNESS3" <<'PY' || exit 1
 import json, sys, os
@@ -1041,6 +1082,11 @@ for event in adapted:
     for entry in data["hooks"].get(event, []):
         for h in entry.get("hooks", []):
             cmd = h.get("command", "")
+            if "codex-cmux-title-sync.py" in cmd:
+                if "codex-hook-adapter.sh" in cmd:
+                    print(f"FAIL: cmux title hook must not use adapter: {cmd}")
+                    sys.exit(1)
+                continue
             if "codex-hook-adapter.sh" not in cmd:
                 print(f"FAIL: {event} hook not wrapped via adapter: {cmd}")
                 sys.exit(1)

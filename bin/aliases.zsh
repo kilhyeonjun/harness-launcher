@@ -291,6 +291,7 @@ _harness_launcher_run() {
 #             fork   → `codex fork`
 _harness_launcher_run_codex_cli() {
   local HARNESS_DIR="$1"; shift
+  export HARNESS_PREFIX
   local profile=""
   local profile_explicit=false
   local mcp_profile=""

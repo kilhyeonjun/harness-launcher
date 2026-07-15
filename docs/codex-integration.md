@@ -207,6 +207,14 @@ context remaining ahead of branch changes. Before a rename, `thread-title` can
 fall back to the thread ID. Change these defaults in `codex-home-prepare.sh`,
 not in a generated project `config.toml`.
 
+Inside cmux, a launcher-owned fail-open `SessionStart` watcher replaces the
+native composite title with `<thread name> | kh`, `<thread name> | gp`, or
+`<thread name> | gd`. It reads only the current SessionStart ID from the
+project's `session_index.jsonl`, targets the exact starting tab surface, and
+never renames the workspace. Missing cmux state or thread metadata is a silent
+no-op. Because Codex trusts hook commands by hash, review a newly generated or
+changed command through `/hooks` when Codex requests it.
+
 ```text
 <prefix> codex                 new session with base profile
 <prefix> codex fast            new session with fast profile

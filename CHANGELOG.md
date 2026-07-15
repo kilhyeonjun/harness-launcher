@@ -4,6 +4,25 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-16
+
+### Changed
+
+- **Codex puts actionable context first.** The native terminal title now uses
+  `activity | thread-title | project-name`, while the footer places
+  `context-remaining` before `branch-changes`.
+- **cmux tabs use the short harness alias after the thread name.** Native kh,
+  gp, and gd launches export their dynamically scoped prefix, and a fail-open
+  SessionStart watcher labels only the exact starting tab as
+  `<thread name> | kh/gp/gd`. The watcher reads the matching session ID only,
+  sanitizes controls, suppresses duplicate writes, and stops with its Codex
+  owner or an unavailable cmux surface.
+
+### Added
+
+- Packaged `codex-cmux-title-sync.py` beside the other launcher-owned runtime
+  adapters and included it in generated-surface fingerprinting.
+
 ## [0.14.1] — 2026-07-15
 
 ### Changed
@@ -224,7 +243,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.14.1...v0.15.0
+[0.14.1]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.11.0...v0.12.0

@@ -512,6 +512,15 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertFalse(self.plugin_enabled("computer-use"))
         self.assertFalse(self.plugin_enabled("chrome"))
         self.assertTrue((self.codex_home / ".surface-success.json").is_file())
+        fingerprint_cache = json.loads(
+            (self.codex_home / ".surface-fingerprint-cache.json").read_text(encoding="utf-8")
+        )
+        title_sync = os.path.realpath(ROOT / "bin" / "codex-cmux-title-sync.py")
+        self.assertIn(
+            title_sync,
+            fingerprint_cache.get("files", {}),
+            "cmux title helper is missing from the launcher-owned fingerprint",
+        )
 
         warm_samples = []
         for _ in range(5):
@@ -689,6 +698,14 @@ out.mkdir(parents=True, exist_ok=True)
         hooks_root = str(self.repo / "core" / "hooks") + os.sep
         for command in commands:
             argv = shlex.split(command)
+            if "codex-cmux-title-sync.py" in command:
+                self.assertEqual(len(argv), 2, command)
+                self.assertEqual(
+                    argv[1],
+                    str(ROOT / "bin" / "codex-cmux-title-sync.py"),
+                    command,
+                )
+                continue
             self.assertIn(len(argv), (2, 4), command)
             self.assertEqual(argv[0], "bash")
             self.assertTrue(argv[-1].startswith(hooks_root), command)
