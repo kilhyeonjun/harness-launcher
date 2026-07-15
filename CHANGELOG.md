@@ -4,6 +4,17 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-07-15
+
+### Changed
+
+- **Codex profile intent is explicit in the launcher UI.** `base` is labeled
+  `Everyday · Recommended`, `sol` is labeled `Stronger · slower`, and `rich`
+  is labeled `Deep · slowest`, while each row continues to show the generated
+  model and effort. The underlying profile routing, the default `base`
+  selection, and saved-history replay are unchanged. Reviewer subagents may
+  still route independently to Sol/high even when the main session uses base.
+
 ## [0.14.0] — 2026-07-15
 
 ### Added
