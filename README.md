@@ -154,12 +154,14 @@ combinable with any profile: `default` keeps the minimal project surface, while
 | Preset | Claude Code | Codex CLI | Intended use |
 | --- | --- | --- | --- |
 | `fast` | Haiku, low effort | GPT-5.6 Luna, low effort | Small edits and quick checks |
-| `base` | Sonnet | GPT-5.6 Terra, medium effort | General implementation work |
-| `sol` (Codex only) | — | GPT-5.6 Sol, medium effort | Stronger model at everyday effort |
+| `base` | Sonnet | GPT-5.6 Terra, medium effort | Everyday work — recommended default |
+| `sol` (Codex only) | — | GPT-5.6 Sol, medium effort | Stronger main model — slower |
 | `plan` | Opus Plan | GPT-5.6 Sol, high effort, read-only | Investigation and planning |
-| `rich` | Opus | GPT-5.6 Sol, high effort | Difficult implementation and review |
+| `rich` | Opus | GPT-5.6 Sol, high effort | Deep work — slowest normal preset |
 
 These are task-oriented operational presets, not claims about OpenAI's model defaults. The launcher deliberately lowers `fast` for speed and raises `plan`/`rich` for deeper work; an unscoped model picker may use a different general starting effort. Model names follow the capabilities exposed by the installed runtime. The launcher does not pin Codex context-window or auto-compaction values; Codex model metadata remains the source of truth.
+
+The main profile does not downgrade reviewers: reviewer subagents may still route to Sol/high.
 
 ## Project layout
 

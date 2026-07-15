@@ -129,14 +129,15 @@ grep -q '^MCP_PROFILE:<UNSET>$' "$STUB1" || {
 }
 echo "PASS: case1 — runtime=Codex base → direct TUI + codex --cd ... -p base + CODEX_HOME prepared"
 for expected in \
-  "fast — gpt-5.6-luna · low" \
-  "base — gpt-5.6-terra · medium" \
-  "sol — gpt-5.6-sol · medium" \
-  "plan — gpt-5.6-sol · high" \
-  "rich — gpt-5.6-sol · high"
-do
-  grep -q "$expected" "$STUB1.tui.log" || {
-    echo "FAIL: Codex mode menu missing current routing label: $expected"; exit 1;
+  "fast — Quick · shallow — gpt-5.6-luna · low" \
+  "base — Everyday · Recommended — gpt-5.6-terra · medium" \
+  "sol — Stronger · slower — gpt-5.6-sol · medium" \
+  "plan — Planning · deep — gpt-5.6-sol · high" \
+  "rich — Deep · slowest — gpt-5.6-sol · high"; do
+  grep -Fq "$expected" "$STUB1.tui.log" || {
+    echo "FAIL: Codex profile intent label missing: $expected"
+    cat "$STUB1.tui.log"
+    exit 1
   }
 done
 echo "PASS: Codex TUI mode labels match GPT-5.6 routing"

@@ -272,18 +272,32 @@ launch_banner() {
   echo ""
 }
 
+# codex_profile_intent <profile> — operational intent shown in the profile menu.
+codex_profile_intent() {
+  case "$1" in
+    base) printf '%s\n' 'Everyday · Recommended' ;;
+    sol)  printf '%s\n' 'Stronger · slower' ;;
+    rich) printf '%s\n' 'Deep · slowest' ;;
+    fast) printf '%s\n' 'Quick · shallow' ;;
+    plan) printf '%s\n' 'Planning · deep' ;;
+    *)    printf '%s\n' 'Custom' ;;
+  esac
+}
+
 # codex_profile_label <profile> — label derived from the generated profile
-# config when available (drift-proof), profile name alone otherwise.
+# config when available (drift-proof), profile name and intent otherwise.
 codex_profile_label() {
   local profile="$1" cfg="$HARNESS_DIR/.harness/codex/$1.config.toml" model="" effort=""
+  local intent
+  intent="$(codex_profile_intent "$profile")"
   if [ -f "$cfg" ]; then
     model=$(sed -n 's/^model = "\(.*\)"/\1/p' "$cfg" | head -1)
     effort=$(sed -n 's/^model_reasoning_effort = "\(.*\)"/\1/p' "$cfg" | head -1)
   fi
   if [ -n "$model" ]; then
-    printf '%s — %s · %s\n' "$profile" "$model" "${effort:-default}"
+    printf '%s — %s — %s · %s\n' "$profile" "$intent" "$model" "${effort:-default}"
   else
-    printf '%s\n' "$profile"
+    printf '%s — %s\n' "$profile" "$intent"
   fi
 }
 
