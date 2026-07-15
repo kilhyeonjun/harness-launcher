@@ -46,6 +46,7 @@ cp "$LAUNCHER_DIR/bin/codex-home-prepare.sh"      "$SHARE_DIR/codex-home-prepare
 cp "$LAUNCHER_DIR/bin/codex-surface.py"           "$SHARE_DIR/codex-surface.py"
 cp "$LAUNCHER_DIR/bin/codex-surface-warm.py"      "$SHARE_DIR/codex-surface-warm.py"
 cp "$LAUNCHER_DIR/bin/codex-hook-adapter.sh"      "$SHARE_DIR/codex-hook-adapter.sh"
+cp "$LAUNCHER_DIR/bin/codex-cmux-title-sync.py"   "$SHARE_DIR/codex-cmux-title-sync.py"
 cp "$LAUNCHER_DIR/bin/codex-migrate-to-symlinks.sh" "$SHARE_DIR/codex-migrate-to-symlinks.sh"
 cp "$LAUNCHER_DIR/bin/kiro-home-prepare.sh"       "$SHARE_DIR/kiro-home-prepare.sh"
 chmod +x \
@@ -54,6 +55,7 @@ chmod +x \
   "$SHARE_DIR/codex-surface.py" \
   "$SHARE_DIR/codex-surface-warm.py" \
   "$SHARE_DIR/codex-hook-adapter.sh" \
+  "$SHARE_DIR/codex-cmux-title-sync.py" \
   "$SHARE_DIR/codex-migrate-to-symlinks.sh" \
   "$SHARE_DIR/kiro-home-prepare.sh"
 

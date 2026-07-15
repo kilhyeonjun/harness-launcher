@@ -100,6 +100,7 @@ CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/A
 # state is intentionally excluded; the auth link itself is repaired cheaply on
 # the warm path.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TITLE_SYNC_PATH="$SCRIPT_DIR/codex-cmux-title-sync.py"
 SURFACE_RESOLVER="$SCRIPT_DIR/codex-surface.py"
 SURFACE_WARM_PROBE="$SCRIPT_DIR/codex-surface-warm.py"
 SURFACE_MANIFEST="$HARNESS_DIR/config/codex-surface.json"
@@ -149,6 +150,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --launcher-file "$SURFACE_WARM_PROBE"
     --launcher-file "$0"
     --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
+    --launcher-file "$TITLE_SYNC_PATH"
     --bundled-marketplace "$CODEX_BUNDLED_MARKETPLACE_SOURCE"
     --fingerprint-cache "$SURFACE_FINGERPRINT_CACHE"
   )
@@ -713,8 +715,8 @@ enabled = $COMPUTER_USE_PLUGIN_ENABLED
 enabled = $CHROME_PLUGIN_ENABLED
 
 [tui]
-terminal_title = ["activity", "project-name", "thread-title"]
-status_line = ["thread-title", "model-with-reasoning", "git-branch", "branch-changes", "run-state", "context-remaining", "five-hour-limit", "weekly-limit"]
+terminal_title = ["activity", "thread-title", "project-name"]
+status_line = ["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "five-hour-limit", "weekly-limit"]
 
 TOML
 
@@ -1317,11 +1319,13 @@ fi
 # top-level additionalContext schema for those events.
 hooks_file="$CODEX_HOME/hooks.json"
 tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
-ADAPTER_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-hook-adapter.sh"
-python3 - "$HARNESS_DIR" "$ADAPTER_PATH" > "$tmp_hooks" <<'PY'
+ADAPTER_PATH="$SCRIPT_DIR/codex-hook-adapter.sh"
+python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" > "$tmp_hooks" <<'PY'
 import json, os, re, shlex, sys
 harness = sys.argv[1]
 adapter = sys.argv[2]
+title_sync = sys.argv[3]
+python_bin = sys.argv[4]
 hooks_dir = os.path.join(harness, "core", "hooks")
 settings_path = os.path.join(harness, ".claude", "settings.json")
 hooks_policy_path = os.path.join(harness, ".claude", "source", "hooks.yaml")
@@ -1467,6 +1471,15 @@ if has(codex_subagent) and codex_subagent not in exclusions:
             group([codex_subagent], event=event,
                   timeouts={codex_subagent: 3000})
         )
+
+# cmux title synchronization is a launcher-owned, fail-open Codex adapter. It
+# emits no hook output, so it runs directly instead of through the Claude JSON
+# adapter. HARNESS_PREFIX and CMUX_SURFACE_ID are inherited from the launch.
+if os.path.isfile(title_sync):
+    command = " ".join((shlex.quote(python_bin), shlex.quote(title_sync)))
+    config["hooks"].setdefault("SessionStart", []).append(
+        {"hooks": [{"type": "command", "command": command, "timeout": 3000}]}
+    )
 
 # Stop intentionally NOT wired for Codex. The Claude harness's session-end.sh
 # emits a session-termination checklist (delivery-required, instinct-gap,

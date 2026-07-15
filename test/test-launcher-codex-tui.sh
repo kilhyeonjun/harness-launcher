@@ -57,6 +57,7 @@ cat > "$TEST_BIN/codex" <<'EOF'
   echo "ARGS:$*"
   echo "CODEX_HOME:${CODEX_HOME:-}"
   echo "MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}"
+  echo "HARNESS_PREFIX:${HARNESS_PREFIX:-<UNSET>}"
 } >> "$TEST_STUB_FILE"
 exit 0
 EOF
@@ -70,6 +71,7 @@ cat > "$HAPPY_BIN/happy" <<'EOF'
   echo "EXEC:happy"
   echo "ARGS:$*"
   echo "CODEX_HOME:${CODEX_HOME:-}"
+  echo "HARNESS_PREFIX:${HARNESS_PREFIX:-<UNSET>}"
 } >> "$TEST_STUB_FILE"
 exit 0
 EOF
@@ -93,6 +95,7 @@ run_tui() {
   HARNESS_CODEX_BIN="$TEST_BIN/codex" \
   HARNESS_DIR="$TEST_HARNESS" \
   HARNESS_NAME="test harness" \
+  HARNESS_PREFIX="test" \
   bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
 }
 
@@ -120,6 +123,9 @@ grep -q '^PREPARE_MCP_PROFILE:<UNSET>$' "$STUB1" || {
 }
 grep -q '^MCP_PROFILE:<UNSET>$' "$STUB1" || {
   echo "FAIL: case1 — default MCP surface leaked into Codex execution"; cat "$STUB1"; exit 1;
+}
+grep -q '^HARNESS_PREFIX:test$' "$STUB1" || {
+  echo "FAIL: case1 — HARNESS_PREFIX was not exported to Codex"; cat "$STUB1"; exit 1;
 }
 [[ -d "$TEST_HARNESS/.harness/codex" ]] || {
   echo "FAIL: case1 — CODEX_HOME directory not prepared"; exit 1;
@@ -215,6 +221,9 @@ grep -qE "^ARGS:codex$" "$STUB3B" || {
 }
 grep -q "^CODEX_HOME:$TEST_HARNESS/.harness/codex\$" "$STUB3B" || {
   echo "FAIL: case3b — CODEX_HOME mismatch"; cat "$STUB3B"; exit 1;
+}
+grep -q '^HARNESS_PREFIX:test$' "$STUB3B" || {
+  echo "FAIL: case3b — HARNESS_PREFIX was not exported through Happy"; cat "$STUB3B"; exit 1;
 }
 echo "PASS: case3b — runtime=Codex + Happy=yes → exec happy codex"
 

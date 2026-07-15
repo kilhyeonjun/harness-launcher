@@ -18,6 +18,7 @@ for file in \
   codex-surface.py \
   codex-surface-warm.py \
   codex-hook-adapter.sh \
+  codex-cmux-title-sync.py \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh; do
   [[ -f "$SHARE/$file" ]] || {
@@ -32,6 +33,7 @@ for file in \
   codex-surface.py \
   codex-surface-warm.py \
   codex-hook-adapter.sh \
+  codex-cmux-title-sync.py \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh; do
   [[ -x "$SHARE/$file" ]] || {
