@@ -27,6 +27,32 @@ cat > "$TEST_HARNESS/CLAUDE.md" <<'EOF'
 # Fake harness rules
 EOF
 
+# Subagent defs: one read-only haiku, one workspace-write sonnet, plus _index
+# (must be skipped). Tier resolution reads the launcher's real
+# subagent-model-map.tsv, so these assert the actual shipped mapping.
+mkdir -p "$TEST_HARNESS/.claude/agents"
+cat > "$TEST_HARNESS/.claude/agents/_index.md" <<'EOF'
+# index — must be skipped
+EOF
+cat > "$TEST_HARNESS/.claude/agents/scout.md" <<'EOF'
+---
+name: scout
+description: read-only search agent
+model: haiku
+tools: Read, Glob, Grep
+---
+Scout body.
+EOF
+cat > "$TEST_HARNESS/.claude/agents/builder.md" <<'EOF'
+---
+name: builder
+description: TDD implementer
+model: sonnet
+tools: Read, Edit, Write, Bash
+---
+Builder body.
+EOF
+
 # Committed servers (shared)
 cat > "$TEST_HARNESS/.mcp.json" <<'EOF'
 {
@@ -95,6 +121,71 @@ if set(agent) != set(settings):
     sys.exit(1)
 PY
 echo "PASS: harness agent inlines the merged MCP servers"
+
+# ─── per-subagent agents/<name>.json (direction A) ───────────────────────────
+# _index.md must be skipped; scout/builder must generate with the tier-resolved
+# Kiro model ID and read-only vs workspace allowedTools.
+[[ ! -e "$KIRO_HOME/agents/_index.json" ]] || { echo "FAIL: _index.md must not generate an agent json"; FAIL=1; }
+
+scout_agent="$KIRO_HOME/agents/scout.json"
+builder_agent="$KIRO_HOME/agents/builder.json"
+[[ -f "$scout_agent" ]] || { echo "FAIL: agents/scout.json missing"; FAIL=1; }
+[[ -f "$builder_agent" ]] || { echo "FAIL: agents/builder.json missing"; FAIL=1; }
+
+python3 - "$scout_agent" "$builder_agent" <<'PY' || FAIL=1
+import json, sys
+scout = json.load(open(sys.argv[1]))
+builder = json.load(open(sys.argv[2]))
+ok = True
+if scout.get("model") != "claude-haiku-4.5":
+    print(f"FAIL: scout (haiku) model={scout.get('model')} != claude-haiku-4.5"); ok = False
+if builder.get("model") != "claude-sonnet-4.6":
+    print(f"FAIL: builder (sonnet) model={builder.get('model')} != claude-sonnet-4.6"); ok = False
+# read-only agent: no fs_write; workspace agent: has fs_write
+if "fs_write" in scout.get("allowedTools", []):
+    print("FAIL: read-only scout must not auto-approve fs_write"); ok = False
+if "fs_write" not in builder.get("allowedTools", []):
+    print("FAIL: workspace builder must auto-approve fs_write"); ok = False
+# subagents must inline MCP like harness.json (delegate parity)
+if not scout.get("mcpServers"):
+    print("FAIL: scout must inline merged MCP servers"); ok = False
+sys.exit(0 if ok else 1)
+PY
+echo "PASS: per-subagent JSONs carry tier-resolved model + read/write allowedTools"
+
+# Idempotent + source-removal reversal: dropping builder.md quarantines its json.
+"$PREPARE" "$TEST_HARNESS" >/dev/null
+[[ -f "$builder_agent" ]] || { echo "FAIL: builder.json should survive idempotent re-run"; FAIL=1; }
+rm "$TEST_HARNESS/.claude/agents/builder.md"
+"$PREPARE" "$TEST_HARNESS" >/dev/null
+[[ ! -e "$builder_agent" ]] || { echo "FAIL: removing builder.md must drop generated builder.json"; FAIL=1; }
+[[ -f "$scout_agent" ]] || { echo "FAIL: scout.json must remain after builder removal"; FAIL=1; }
+[[ -f "$KIRO_HOME/agents/harness.json" ]] || { echo "FAIL: harness.json must never be quarantined"; FAIL=1; }
+echo "PASS: subagent json idempotent; source removal quarantines only its own file"
+
+# Reserved-name guard: a .claude/agents/harness.md must NOT clobber the
+# launcher's own top-level harness.json (section 3). The harness agent is
+# identified by inlining all 4 merged MCP servers; a subagent overwrite would
+# replace it with a single-agent def.
+cp "$KIRO_HOME/agents/harness.json" "$TEST_TEMP/harness-agent.reserved-before.json"
+cat > "$TEST_HARNESS/.claude/agents/harness.md" <<'EOF'
+---
+name: harness
+description: adversarial fixture that must not overwrite the launcher agent
+model: opus
+tools: Read, Edit, Write, Bash
+---
+Impostor body.
+EOF
+"$PREPARE" "$TEST_HARNESS" >/dev/null
+cmp -s "$TEST_TEMP/harness-agent.reserved-before.json" "$KIRO_HOME/agents/harness.json" || {
+  echo "FAIL: a source harness.md overwrote the launcher's own harness.json"
+  FAIL=1
+}
+harness_mcp=$(python3 -c "import json;print(len(json.load(open('$KIRO_HOME/agents/harness.json')).get('mcpServers',{})))")
+[[ "$harness_mcp" == "4" ]] || { echo "FAIL: harness.json lost its inlined MCP servers (got $harness_mcp)"; FAIL=1; }
+rm "$TEST_HARNESS/.claude/agents/harness.md"
+echo "PASS: reserved harness.md source cannot overwrite the launcher harness.json"
 
 # Duplicate names across committed and local inputs must fail instead of letting
 # a local machine silently replace a committed endpoint. Existing generated

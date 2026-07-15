@@ -40,6 +40,7 @@ select_harness_python3 >/dev/null || exit 1
 mkdir -p "$SHARE_DIR"
 cp "$LAUNCHER_DIR/bin/aliases.zsh"                "$SHARE_DIR/aliases.zsh"
 cp "$LAUNCHER_DIR/bin/harness-common.sh"          "$SHARE_DIR/harness-common.sh"
+cp "$LAUNCHER_DIR/bin/subagent-model-map.tsv"     "$SHARE_DIR/subagent-model-map.tsv"
 cp "$LAUNCHER_DIR/bin/launcher.sh"                "$SHARE_DIR/launcher.sh"
 cp "$LAUNCHER_DIR/bin/codex-home-prepare.sh"      "$SHARE_DIR/codex-home-prepare.sh"
 cp "$LAUNCHER_DIR/bin/codex-surface.py"           "$SHARE_DIR/codex-surface.py"

@@ -1,0 +1,33 @@
+# Subagent model/effort routing map — single source of truth.
+#
+# Claude subagent frontmatter declares a model TIER (haiku/sonnet/opus). Each
+# runtime resolves that tier to its own model + effort here. The tier is the
+# SSOT: to change a role's tier, edit the agent's frontmatter, not this table.
+#
+# Runtime effort support:
+#   - Codex: native per-agent model + reasoning effort (both columns honored).
+#   - Kiro:  native per-agent model only. The Q/Kiro agent schema has no
+#            per-agent effort field; effort is a per-MODEL default applied once
+#            via chat.modelDefaults at home prepare. kiro_model must be an ID
+#            the /model service returns, else Kiro falls back to default + warns.
+#
+# Tier mapping is empirically tuned (gpt-5.6 luna/terra/sol measured on
+# representative subagent tasks), NOT a mechanical opus->sol lift:
+#   - haiku  -> luna/low     : local read/record roles; luna medium already
+#                              scores 92-96 and is cheapest by 3-4x on local work.
+#   - sonnet -> terra/medium : exploration/implement roles. Measured: on an
+#                              exploration task terra used HALF luna's tokens at
+#                              equal cost and 92 quality; sol added only +4 pts
+#                              for 2x cost. Terra is the cost/quality sweet spot
+#                              here — the "terra is Pareto-dominated" vendor
+#                              benchmark did not hold for this workload.
+#   - opus   -> sol/high     : deep-judgment roles (review, design) only, where
+#                              failure cost is high and invocation frequency low,
+#                              so sol's premium is immaterial.
+#
+# Columns (tab-separated): claude_tier  codex_model  codex_effort  kiro_model
+# claude_tier "default" applies to any agent with no/unknown model: field.
+haiku	gpt-5.6-luna	low	claude-haiku-4.5
+sonnet	gpt-5.6-terra	medium	claude-sonnet-4.6
+opus	gpt-5.6-sol	high	claude-opus-4.6
+default	gpt-5.6-terra	medium	claude-sonnet-4.6

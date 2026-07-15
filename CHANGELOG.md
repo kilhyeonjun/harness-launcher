@@ -4,6 +4,28 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-15
+
+### Added
+
+- **Subagent model/effort routing is now a single source of truth.**
+  `bin/subagent-model-map.tsv` maps each Claude subagent frontmatter tier
+  (haiku/sonnet/opus) to a per-runtime model + effort, and both
+  `codex-home-prepare.sh` and `kiro-home-prepare.sh` read it so the three
+  runtimes cannot silently drift. The Codex tier mapping is empirically tuned
+  (gpt-5.6 luna/terra/sol measured on representative subagent tasks), not a
+  mechanical opus→flagship lift: `haiku→luna/low`, `sonnet→terra/medium`,
+  `opus→sol/high`. Missing table falls back to the same literals.
+- **Kiro CLI now gets per-subagent agents.** `.claude/agents/*.md` are converted
+  to `$KIRO_HOME/agents/<name>.json` with the tier-resolved Kiro model ID
+  (column 4 of the map) and read-only vs workspace `allowedTools` derived from
+  the agent's declared tools, so `chat.enableDelegate` can route to each
+  subagent on its intended model. Generated files carry an ownership marker and
+  are reversible-quarantined on source removal; the launcher's own
+  `harness.json` and any hand-authored agent JSON are never touched. Effort is
+  intentionally left to the session default — the Q/Kiro agent schema has no
+  per-agent effort field.
+
 ## [0.13.0] — 2026-07-15
 
 ### Changed
@@ -191,7 +213,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.2...v0.11.0

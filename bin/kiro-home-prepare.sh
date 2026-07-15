@@ -180,6 +180,182 @@ PY
 
 atomic_write "$agents_out" "$tmp_agents"
 
+# ─── 3b. per-subagent agents/<name>.json ─────────────────────────────────────
+# Convert .claude/agents/*.md (Claude subagent defs) to Kiro agent JSONs so
+# `chat.enableDelegate` can route to them with a per-agent model. The Claude
+# frontmatter model TIER resolves to a Kiro model ID via subagent-model-map.tsv
+# (column 4). The Kiro/Q agent schema has NO per-agent effort field, so effort
+# is intentionally left to the session default (`--effort`) / `/effort` — see
+# domains/knowledge/harness/model-routing.md for the runtime divergence.
+subagents_src="$HARNESS_DIR/.claude/agents"
+map_tsv="$LAUNCHER_BIN_DIR/subagent-model-map.tsv"
+if [[ -d "$subagents_src" ]]; then
+  python3 - "$subagents_src" "$KIRO_HOME/agents" "$mcp_out" "$hooks_dir" "$map_tsv" <<'PY'
+import glob, json, os, shutil, sys
+
+src_dir, out_dir, mcp_out, hooks_dir, map_tsv = sys.argv[1:6]
+quarantine_dir = os.path.join(os.path.dirname(out_dir), ".surface-quarantine", "agents")
+owned_marker = "_generated-by-kiro-home-prepare"
+
+# tier -> kiro model ID, from the shared SSOT (column 4). Fallback mirrors the
+# launcher's proven production IDs if the table is missing.
+model_map = {
+    "haiku": "claude-haiku-4.5",
+    "sonnet": "claude-sonnet-4.6",
+    "opus": "claude-opus-4.6",
+    "default": "claude-sonnet-4.6",
+}
+if map_tsv and os.path.exists(map_tsv):
+    loaded = {}
+    with open(map_tsv, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            cols = line.split("\t")
+            if len(cols) >= 4 and cols[0] and cols[3].strip():
+                loaded[cols[0].strip().lower()] = cols[3].strip()
+    if loaded:
+        model_map = loaded
+
+def map_model(tier):
+    t = (tier or "").strip().lower()
+    return model_map.get(t, model_map.get("default", "claude-sonnet-4.6"))
+
+def parse_frontmatter(text):
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end < 0:
+        return {}
+    meta, lines = {}, text[3:end].lstrip("\n").split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip() or ":" not in line:
+            i += 1; continue
+        key, _, val = line.partition(":")
+        key, val = key.strip(), val.strip()
+        if val == ">":
+            buf = []; i += 1
+            while i < len(lines) and (lines[i].startswith((" ", "\t")) or not lines[i].strip()):
+                if lines[i].strip():
+                    buf.append(lines[i].strip())
+                i += 1
+            meta[key] = " ".join(buf); continue
+        meta[key] = val; i += 1
+    return meta
+
+mcp_servers = {}
+if os.path.isfile(mcp_out):
+    with open(mcp_out) as f:
+        mcp_servers = json.load(f).get("mcpServers") or {}
+
+def has_hook(name):
+    return os.path.isfile(os.path.join(hooks_dir, name))
+
+hooks = {"agentSpawn": [], "userPromptSubmit": []}
+if has_hook("session-start.sh"):
+    hooks["agentSpawn"].append({"command": f'bash "{hooks_dir}/session-start.sh"'})
+prompt_hooks = []
+if has_hook("prompt-keyword-routing.sh"):
+    prompt_hooks.append({"command": f'bash "{hooks_dir}/prompt-keyword-routing.sh"'})
+if has_hook("user-prompt-session-end-detect.sh"):
+    prompt_hooks.append({"command": f'bash "{hooks_dir}/user-prompt-session-end-detect.sh"'})
+hooks["userPromptSubmit"] = prompt_hooks
+
+WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "Bash"}
+
+def allowed_tools(meta):
+    # Read-only agent => auto-approve reads only. Workspace agent => also writes.
+    blocked = {t.strip() for t in meta.get("disallowedTools", "").split(",") if t.strip()}
+    allowed = {t.strip() for t in meta.get("tools", "").split(",") if t.strip()}
+    read_only = bool(blocked & WRITE_TOOLS) or (allowed and not (allowed & WRITE_TOOLS))
+    return ["fs_read", "web_search"] if read_only else ["fs_read", "fs_write", "web_search"]
+
+generated = []
+for path in sorted(glob.glob(os.path.join(src_dir, "*.md"))):
+    name = os.path.basename(path)[:-3]
+    # Skip _index and the reserved "harness" name: a .claude/agents/harness.md
+    # would otherwise map to harness.json and clobber the launcher's own
+    # top-level agent (written unmarked by section 3) via the overwrite path.
+    if name in ("_index", "harness"):
+        continue
+    with open(path, encoding="utf-8") as f:
+        meta = parse_frontmatter(f.read())
+    if not meta.get("name"):
+        continue
+    agent = {
+        "$schema": "https://raw.githubusercontent.com/aws/amazon-q-developer-cli/refs/heads/main/schemas/agent-v1.json",
+        owned_marker: True,
+        "name": meta["name"],
+        "description": meta.get("description", "").strip(),
+        "prompt": None,
+        "model": map_model(meta.get("model", "")),
+        "mcpServers": mcp_servers,
+        "tools": ["*"],
+        "toolAliases": {},
+        "allowedTools": allowed_tools(meta),
+        "resources": ["file://CLAUDE.md", "file://.claude/rules/**/*.md", "file://.kiro/steering/**/*.md"],
+        "hooks": hooks,
+        "toolsSettings": {},
+        "useLegacyMcpJson": False,
+    }
+    out_path = os.path.join(out_dir, f"{name}.json")
+    new_content = json.dumps(agent, indent=2) + "\n"
+    if os.path.exists(out_path):
+        with open(out_path, encoding="utf-8") as f:
+            old = f.read()
+        if old == new_content:
+            generated.append(f"{name}.json"); continue
+        # Only overwrite files we own; quarantine anything hand-authored.
+        try:
+            owned = json.loads(old).get(owned_marker) is True
+        except Exception:
+            owned = False
+        if not owned:
+            os.makedirs(quarantine_dir, exist_ok=True)
+            dest = os.path.join(quarantine_dir, f"{name}.json")
+            suffix = 1
+            while os.path.lexists(dest):
+                dest = os.path.join(quarantine_dir, f"{name}.json.{suffix}"); suffix += 1
+            shutil.move(out_path, dest)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    generated.append(f"{name}.json")
+
+# Reversible-quarantine any generated (owned) agent JSON whose source .md is gone.
+# harness.json is the launcher's own top-level agent — never touch it.
+#
+# Unlike codex (whose agents/ is a pure generated dir, so it quarantines
+# anything not produced this run), this Kiro agents/ dir legitimately co-hosts
+# hand-authored / Q-CLI-native agent JSONs (e.g. default.json). So we only move
+# files that carry our own ownership marker: a non-owned file is left in place
+# (`if not owned: continue`). The marker can in principle be forged onto a
+# hand-authored file, but the worst case is a *reversible* quarantine of that
+# one file — no data loss — which is the safer trade-off than deleting a user's
+# real Kiro agent. The forward loop's reserved-name skip protects harness.json.
+keep = set(generated) | {"harness.json"}
+for path in sorted(glob.glob(os.path.join(out_dir, "*.json"))):
+    base = os.path.basename(path)
+    if base in keep:
+        continue
+    try:
+        with open(path, encoding="utf-8") as f:
+            owned = json.load(f).get(owned_marker) is True
+    except Exception:
+        owned = False
+    if not owned:
+        continue
+    os.makedirs(quarantine_dir, exist_ok=True)
+    dest = os.path.join(quarantine_dir, base)
+    suffix = 1
+    while os.path.lexists(dest):
+        dest = os.path.join(quarantine_dir, f"{base}.{suffix}"); suffix += 1
+    shutil.move(path, dest)
+PY
+fi
+
 # ─── 4. steering/AGENTS.md ───────────────────────────────────────────────────
 # Compiler-first (same as codex), fallback to rules concatenation, then CLAUDE.md
 
