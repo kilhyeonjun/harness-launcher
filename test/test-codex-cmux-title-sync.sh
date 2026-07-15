@@ -33,6 +33,11 @@ cat > "$FAKE_CMUX" <<'PY'
 import json
 import os
 import sys
+import time
+
+delay = float(os.environ.get("CMUX_SLEEP_SECONDS", "0"))
+if delay:
+    time.sleep(delay)
 
 with open(os.environ["CMUX_LOG"], "a", encoding="utf-8") as stream:
     stream.write(json.dumps(sys.argv[1:], ensure_ascii=False) + "\n")
@@ -231,5 +236,19 @@ sleep 0.2
 [[ "$(title_count "one-watcher | kh")" -eq 1 ]] || { echo "FAIL: duplicate SessionStart spawned multiple active watchers"; exit 1; }
 stop_owner "$OWNER_PID"
 echo "PASS: per-session and surface lock permits one watcher"
+
+reset_case
+append_name "slow-cmux-session" "slow-cmux"
+start_owner
+export CMUX_SLEEP_SECONDS=2.2
+run_hook "slow-cmux-session" "$OWNER_PID"
+if ! wait_for_title "slow-cmux | kh"; then
+  unset CMUX_SLEEP_SECONDS
+  echo "FAIL: a healthy cmux round trip over two seconds was timed out"
+  exit 1
+fi
+unset CMUX_SLEEP_SECONDS
+stop_owner "$OWNER_PID"
+echo "PASS: healthy cmux round trips over two seconds are allowed"
 
 echo "✓ All Codex cmux title sync tests passed"

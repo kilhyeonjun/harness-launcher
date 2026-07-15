@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 VALID_PREFIXES = {"kh", "gp", "gd"}
+CMUX_COMMAND_TIMEOUT_SECONDS = 8
 
 
 def sanitize_title(value: str) -> str:
@@ -59,7 +60,7 @@ def rename_tab(cmux: str, surface: str, title: str) -> bool:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=2,
+            timeout=CMUX_COMMAND_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
