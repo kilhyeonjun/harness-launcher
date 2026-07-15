@@ -196,15 +196,16 @@ surfaces:
 
 ```toml
 [tui]
-terminal_title = ["activity", "project-name", "thread-title"]
-status_line = ["thread-title", "model-with-reasoning", "git-branch", "branch-changes", "run-state", "context-remaining", "five-hour-limit", "weekly-limit"]
+terminal_title = ["activity", "thread-title", "project-name"]
+status_line = ["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "five-hour-limit", "weekly-limit"]
 ```
 
 After `/rename <name>`, Codex refreshes the footer and emits the configured
-terminal title through OSC 0. Terminals such as cmux use that value as the tab
-title. Before a rename, `thread-title` can fall back to the thread ID;
-`project-name` keeps the terminal tab recognizable. Change these defaults in
-`codex-home-prepare.sh`, not in a generated project `config.toml`.
+terminal title through OSC 0. The native non-cmux fallback renders activity,
+then the thread name, then the repository project name. The footer prioritizes
+context remaining ahead of branch changes. Before a rename, `thread-title` can
+fall back to the thread ID. Change these defaults in `codex-home-prepare.sh`,
+not in a generated project `config.toml`.
 
 ```text
 <prefix> codex                 new session with base profile

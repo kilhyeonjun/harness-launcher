@@ -713,8 +713,8 @@ enabled = $COMPUTER_USE_PLUGIN_ENABLED
 enabled = $CHROME_PLUGIN_ENABLED
 
 [tui]
-terminal_title = ["activity", "project-name", "thread-title"]
-status_line = ["thread-title", "model-with-reasoning", "git-branch", "branch-changes", "run-state", "context-remaining", "five-hour-limit", "weekly-limit"]
+terminal_title = ["activity", "thread-title", "project-name"]
+status_line = ["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "five-hour-limit", "weekly-limit"]
 
 TOML
 

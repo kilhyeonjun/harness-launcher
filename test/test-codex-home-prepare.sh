@@ -942,12 +942,12 @@ grep -A1 '^\[plugins\."chrome@openai-bundled"\]' "$config3" | grep -q '^enabled 
 echo "PASS: terminal Codex enables Computer Use and Chrome; Browser omitted"
 
 grep -q '^\[tui\]' "$config3" || { echo "FAIL: [tui] section missing"; exit 1; }
-grep -q '^terminal_title = \["activity", "project-name", "thread-title"\]' "$config3" || {
+grep -q '^terminal_title = \["activity", "thread-title", "project-name"\]' "$config3" || {
   echo "FAIL: [tui].terminal_title missing expected harness defaults"; exit 1;
 }
 echo "PASS: [tui].terminal_title configured in config.toml"
 
-grep -q '^status_line = \["thread-title", "model-with-reasoning", "git-branch", "branch-changes", "run-state", "context-remaining", "five-hour-limit", "weekly-limit"\]' "$config3" || {
+grep -q '^status_line = \["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "five-hour-limit", "weekly-limit"\]' "$config3" || {
   echo "FAIL: [tui].status_line missing expected harness defaults"; exit 1;
 }
 echo "PASS: [tui].status_line configured in config.toml"

@@ -110,16 +110,16 @@ def config_matches(codex_home, catalog):
     if config.get("tui") != {
         "terminal_title": [
             "activity",
-            "project-name",
             "thread-title",
+            "project-name",
         ],
         "status_line": [
             "thread-title",
             "model-with-reasoning",
             "git-branch",
+            "context-remaining",
             "branch-changes",
             "run-state",
-            "context-remaining",
             "five-hour-limit",
             "weekly-limit",
         ]
