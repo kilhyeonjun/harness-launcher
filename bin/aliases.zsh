@@ -276,7 +276,7 @@ _harness_launcher_run() {
     fi
     return $?
   else
-    HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" \
+    HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
       "$_HARNESS_LAUNCHER_BIN/launcher.sh"
     return $?
   fi

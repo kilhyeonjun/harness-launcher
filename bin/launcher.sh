@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # harness-launcher — TUI for picking runtime/provider/mode/effort.
 # Invoked by bin/aliases.zsh when user runs `<prefix>` with no shortcut args.
-# Required env: HARNESS_DIR, HARNESS_NAME
+# Required env: HARNESS_DIR, HARNESS_NAME. Native Codex also receives the
+# HARNESS_PREFIX forwarded by aliases.zsh.
 #
 # Design (v3, launchpad):
 #   - The top screen is a launchpad: recent complete launch configs (history)

@@ -234,4 +234,27 @@ if [[ -s "$light_dup_stub" ]]; then
 fi
 echo "PASS: light shortcut fails closed on duplicate server names"
 
+# The no-argument launchpad path crosses a second process boundary before
+# native Codex starts. Preserve the short harness prefix for that process too.
+tui_stub_dir="$TEST_TEMP/tui-launcher"
+tui_stub_log="$TEST_TEMP/tui-launcher-env.txt"
+mkdir -p "$tui_stub_dir"
+cat > "$tui_stub_dir/launcher.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'HARNESS_PREFIX:%s\n' "${HARNESS_PREFIX:-<UNSET>}" > "$TUI_STUB_LOG"
+EOF
+chmod +x "$tui_stub_dir/launcher.sh"
+(
+  export TUI_STUB_LOG="$tui_stub_log"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$tui_stub_dir"
+  _harness_launcher_run "$TEST_HARNESS"
+)
+grep -q '^HARNESS_PREFIX:test$' "$tui_stub_log" || {
+  echo "FAIL: no-argument launchpad did not receive HARNESS_PREFIX=test"
+  cat "$tui_stub_log"
+  exit 1
+}
+echo "PASS: no-argument launchpad receives the short harness prefix"
+
 echo "✓ All direct OAuth tests passed"
