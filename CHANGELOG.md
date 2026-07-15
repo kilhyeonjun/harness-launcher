@@ -4,6 +4,14 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.15.2] — 2026-07-16
+
+### Fixed
+
+- Keep the cmux title watcher under the live launcher/Codex process ancestry
+  and use `SessionStart` only to hand off the exact session ID. This preserves
+  cmux caller authorization after the short-lived hook process exits.
+
 ## [0.15.1] — 2026-07-16
 
 ### Fixed
@@ -250,7 +258,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.2...HEAD
+[0.15.2]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.14.0...v0.14.1

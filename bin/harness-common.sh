@@ -130,6 +130,51 @@ harness_codex_bin_resolve() {
   return 1
 }
 
+# Keep the title watcher below a live launcher/Codex ancestor. cmux authorizes
+# terminal callers through process ancestry, so a watcher orphaned by a
+# short-lived SessionStart hook cannot rename the target tab.
+harness_codex_cmux_broker_start() {
+  local helper="$1" state_dir request_file
+  harness_codex_cmux_broker_stop
+  [ -x "$helper" ] || return 0
+  [ -n "${CODEX_HOME:-}" ] || return 0
+  [ -n "${CMUX_WORKSPACE_ID:-}" ] || return 0
+  [ -n "${CMUX_TAB_ID:-}" ] || return 0
+  [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
+  case "${HARNESS_PREFIX:-}" in
+    kh|gp|gd) ;;
+    *) return 0 ;;
+  esac
+
+  state_dir="${CODEX_CMUX_TITLE_STATE_DIR:-$CODEX_HOME/.cmux-title-sync}"
+  mkdir -p "$state_dir" 2>/dev/null || return 0
+  chmod 700 "$state_dir" 2>/dev/null || return 0
+  request_file="$(mktemp "$state_dir/request.XXXXXX")" || return 0
+  chmod 600 "$request_file" 2>/dev/null || {
+    rm -f "$request_file"
+    return 0
+  }
+
+  export CODEX_CMUX_TITLE_REQUEST_FILE="$request_file"
+  HARNESS_CODEX_CMUX_BROKER_REQUEST="$request_file"
+  "$helper" --broker "$request_file" "$CMUX_SURFACE_ID" "$HARNESS_PREFIX" "$CODEX_HOME" "$$" </dev/null >/dev/null 2>&1 &
+  HARNESS_CODEX_CMUX_BROKER_PID=$!
+  return 0
+}
+
+harness_codex_cmux_broker_stop() {
+  if [ -n "${HARNESS_CODEX_CMUX_BROKER_PID:-}" ]; then
+    kill "$HARNESS_CODEX_CMUX_BROKER_PID" 2>/dev/null || true
+    wait "$HARNESS_CODEX_CMUX_BROKER_PID" 2>/dev/null || true
+  fi
+  if [ -n "${HARNESS_CODEX_CMUX_BROKER_REQUEST:-}" ]; then
+    rm -f "$HARNESS_CODEX_CMUX_BROKER_REQUEST"
+  fi
+  unset HARNESS_CODEX_CMUX_BROKER_PID
+  unset HARNESS_CODEX_CMUX_BROKER_REQUEST
+  unset CODEX_CMUX_TITLE_REQUEST_FILE
+}
+
 harness_kiro_bin_resolve() {
   local configured="${HARNESS_KIRO_BIN:-}"
   if [ -n "$configured" ]; then

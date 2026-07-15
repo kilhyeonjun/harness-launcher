@@ -807,7 +807,11 @@ launch_codex() {
     codex_happy_compatible || { echo "❌ Happy는 base 프로필 새 세션에서만 사용할 수 있습니다" >&2; return 1; }
     history_save
     launch_banner "$PLAN_SUMMARY" happy codex
+    harness_codex_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py"
     cd "$HARNESS_DIR" && exec happy codex
+    local rc=$?
+    harness_codex_cmux_broker_stop
+    return $rc
   fi
 
   [ -n "$CODEX_BIN" ] || { echo "❌ codex not found in PATH" >&2; return 1; }
@@ -826,7 +830,11 @@ launch_codex() {
 
   history_save
   launch_banner "$PLAN_SUMMARY" "${cmd[@]}"
+  harness_codex_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py"
   exec "${cmd[@]}"
+  local rc=$?
+  harness_codex_cmux_broker_stop
+  return $rc
 }
 
 launch_kiro() {

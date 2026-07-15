@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -16,6 +17,7 @@ from pathlib import Path
 
 VALID_PREFIXES = {"kh", "gp", "gd"}
 CMUX_COMMAND_TIMEOUT_SECONDS = 8
+BROKER_REQUEST_TIMEOUT_SECONDS = 120
 
 
 def sanitize_title(value: str) -> str:
@@ -117,6 +119,128 @@ def resolve_cmux() -> str | None:
     return None
 
 
+def write_broker_request(
+    request_path_raw: str,
+    state_dir_raw: str,
+    session_id: str,
+    owner_pid: int,
+) -> bool:
+    request_path = Path(request_path_raw)
+    try:
+        if request_path.parent.resolve() != Path(state_dir_raw).resolve():
+            return False
+        metadata = request_path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_nlink != 1
+        ):
+            return False
+        flags = os.O_WRONLY | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(request_path, flags)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump({"session_id": session_id, "owner_pid": owner_pid}, stream)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError:
+        return False
+    return True
+
+
+def read_broker_request(request_path: Path) -> tuple[str, int] | None:
+    try:
+        payload = json.loads(request_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    session_id = payload.get("session_id")
+    owner_pid = payload.get("owner_pid")
+    if (
+        not isinstance(session_id, str)
+        or not session_id
+        or not isinstance(owner_pid, int)
+        or owner_pid <= 1
+    ):
+        return None
+    return session_id, owner_pid
+
+
+def broker(
+    request_path_raw: str,
+    surface: str,
+    prefix: str,
+    codex_home: str,
+    launcher_pid_raw: str,
+) -> int:
+    request_path = Path(request_path_raw)
+    state_dir = os.environ.get(
+        "CODEX_CMUX_TITLE_STATE_DIR",
+        str(Path(codex_home) / ".cmux-title-sync"),
+    )
+    request_is_owned = False
+
+    def finish(result: int = 0) -> int:
+        if request_is_owned:
+            try:
+                request_path.unlink()
+            except OSError:
+                pass
+        return result
+
+    try:
+        metadata = request_path.lstat()
+        if (
+            request_path.parent.resolve() != Path(state_dir).resolve()
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_nlink != 1
+        ):
+            return 0
+        request_is_owned = True
+    except OSError:
+        return 0
+    if prefix not in VALID_PREFIXES or not launcher_pid_raw.isdecimal():
+        return finish()
+    launcher_pid = int(launcher_pid_raw)
+    cmux = resolve_cmux()
+    if not cmux:
+        return finish()
+    try:
+        poll_seconds = max(
+            float(os.environ.get("CODEX_CMUX_TITLE_POLL_SECONDS", "0.5")),
+            0.02,
+        )
+    except ValueError:
+        return finish()
+
+    deadline = time.monotonic() + BROKER_REQUEST_TIMEOUT_SECONDS
+    request = None
+    while process_is_alive(launcher_pid) and time.monotonic() < deadline:
+        request = read_broker_request(request_path)
+        if request:
+            break
+        time.sleep(poll_seconds)
+    if not request:
+        return finish()
+    session_id, owner_pid = request
+    return finish(
+        watch(
+            session_id,
+            surface,
+            prefix,
+            codex_home,
+            str(owner_pid),
+            cmux,
+            state_dir,
+            str(poll_seconds),
+        )
+    )
+
+
 def watch(
     session_id: str,
     surface: str,
@@ -184,9 +308,8 @@ def session_start() -> int:
     if prefix not in VALID_PREFIXES or not codex_home or not surface:
         return 0
 
-    cmux = resolve_cmux()
     owner_pid = discover_codex_owner_pid()
-    if not cmux or owner_pid is None:
+    if owner_pid is None:
         return 0
 
     state_dir = os.environ.get(
@@ -194,6 +317,13 @@ def session_start() -> int:
         str(Path(codex_home) / ".cmux-title-sync"),
     )
     poll_seconds = os.environ.get("CODEX_CMUX_TITLE_POLL_SECONDS", "0.5")
+    request_path = os.environ.get("CODEX_CMUX_TITLE_REQUEST_FILE", "")
+    if request_path:
+        write_broker_request(request_path, state_dir, session_id, owner_pid)
+        return 0
+    cmux = resolve_cmux()
+    if not cmux:
+        return 0
     watch_args = [
         session_id,
         surface,
@@ -221,6 +351,8 @@ def session_start() -> int:
 def main() -> int:
     if len(sys.argv) == 10 and sys.argv[1] == "--watch":
         return watch(*sys.argv[2:])
+    if len(sys.argv) == 7 and sys.argv[1] == "--broker":
+        return broker(*sys.argv[2:])
     return session_start()
 
 
