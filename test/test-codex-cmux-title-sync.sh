@@ -32,12 +32,23 @@ cat > "$FAKE_CMUX" <<'PY'
 #!/usr/bin/env python3
 import json
 import os
+import subprocess
 import sys
 import time
 
 delay = float(os.environ.get("CMUX_SLEEP_SECONDS", "0"))
 if delay:
     time.sleep(delay)
+if os.environ.get("CMUX_REQUIRE_LIVE_GRANDPARENT") == "1":
+    parent = os.getppid()
+    grandparent = subprocess.run(
+        ["ps", "-p", str(parent), "-o", "ppid="],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if grandparent == "1":
+        raise SystemExit(9)
 
 with open(os.environ["CMUX_LOG"], "a", encoding="utf-8") as stream:
     stream.write(json.dumps(sys.argv[1:], ensure_ascii=False) + "\n")
@@ -250,5 +261,39 @@ fi
 unset CMUX_SLEEP_SECONDS
 stop_owner "$OWNER_PID"
 echo "PASS: healthy cmux round trips over two seconds are allowed"
+
+reset_case
+append_name "broker-session" "broker-name"
+start_owner
+request_file="$STATE_DIR/broker-request"
+: > "$request_file"
+export CMUX_REQUIRE_LIVE_GRANDPARENT=1
+env CODEX_CMUX_TITLE_CMUX_BIN="$FAKE_CMUX" CODEX_CMUX_TITLE_STATE_DIR="$STATE_DIR" CODEX_CMUX_TITLE_POLL_SECONDS="0.05" python3 "$SYNC" --broker "$request_file" "surface:42" "$PREFIX" "$FAKE_CODEX_HOME" "$$" &
+BROKER_PID=$!
+OWNER_PIDS+=("$BROKER_PID")
+printf '%s\n' '{"hook_event_name":"SessionStart","session_id":"broker-session"}' |
+  env HARNESS_PREFIX="$PREFIX" CODEX_HOME="$FAKE_CODEX_HOME" CMUX_SURFACE_ID="surface:42" CODEX_CMUX_TITLE_REQUEST_FILE="$request_file" CODEX_CMUX_TITLE_STATE_DIR="$STATE_DIR" CODEX_CMUX_TITLE_OWNER_PID="$OWNER_PID" python3 "$SYNC"
+wait_for_title "broker-name | kh" || {
+  unset CMUX_REQUIRE_LIVE_GRANDPARENT
+  echo "FAIL: launcher-anchored broker did not preserve cmux caller ancestry"
+  exit 1
+}
+unset CMUX_REQUIRE_LIVE_GRANDPARENT
+stop_owner "$OWNER_PID"
+wait "$BROKER_PID"
+[[ ! -e "$request_file" ]] || {
+  echo "FAIL: completed broker left its request file behind"
+  exit 1
+}
+echo "PASS: launcher-anchored broker preserves cmux caller ancestry"
+
+unowned_request="$TMP/unowned-request"
+printf '%s\n' "sentinel" > "$unowned_request"
+env CODEX_CMUX_TITLE_CMUX_BIN="$FAKE_CMUX" CODEX_CMUX_TITLE_STATE_DIR="$STATE_DIR" python3 "$SYNC" --broker "$unowned_request" "surface:42" "$PREFIX" "$FAKE_CODEX_HOME" "$$"
+[[ "$(cat "$unowned_request")" == "sentinel" ]] || {
+  echo "FAIL: broker removed a request file outside its owned state directory"
+  exit 1
+}
+echo "PASS: broker cleanup is confined to its owned state directory"
 
 echo "✓ All Codex cmux title sync tests passed"

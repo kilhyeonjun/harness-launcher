@@ -103,7 +103,7 @@ _harness_launcher_codex_harness_for_args() {
 }
 
 codex() {
-  local codex_bin harness_dir
+  local codex_bin harness_dir broker_started=false
   codex_bin="$(_harness_launcher_codex_bin)" || {
     echo "❌ codex not found in PATH" >&2
     return 1
@@ -111,11 +111,19 @@ codex() {
 
   if [[ "${HARNESS_LAUNCHER_DISABLE_CODEX_WRAPPER:-}" != "1" ]]; then
     if harness_dir="$(_harness_launcher_codex_harness_for_args "$@")"; then
+      local HARNESS_NAME HARNESS_PREFIX
+      source "$harness_dir/config/launcher.env"
+      export HARNESS_PREFIX
       _harness_launcher_export_codex_runtime_env "$harness_dir" || return $?
+      harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
+      broker_started=true
     fi
   fi
 
   "$codex_bin" "$@"
+  local rc=$?
+  $broker_started && harness_codex_cmux_broker_stop
+  return $rc
 }
 
 # harness_register <harness-dir>
@@ -372,13 +380,18 @@ _harness_launcher_run_codex_cli() {
     launch_cmd=("$codex_bin")
   fi
   if [[ -n "$subcmd" ]]; then
+    harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
     "${launch_cmd[@]}" "$subcmd" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
   elif $use_happy; then
+    harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
     (cd "$HARNESS_DIR" && "${launch_cmd[@]}" "${codex_args[@]}")
   else
+    harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
     "${launch_cmd[@]}" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
   fi
-  return $?
+  local rc=$?
+  harness_codex_cmux_broker_stop
+  return $rc
 }
 
 # _harness_launcher_run_kiro_cli <harness-dir> [args...]
