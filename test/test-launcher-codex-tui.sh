@@ -141,11 +141,13 @@ do
 done
 echo "PASS: Codex TUI mode labels match GPT-5.6 routing"
 
-# Case 1b: runtime=Codex, base mode, work MCP surface, safety=Default.
-# The surface must be selected before Codex home preparation and execution.
+# Case 1b: runtime=Codex, base mode, work via the final-menu MCP surface toggle
+# (same UX as the claude/kiro light toggle). The surface must be selected
+# before Codex home preparation and execution.
+# final menu: 1 Start / 2 MCP surface / [3 Happy] / Back
 STUB1B="$TEST_TEMP/out1b-codex-work-surface.txt"
 : > "$STUB1B"
-run_tui $'2\n1\n6\n1\n1\n' "$STUB1B"
+run_tui $'2\n1\n2\n1\n2\n1\n' "$STUB1B"
 grep -q '^EXEC:codex' "$STUB1B" || {
   echo "FAIL: case1b — expected codex exec; got:"; cat "$STUB1B"; cat "$STUB1B.tui.log"; exit 1;
 }
@@ -155,10 +157,25 @@ grep -q '^MCP_PROFILE:work$' "$STUB1B" || {
 grep -q '^PREPARE_MCP_PROFILE:work$' "$STUB1B" || {
   echo "FAIL: case1b — expected work MCP surface before Codex preparation"; cat "$STUB1B"; cat "$STUB1B.tui.log"; exit 1;
 }
-grep -q 'work — base' "$STUB1B.tui.log" || {
-  echo "FAIL: case1b — work MCP surface option was not shown"; cat "$STUB1B.tui.log"; exit 1;
+grep -q 'MCP surface: work' "$STUB1B.tui.log" || {
+  echo "FAIL: case1b — MCP surface toggle was not shown as work"; cat "$STUB1B.tui.log"; exit 1;
 }
-echo "PASS: case1b — Codex work MCP surface is exported before execution"
+grep -q 'work — base' "$STUB1B.tui.log" && {
+  echo "FAIL: case1b — work must no longer be a Profile menu entry"; cat "$STUB1B.tui.log"; exit 1;
+}
+echo "PASS: case1b — Codex work MCP surface toggle exports before execution"
+
+# Case 1c: work surface combines with a non-base profile (rich), like claude light.
+STUB1C="$TEST_TEMP/out1c-codex-work-rich.txt"
+: > "$STUB1C"
+run_tui $'2\n1\n5\n1\n2\n1\n' "$STUB1C"
+grep -qE "^ARGS:.*-p rich" "$STUB1C" || {
+  echo "FAIL: case1c — expected -p rich with work surface"; cat "$STUB1C"; exit 1;
+}
+grep -q '^MCP_PROFILE:work$' "$STUB1C" || {
+  echo "FAIL: case1c — work surface must combine with rich profile"; cat "$STUB1C"; cat "$STUB1C.tui.log"; exit 1;
+}
+echo "PASS: case1c — work MCP surface combines with any profile"
 
 # Case 2: runtime=Codex, session=Continue last, mode=Plan, safety=Default
 STUB2="$TEST_TEMP/out2-codex-continue.txt"
@@ -185,9 +202,10 @@ grep -qE "^ARGS:.*--full-auto" "$STUB3" || {
 echo "PASS: case3 — Safety=Full auto → --full-auto flag"
 
 # Case 3b: runtime=Codex, Happy=yes → exec happy codex with same Codex args
+# final menu with happy visible: 1 Start / 2 MCP surface / 3 Happy / 4 Back
 STUB3B="$TEST_TEMP/out3b-codex-happy.txt"
 : > "$STUB3B"
-run_tui $'2\n1\n2\n1\n2\n1\n' "$STUB3B" "$HAPPY_BIN"
+run_tui $'2\n1\n2\n1\n3\n1\n' "$STUB3B" "$HAPPY_BIN"
 grep -q "^EXEC:happy" "$STUB3B" || {
   echo "FAIL: case3b — expected happy exec; got:"; cat "$STUB3B"; cat "$STUB3B.tui.log"; exit 1;
 }
@@ -251,7 +269,8 @@ echo "PASS: case5 — runtime=Claude routes to Claude exec"
 # must launch native codex with --full-auto (not fail into plan_reset).
 STUB6="$TEST_TEMP/out6-happy-residue.txt"
 : > "$STUB6"
-run_tui $'2\n1\n2\n1\n2\n3\n2\n1\n' "$STUB6" "$HAPPY_BIN"
+# final(compatible): Happy=3, Back=4 → safety full-auto=2 → final(incompatible): Start=1
+run_tui $'2\n1\n2\n1\n3\n4\n2\n1\n' "$STUB6" "$HAPPY_BIN"
 grep -q "^EXEC:codex" "$STUB6" || {
   echo "FAIL: case6 — expected native codex exec after happy auto-clear"; cat "$STUB6"; cat "$STUB6.tui.log"; exit 1;
 }
@@ -265,5 +284,48 @@ if grep -q "시작 실패" "$STUB6.tui.log"; then
   echo "FAIL: case6 — start must succeed, not fail into plan reset"; cat "$STUB6.tui.log"; exit 1;
 fi
 echo "PASS: case6 — stale Happy toggle auto-clears when compatibility breaks"
+
+# Case 6b: Happy on, then work toggle → happy must drop; codex runs with work.
+STUB6B="$TEST_TEMP/out6b-happy-work-exclusive.txt"
+: > "$STUB6B"
+# final: Happy on(3) → MCP surface work(2) → Start(1)
+run_tui $'2\n1\n2\n1\n3\n2\n1\n' "$STUB6B" "$HAPPY_BIN"
+grep -q "^EXEC:codex" "$STUB6B" || {
+  echo "FAIL: case6b — expected native codex exec after work toggle drops happy"; cat "$STUB6B"; cat "$STUB6B.tui.log"; exit 1;
+}
+grep -q '^MCP_PROFILE:work$' "$STUB6B" || {
+  echo "FAIL: case6b — expected work surface"; cat "$STUB6B"; exit 1;
+}
+if grep -q "^EXEC:happy" "$STUB6B"; then
+  echo "FAIL: case6b — happy must not survive the work toggle"; cat "$STUB6B"; exit 1;
+fi
+echo "PASS: case6b — work toggle drops Happy (mutually exclusive)"
+
+# Case 7: replaying a 0.12.0-era work history row (CODEX_SURFACE=work written
+# by the removed Profile-menu flow) must still launch with the work surface.
+# run_tui wipes the history, so drive the launcher directly with a seeded row.
+STUB7="$TEST_TEMP/out7-legacy-work-history.txt"
+: > "$STUB7"
+mkdir -p "$TEST_HARNESS/.harness"
+printf 'TS=1\tSUMMARY=Codex · new · base · work-MCP\tRUNTIME=codex\tSESSION=new\tMODE=\tPERM=default\tMCP_SURFACE=full\tCHROME=0\tHAPPY=0\tCODEX_PROFILE=base\tCODEX_SURFACE=work\tCODEX_SAFETY=default\tKIRO_TRUST=0\n' \
+  > "$TEST_HARNESS/.harness/launcher-history"
+# launchpad: New Claude(1), New Codex(2), hist row(3)
+TEST_STUB_FILE="$STUB7" \
+PATH="$TEST_BIN:/usr/bin:/bin" \
+HARNESS_CODEX_BIN="$TEST_BIN/codex" \
+HARNESS_DIR="$TEST_HARNESS" \
+HARNESS_NAME="test harness" \
+bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< $'3\n' > "$STUB7.tui.log" 2>&1 || true
+grep -q '^PREPARE_MCP_PROFILE:work$' "$STUB7" || {
+  echo "FAIL: case7 — 0.12-era work history row must prepare with work surface"; cat "$STUB7"; cat "$STUB7.tui.log"; exit 1;
+}
+grep -q '^MCP_PROFILE:work$' "$STUB7" || {
+  echo "FAIL: case7 — 0.12-era work history row must exec with work surface"; cat "$STUB7"; exit 1;
+}
+grep -qE "^ARGS:.*-p base" "$STUB7" || {
+  echo "FAIL: case7 — expected -p base from the replayed row"; cat "$STUB7"; exit 1;
+}
+rm -f "$TEST_HARNESS/.harness/launcher-history"
+echo "PASS: case7 — 0.12-era CODEX_SURFACE=work history row replays correctly"
 
 echo "✓ All codex TUI tests passed"

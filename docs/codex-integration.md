@@ -206,7 +206,7 @@ title. Before a rename, `thread-title` can fall back to the thread ID;
 ```text
 <prefix> codex                 new session with base profile
 <prefix> codex fast            new session with fast profile
-<prefix> codex work            new session with base profile and the work MCP surface
+<prefix> codex [profile] work   new session with the work MCP surface (any profile)
 <prefix> codex continue        resume --last
 <prefix> codex resume          resume picker
 ```
@@ -214,13 +214,14 @@ title. Before a rename, `thread-title` can fall back to the thread ID;
 The interactive launcher also supports forking the last Codex session. Extra runtime arguments pass through after launcher parsing.
 
 When native Codex is selected interactively, the Profile menu offers the model
-profiles plus a `work` entry. Picking a model profile leaves
-`HARNESS_CODEX_MCP_PROFILE` unset and uses the manifest's minimal default
-surface. Picking `work` selects the base profile and exports
+profiles only; the work surface is a `🔌 MCP surface` toggle on the summary
+screen (the same UX as the Claude/Kiro `light` toggle) and combines with any
+profile. `default` leaves `HARNESS_CODEX_MCP_PROFILE` unset and uses the
+manifest's minimal default surface; `work` exports
 `HARNESS_CODEX_MCP_PROFILE=work` before preparing `CODEX_HOME`, so preparation
-and the launched process use the same approved work integrations (the work
-surface is base-profile-only, matching the shortcut path). Backing out never
-silently upgrades the surface.
+and the launched process use the same approved work integrations. The Happy
+wrapper and the work surface are mutually exclusive (the later toggle wins).
+Backing out never silently upgrades the surface.
 
 ## Verification
 

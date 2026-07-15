@@ -285,7 +285,7 @@ _harness_launcher_run() {
 # _harness_launcher_run_codex_cli <harness-dir> [args...]
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
 #   Modes:    fast | base | plan | rich  → -p <profile>
-#   Surface:  work → base profile + work MCP surface
+#   Surface:  work → work MCP surface (combinable with any profile)
 #   Wrapper:  happy → `happy codex ...`
 #   Sessions: resume → `codex resume`,  continue → `codex resume --last`,
 #             fork   → `codex fork`
@@ -296,25 +296,22 @@ _harness_launcher_run_codex_cli() {
   local mcp_profile=""
   local subcmd=""
   local use_happy=false
+  local freeform=false
   local -a codex_args=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       fast|base|sol|plan|rich)
-        [[ -z "$mcp_profile" ]] || {
-          echo "❌ Codex work MCP surface cannot be combined with the $1 model profile" >&2
-          return 1
-        }
         profile="$1"; profile_explicit=true; shift ;;
       work)
-        if [[ -n "$profile" ]]; then
-          echo "❌ Codex work MCP surface cannot be combined with the $profile model profile" >&2
-          return 1
-        fi
-        if [[ -z "$subcmd" && ${#codex_args[@]} -eq 0 && $use_happy == false ]]; then
-          profile="base"; profile_explicit=true; mcp_profile="work"; shift
-        else
+        # Surface keyword, combinable with any model profile and any launcher
+        # keyword in any order (same UX as the claude `light` keyword). Only a
+        # genuinely free-form token before it (e.g. `exec work`) demotes it to
+        # prompt text — launcher keywords like full-auto/continue must not.
+        if $freeform; then
           codex_args+=("$1"); shift
+        else
+          mcp_profile="work"; shift
         fi
         ;;
       resume)              subcmd="resume"; shift ;;
@@ -324,20 +321,14 @@ _harness_launcher_run_codex_cli() {
       full-auto)           codex_args+=(--full-auto); shift ;;
       never)               codex_args+=(-a never); shift ;;
       bypass)              codex_args+=(--dangerously-bypass-approvals-and-sandbox); shift ;;
-      *)                   codex_args+=("$1"); shift ;;
+      *)                   freeform=true; codex_args+=("$1"); shift ;;
     esac
   done
 
   [[ -z "$profile" ]] && profile="base"
 
-  if [[ -n "$mcp_profile" ]]; then
-    local HARNESS_CODEX_MCP_PROFILE="$mcp_profile"
-    export HARNESS_CODEX_MCP_PROFILE
-    _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
-  else
-    _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
-  fi
-
+  # Validate incompatible combinations BEFORE preparing the runtime home, so a
+  # rejected launch leaves no work-surface residue in the generated config.
   if $use_happy; then
     command -v happy >/dev/null 2>&1 || {
       echo "❌ happy not found in PATH" >&2
@@ -351,12 +342,24 @@ _harness_launcher_run_codex_cli() {
       echo "❌ Happy Codex does not support launcher profiles. Use '${HARNESS_PREFIX:-harness} codex happy' for Happy mode, or '${HARNESS_PREFIX:-harness} codex $profile' for native Codex CLI." >&2
       return 1
     fi
+    if [[ -n "$mcp_profile" ]]; then
+      echo "❌ Happy Codex는 work MCP surface와 함께 사용할 수 없습니다." >&2
+      return 1
+    fi
   else
     local codex_bin
     codex_bin="$(_harness_launcher_codex_bin)" || {
       echo "❌ codex not found in PATH" >&2
       return 1
     }
+  fi
+
+  if [[ -n "$mcp_profile" ]]; then
+    local HARNESS_CODEX_MCP_PROFILE="$mcp_profile"
+    export HARNESS_CODEX_MCP_PROFILE
+    _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
+  else
+    _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
   fi
 
   # Plain invocation (not exec) so the user's interactive shell survives
@@ -460,7 +463,7 @@ _harness_launcher_complete() {
     'dontAsk:Auto-approve most actions'
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
-    'codex:Codex CLI native (fast/base/sol/plan/rich/work · fork · full-auto/never/bypass)'
+    'codex:Codex CLI native (fast/base/sol/plan/rich · work surface · fork · full-auto/never/bypass)'
     'kiro-cli:Kiro CLI native'
     'happy:Use Happy mobile wrapper for Codex CLI'
   )

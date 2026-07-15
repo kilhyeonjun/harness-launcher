@@ -96,11 +96,12 @@ echo 'PASS: mode labels match the shared mode table'
 
 # --- 3. launchpad history row replays identical launch ----------------------
 OUT="$TEST_TEMP/3.out"; STUB="$TEST_TEMP/3.stub"
-run_tui $'1\n' "$OUT" "$STUB"
+run_tui $'2\n' "$OUT" "$STUB"
 grep -q 'EXEC:claude --model sonnet --effort high' "$STUB" || fail 'history row should replay same exec' "$OUT"
 [[ "$(grep -c '^EXEC:' "$STUB")" -eq 1 ]] || fail 'history row should exec exactly once' "$OUT"
 grep -q '↩ Claude · direct · new · sonnet · high' "$OUT" || fail 'launchpad should list the history row' "$OUT"
-grep -q 'New — Claude Code 구성' "$OUT" || fail 'launchpad should offer a New composer entry' "$OUT"
+grep -q '1) ☁️  New — Claude Code 구성' "$OUT" || fail 'New composer entry must be option 1 (above history)' "$OUT"
+grep -q '2) ↩ Claude' "$OUT" || fail 'history rows must follow the composer entries' "$OUT"
 echo 'PASS: launchpad history row replays the previous launch'
 
 # --- 4. continue session flag ------------------------------------------------
@@ -233,7 +234,7 @@ echo 'PASS: history-only with zero runtimes fails with a clear error'
 OUT="$TEST_TEMP/16b.out"; STUB="$TEST_TEMP/16b.stub"; reset_plan
 printf 'RUNTIME=claude\nSUMMARY=Claude · direct · new · sonnet · high\nPROVIDER=direct\nSESSION=new\nMODE=base\n' \
   > "$TEST_HARNESS/.harness/launcher-last"
-run_tui $'1\n' "$OUT" "$STUB"
+run_tui $'2\n' "$OUT" "$STUB"
 [[ -f "$TEST_HARNESS/.harness/launcher-last" ]] && fail 'legacy plan file should be removed after migration' "$OUT"
 head -1 "$HISTORY" | grep -q 'MODE=base' || fail 'legacy plan should migrate into history' "$OUT"
 grep -q 'EXEC:claude --model sonnet --effort high' "$STUB" || fail 'migrated history row should replay' "$OUT"
@@ -287,11 +288,11 @@ echo 'PASS: kiro light MCP surface filters SSH servers, full restores'
 OUT="$TEST_TEMP/19.out"; STUB="$TEST_TEMP/19.stub"; reset_plan
 run_tui $'1\n2\n1\n' "$OUT" "$STUB"                       # base → history[1]
 OUT="$TEST_TEMP/19b.out"; STUB="$TEST_TEMP/19b.stub"
-run_tui $'2\n1\n1\n1\n' "$OUT" "$STUB"                    # New Claude(2) → fast → history now: fast, base
+run_tui $'1\n1\n1\n1\n' "$OUT" "$STUB"                    # New Claude(1) → fast → history now: fast, base
 [[ "$(wc -l < "$HISTORY")" -eq 2 ]] || fail 'two distinct configs should produce two history rows' "$OUT"
 head -1 "$HISTORY" | grep -q 'MODE=fast' || fail 'newest config should be first in history' "$OUT"
 OUT="$TEST_TEMP/19c.out"; STUB="$TEST_TEMP/19c.stub"
-run_tui $'2\n' "$OUT" "$STUB"                             # older row (base) replays…
+run_tui $'3\n' "$OUT" "$STUB"                             # older row (base, option 3: New1 fast2 base3) replays…
 grep -q 'EXEC:claude --model sonnet --effort high' "$STUB" || fail 'older history row should replay base' "$OUT"
 [[ "$(wc -l < "$HISTORY")" -eq 2 ]] || fail 'replay must dedupe, not append a third row' "$OUT"
 head -1 "$HISTORY" | grep -q 'MODE=base' || fail '…and move to the top of the history' "$OUT"
@@ -318,7 +319,7 @@ grep -q 'EXEC:happy' "$STUB" && fail 'light after happy must not exec happy' "$O
 # replay guard: a hand-edited history row with both set must fail, not launch full
 OUT="$TEST_TEMP/20c.out"; STUB="$TEST_TEMP/20c.stub"; reset_plan
 printf 'TS=1\tSUMMARY=Claude · direct · new · sonnet · high · mcp-light · happy\tRUNTIME=claude\tPROVIDER=direct\tSESSION=new\tMODE=base\tPERM=default\tMCP_SURFACE=light\tCHROME=0\tHAPPY=1\n' > "$HISTORY"
-run_tui $'1\nq\n' "$OUT" "$STUB"
+run_tui $'2\nq\n' "$OUT" "$STUB"
 grep -q 'Happy 래퍼는 light MCP surface를 지원하지 않습니다' "$OUT" || fail 'replayed light+happy row must fail with a clear error' "$OUT"
 [[ -f "$STUB" ]] && grep -q '^EXEC:' "$STUB" && fail 'replayed light+happy row must not exec anything' "$OUT"
 rm -f "$TEST_BIN/happy" "$TEST_HARNESS/.mcp.json"; reset_plan
@@ -343,8 +344,9 @@ OUT="$TEST_TEMP/22.out"; STUB="$TEST_TEMP/22.stub"; reset_plan
 mkdir -p "$TEST_HARNESS/.harness"
 printf 'TS=2\tSUMMARY=Codex · new · base\tRUNTIME=codex\tSESSION=new\tCODEX_PROFILE=base\tCODEX_SURFACE=default\tCODEX_SAFETY=default\n' > "$HISTORY"
 printf 'TS=1\tSUMMARY=Claude · direct · new · haiku · low\tRUNTIME=claude\tPROVIDER=direct\tSESSION=new\tMODE=fast\tPERM=default\tMCP_SURFACE=full\tCHROME=0\tHAPPY=0\n' >> "$HISTORY"
-# codex is not installed → its row is hidden; option 1 must be the claude fast row
-run_tui $'1\n' "$OUT" "$STUB"
+# codex is not installed → its row is hidden; option 2 (after the New Claude
+# composer at option 1) must be the claude fast row
+run_tui $'2\n' "$OUT" "$STUB"
 grep -q 'Codex · new · base' "$OUT" && fail 'hidden runtime row must not be listed' "$OUT"
 grep -q 'EXEC:claude --model haiku --effort low' "$STUB" || fail 'first visible row must replay the claude entry, not the hidden codex one' "$OUT"
 reset_plan
@@ -357,8 +359,8 @@ mkdir -p "$TEST_HARNESS/.harness"
 for i in 1 2 3 4 5 6 7 8 9; do
   printf 'TS=%s\tSUMMARY=cfg%s\tRUNTIME=claude\tPROVIDER=direct\tSESSION=new\tMODE=m%s\tPERM=default\tMCP_SURFACE=full\tCHROME=0\tHAPPY=0\n' "$i" "$i" "$i" >> "$HISTORY"
 done
-# 9 hist rows + New Claude at 10 → compose a 10th distinct config (base)
-run_tui $'10\n1\n2\n1\n' "$OUT" "$STUB"
+# New Claude at 1 (composers on top), 9 hist rows below → compose a 10th config (base)
+run_tui $'1\n1\n2\n1\n' "$OUT" "$STUB"
 grep -q 'EXEC:claude --model sonnet' "$STUB" || fail 'composer must still launch with 9 history rows' "$OUT"
 [[ "$(wc -l < "$HISTORY")" -eq 8 ]] || fail "10th distinct config must trim history to 8 (got $(wc -l < "$HISTORY"))"
 head -1 "$HISTORY" | grep -q 'MODE=base' || fail 'newest config must be first after trimming'
@@ -371,7 +373,7 @@ echo 'PASS: history trimmed to HISTORY_MAX'
 OUT="$TEST_TEMP/24.out"; STUB="$TEST_TEMP/24.stub"; reset_plan
 printf 'TS=1\tSUMMARY=Claude · direct · new · sonnet · high\tRUNTIME=claude\tPROVIDER=direct\tSESSION=new\tMODE=base\tPERM=default\tMCP_SURFACE=full\tCHROME=0\tHAPPY=0\n' > "$HISTORY"
 printf 'RUNTIME=claude\nSUMMARY=LEGACYMARK\nPROVIDER=direct\nSESSION=new\nMODE=rich\n' > "$TEST_HARNESS/.harness/launcher-last"
-run_tui $'1\n' "$OUT" "$STUB"
+run_tui $'2\n' "$OUT" "$STUB"
 [[ -f "$TEST_HARNESS/.harness/launcher-last" ]] && fail 'legacy plan must be deleted even when history exists' "$OUT"
 grep -q 'LEGACYMARK' "$HISTORY" && fail 'legacy plan must NOT be merged into an existing history' "$OUT"
 grep -q 'EXEC:claude --model sonnet' "$STUB" || fail 'existing history must stay replayable' "$OUT"

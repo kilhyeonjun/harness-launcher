@@ -239,8 +239,9 @@ if [[ "$work_prepare_mcp_profile" != "work" || "$work_mcp_profile" != "work" ]];
 fi
 echo "PASS: codex CLI work → base profile + work MCP surface before prepare"
 
-# `work` is a launcher surface selector only when it is the first token after
-# `codex`. It must not consume a raw Codex subcommand prompt.
+# `work` is a surface keyword until free-form args start. `codex exec work`
+# keeps 'work' as prompt text because 'exec' lands in codex_args first — the
+# launcher must not consume a raw Codex subcommand prompt.
 STUB_EXEC_WORK="$TEST_TEMP/output-codex-cli-exec-work.txt"
 : > "$STUB_EXEC_WORK"
 run_codex "$STUB_EXEC_WORK" exec work
@@ -255,25 +256,57 @@ if [[ "$(get_field MCP_PROFILE "$STUB_EXEC_WORK")" != "<UNSET>" ]]; then
 fi
 echo "PASS: codex exec work → prompt preserved without work MCP surface"
 
-for incompatible_args in "work rich" "rich work" "work sol" "sol work"; do
-  failure_output="$TEST_TEMP/output-codex-cli-incompatible-${incompatible_args// /-}.txt"
-  : > "$TEST_TEMP/output-codex-cli-failure-stub.txt"
-  if run_codex_failure "$failure_output" ${(z)incompatible_args}; then
-    echo "FAIL: codex CLI $incompatible_args — incompatible mode/profile combination must fail"
-    exit 1
-  fi
-  if [[ -s "$TEST_TEMP/output-codex-cli-failure-stub.txt" ]]; then
-    echo "FAIL: codex CLI $incompatible_args — must fail before Codex starts"
-    cat "$TEST_TEMP/output-codex-cli-failure-stub.txt"
-    exit 1
-  fi
-  if ! grep -qi 'cannot be combined' "$failure_output"; then
-    echo "FAIL: codex CLI $incompatible_args — expected clear incompatibility error"
-    cat "$failure_output"
+# work is a surface keyword combinable with any model profile (same UX as the
+# claude `light` keyword) — both orders must select the profile AND the surface.
+for combo_args in "work rich" "rich work" "work sol" "sol work"; do
+  combo_stub="$TEST_TEMP/output-codex-cli-combo-${combo_args// /-}.txt"
+  : > "$combo_stub"
+  run_codex "$combo_stub" ${(z)combo_args}
+  combo_argv="$(get_field ARGV "$combo_stub")"
+  combo_profile="${combo_args/work/}"; combo_profile="${combo_profile// /}"
+  case "$combo_argv" in
+    *"-p $combo_profile"*) ;;
+    *) echo "FAIL: codex CLI $combo_args — expected -p $combo_profile, got '$combo_argv'"; exit 1 ;;
+  esac
+  if [[ "$(get_field MCP_PROFILE "$combo_stub")" != "work" ]]; then
+    echo "FAIL: codex CLI $combo_args — expected work MCP surface with the $combo_profile profile"
     exit 1
   fi
 done
-echo "PASS: codex CLI work rejects incompatible model profiles"
+echo "PASS: codex CLI work combines with any model profile"
+
+# Launcher keywords must not demote work to prompt text — only free-form args
+# do. Both orders around safety/session keywords must select the surface.
+for kw_combo in "full-auto work" "work full-auto" "continue work" "resume work" "never work"; do
+  kw_stub="$TEST_TEMP/output-codex-cli-kw-${kw_combo// /-}.txt"
+  : > "$kw_stub"
+  run_codex "$kw_stub" ${(z)kw_combo}
+  if [[ "$(get_field MCP_PROFILE "$kw_stub")" != "work" ]]; then
+    echo "FAIL: codex CLI $kw_combo — work surface must survive launcher keywords (got '$(get_field MCP_PROFILE "$kw_stub")')"
+    exit 1
+  fi
+  kw_argv="$(get_field ARGV "$kw_stub")"
+  case "$kw_argv" in
+    *" work"*|*"work "*) echo "FAIL: codex CLI $kw_combo — literal 'work' leaked into codex argv: $kw_argv"; exit 1 ;;
+  esac
+done
+echo "PASS: codex CLI work survives safety/session keyword ordering"
+
+# happy + work is the one impossible combination — must fail before prepare.
+happy_work_out="$TEST_TEMP/output-codex-cli-happy-work.txt"
+: > "$TEST_TEMP/output-codex-cli-failure-stub.txt"
+if run_codex_failure "$happy_work_out" happy work; then
+  echo "FAIL: codex CLI happy work — must fail"
+  exit 1
+fi
+if [[ -s "$TEST_TEMP/output-codex-cli-failure-stub.txt" ]]; then
+  echo "FAIL: codex CLI happy work — must fail before Codex starts"
+  exit 1
+fi
+grep -q 'work MCP surface' "$happy_work_out" || {
+  echo "FAIL: codex CLI happy work — expected clear error"; cat "$happy_work_out"; exit 1;
+}
+echo "PASS: codex CLI happy work fails closed"
 
 # Session shortcuts
 run_session "resume"   "resume"           ""        || exit 1

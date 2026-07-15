@@ -91,7 +91,7 @@ menu_filter() {
       --header "$header" \
       --placeholder "타이핑해서 검색 · Enter 실행" \
       --indicator "❯" \
-      --height $(( ${#options[@]} + 2 )))
+      --height $(( ${#options[@]} + 4 )))
     rc=$?
     [ $rc -eq 130 ] && exit 0
     [ $rc -ne 0 ] && return 1
@@ -320,6 +320,11 @@ collect_launchpad() {
     echo "  claude 설치 여부 또는 HARNESS_CODEX_BIN / HARNESS_KIRO_BIN 설정을 확인하세요." >&2
     exit 1
   fi
+  # Composer entries first — the primary action stays at the top; recent
+  # configs follow below them.
+  $HAS_CLAUDE && { opts+=("claude"); labels+=("☁️  New — Claude Code 구성…"); }
+  $HAS_CODEX && { opts+=("codex"); labels+=("⚡ New — Codex CLI 구성…"); }
+  $HAS_KIRO && { opts+=("kiro"); labels+=("🦜 New — Kiro CLI 구성…"); }
   # History rows — complete configs, newest first. Rows whose runtime is no
   # longer installed are hidden (the entry stays in the file). The full line is
   # captured per row so replay does not depend on the file staying unchanged
@@ -341,9 +346,6 @@ collect_launchpad() {
       hist_lines+=("$line")
     done < "$HISTORY_FILE"
   fi
-  $HAS_CLAUDE && { opts+=("claude"); labels+=("☁️  New — Claude Code 구성…"); }
-  $HAS_CODEX && { opts+=("codex"); labels+=("⚡ New — Codex CLI 구성…"); }
-  $HAS_KIRO && { opts+=("kiro"); labels+=("🦜 New — Kiro CLI 구성…"); }
 
   if [ ${#opts[@]} -eq 1 ]; then
     CHOICE_RUNTIME="${opts[0]}"
@@ -554,15 +556,13 @@ collect_codex() {
           "⚖️  $(codex_profile_label base)" \
           "🌞 $(codex_profile_label sol)" \
           "🗺️  $(codex_profile_label plan)" \
-          "🧠 $(codex_profile_label rich)" \
-          "💼 work — base 프로필 + work MCP (Slack/Jira/Notion)" || { step=session; continue; }
+          "🧠 $(codex_profile_label rich)" || { step=session; continue; }
         case "$MENU_RESULT" in
-          "⚡"*) CHOICE_CODEX_PROFILE="fast"; CHOICE_CODEX_SURFACE="default" ;;
-          "🌞"*) CHOICE_CODEX_PROFILE="sol"; CHOICE_CODEX_SURFACE="default" ;;
-          "🗺"*) CHOICE_CODEX_PROFILE="plan"; CHOICE_CODEX_SURFACE="default" ;;
-          "🧠"*) CHOICE_CODEX_PROFILE="rich"; CHOICE_CODEX_SURFACE="default" ;;
-          "💼"*) CHOICE_CODEX_PROFILE="base"; CHOICE_CODEX_SURFACE="work" ;;
-          *)     CHOICE_CODEX_PROFILE="base"; CHOICE_CODEX_SURFACE="default" ;;
+          "⚡"*) CHOICE_CODEX_PROFILE="fast" ;;
+          "🌞"*) CHOICE_CODEX_PROFILE="sol" ;;
+          "🗺"*) CHOICE_CODEX_PROFILE="plan" ;;
+          "🧠"*) CHOICE_CODEX_PROFILE="rich" ;;
+          *)     CHOICE_CODEX_PROFILE="base" ;;
         esac
         step=safety ;;
 
@@ -582,13 +582,15 @@ collect_codex() {
         step=final ;;
 
       final)
-        # Happy only works for a base-profile new session; if back-navigation
-        # broke compatibility, the toggle silently staying on would make Start
-        # fail with no way to turn it off (the toggle is hidden).
+        # Happy only works for a base-profile new session with the default
+        # surface; if back-navigation broke compatibility, the toggle silently
+        # staying on would make Start fail with no way to turn it off (the
+        # toggle is hidden).
         codex_happy_compatible || CHOICE_HAPPY=0
         codex_summary
         BREADCRUMB=""
         local fopts=("🚀 Start now")
+        fopts+=("🔌 MCP surface: $CHOICE_CODEX_SURFACE")
         if $HAS_HAPPY && codex_happy_compatible; then
           fopts+=("📱 Happy wrapper: $( [ "$CHOICE_HAPPY" = 1 ] && echo on || echo off )")
         fi
@@ -596,6 +598,15 @@ collect_codex() {
         menu "$PLAN_SUMMARY" "${fopts[@]}" || { step=safety; continue; }
         case "$MENU_RESULT" in
           *Start*) return 0 ;;
+          *"MCP surface"*)
+            # work rides on the generated work profile config; the happy
+            # wrapper cannot use it — same exclusivity as claude light+happy.
+            if [ "$CHOICE_CODEX_SURFACE" = "work" ]; then
+              CHOICE_CODEX_SURFACE="default"
+            else
+              CHOICE_CODEX_SURFACE="work"
+              [ "$CHOICE_HAPPY" = 1 ] && { CHOICE_HAPPY=0; echo "ℹ️  work MCP surface는 Happy와 함께 쓸 수 없어 Happy를 껐습니다." >&2; }
+            fi ;;
           *Happy*)
             if [ "$CHOICE_HAPPY" = 1 ]; then CHOICE_HAPPY=0; else CHOICE_HAPPY=1; fi ;;
           *Back*) step=safety ;;

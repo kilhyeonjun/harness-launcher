@@ -119,7 +119,7 @@ The same command shape works for every registered prefix:
 <prefix> continue|resume         Claude Code session shortcut
 <prefix> light                   Claude Code with the light MCP surface (SSH-backed servers excluded)
 <prefix> codex [profile]         native Codex CLI (fast|base|sol|plan|rich)
-<prefix> codex work              native Codex CLI with the base profile and work MCP surface
+<prefix> codex [profile] work    native Codex CLI with the work MCP surface (any profile)
 <prefix> codex continue          Codex `resume --last`
 <prefix> codex resume            Codex resume picker
 <prefix> codex fork              Codex `fork --last`
@@ -144,9 +144,10 @@ stdio wrappers and loopback HTTP on ports 38200–38299), and the Happy wrapper
 are toggles. Esc (or `q`/invalid-then-`q` in the no-gum fallback) goes one step back; at the launchpad it exits.
 Menu labels are generated from the same mode table the shortcuts use, and the
 native-Codex profile labels read the generated profile configs, so what a label
-says is what launches. Native Codex offers the `work` MCP surface as a profile
-choice: `Default` keeps the minimal project surface, while `work` runs the base
-profile with only the approved work MCPs declared by `config/codex-surface.json`.
+says is what launches. Native Codex exposes its `work` MCP surface the same way
+Claude/Kiro expose `light` — a `🔌 MCP surface` toggle on the summary screen,
+combinable with any profile: `default` keeps the minimal project surface, while
+`work` uses only the approved work MCPs declared by `config/codex-surface.json`.
 
 ### Presets
 

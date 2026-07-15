@@ -4,6 +4,26 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-07-15
+
+### Changed
+
+- **Launchpad ordering.** "New …" composer entries now sit at the top of the
+  launchpad with recent configurations listed below them, and the gum filter
+  viewport is tall enough to show every row (header/input no longer eat list
+  lines).
+- **Codex `work` is now an MCP-surface toggle, matching Claude/Kiro `light`.**
+  The Profile menu lists model profiles only; `work` moved to a
+  `🔌 MCP surface: default|work` toggle on the summary screen and combines
+  with any profile (previously base-only). The shortcut gained the same
+  freedom: `<prefix> codex rich work` / `<prefix> codex work sol` both select
+  the profile and the work surface, and `work` stays a surface keyword
+  regardless of order with session/safety keywords (`continue work`,
+  `full-auto work`, …) — only a genuinely free-form token before it (e.g.
+  `codex exec work`) demotes it to prompt text. Happy + work is rejected
+  (toggle exclusivity in the TUI, fail-closed before home preparation in the
+  shortcut).
+
 ## [0.12.0] — 2026-07-15
 
 ### Added
@@ -171,7 +191,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.10.1...v0.10.2
