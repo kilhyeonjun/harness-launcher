@@ -19,6 +19,7 @@ spec.loader.exec_module(module)
 
 with tempfile.TemporaryDirectory() as tmp:
     queue = pathlib.Path(tmp)
+    spawn_worker = module._spawn_worker
     module._spawn_worker = lambda *_args, **_kwargs: None
     started = time.monotonic()
     rc = module.handle("postToolUse", "kh", json.dumps({"tool_name": "fs_read", "secret": "must-not-persist"}), queue)
@@ -31,14 +32,28 @@ with tempfile.TemporaryDirectory() as tmp:
     assert "must-not-persist" not in persisted
     assert "fs_read" in persisted
     assert files[0].stat().st_mode & 0o777 == 0o600
+    module._spawn_worker = spawn_worker
 
 with tempfile.TemporaryDirectory() as tmp:
     queue = pathlib.Path(tmp)
     module.MAX_QUEUE_FILES = 2
-    module._spawn_worker = lambda *_args, **_kwargs: None
+    popen_calls = []
+    held_locks = []
+    real_popen = module.subprocess.Popen
+    def fake_popen(*args, **kwargs):
+        popen_calls.append(args)
+        pass_fds = kwargs.get("pass_fds", ())
+        if pass_fds:
+            held_locks.append(module.os.dup(pass_fds[0]))
+        return object()
+    module.subprocess.Popen = fake_popen
     for _ in range(5):
         assert module.handle("agentSpawn", "gp", "{}", queue) == 0
+    module.subprocess.Popen = real_popen
     assert len(list(queue.glob("*.json"))) <= 2
+    assert len(popen_calls) == 1, f"burst spawned {len(popen_calls)} workers"
+    for fd in held_locks:
+        module.os.close(fd)
 
 with tempfile.TemporaryDirectory() as tmp:
     queue = pathlib.Path(tmp)

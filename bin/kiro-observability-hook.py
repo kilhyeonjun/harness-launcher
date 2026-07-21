@@ -104,33 +104,51 @@ def _prepare_queue(queue_dir: Path) -> bool:
         return False
 
 
-def _enqueue(payload: dict[str, Any], queue_dir: Path) -> None:
+def _enqueue(payload: dict[str, Any], queue_dir: Path) -> bool:
     if not _prepare_queue(queue_dir) or len(_queue_files(queue_dir)) >= MAX_QUEUE_FILES:
-        return
+        return False
     path = queue_dir / f"{time.time_ns():020d}-{os.getpid()}-{secrets.token_hex(4)}.json"
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, separators=(",", ":"))
+        return True
     except OSError:
         try:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+        return False
 
 
 def _spawn_worker(queue_dir: Path) -> None:
+    if not _prepare_queue(queue_dir):
+        return
+    lock = None
+    try:
+        lock = (queue_dir / ".drain.lock").open("a+")
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, BlockingIOError):
+        if lock is not None:
+            lock.close()
+        return
     try:
         subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__), "--drain", str(queue_dir)],
+            [sys.executable, os.path.abspath(__file__), "--drain-locked", str(queue_dir), str(lock.fileno())],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
             close_fds=True,
+            pass_fds=(lock.fileno(),),
         )
     except OSError:
-        return
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+    finally:
+        lock.close()
 
 
 def _post_json(payload: dict[str, Any]) -> bool:
@@ -151,15 +169,21 @@ def _post_json(payload: dict[str, Any]) -> bool:
         connection.close()
 
 
-def drain(queue_dir: Path | None = None) -> int:
+def drain(queue_dir: Path | None = None, inherited_lock_fd: int | None = None) -> int:
     queue = queue_dir or _default_queue_dir()
     if not _prepare_queue(queue):
         return 0
-    try:
-        lock = (queue / ".drain.lock").open("a+")
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (OSError, BlockingIOError):
-        return 0
+    if inherited_lock_fd is not None:
+        try:
+            lock = os.fdopen(inherited_lock_fd, "a+")
+        except OSError:
+            return 0
+    else:
+        try:
+            lock = (queue / ".drain.lock").open("a+")
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError):
+            return 0
     now = time.time()
     try:
         for path in _queue_files(queue)[:MAX_DRAIN_FILES]:
@@ -205,14 +229,19 @@ def handle(event: str, profile: str, raw: str, queue_dir: Path | None = None) ->
         candidate = data.get("tool_name", data.get("toolName", ""))
         tool_name = candidate if isinstance(candidate, str) and candidate in _SAFE_TOOL_NAMES else "unknown"
     queue = queue_dir or _default_queue_dir()
-    _enqueue(_payload(_ALLOWED_EVENTS[event], profile, tool_name), queue)
-    _spawn_worker(queue)
+    if _enqueue(_payload(_ALLOWED_EVENTS[event], profile, tool_name), queue):
+        _spawn_worker(queue)
     return 0
 
 
 def main(argv: list[str]) -> int:
     if len(argv) == 3 and argv[1] == "--drain":
         return drain(Path(argv[2]))
+    if len(argv) == 4 and argv[1] == "--drain-locked":
+        try:
+            return drain(Path(argv[2]), int(argv[3]))
+        except ValueError:
+            return 0
     if len(argv) != 3:
         return 0
     raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1).decode("utf-8", "replace")
