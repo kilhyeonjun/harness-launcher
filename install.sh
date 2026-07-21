@@ -36,9 +36,13 @@ select_harness_python3() {
 
 select_harness_python3 >/dev/null || exit 1
 
-for destination in "$BIN_DIR/harness-exec" "$SHARE_DIR/harness-exec"; do
+for destination in \
+  "$BIN_DIR/harness-exec" \
+  "$SHARE_DIR/harness-exec" \
+  "$BIN_DIR/harness-profile" \
+  "$SHARE_DIR/harness-profile"; do
   if [[ -d "$destination" && ! -L "$destination" ]]; then
-    echo "ERROR: harness-exec destination is a directory: $destination" >&2
+    echo "ERROR: executable destination is a directory: $destination" >&2
     exit 1
   fi
 done
@@ -59,8 +63,9 @@ cp "$LAUNCHER_DIR/bin/codex-cmux-title-sync.py"   "$SHARE_DIR/codex-cmux-title-s
 cp "$LAUNCHER_DIR/bin/codex-migrate-to-symlinks.sh" "$SHARE_DIR/codex-migrate-to-symlinks.sh"
 cp "$LAUNCHER_DIR/bin/kiro-home-prepare.sh"       "$SHARE_DIR/kiro-home-prepare.sh"
 cp "$LAUNCHER_DIR/bin/harness-exec"               "$SHARE_DIR/harness-exec"
+cp "$LAUNCHER_DIR/bin/harness-profile"            "$SHARE_DIR/harness-profile"
 cp "$LAUNCHER_DIR/bin/kiro-observability-hook.py" "$SHARE_DIR/kiro-observability-hook.py"
-chmod +x \
+chmod 755 \
   "$SHARE_DIR/launcher.sh" \
   "$SHARE_DIR/codex-home-prepare.sh" \
   "$SHARE_DIR/codex-surface.py" \
@@ -70,8 +75,10 @@ chmod +x \
   "$SHARE_DIR/codex-migrate-to-symlinks.sh" \
   "$SHARE_DIR/kiro-home-prepare.sh" \
   "$SHARE_DIR/harness-exec" \
+  "$SHARE_DIR/harness-profile" \
   "$SHARE_DIR/kiro-observability-hook.py"
 ln -sfn "../share/harness-launcher/harness-exec" "$BIN_DIR/harness-exec"
+ln -sfn "../share/harness-launcher/harness-profile" "$BIN_DIR/harness-profile"
 
 echo "Installed to $SHARE_DIR"
 echo ""

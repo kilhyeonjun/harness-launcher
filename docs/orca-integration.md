@@ -4,24 +4,26 @@
 
 ## Supported boundary
 
-Installations expose a non-interactive executable:
+Installations expose a non-interactive primitive and registered profile commands:
 
 ```text
 harness-exec <harness-dir> [--cwd <dir>] [launcher arguments...]
+harness-profile register <harness-dir>
+<profile-prefix> [launcher arguments...]
 ```
 
-Unlike a registered Zsh prefix, `harness-exec` does not depend on `.zshrc` or an interactive/login shell. It defaults to the harness root. `--cwd` resolves symlinks and fails closed unless the target directory exists inside the registered harness.
+`harness-profile register` installs the harness's `HARNESS_PREFIX` as a real executable under `~/.local/bin`. Both that executable and the interactive Zsh function delegate to `harness-exec`. When the current directory resolves inside the harness, it becomes the run directory automatically; outside the boundary, the legacy harness-root default remains. Explicit `--cwd` resolves symlinks and fails closed unless the target exists inside the registered harness.
 
 Examples:
 
 ```bash
-harness-exec "$HOME/work-harness" --cwd . base
-harness-exec "$HOME/work-harness" --cwd . codex base
-harness-exec "$HOME/work-harness" --cwd . codex base work
-harness-exec "$HOME/work-harness" --cwd . kiro-cli base
+wh base
+wh codex base
+wh codex base work
+wh kiro-cli base
 ```
 
-Orca starts project terminals in the selected worktree, so the literal `--cwd .` keeps the command portable without relying on environment-variable expansion.
+Orca starts project terminals in the selected worktree, so the registered profile command automatically preserves that workspace. Use `harness-exec <harness-dir> --cwd . ...` only for automation that cannot use the registered profile command.
 
 ## Project and worktree layout
 
@@ -45,7 +47,7 @@ For each profile:
 
 1. Add only the owning harness's child code repositories.
 2. Configure the profile-local worktree base path.
-3. Open an Orca terminal in the selected worktree and start the agent with one of the `harness-exec --cwd .` commands above.
+3. Open an Orca terminal in the selected worktree and start the agent with its registered profile command (`kh`, `gp`, `gd`, or another `HARNESS_PREFIX`).
 4. Keep Orca's built-in task-agent dispatch disabled during the initial pilot. It starts Orca's own raw `claude`, `codex`, or `kiro-cli` command and can bypass launcher ownership.
 
 Do not replace the built-in agent binaries with recursive PATH shims. Native Orca task dispatch requires a separately reviewed adapter because Orca appends runtime-specific prompt, resume, and permission arguments.
@@ -67,7 +69,7 @@ Orca's worktree isolation is not a security sandbox. Runtime approval and sandbo
 Use a disposable repository before registering production or company code.
 
 1. Create a worktree under `<harness>/.worktrees/<repo-name>/`.
-2. Launch Claude, Codex, and Kiro through `harness-exec --cwd .`.
+2. Launch Claude, Codex, and Kiro through the registered profile command.
 3. Verify the process working directory is the worktree.
 4. Verify `CODEX_HOME` and `KIRO_HOME` remain rooted in the owning harness.
 5. Verify no other harness's skills, MCP servers, account state, or generated files appear.

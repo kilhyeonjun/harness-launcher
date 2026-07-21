@@ -2,7 +2,7 @@
 
 ## Overview
 
-`harness-launcher` is a shell adapter. It registers a project directory as a short Zsh function, translates presets into runtime arguments, prepares project-scoped runtime state, and then hands control to the selected CLI.
+`harness-launcher` is a shell and executable adapter. It registers a project directory as a short profile command, translates presets into runtime arguments, prepares project-scoped runtime state, and then hands control to the selected CLI.
 
 ```text
 ~/.zshrc
@@ -14,15 +14,16 @@
                  └─ Kiro CLI   → prepare .harness/kiro
 ```
 
-External orchestrators use the same runner through `harness-exec` rather than depending on shell startup:
+External orchestrators use the same runner through a registered executable profile or `harness-exec` rather than depending on shell startup:
 
 ```text
 workspace manager
-  └─ harness-exec <project> --cwd <project-local-worktree> ...
+  └─ <profile-prefix> ...
+       └─ harness-exec <project> ...
        └─ the same _harness_launcher_run policy path
 ```
 
-The explicit working directory must resolve inside the registered project. Workspace managers own UI and worktree lifecycle; the launcher continues to own runtime homes, auth routing, MCP, skills, hooks, presets, and observability.
+The current workspace is adopted only when its canonical path resolves inside the registered project; explicit `--cwd` uses the same boundary. Workspace managers own UI and worktree lifecycle; the launcher continues to own runtime homes, auth routing, MCP, skills, hooks, presets, and observability.
 
 The launcher is not a model proxy and does not host an API. Gateway modes are optional routes to user-configured external processes.
 
@@ -36,13 +37,13 @@ HARNESS_NAME="Example harness"
 HARNESS_PREFIX="ex"
 ```
 
-`harness_register` resolves the project to an absolute path, sources `launcher.env`, defines the prefix function, and attaches completion when Zsh's `compdef` is available.
+`harness_register` resolves the project to an absolute path, sources `launcher.env`, defines the prefix function, and attaches completion when Zsh's `compdef` is available. `harness-profile register` persists the same prefix as an executable command without copying policy.
 
 Because `launcher.env` is sourced, registration is a trust decision. The launcher does not attempt to parse or sandbox arbitrary shell code in that file.
 
 ## Command routing
 
-The prefix function delegates to `_harness_launcher_run`:
+The prefix function and executable profile both delegate through `harness-exec` to `_harness_launcher_run`:
 
 ```text
 ex                         interactive TUI

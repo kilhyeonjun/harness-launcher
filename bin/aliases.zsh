@@ -148,15 +148,28 @@ harness_register() {
   local HARNESS_NAME HARNESS_PREFIX
   source "$env_file"
   [[ -z "$HARNESS_PREFIX" ]] && { echo "harness_register: HARNESS_PREFIX required in $env_file" >&2; return 1; }
+  [[ "$HARNESS_PREFIX" =~ '^[A-Za-z_][A-Za-z0-9_-]*$' ]] || {
+    echo "harness_register: invalid HARNESS_PREFIX in $env_file: $HARNESS_PREFIX" >&2
+    return 1
+  }
   [[ -z "$HARNESS_NAME" ]] && { echo "harness_register: HARNESS_NAME required in $env_file" >&2; return 1; }
 
   # Remove any pre-existing alias that shadows the prefix (e.g., oh-my-zsh gd/gp aliases)
   unalias "$HARNESS_PREFIX" 2>/dev/null || true
 
-  # Define <prefix>() — delegates to generic runner with harness dir
-  eval "${HARNESS_PREFIX}() { _harness_launcher_run '$dir' \"\$@\"; }"
+  # Define <prefix>() as a thin wrapper around the same executable contract used
+  # by external workspace managers. This keeps interactive shells, Orca, and
+  # non-interactive automation on one cwd-resolution and policy path.
+  local harness_exec="$_HARNESS_LAUNCHER_BIN/harness-exec"
+  [[ -x "$harness_exec" ]] || {
+    echo "harness_register: missing executable: $harness_exec" >&2
+    return 1
+  }
+  local quoted_dir="${(q)dir}"
+  local quoted_harness_exec="${(q)harness_exec}"
+  eval "${HARNESS_PREFIX}() { ${quoted_harness_exec} ${quoted_dir} \"\$@\"; }" || return 1
   # Define _<prefix>_complete() — delegates to generic completion
-  eval "_${HARNESS_PREFIX}_complete() { _harness_launcher_complete '$dir' \"\$@\"; }"
+  eval "_${HARNESS_PREFIX}_complete() { _harness_launcher_complete ${quoted_dir} \"\$@\"; }" || return 1
   if (( $+functions[compdef] )); then
     compdef "_${HARNESS_PREFIX}_complete" "$HARNESS_PREFIX"
   fi

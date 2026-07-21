@@ -64,6 +64,46 @@ fi
 
 echo "PASS: harness-exec launches a profile-scoped Codex session in an explicit worktree"
 
+: > "$LOG"
+(
+  cd "$WORKTREE"
+  PATH="$STUB_BIN:/usr/bin:/bin" \
+    HARNESS_CODEX_BIN="$STUB_BIN/codex" \
+    HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$TMP/missing-marketplace" \
+    HARNESS_EXEC_TEST_LOG="$LOG" \
+    "$PREFIX/bin/harness-exec" "$HARNESS" codex base
+)
+assert_line "PWD:$WORKTREE_REAL"
+if ! grep -Fq "ARGV: <--cd> <$WORKTREE_REAL> <-p> <base>" "$LOG"; then
+  echo "FAIL: implicit workspace cwd was not forwarded to Codex" >&2
+  sed 's/^/  /' "$LOG" >&2
+  exit 1
+fi
+
+echo "PASS: harness-exec uses the current workspace when it is inside the harness boundary"
+
+: > "$LOG"
+PATH="$STUB_BIN:/usr/bin:/bin" \
+  HARNESS_CODEX_BIN="$STUB_BIN/codex" \
+  HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$TMP/missing-marketplace" \
+  HARNESS_EXEC_TEST_LOG="$LOG" \
+  WORKTREE="$WORKTREE" \
+  HARNESS="$HARNESS" \
+  zsh -c '
+    source "'$PREFIX'/share/harness-launcher/aliases.zsh"
+    harness_register "$HARNESS"
+    cd "$WORKTREE"
+    th codex base
+  '
+assert_line "PWD:$WORKTREE_REAL"
+if ! grep -Fq "ARGV: <--cd> <$WORKTREE_REAL> <-p> <base>" "$LOG"; then
+  echo "FAIL: registered profile command did not preserve the current workspace" >&2
+  sed 's/^/  /' "$LOG" >&2
+  exit 1
+fi
+
+echo "PASS: registered profile commands use the current workspace"
+
 for session in resume fork; do
   : > "$LOG"
   PATH="$STUB_BIN:/usr/bin:/bin" \
