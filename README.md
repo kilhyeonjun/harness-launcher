@@ -66,7 +66,7 @@ cd harness-launcher
 HARNESS_LAUNCHER_PREFIX="$HOME/.local" ./install.sh
 ```
 
-The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-exec` under `$HARNESS_LAUNCHER_PREFIX/bin`. Homebrew is the recommended installation path on macOS.
+The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-exec` plus `harness-profile` under `$HARNESS_LAUNCHER_PREFIX/bin`. Homebrew is the recommended installation path on macOS.
 
 ## Quick start
 
@@ -103,15 +103,23 @@ exec zsh
 wh codex --version
 ```
 
-`HARNESS_PREFIX` becomes the shell function name. Register as many projects as you need, but each prefix must be unique.
+`HARNESS_PREFIX` becomes the shell function name. Register as many projects as you need, but each prefix must be unique. To make the same prefix available as a real executable outside interactive Zsh startup, register it once:
+
+```bash
+harness-profile register "$HOME/work-harness"
+```
+
+This installs a profile entry under `~/.config/harness-launcher/profiles/` and a command symlink under `~/.local/bin/` without copying project policy.
+
+Registered commands are workspace-aware. If the current directory resolves inside the owning harness, the launcher uses it automatically; otherwise it preserves the legacy harness-root default. An explicit `--cwd` still takes precedence.
 
 External orchestrators and non-interactive shells can bypass `.zshrc` while keeping the same project policy:
 
 ```bash
-harness-exec "$HOME/work-harness" --cwd . codex base
+harness-exec "$HOME/work-harness" codex base
 ```
 
-`--cwd` must resolve inside the registered harness. This is the supported boundary for Orca and similar worktree managers; see [Orca ADE integration](docs/orca-integration.md).
+When the external terminal starts inside the harness, no `--cwd .` is needed. If supplied, `--cwd` must resolve inside the registered harness. This is the supported boundary for Orca and similar worktree managers; see [Orca ADE integration](docs/orca-integration.md).
 
 > [!WARNING]
 > `config/launcher.env` is sourced as shell code. Only register project directories you trust.

@@ -23,7 +23,8 @@ The README covers installation and the first registered project. These documents
 | Path | Responsibility |
 | --- | --- |
 | `bin/aliases.zsh` | Project registration, shortcuts, completion, runtime wrappers |
-| `bin/harness-exec` | Non-interactive executable entrypoint for external orchestrators |
+| `bin/harness-exec` | Non-interactive executable entrypoint and canonical cwd resolver for external orchestrators |
+| `bin/harness-profile` | Durable profile registry and executable prefix installer |
 | `bin/launcher.sh` | Interactive runtime/session/mode/safety picker |
 | `bin/codex-home-prepare.sh` | Generated per-project Codex home |
 | `bin/kiro-home-prepare.sh` | Generated per-project Kiro home |

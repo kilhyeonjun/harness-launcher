@@ -22,6 +22,7 @@ for file in \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh \
   harness-exec \
+  harness-profile \
   kiro-observability-hook.py; do
   [[ -f "$SHARE/$file" ]] || {
     echo "FAIL: source installer did not install $file" >&2
@@ -39,6 +40,7 @@ for file in \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh \
   harness-exec \
+  harness-profile \
   kiro-observability-hook.py; do
   [[ -x "$SHARE/$file" ]] || {
     echo "FAIL: source installer did not mark $file executable" >&2
@@ -52,6 +54,19 @@ done
 }
 [[ "$(readlink "$PREFIX/bin/harness-exec")" == "../share/harness-launcher/harness-exec" ]] || {
   echo "FAIL: harness-exec symlink points at the wrong installed asset" >&2
+  exit 1
+}
+
+[[ -L "$PREFIX/bin/harness-profile" && -x "$PREFIX/bin/harness-profile" ]] || {
+  echo "FAIL: source installer did not expose harness-profile as an executable symlink" >&2
+  exit 1
+}
+[[ "$(readlink "$PREFIX/bin/harness-profile")" == "../share/harness-launcher/harness-profile" ]] || {
+  echo "FAIL: harness-profile symlink points at the wrong installed asset" >&2
+  exit 1
+}
+[[ "$(stat -f '%Lp' "$PREFIX/share/harness-launcher/harness-profile")" == "755" ]] || {
+  echo "FAIL: installed harness-profile is not world-readable and executable" >&2
   exit 1
 }
 
@@ -86,6 +101,22 @@ grep -Fq 'destination is a directory' "$TEMP_DIR/install-share-collision.log" ||
 }
 [[ -d "$SHARE_COLLISION_PREFIX/share/harness-launcher/harness-exec" ]] || {
   echo "FAIL: installer altered the colliding share directory" >&2
+  exit 1
+}
+
+PROFILE_COLLISION_PREFIX="$TEMP_DIR/profile-collision-prefix"
+mkdir -p "$PROFILE_COLLISION_PREFIX/bin/harness-profile"
+if HARNESS_LAUNCHER_PREFIX="$PROFILE_COLLISION_PREFIX" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-profile-collision.log" 2>&1; then
+  echo "FAIL: source installer accepted a directory at bin/harness-profile" >&2
+  exit 1
+fi
+grep -Fq 'destination is a directory' "$TEMP_DIR/install-profile-collision.log" || {
+  echo "FAIL: profile directory collision did not produce a clear error" >&2
+  exit 1
+}
+[[ -d "$PROFILE_COLLISION_PREFIX/bin/harness-profile" ]] || {
+  echo "FAIL: installer altered the colliding profile directory" >&2
   exit 1
 }
 

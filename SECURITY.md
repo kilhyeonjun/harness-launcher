@@ -48,7 +48,8 @@ Important boundaries:
 - `node_repl` browser integration trusts exact browser-client hashes. Project-writable runtime homes are not trusted code paths.
 - A gateway mode sends prompts and tool traffic to the configured gateway. Users are responsible for trusting that endpoint.
 - The launcher prefers runtime binaries from `PATH`. `HARNESS_CODEX_BIN` and app fallback options deliberately change the executable trust decision.
-- `harness-exec --cwd` resolves symlinks and rejects directories outside the registered project. External workspace managers must keep project worktrees under that boundary.
+- Workspace-aware profile commands use the current directory only when its canonical path remains inside the registered project. Explicit `harness-exec --cwd` follows the same resolver; symlink escapes and outside directories are rejected.
+- Executable profile registration refuses foreign command/registry symlinks and cross-harness prefix rebinding; replacement requires removing the conflicting registration explicitly.
 - A workspace manager does not become the owner of launcher-managed auth, runtime homes, MCP, skills, hooks, approval modes, or observability merely because it starts `harness-exec`.
 
 ## Out of scope

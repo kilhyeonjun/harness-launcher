@@ -11,8 +11,9 @@ usage() {
 Usage: harness-exec <harness-dir> [--cwd <dir>] [launcher arguments...]
 
 Runs a registered harness without depending on interactive shell startup.
-The default working directory is the harness root. An explicit --cwd must
-resolve inside that harness.
+The current directory is used automatically when it resolves inside the harness;
+otherwise the harness root remains the default. An explicit --cwd must resolve
+inside that harness.
 EOF
 }
 
@@ -36,7 +37,13 @@ source "$SCRIPT_DIR/aliases.zsh"
 
 case "${1:-}" in
   --cwd) ;;
-  *) set -- --cwd "$HARNESS_DIR" "$@" ;;
+  *)
+    if HARNESS_CURRENT_DIR="$(harness_resolve_run_dir "$HARNESS_DIR" "$PWD" 2>/dev/null)"; then
+      set -- --cwd "$HARNESS_CURRENT_DIR" "$@"
+    else
+      set -- --cwd "$HARNESS_DIR" "$@"
+    fi
+    ;;
 esac
 
 _harness_launcher_run "$HARNESS_DIR" "$@"

@@ -4,6 +4,23 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-21
+
+### Added
+
+- Add `harness-profile register`, which installs any trusted harness prefix as
+  a real executable backed by a small profile registry instead of requiring
+  interactive Zsh startup. Registration is fail-closed and preserves existing
+  command and profile ownership across trust boundaries.
+
+### Changed
+
+- Registered prefix functions and executable profile commands now share the
+  `harness-exec` contract. They automatically keep the current workspace when
+  it resolves inside the harness, preserve the harness-root default elsewhere,
+  and retain explicit `--cwd` precedence and symlink-escape rejection. Prefix
+  registration also rejects unsafe function names and shell-quotes harness paths.
+
 ## [0.16.0] — 2026-07-21
 
 ### Added

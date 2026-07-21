@@ -46,6 +46,17 @@ harness-exec "/path/to/harness" --cwd "/path/to/harness/.worktrees/example" code
 
 For a source install, ensure `$HARNESS_LAUNCHER_PREFIX/bin` is on `PATH` and rerun `install.sh`. For Homebrew, upgrade or reinstall the formula. A rejected `--cwd` must be moved under the owning harness; do not bypass the boundary with a symlink because canonical symlink targets outside the harness are rejected.
 
+## The profile prefix works in Zsh but not in Orca or automation
+
+Install the prefix as a real executable and ensure `~/.local/bin` is on `PATH`:
+
+```zsh
+harness-profile register "/path/to/harness"
+command -v <prefix>
+```
+
+The executable reads only the canonical harness path from `~/.config/harness-launcher/profiles/<prefix>` and delegates to `harness-exec`. Registration is idempotent for the same canonical harness and launcher-owned command, but fails closed on regular files, foreign symlinks, registry symlinks, or a prefix already owned by another harness.
+
 ## `codex` reports `ENOENT`
 
 A version-manager shim can exist while its platform package is missing. Check the executable selected by the login shell:

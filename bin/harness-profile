@@ -1,0 +1,133 @@
+#!/usr/bin/env zsh
+set -u
+
+INVOKED_NAME="${0:t}"
+ENTRY_PATH="${0:a}"
+SELF_PATH="${0:A}"
+SCRIPT_DIR="${SELF_PATH:h}"
+PROFILE_HOME="${HARNESS_PROFILE_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/harness-launcher}"
+PROFILE_DIR="$PROFILE_HOME/profiles"
+PROFILE_BIN_DIR="${HARNESS_PROFILE_BIN_DIR:-$HOME/.local/bin}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  harness-profile register <harness-dir>
+  harness-profile <profile> [launcher arguments...]
+  <profile> [launcher arguments...]  # through a registered symlink
+
+Registered profile commands use the current directory when it resolves inside
+that harness. Otherwise they preserve the legacy harness-root default.
+EOF
+}
+
+valid_prefix() {
+  [[ "$1" =~ '^[A-Za-z_][A-Za-z0-9_-]*$' ]]
+}
+
+run_profile() {
+  local profile="$1"; shift
+  valid_prefix "$profile" || {
+    echo "harness-profile: invalid profile name: $profile" >&2
+    return 2
+  }
+  local profile_file="$PROFILE_DIR/$profile"
+  [[ -f "$profile_file" && ! -L "$profile_file" ]] || {
+    echo "harness-profile: profile is not registered: $profile" >&2
+    return 2
+  }
+  local harness_dir
+  IFS= read -r harness_dir < "$profile_file"
+  [[ -d "$harness_dir" && -f "$harness_dir/config/launcher.env" ]] || {
+    echo "harness-profile: registered harness is unavailable: $harness_dir" >&2
+    return 2
+  }
+  exec "$SCRIPT_DIR/harness-exec" "$harness_dir" "$@"
+}
+
+register_profile() {
+  [[ $# -eq 1 ]] || { usage >&2; return 2; }
+  local harness_dir="$1"
+  [[ -d "$harness_dir" && -f "$harness_dir/config/launcher.env" ]] || {
+    echo "harness-profile: invalid harness directory: $harness_dir" >&2
+    return 2
+  }
+  harness_dir="${harness_dir:A}"
+
+  local HARNESS_NAME="" HARNESS_PREFIX=""
+  source "$harness_dir/config/launcher.env"
+  valid_prefix "$HARNESS_PREFIX" || {
+    echo "harness-profile: invalid HARNESS_PREFIX: $HARNESS_PREFIX" >&2
+    return 2
+  }
+
+  local command_path="$PROFILE_BIN_DIR/$HARNESS_PREFIX"
+  local profile_file="$PROFILE_DIR/$HARNESS_PREFIX"
+  local had_command=0
+  if [[ -e "$command_path" || -L "$command_path" ]]; then
+    if [[ ! -L "$command_path" || "${command_path:A}" != "$SELF_PATH" ]]; then
+      echo "harness-profile: command destination is not launcher-owned: $command_path" >&2
+      return 2
+    fi
+    had_command=1
+  fi
+
+  mkdir -p "$PROFILE_DIR" "$PROFILE_BIN_DIR" || {
+    echo "harness-profile: failed to prepare profile directories" >&2
+    return 2
+  }
+  chmod 700 "$PROFILE_HOME" "$PROFILE_DIR" || {
+    echo "harness-profile: failed to secure profile directories" >&2
+    return 2
+  }
+
+  if [[ -e "$profile_file" || -L "$profile_file" ]]; then
+    if [[ ! -f "$profile_file" || -L "$profile_file" ]]; then
+      echo "harness-profile: profile destination is not launcher-owned: $profile_file" >&2
+      return 2
+    fi
+    local registered_harness
+    IFS= read -r registered_harness < "$profile_file"
+    if [[ "$registered_harness" != "$harness_dir" ]]; then
+      echo "harness-profile: profile prefix already belongs to another harness: $HARNESS_PREFIX" >&2
+      return 2
+    fi
+  fi
+
+  local tmp_file="$PROFILE_DIR/.${HARNESS_PREFIX}.tmp.$$"
+  umask 077
+  if ! printf '%s\n' "$harness_dir" > "$tmp_file"; then
+    rm -f "$tmp_file"
+    echo "harness-profile: failed to stage profile: $HARNESS_PREFIX" >&2
+    return 2
+  fi
+  if ! ln -sfn "$ENTRY_PATH" "$command_path"; then
+    rm -f "$tmp_file"
+    echo "harness-profile: failed to install profile command: $command_path" >&2
+    return 2
+  fi
+  if ! mv "$tmp_file" "$profile_file"; then
+    rm -f "$tmp_file"
+    (( had_command )) || rm -f "$command_path"
+    echo "harness-profile: failed to persist profile: $HARNESS_PREFIX" >&2
+    return 2
+  fi
+  print -r -- "Registered $HARNESS_PREFIX -> $harness_dir"
+}
+
+if [[ "$INVOKED_NAME" != "harness-profile" ]]; then
+  run_profile "$INVOKED_NAME" "$@"
+fi
+
+case "${1:-}" in
+  -h|--help|"") usage; exit 0 ;;
+  register)
+    shift
+    register_profile "$@"
+    ;;
+  *)
+    profile="$1"
+    shift
+    run_profile "$profile" "$@"
+    ;;
+esac
