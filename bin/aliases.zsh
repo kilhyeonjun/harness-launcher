@@ -166,6 +166,15 @@ _harness_launcher_run() {
   local HARNESS_NAME HARNESS_PREFIX
   source "$HARNESS_DIR/config/launcher.env"
 
+  local HARNESS_RUN_DIR=""
+  case "${1:-}" in
+    --cwd)
+      [[ $# -ge 2 ]] || { echo "harness-launcher: --cwd requires a directory" >&2; return 2; }
+      HARNESS_RUN_DIR="$(harness_resolve_run_dir "$HARNESS_DIR" "$2")" || return $?
+      shift 2
+      ;;
+  esac
+
   local -a claude_args=()
   local session_flag="" skip_tui=false env_effort="" provider_url="" gateway_api_key="" provider_name=""
   local mode_applied=false mcp_surface="full"
@@ -278,13 +287,22 @@ _harness_launcher_run() {
     if [[ "$mcp_surface" == "light" ]]; then
       local _light_file
       _light_file="$(harness_claude_light_mcp_config "$HARNESS_DIR")" || return $?
-      claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}"
+      if [[ -n "$HARNESS_RUN_DIR" ]]; then
+        (cd "$HARNESS_RUN_DIR" && claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}")
+      else
+        claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}"
+      fi
     else
-      _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}"
+      if [[ -n "$HARNESS_RUN_DIR" ]]; then
+        (cd "$HARNESS_RUN_DIR" && _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}")
+      else
+        _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}"
+      fi
     fi
     return $?
   else
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
+      HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
       "$_HARNESS_LAUNCHER_BIN/launcher.sh"
     return $?
   fi
@@ -299,6 +317,7 @@ _harness_launcher_run() {
 #             fork   → `codex fork`
 _harness_launcher_run_codex_cli() {
   local HARNESS_DIR="$1"; shift
+  local run_dir="${HARNESS_RUN_DIR:-$HARNESS_DIR}"
   export HARNESS_PREFIX
   local profile=""
   local profile_explicit=false
@@ -381,13 +400,13 @@ _harness_launcher_run_codex_cli() {
   fi
   if [[ -n "$subcmd" ]]; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    "${launch_cmd[@]}" "$subcmd" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
+    (cd "$run_dir" && "${launch_cmd[@]}" "$subcmd" --cd "$run_dir" -p "$profile" "${codex_args[@]}")
   elif $use_happy; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$HARNESS_DIR" && "${launch_cmd[@]}" "${codex_args[@]}")
+    (cd "$run_dir" && "${launch_cmd[@]}" "${codex_args[@]}")
   else
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    "${launch_cmd[@]}" --cd "$HARNESS_DIR" -p "$profile" "${codex_args[@]}"
+    (cd "$run_dir" && "${launch_cmd[@]}" --cd "$run_dir" -p "$profile" "${codex_args[@]}")
   fi
   local rc=$?
   harness_codex_cmux_broker_stop
@@ -400,6 +419,7 @@ _harness_launcher_run_codex_cli() {
 #   Sessions: resume → --resume-picker, continue → -r
 _harness_launcher_run_kiro_cli() {
   local HARNESS_DIR="$1"; shift
+  local run_dir="${HARNESS_RUN_DIR:-$HARNESS_DIR}"
   local model="" effort="" agent="harness" mcp_surface="full"
   local -a kiro_args=()
   local session_flag=""
@@ -447,7 +467,7 @@ _harness_launcher_run_kiro_cli() {
   [[ ${#kiro_args[@]} -gt 0 ]] && launch_cmd+=("${kiro_args[@]}")
   unset HARNESS_KIRO_MODEL HARNESS_KIRO_EFFORT
 
-  (cd "$HARNESS_DIR" && "${launch_cmd[@]}")
+  (cd "$run_dir" && "${launch_cmd[@]}")
   local rc=$?
   unset HARNESS_KIRO_MCP_PROFILE
   return $rc

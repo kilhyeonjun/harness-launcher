@@ -18,11 +18,18 @@
 
 HARNESS_DIR="${HARNESS_DIR:?HARNESS_DIR required}"
 HARNESS_NAME="${HARNESS_NAME:?HARNESS_NAME required}"
-cd "$HARNESS_DIR" || exit 1
 
 LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=harness-common.sh
 . "$LAUNCHER_BIN_DIR/harness-common.sh"
+
+if [ -n "${HARNESS_RUN_DIR:-}" ]; then
+  HARNESS_RUN_DIR="$(harness_resolve_run_dir "$HARNESS_DIR" "$HARNESS_RUN_DIR")" || exit $?
+else
+  harness_resolve_run_dir "$HARNESS_DIR" "$HARNESS_DIR" >/dev/null || exit $?
+  HARNESS_RUN_DIR="$HARNESS_DIR"
+fi
+cd "$HARNESS_RUN_DIR" || exit 1
 
 # Launch history (launchpad rows): one tab-separated KEY=VALUE line per entry,
 # newest first, deduped by config identity (TS/SUMMARY excluded).
@@ -808,7 +815,7 @@ launch_codex() {
     history_save
     launch_banner "$PLAN_SUMMARY" happy codex
     harness_codex_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py"
-    cd "$HARNESS_DIR" && exec happy codex
+    cd "$HARNESS_RUN_DIR" && exec happy codex
     local rc=$?
     harness_codex_cmux_broker_stop
     return $rc
@@ -821,7 +828,7 @@ launch_codex() {
     resume)   cmd+=(resume) ;;
     fork)     cmd+=(fork --last) ;;
   esac
-  cmd+=(--cd "$HARNESS_DIR" -p "$CHOICE_CODEX_PROFILE")
+  cmd+=(--cd "$HARNESS_RUN_DIR" -p "$CHOICE_CODEX_PROFILE")
   case "$CHOICE_CODEX_SAFETY" in
     full-auto) cmd+=(--full-auto) ;;
     never)     cmd+=(-a never) ;;

@@ -35,6 +35,17 @@ whence -w wh
 
 If a plugin recreates its alias after registration, move the `harness_register` call below that plugin's initialization in `~/.zshrc`.
 
+## `harness-exec` is missing or rejects the worktree
+
+Check the installed external entrypoint:
+
+```zsh
+command -v harness-exec
+harness-exec "/path/to/harness" --cwd "/path/to/harness/.worktrees/example" codex --version
+```
+
+For a source install, ensure `$HARNESS_LAUNCHER_PREFIX/bin` is on `PATH` and rerun `install.sh`. For Homebrew, upgrade or reinstall the formula. A rejected `--cwd` must be moved under the owning harness; do not bypass the boundary with a symlink because canonical symlink targets outside the harness are rejected.
+
 ## `codex` reports `ENOENT`
 
 A version-manager shim can exist while its platform package is missing. Check the executable selected by the login shell:

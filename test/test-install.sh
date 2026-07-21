@@ -20,7 +20,8 @@ for file in \
   codex-hook-adapter.sh \
   codex-cmux-title-sync.py \
   codex-migrate-to-symlinks.sh \
-  kiro-home-prepare.sh; do
+  kiro-home-prepare.sh \
+  harness-exec; do
   [[ -f "$SHARE/$file" ]] || {
     echo "FAIL: source installer did not install $file" >&2
     exit 1
@@ -35,14 +36,56 @@ for file in \
   codex-hook-adapter.sh \
   codex-cmux-title-sync.py \
   codex-migrate-to-symlinks.sh \
-  kiro-home-prepare.sh; do
+  kiro-home-prepare.sh \
+  harness-exec; do
   [[ -x "$SHARE/$file" ]] || {
     echo "FAIL: source installer did not mark $file executable" >&2
     exit 1
   }
 done
 
+[[ -L "$PREFIX/bin/harness-exec" && -x "$PREFIX/bin/harness-exec" ]] || {
+  echo "FAIL: source installer did not expose harness-exec as an executable symlink" >&2
+  exit 1
+}
+[[ "$(readlink "$PREFIX/bin/harness-exec")" == "../share/harness-launcher/harness-exec" ]] || {
+  echo "FAIL: harness-exec symlink points at the wrong installed asset" >&2
+  exit 1
+}
+
 grep -q "Installed to $SHARE" "$TEMP_DIR/install.log"
+
+COLLISION_PREFIX="$TEMP_DIR/collision-prefix"
+mkdir -p "$COLLISION_PREFIX/bin/harness-exec"
+if HARNESS_LAUNCHER_PREFIX="$COLLISION_PREFIX" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-collision.log" 2>&1; then
+  echo "FAIL: source installer accepted a directory at bin/harness-exec" >&2
+  exit 1
+fi
+grep -Fq 'destination is a directory' "$TEMP_DIR/install-collision.log" || {
+  echo "FAIL: directory collision did not produce a clear error" >&2
+  exit 1
+}
+[[ -d "$COLLISION_PREFIX/bin/harness-exec" ]] || {
+  echo "FAIL: installer altered the colliding directory" >&2
+  exit 1
+}
+
+SHARE_COLLISION_PREFIX="$TEMP_DIR/share-collision-prefix"
+mkdir -p "$SHARE_COLLISION_PREFIX/share/harness-launcher/harness-exec"
+if HARNESS_LAUNCHER_PREFIX="$SHARE_COLLISION_PREFIX" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-share-collision.log" 2>&1; then
+  echo "FAIL: source installer accepted a directory at share/harness-launcher/harness-exec" >&2
+  exit 1
+fi
+grep -Fq 'destination is a directory' "$TEMP_DIR/install-share-collision.log" || {
+  echo "FAIL: share directory collision did not produce a clear error" >&2
+  exit 1
+}
+[[ -d "$SHARE_COLLISION_PREFIX/share/harness-launcher/harness-exec" ]] || {
+  echo "FAIL: installer altered the colliding share directory" >&2
+  exit 1
+}
 
 EXPLICIT_PREFIX="$TEMP_DIR/explicit-python-prefix"
 GOOD_PYTHON=""

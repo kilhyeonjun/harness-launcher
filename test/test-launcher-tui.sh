@@ -17,6 +17,9 @@ TEST_TEMP="$(mktemp -d)"
 TEST_HARNESS="$TEST_TEMP/fake-harness"
 TEST_BIN="$TEST_TEMP/bin"
 mkdir -p "$TEST_HARNESS/config" "$TEST_BIN"
+TEST_WORKTREE="$TEST_HARNESS/.worktrees/sample"
+mkdir -p "$TEST_WORKTREE"
+TEST_WORKTREE_REAL="$(cd -P "$TEST_WORKTREE" && pwd -P)"
 cat > "$TEST_HARNESS/config/launcher.env" <<'EOF'
 HARNESS_NAME="test harness"
 HARNESS_PREFIX="test"
@@ -30,6 +33,7 @@ write_stub() {
 #!/usr/bin/env bash
 {
   echo "EXEC:$1 \$*"
+  echo "PWD:\$PWD"
   echo "BASE_URL:\${ANTHROPIC_BASE_URL:-}"
   echo "AUTH_TOKEN:\${ANTHROPIC_AUTH_TOKEN:-}"
   echo "OPUS_MODEL:\${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
@@ -89,6 +93,31 @@ head -1 "$HISTORY" | grep -q 'MODE=base' || fail 'history entry should record MO
 head -1 "$HISTORY" | grep -q 'RUNTIME=claude' || fail 'history entry should record RUNTIME=claude'
 echo 'PASS: base mode launches and saves history entry'
 
+OUT="$TEST_TEMP/1b.out"; STUB="$TEST_TEMP/1b.stub"
+run_tui $'1\n1\n2\n1\n' "$OUT" "$STUB" HARNESS_RUN_DIR="$TEST_WORKTREE"
+grep -Fqx "PWD:$TEST_WORKTREE_REAL" "$STUB" \
+  || fail 'launchpad should start Claude in HARNESS_RUN_DIR' "$OUT"
+echo 'PASS: launchpad starts Claude in the explicit worktree'
+
+OUTSIDE_RUN_DIR="$TEST_TEMP/outside-worktree"
+mkdir -p "$OUTSIDE_RUN_DIR"
+OUT="$TEST_TEMP/1c.out"; STUB="$TEST_TEMP/1c.stub"
+run_tui $'1\n2\n1\n' "$OUT" "$STUB" HARNESS_RUN_DIR="$OUTSIDE_RUN_DIR"
+[[ ! -s "$STUB" ]] || fail 'launchpad must not start Claude outside HARNESS_DIR' "$STUB"
+grep -Fq -- '--cwd must stay inside the registered harness' "$OUT" \
+  || fail 'external HARNESS_RUN_DIR should fail clearly' "$OUT"
+echo 'PASS: direct launchpad entrypoint rejects external run dirs'
+
+SYMLINK_RUN_DIR="$TEST_HARNESS/.worktrees/escape"
+ln -s "$OUTSIDE_RUN_DIR" "$SYMLINK_RUN_DIR"
+OUT="$TEST_TEMP/1d.out"; STUB="$TEST_TEMP/1d.stub"
+run_tui $'1\n2\n1\n' "$OUT" "$STUB" HARNESS_RUN_DIR="$SYMLINK_RUN_DIR"
+[[ ! -s "$STUB" ]] || fail 'launchpad must not follow a worktree symlink outside HARNESS_DIR' "$STUB"
+grep -Fq -- '--cwd must stay inside the registered harness' "$OUT" \
+  || fail 'symlink escape should fail clearly' "$OUT"
+echo 'PASS: direct launchpad entrypoint rejects symlink escapes'
+
+OUT="$TEST_TEMP/1b.out"
 # --- 2. mode labels derive from the shared table (B2 regression) ------------
 grep -q 'Fast — haiku · low' "$OUT" || fail 'fast label must show the real model (haiku)' "$OUT"
 grep -q 'Base — sonnet · high' "$OUT" || fail 'base label must show sonnet · high' "$OUT"
@@ -183,14 +212,17 @@ mkdir -p "$TEST_TEMP/kirodir"
 cat > "$TEST_TEMP/kirodir/my-kiro" <<'EOF'
 #!/usr/bin/env bash
 echo "EXEC:kiro $*" >> "$TEST_STUB_FILE"
+echo "PWD:$PWD" >> "$TEST_STUB_FILE"
 exit 0
 EOF
 chmod +x "$TEST_TEMP/kirodir/my-kiro"
 rm -f "$TEST_BIN/claude" "$TEST_BIN/happy"   # kiro becomes the only runtime
 OUT="$TEST_TEMP/13.out"; STUB="$TEST_TEMP/13.stub"; reset_plan
-run_tui $'1\n2\n1\n' "$OUT" "$STUB" HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro"
+run_tui $'1\n2\n1\n' "$OUT" "$STUB" \
+  HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro" HARNESS_RUN_DIR="$TEST_WORKTREE"
 grep -q 'EXEC:kiro chat --model claude-sonnet-4.6 --effort high --agent harness' "$STUB" \
   || fail 'HARNESS_KIRO_BIN should surface kiro runtime in the TUI' "$OUT"
+grep -Fqx "PWD:$TEST_WORKTREE_REAL" "$STUB" || fail 'TUI native Kiro should use HARNESS_RUN_DIR' "$STUB"
 write_stub claude
 echo 'PASS: HARNESS_KIRO_BIN resolved by TUI'
 

@@ -1,0 +1,42 @@
+#!/usr/bin/env zsh
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+if [[ ! -f "$SCRIPT_DIR/aliases.zsh" && -f "$SCRIPT_DIR/../share/harness-launcher/aliases.zsh" ]]; then
+  SCRIPT_DIR="$(cd "$SCRIPT_DIR/../share/harness-launcher" 2>/dev/null && pwd)"
+fi
+
+usage() {
+  cat <<'EOF'
+Usage: harness-exec <harness-dir> [--cwd <dir>] [launcher arguments...]
+
+Runs a registered harness without depending on interactive shell startup.
+The default working directory is the harness root. An explicit --cwd must
+resolve inside that harness.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
+[[ $# -ge 1 ]] || { usage >&2; exit 2; }
+HARNESS_DIR="$1"
+shift
+[[ -d "$HARNESS_DIR" && -f "$HARNESS_DIR/config/launcher.env" ]] || {
+  echo "harness-exec: invalid harness directory: $HARNESS_DIR" >&2
+  exit 2
+}
+HARNESS_DIR="${HARNESS_DIR:A}"
+
+source "$SCRIPT_DIR/aliases.zsh"
+
+case "${1:-}" in
+  --cwd) ;;
+  *) set -- --cwd "$HARNESS_DIR" "$@" ;;
+esac
+
+_harness_launcher_run "$HARNESS_DIR" "$@"

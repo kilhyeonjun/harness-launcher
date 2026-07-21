@@ -7,6 +7,7 @@ The README covers installation and the first registered project. These documents
 - [Architecture and trust boundaries](architecture.md) — registration, command routing, generated runtime homes, and security boundaries.
 - [Codex integration](codex-integration.md) — profile overlays, MCP translation, skills, plugins, hooks, and compatibility behavior.
 - [Codex surface manifests](codex-surface.md) — exact skill/plugin/MCP membership, host-token resolution, and warm launches.
+- [Orca ADE integration](orca-integration.md) — executable entrypoint, profile-local worktrees, ownership boundaries, and safety gates.
 - [Troubleshooting](troubleshooting.md) — shell resolution, stale runtime binaries, generated state, MCP conflicts, and browser-host issues.
 
 ## Project policies
@@ -22,6 +23,7 @@ The README covers installation and the first registered project. These documents
 | Path | Responsibility |
 | --- | --- |
 | `bin/aliases.zsh` | Project registration, shortcuts, completion, runtime wrappers |
+| `bin/harness-exec` | Non-interactive executable entrypoint for external orchestrators |
 | `bin/launcher.sh` | Interactive runtime/session/mode/safety picker |
 | `bin/codex-home-prepare.sh` | Generated per-project Codex home |
 | `bin/kiro-home-prepare.sh` | Generated per-project Kiro home |

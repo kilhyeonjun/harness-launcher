@@ -66,7 +66,7 @@ cd harness-launcher
 HARNESS_LAUNCHER_PREFIX="$HOME/.local" ./install.sh
 ```
 
-The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher`. Homebrew is the recommended installation path on macOS.
+The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-exec` under `$HARNESS_LAUNCHER_PREFIX/bin`. Homebrew is the recommended installation path on macOS.
 
 ## Quick start
 
@@ -104,6 +104,14 @@ wh codex --version
 ```
 
 `HARNESS_PREFIX` becomes the shell function name. Register as many projects as you need, but each prefix must be unique.
+
+External orchestrators and non-interactive shells can bypass `.zshrc` while keeping the same project policy:
+
+```bash
+harness-exec "$HOME/work-harness" --cwd . codex base
+```
+
+`--cwd` must resolve inside the registered harness. This is the supported boundary for Orca and similar worktree managers; see [Orca ADE integration](docs/orca-integration.md).
 
 > [!WARNING]
 > `config/launcher.env` is sourced as shell code. Only register project directories you trust.

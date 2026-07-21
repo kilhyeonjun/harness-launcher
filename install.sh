@@ -5,7 +5,9 @@
 set -e
 
 LAUNCHER_DIR="$(cd "$(dirname "$0")" && pwd)"
-SHARE_DIR="${HARNESS_LAUNCHER_PREFIX:-/usr/local}/share/harness-launcher"
+PREFIX="${HARNESS_LAUNCHER_PREFIX:-/usr/local}"
+SHARE_DIR="$PREFIX/share/harness-launcher"
+BIN_DIR="$PREFIX/bin"
 
 select_harness_python3() {
   local candidate
@@ -34,10 +36,17 @@ select_harness_python3() {
 
 select_harness_python3 >/dev/null || exit 1
 
+for destination in "$BIN_DIR/harness-exec" "$SHARE_DIR/harness-exec"; do
+  if [[ -d "$destination" && ! -L "$destination" ]]; then
+    echo "ERROR: harness-exec destination is a directory: $destination" >&2
+    exit 1
+  fi
+done
+
 # All binaries live as siblings of aliases.zsh so that _HARNESS_LAUNCHER_BIN
 # (set by aliases.zsh to its own dirname) resolves to launcher.sh and
 # codex-home-prepare.sh without an extra subdir.
-mkdir -p "$SHARE_DIR"
+mkdir -p "$SHARE_DIR" "$BIN_DIR"
 cp "$LAUNCHER_DIR/bin/aliases.zsh"                "$SHARE_DIR/aliases.zsh"
 cp "$LAUNCHER_DIR/bin/harness-common.sh"          "$SHARE_DIR/harness-common.sh"
 cp "$LAUNCHER_DIR/bin/subagent-model-map.tsv"     "$SHARE_DIR/subagent-model-map.tsv"
@@ -49,6 +58,7 @@ cp "$LAUNCHER_DIR/bin/codex-hook-adapter.sh"      "$SHARE_DIR/codex-hook-adapter
 cp "$LAUNCHER_DIR/bin/codex-cmux-title-sync.py"   "$SHARE_DIR/codex-cmux-title-sync.py"
 cp "$LAUNCHER_DIR/bin/codex-migrate-to-symlinks.sh" "$SHARE_DIR/codex-migrate-to-symlinks.sh"
 cp "$LAUNCHER_DIR/bin/kiro-home-prepare.sh"       "$SHARE_DIR/kiro-home-prepare.sh"
+cp "$LAUNCHER_DIR/bin/harness-exec"               "$SHARE_DIR/harness-exec"
 chmod +x \
   "$SHARE_DIR/launcher.sh" \
   "$SHARE_DIR/codex-home-prepare.sh" \
@@ -57,7 +67,9 @@ chmod +x \
   "$SHARE_DIR/codex-hook-adapter.sh" \
   "$SHARE_DIR/codex-cmux-title-sync.py" \
   "$SHARE_DIR/codex-migrate-to-symlinks.sh" \
-  "$SHARE_DIR/kiro-home-prepare.sh"
+  "$SHARE_DIR/kiro-home-prepare.sh" \
+  "$SHARE_DIR/harness-exec"
+ln -sfn "../share/harness-launcher/harness-exec" "$BIN_DIR/harness-exec"
 
 echo "Installed to $SHARE_DIR"
 echo ""

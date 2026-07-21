@@ -4,6 +4,7 @@
 # no associative arrays, no ${var,,}, no bash-only ${!arr[@]}, no zsh-only print.
 #
 # Contents:
+#   harness_resolve_run_dir <harness-dir> <requested-dir>
 #   harness_mode_resolve <mode> <provider>   → HARNESS_MODE_MODEL / HARNESS_MODE_EFFORT
 #   harness_mode_label   <mode> <provider>   → display label derived from resolve
 #   harness_codex_bin_resolve / harness_kiro_bin_resolve
@@ -14,6 +15,23 @@
 #   harness_ultracode_hint
 
 HARNESS_CODEX_APP_BIN_DEFAULT="/Applications/Codex.app/Contents/Resources/codex"
+
+harness_resolve_run_dir() {
+  local harness_dir="$1" requested="$2" harness_abs requested_abs
+  [ -d "$requested" ] || {
+    echo "harness-launcher: --cwd is not a directory: $requested" >&2
+    return 2
+  }
+  harness_abs="$(cd -P "$harness_dir" 2>/dev/null && pwd -P)" || return 2
+  requested_abs="$(cd -P "$requested" 2>/dev/null && pwd -P)" || return 2
+  case "$requested_abs" in
+    "$harness_abs"|"$harness_abs"/*) printf '%s\n' "$requested_abs" ;;
+    *)
+      echo "harness-launcher: --cwd must stay inside the registered harness: $harness_abs" >&2
+      return 2
+      ;;
+  esac
+}
 
 # --- mode → model/effort table -------------------------------------------------
 # The ONLY place mode/provider → model/effort lives. Labels are derived from

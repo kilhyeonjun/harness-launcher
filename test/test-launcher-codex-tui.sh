@@ -23,6 +23,9 @@ TEST_HARNESS="$TEST_TEMP/fake-harness"
 TEST_BIN="$TEST_TEMP/bin"
 TEST_LAUNCHER_BIN="$TEST_TEMP/launcher-bin"
 mkdir -p "$TEST_HARNESS/config" "$TEST_BIN" "$TEST_LAUNCHER_BIN"
+TEST_WORKTREE="$TEST_HARNESS/.worktrees/sample"
+mkdir -p "$TEST_WORKTREE"
+TEST_WORKTREE_REAL="$(cd -P "$TEST_WORKTREE" && pwd -P)"
 cp "$LAUNCHER_DIR/bin/launcher.sh" "$TEST_LAUNCHER_BIN/launcher.sh"
 cp "$LAUNCHER_DIR/bin/harness-common.sh" "$TEST_LAUNCHER_BIN/harness-common.sh"
 cat > "$TEST_LAUNCHER_BIN/codex-home-prepare.sh" <<'EOF'
@@ -96,6 +99,7 @@ run_tui() {
   HARNESS_DIR="$TEST_HARNESS" \
   HARNESS_NAME="test harness" \
   HARNESS_PREFIX="test" \
+  HARNESS_RUN_DIR="${HARNESS_RUN_DIR_OVERRIDE:-}" \
   bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
 }
 
@@ -134,6 +138,15 @@ grep -q '^HARNESS_PREFIX:test$' "$STUB1" || {
   echo "FAIL: case1 — AGENTS.md not created (prepare not invoked)"; exit 1;
 }
 echo "PASS: case1 — runtime=Codex base → direct TUI + codex --cd ... -p base + CODEX_HOME prepared"
+
+# Case 1a: an external orchestrator can pin the Codex launch to a profile-local worktree.
+STUB1A="$TEST_TEMP/out1a-codex-worktree.txt"
+: > "$STUB1A"
+HARNESS_RUN_DIR_OVERRIDE="$TEST_WORKTREE" run_tui $'2\n1\n2\n1\n1\n' "$STUB1A"
+grep -qE "^ARGS:.*--cd $TEST_WORKTREE_REAL" "$STUB1A" || {
+  echo "FAIL: case1a — Codex ignored HARNESS_RUN_DIR"; cat "$STUB1A"; exit 1;
+}
+echo "PASS: case1a — Codex TUI uses the explicit worktree"
 for expected in \
   "fast — Quick · shallow — gpt-5.6-luna · low" \
   "base — Everyday · Recommended — gpt-5.6-terra · medium" \

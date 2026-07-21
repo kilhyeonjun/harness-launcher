@@ -1,6 +1,9 @@
 # harness-launcher generated runtime state
 .harness/
 
+# Profile-local worktrees for external orchestrators
+.worktrees/
+
 # Local MCP overlays and runtime environment values
 .mcp.local.json
 mcp.local.json

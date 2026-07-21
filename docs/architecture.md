@@ -14,6 +14,16 @@
                  └─ Kiro CLI   → prepare .harness/kiro
 ```
 
+External orchestrators use the same runner through `harness-exec` rather than depending on shell startup:
+
+```text
+workspace manager
+  └─ harness-exec <project> --cwd <project-local-worktree> ...
+       └─ the same _harness_launcher_run policy path
+```
+
+The explicit working directory must resolve inside the registered project. Workspace managers own UI and worktree lifecycle; the launcher continues to own runtime homes, auth routing, MCP, skills, hooks, presets, and observability.
+
 The launcher is not a model proxy and does not host an API. Gateway modes are optional routes to user-configured external processes.
 
 ## Registration
