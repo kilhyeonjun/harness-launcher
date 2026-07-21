@@ -54,6 +54,15 @@ python3() {
 
 CODEX_HOME="$HARNESS_DIR/.harness/codex"
 PROJECT_CODEX_DIR="$HARNESS_DIR/.codex"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/harness-common.sh"
+HARNESS_OBSERVABILITY_ACTIVE=0
+if harness_observability_load "$HARNESS_DIR"; then
+  HARNESS_OBSERVABILITY_ACTIVE=1
+else
+  observability_status=$?
+  [[ "$observability_status" -eq 1 ]] || exit "$observability_status"
+fi
 
 # Serialize the complete mutation of one generated Codex home. The lock file
 # itself requires the generated directory to exist, but no launcher-managed
@@ -99,7 +108,6 @@ CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/A
 # rescanning an already-converged generated home. Auth/session/hook runtime
 # state is intentionally excluded; the auth link itself is repaired cheaply on
 # the warm path.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TITLE_SYNC_PATH="$SCRIPT_DIR/codex-cmux-title-sync.py"
 SURFACE_RESOLVER="$SCRIPT_DIR/codex-surface.py"
 SURFACE_WARM_PROBE="$SCRIPT_DIR/codex-surface-warm.py"
@@ -123,11 +131,16 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
       "$CODEX_HOME" \
       "$SURFACE_MANIFEST" \
       "$SURFACE_SKILL_PROFILE" \
-      "$SURFACE_MCP_PROFILE")"; then
-    if [[ -f "$HOME/.codex/auth.json" ]]; then
-      ln -sfn "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
+      "$SURFACE_MCP_PROFILE" \
+      "${HARNESS_OBSERVABILITY_PROFILE:-}" 2>/dev/null)"; then
+    existing_observability=0
+    [[ -f "$CODEX_HOME/config.toml" ]] && grep -q '^\[otel\]$' "$CODEX_HOME/config.toml" && existing_observability=1
+    if [[ "$existing_observability" -eq "$HARNESS_OBSERVABILITY_ACTIVE" ]]; then
+      if [[ -f "$HOME/.codex/auth.json" ]]; then
+        ln -sfn "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
+      fi
+      exit 0
     fi
-    exit 0
   else
     surface_probe_status=$?
     if [[ "$surface_probe_status" -ne 3 ]]; then
@@ -149,6 +162,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --launcher-file "$SURFACE_RESOLVER"
     --launcher-file "$SURFACE_WARM_PROBE"
     --launcher-file "$0"
+    --launcher-file "$SCRIPT_DIR/harness-common.sh"
     --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
     --launcher-file "$TITLE_SYNC_PATH"
     --bundled-marketplace "$CODEX_BUNDLED_MARKETPLACE_SOURCE"
@@ -695,7 +709,22 @@ model_reasoning_effort = "medium"
 # Context window/auto-compact intentionally unpinned: Codex resolves them from
 # model metadata (372K for GPT-5.6 in Codex CLI as of 2026-07). Pinning
 # 1M-style values here made auto-compact fire past the real backend limit.
+TOML
 
+if [[ "$HARNESS_OBSERVABILITY_ACTIVE" -eq 1 ]]; then
+  cat >> "$tmp_config" <<TOML
+[otel]
+environment = "$HARNESS_OBSERVABILITY_PROFILE"
+log_user_prompt = false
+span_attributes = { "service.name" = "harness-agent", "obs.runtime" = "codex", "obs.profile" = "$HARNESS_OBSERVABILITY_PROFILE" }
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary", headers = {} } }
+trace_exporter = { otlp-http = { endpoint = "$HARNESS_OTLP_HTTP_ENDPOINT/v1/traces", protocol = "binary", headers = {} } }
+metrics_exporter = { otlp-http = { endpoint = "$HARNESS_OTLP_HTTP_ENDPOINT/v1/metrics", protocol = "binary", headers = {} } }
+
+TOML
+fi
+
+cat >> "$tmp_config" <<TOML
 [features]
 # ChatGPT Apps/connectors disabled — harness sessions don't use them and user
 # opts deny-by-default globally. Most-comprehensive disable: feature-flag level.

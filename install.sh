@@ -59,6 +59,7 @@ cp "$LAUNCHER_DIR/bin/codex-cmux-title-sync.py"   "$SHARE_DIR/codex-cmux-title-s
 cp "$LAUNCHER_DIR/bin/codex-migrate-to-symlinks.sh" "$SHARE_DIR/codex-migrate-to-symlinks.sh"
 cp "$LAUNCHER_DIR/bin/kiro-home-prepare.sh"       "$SHARE_DIR/kiro-home-prepare.sh"
 cp "$LAUNCHER_DIR/bin/harness-exec"               "$SHARE_DIR/harness-exec"
+cp "$LAUNCHER_DIR/bin/kiro-observability-hook.py" "$SHARE_DIR/kiro-observability-hook.py"
 chmod +x \
   "$SHARE_DIR/launcher.sh" \
   "$SHARE_DIR/codex-home-prepare.sh" \
@@ -68,7 +69,8 @@ chmod +x \
   "$SHARE_DIR/codex-cmux-title-sync.py" \
   "$SHARE_DIR/codex-migrate-to-symlinks.sh" \
   "$SHARE_DIR/kiro-home-prepare.sh" \
-  "$SHARE_DIR/harness-exec"
+  "$SHARE_DIR/harness-exec" \
+  "$SHARE_DIR/kiro-observability-hook.py"
 ln -sfn "../share/harness-launcher/harness-exec" "$BIN_DIR/harness-exec"
 
 echo "Installed to $SHARE_DIR"

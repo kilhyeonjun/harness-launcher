@@ -21,7 +21,8 @@ for file in \
   codex-cmux-title-sync.py \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh \
-  harness-exec; do
+  harness-exec \
+  kiro-observability-hook.py; do
   [[ -f "$SHARE/$file" ]] || {
     echo "FAIL: source installer did not install $file" >&2
     exit 1
@@ -37,7 +38,8 @@ for file in \
   codex-cmux-title-sync.py \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh \
-  harness-exec; do
+  harness-exec \
+  kiro-observability-hook.py; do
   [[ -x "$SHARE/$file" ]] || {
     echo "FAIL: source installer did not mark $file executable" >&2
     exit 1

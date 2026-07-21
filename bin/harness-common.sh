@@ -33,6 +33,31 @@ harness_resolve_run_dir() {
   esac
 }
 
+harness_python3_resolve() {
+  local candidate
+  if [ -n "${HARNESS_PYTHON_BIN:-}" ]; then
+    candidate="$HARNESS_PYTHON_BIN"
+    [ -x "$candidate" ] && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null && {
+      printf '%s\n' "$candidate"
+      return 0
+    }
+  else
+    for candidate in \
+      /opt/homebrew/opt/python@3.13/libexec/bin/python3 \
+      /usr/local/opt/python@3.13/libexec/bin/python3 \
+      /opt/homebrew/bin/python3 \
+      /usr/local/bin/python3 \
+      "$(command -v python3 2>/dev/null || true)"; do
+      [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+      "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null || continue
+      printf '%s\n' "$candidate"
+      return 0
+    done
+  fi
+  echo "ERROR: harness-launcher requires Python 3.11 or newer (set HARNESS_PYTHON_BIN)" >&2
+  return 1
+}
+
 # --- mode → model/effort table -------------------------------------------------
 # The ONLY place mode/provider → model/effort lives. Labels are derived from
 # this resolution so a label can never disagree with the launched model again.
@@ -214,15 +239,83 @@ harness_probe_health() {
     node -e 'const baseUrl = process.env.PROBE_PROVIDER_URL; const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000); fetch(`${baseUrl}/health`, { signal: controller.signal }).then(() => { clearTimeout(timer); process.exit(0); }).catch(() => { clearTimeout(timer); process.exit(1); });' >/dev/null 2>&1
 }
 
+# --- local observability --------------------------------------------------------
+# Strict parser: local observability config is data, never sourced as shell code.
+# Return 0=enabled, 1=disabled/not configured/invalid (optional telemetry is fail-open).
+harness_observability_load() {
+  local harness_dir="$1" launcher_file config_file line key value prefix="" seen_keys="" HARNESS_OBSERVABILITY_ENABLED=""
+  HARNESS_OBSERVABILITY_ACTIVE=0
+  HARNESS_OBSERVABILITY_PROFILE=""
+  HARNESS_OTLP_HTTP_ENDPOINT=""
+
+  launcher_file="$harness_dir/config/launcher.env"
+  if [ -f "$launcher_file" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        HARNESS_PREFIX=*)
+          value="${line#HARNESS_PREFIX=}"
+          value="${value#\"}"; value="${value%\"}"
+          value="${value#\'}"; value="${value%\'}"
+          prefix="$value"
+          ;;
+      esac
+    done < "$launcher_file"
+  fi
+
+  case "$prefix" in
+    kh|gp|gd) ;;
+    *) return 1 ;;
+  esac
+  config_file="$harness_dir/config/.local/observability.env"
+  [ -f "$config_file" ] || return 1
+
+  HARNESS_OBSERVABILITY_ENABLED=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+      *=*) key="${line%%=*}"; value="${line#*=}" ;;
+      *) echo "WARN: invalid observability config line; telemetry disabled" >&2; return 1 ;;
+    esac
+    case " $seen_keys " in
+      *" $key "*) echo "WARN: duplicate observability config key: $key; telemetry disabled" >&2; return 1 ;;
+    esac
+    seen_keys="$seen_keys $key"
+    case "$key" in
+      HARNESS_OBSERVABILITY_ENABLED) HARNESS_OBSERVABILITY_ENABLED="$value" ;;
+      HARNESS_OTLP_HTTP_ENDPOINT) HARNESS_OTLP_HTTP_ENDPOINT="$value" ;;
+      *) echo "WARN: unknown observability config key: $key; telemetry disabled" >&2; return 1 ;;
+    esac
+  done < "$config_file"
+
+  [ "$HARNESS_OBSERVABILITY_ENABLED" = "1" ] || {
+    [ -z "$HARNESS_OBSERVABILITY_ENABLED" ] || [ "$HARNESS_OBSERVABILITY_ENABLED" = "0" ] || {
+      echo "WARN: HARNESS_OBSERVABILITY_ENABLED must be 0 or 1; telemetry disabled" >&2
+      return 1
+    }
+    return 1
+  }
+  [ "$HARNESS_OTLP_HTTP_ENDPOINT" = "http://127.0.0.1:4318" ] || {
+    echo "WARN: observability HTTP endpoint must be loopback http://127.0.0.1:4318; telemetry disabled" >&2
+    return 1
+  }
+
+  HARNESS_OBSERVABILITY_ACTIVE=1
+  HARNESS_OBSERVABILITY_PROFILE="$prefix"
+  return 0
+}
+
 # --- per-harness env ------------------------------------------------------------
 # Export MCP secrets from .claude/settings.local.json env so gateway/native
 # runtimes resolve bearer_token_env_var etc. (they inherit no other harness env).
 harness_export_local_env() {
-  local harness_dir="$1" _mk _mv
+  local harness_dir="$1"
+  local harness_python
   [ -f "$harness_dir/.claude/settings.local.json" ] || return 0
+  harness_python="$(harness_python3_resolve)" || return 1
+  local _mk _mv
   while IFS=$'\t' read -r _mk _mv; do
     [ -n "$_mk" ] && export "$_mk=$_mv"
-  done < <(python3 - "$harness_dir/.claude/settings.local.json" 2>/dev/null <<'PY'
+  done < <("$harness_python" - "$harness_dir/.claude/settings.local.json" 2>/dev/null <<'PY'
 import json, sys
 with open(sys.argv[1]) as f:
     env = (json.load(f).get("env") or {})
@@ -263,12 +356,14 @@ harness_mcp_local_configs() {
 
 harness_validate_mcp_local_configs() {
   local harness_dir="$1"
+  local harness_python
   set --
   [ -f "$harness_dir/.mcp.json" ] && set -- "$@" "$harness_dir/.mcp.json"
   [ -f "$harness_dir/.mcp.local.json" ] && set -- "$@" "$harness_dir/.mcp.local.json"
   [ -f "$harness_dir/mcp.local.json" ] && set -- "$@" "$harness_dir/mcp.local.json"
   [ "$#" -gt 1 ] || return 0
-  python3 - "$@" <<'PY'
+  harness_python="$(harness_python3_resolve)" || return 1
+  "$harness_python" - "$@" <<'PY'
 import json, sys
 
 seen = {}
@@ -307,8 +402,10 @@ PY
 harness_claude_light_mcp_config() {
   local harness_dir="$1"
   local out="$harness_dir/.harness/claude/mcp-light.json"
+  local harness_python
   mkdir -p "$harness_dir/.harness/claude"
-  python3 - "$harness_dir" "$out" <<'PY' || return 1
+  harness_python="$(harness_python3_resolve)" || return 1
+  "$harness_python" - "$harness_dir" "$out" <<'PY' || return 1
 import json, os, re, sys
 
 harness_dir, out = sys.argv[1], sys.argv[2]

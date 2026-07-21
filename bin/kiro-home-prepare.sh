@@ -20,6 +20,17 @@ cleanup_staging() {
 trap cleanup_staging EXIT
 
 LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$LAUNCHER_BIN_DIR/harness-common.sh"
+PYTHON_BIN="$(harness_python3_resolve)" || exit 1
+HARNESS_OBSERVABILITY_ACTIVE=0
+HARNESS_OBSERVABILITY_PROFILE=""
+if harness_observability_load "$HARNESS_DIR"; then
+  HARNESS_OBSERVABILITY_ACTIVE=1
+else
+  observability_status=$?
+  [[ "$observability_status" -eq 1 ]] || exit "$observability_status"
+fi
+KIRO_OBSERVABILITY_HOOK="$LAUNCHER_BIN_DIR/kiro-observability-hook.py"
 
 # Atomic swap helper: only overwrite if content differs
 atomic_write() {
@@ -38,7 +49,7 @@ atomic_write() {
 mcp_out="$KIRO_HOME/settings/mcp.json"
 tmp_mcp="$STAGING_DIR/mcp.json"
 
-python3 - "$HARNESS_DIR" > "$tmp_mcp" <<'PY'
+"$PYTHON_BIN" - "$HARNESS_DIR" > "$tmp_mcp" <<'PY'
 import json, os, re, sys
 
 harness = sys.argv[1]
@@ -119,12 +130,16 @@ agents_out="$KIRO_HOME/agents/harness.json"
 tmp_agents="$(mktemp "$KIRO_HOME/.harness.json.XXXXXX")"
 hooks_dir="$HARNESS_DIR/core/hooks"
 
-python3 - "$HARNESS_DIR" "$hooks_dir" "$mcp_out" > "$tmp_agents" <<'PY'
+"$PYTHON_BIN" - "$HARNESS_DIR" "$hooks_dir" "$mcp_out" "$HARNESS_OBSERVABILITY_ACTIVE" "$HARNESS_OBSERVABILITY_PROFILE" "$KIRO_OBSERVABILITY_HOOK" "$PYTHON_BIN" > "$tmp_agents" <<'PY'
 import json, os, sys
 
 harness = sys.argv[1]
 hooks_dir = sys.argv[2]
 mcp_out = sys.argv[3]
+observability_active = sys.argv[4] == "1"
+observability_profile = sys.argv[5]
+observability_hook = sys.argv[6]
+python_bin = sys.argv[7]
 
 def has_hook(name):
     return os.path.isfile(os.path.join(hooks_dir, name))
@@ -137,11 +152,18 @@ if os.path.isfile(mcp_out):
     with open(mcp_out) as f:
         mcp_servers = json.load(f).get("mcpServers") or {}
 
-# Build hooks — only 2 events supported by kiro-cli
+# Build existing harness hooks plus metadata-only observer hooks.
 hooks = {"agentSpawn": [], "userPromptSubmit": []}
 
 if has_hook("session-start.sh"):
     hooks["agentSpawn"].append({"command": f'bash "{hooks_dir}/session-start.sh"'})
+if observability_active:
+    hooks["agentSpawn"].append(
+        {"command": f'"{python_bin}" "{observability_hook}" agentSpawn {observability_profile} >/dev/null 2>&1 || :'}
+    )
+    hooks["postToolUse"] = [
+        {"command": f'"{python_bin}" "{observability_hook}" postToolUse {observability_profile} >/dev/null 2>&1 || :'}
+    ]
 
 prompt_hooks = []
 if has_hook("prompt-keyword-routing.sh"):
@@ -190,10 +212,14 @@ atomic_write "$agents_out" "$tmp_agents"
 subagents_src="$HARNESS_DIR/.claude/agents"
 map_tsv="$LAUNCHER_BIN_DIR/subagent-model-map.tsv"
 if [[ -d "$subagents_src" ]]; then
-  python3 - "$subagents_src" "$KIRO_HOME/agents" "$mcp_out" "$hooks_dir" "$map_tsv" <<'PY'
+  "$PYTHON_BIN" - "$subagents_src" "$KIRO_HOME/agents" "$mcp_out" "$hooks_dir" "$map_tsv" "$HARNESS_OBSERVABILITY_ACTIVE" "$HARNESS_OBSERVABILITY_PROFILE" "$KIRO_OBSERVABILITY_HOOK" "$PYTHON_BIN" <<'PY'
 import glob, json, os, shutil, sys
 
 src_dir, out_dir, mcp_out, hooks_dir, map_tsv = sys.argv[1:6]
+observability_active = sys.argv[6] == "1"
+observability_profile = sys.argv[7]
+observability_hook = sys.argv[8]
+python_bin = sys.argv[9]
 quarantine_dir = os.path.join(os.path.dirname(out_dir), ".surface-quarantine", "agents")
 owned_marker = "_generated-by-kiro-home-prepare"
 
@@ -263,6 +289,9 @@ if has_hook("prompt-keyword-routing.sh"):
 if has_hook("user-prompt-session-end-detect.sh"):
     prompt_hooks.append({"command": f'bash "{hooks_dir}/user-prompt-session-end-detect.sh"'})
 hooks["userPromptSubmit"] = prompt_hooks
+if observability_active:
+    hooks["agentSpawn"].append({"command": f'"{python_bin}" "{observability_hook}" agentSpawn {observability_profile} >/dev/null 2>&1 || :'})
+    hooks["postToolUse"] = [{"command": f'"{python_bin}" "{observability_hook}" postToolUse {observability_profile} >/dev/null 2>&1 || :'}]
 
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "Bash"}
 
@@ -365,7 +394,7 @@ compiled=0
 
 if [[ -f "$compiler" && -f "$HARNESS_DIR/.claude/source/runtime-contract.yaml" ]]; then
   tmp_steering="$(mktemp "$KIRO_HOME/.AGENTS.md.XXXXXX")"
-  if python3 "$compiler" --write-codex "$HARNESS_DIR" >/dev/null 2>&1; then
+  if "$PYTHON_BIN" "$compiler" --write-codex "$HARNESS_DIR" >/dev/null 2>&1; then
     # Compiler writes to .harness/codex/AGENTS.md — copy content for kiro
     codex_agents="$HARNESS_DIR/.harness/codex/AGENTS.md"
     if [[ -f "$codex_agents" ]]; then

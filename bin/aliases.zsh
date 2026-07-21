@@ -104,6 +104,8 @@ _harness_launcher_codex_harness_for_args() {
 
 codex() {
   local codex_bin harness_dir broker_started=false
+  local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE HARNESS_OTLP_HTTP_ENDPOINT
+  local OTEL_RESOURCE_ATTRIBUTES obs_rc
   codex_bin="$(_harness_launcher_codex_bin)" || {
     echo "❌ codex not found in PATH" >&2
     return 1
@@ -114,6 +116,13 @@ codex() {
       local HARNESS_NAME HARNESS_PREFIX
       source "$harness_dir/config/launcher.env"
       export HARNESS_PREFIX
+      if harness_observability_load "$harness_dir"; then
+        OTEL_RESOURCE_ATTRIBUTES="service.name=codex_exec,obs.runtime=codex,obs.profile=$HARNESS_OBSERVABILITY_PROFILE"
+        export OTEL_RESOURCE_ATTRIBUTES
+      else
+        obs_rc=$?
+        [[ "$obs_rc" -eq 1 ]] || return "$obs_rc"
+      fi
       _harness_launcher_export_codex_runtime_env "$harness_dir" || return $?
       harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
       broker_started=true
@@ -261,6 +270,38 @@ _harness_launcher_run() {
   done
 
   if $skip_tui; then
+    # Shortcut/gateway paths below launch Claude directly. Native Codex/Kiro
+    # returned above; no-argument TUI selection is handled inside launcher.sh.
+    local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE
+    local HARNESS_OTLP_HTTP_ENDPOINT obs_rc
+    if harness_observability_load "$HARNESS_DIR"; then
+      local CLAUDE_CODE_ENABLE_TELEMETRY=1
+      local OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none
+      local OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      local OTEL_EXPORTER_OTLP_ENDPOINT="$HARNESS_OTLP_HTTP_ENDPOINT"
+      local OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="$HARNESS_OTLP_HTTP_ENDPOINT/v1/logs"
+      local OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="$HARNESS_OTLP_HTTP_ENDPOINT/v1/metrics"
+      local OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="$HARNESS_OTLP_HTTP_ENDPOINT/v1/traces"
+      local OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf
+      local OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/protobuf
+      local OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+      local OTEL_EXPORTER_OTLP_HEADERS="" OTEL_EXPORTER_OTLP_LOGS_HEADERS=""
+      local OTEL_EXPORTER_OTLP_METRICS_HEADERS="" OTEL_EXPORTER_OTLP_TRACES_HEADERS=""
+      local OTEL_RESOURCE_ATTRIBUTES="service.name=harness-agent,obs.runtime=claude_code,obs.profile=$HARNESS_OBSERVABILITY_PROFILE"
+      local OTEL_LOG_USER_PROMPTS=0 OTEL_LOG_ASSISTANT_RESPONSES=0
+      local OTEL_LOG_TOOL_DETAILS=0 OTEL_LOG_TOOL_CONTENT=0 OTEL_LOG_RAW_API_BODIES=0
+      export CLAUDE_CODE_ENABLE_TELEMETRY OTEL_METRICS_EXPORTER OTEL_LOGS_EXPORTER OTEL_TRACES_EXPORTER
+      export OTEL_EXPORTER_OTLP_PROTOCOL OTEL_EXPORTER_OTLP_ENDPOINT OTEL_RESOURCE_ATTRIBUTES
+      export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT OTEL_EXPORTER_OTLP_METRICS_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+      export OTEL_EXPORTER_OTLP_LOGS_PROTOCOL OTEL_EXPORTER_OTLP_METRICS_PROTOCOL OTEL_EXPORTER_OTLP_TRACES_PROTOCOL
+      export OTEL_EXPORTER_OTLP_HEADERS OTEL_EXPORTER_OTLP_LOGS_HEADERS OTEL_EXPORTER_OTLP_METRICS_HEADERS OTEL_EXPORTER_OTLP_TRACES_HEADERS
+      export OTEL_LOG_USER_PROMPTS OTEL_LOG_ASSISTANT_RESPONSES
+      export OTEL_LOG_TOOL_DETAILS OTEL_LOG_TOOL_CONTENT OTEL_LOG_RAW_API_BODIES
+    else
+      obs_rc=$?
+      [[ "$obs_rc" -eq 1 ]] || return "$obs_rc"
+    fi
+
     [[ -n "$session_flag" ]] && claude_args=("$session_flag" "${claude_args[@]}")
     if [[ -n "$provider_url" ]]; then
       export ANTHROPIC_BASE_URL="$provider_url"
@@ -319,6 +360,15 @@ _harness_launcher_run_codex_cli() {
   local HARNESS_DIR="$1"; shift
   local run_dir="${HARNESS_RUN_DIR:-$HARNESS_DIR}"
   export HARNESS_PREFIX
+  local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE HARNESS_OTLP_HTTP_ENDPOINT
+  local OTEL_RESOURCE_ATTRIBUTES obs_rc
+  if harness_observability_load "$HARNESS_DIR"; then
+    OTEL_RESOURCE_ATTRIBUTES="service.name=codex_exec,obs.runtime=codex,obs.profile=$HARNESS_OBSERVABILITY_PROFILE"
+    export OTEL_RESOURCE_ATTRIBUTES
+  else
+    obs_rc=$?
+    [[ "$obs_rc" -eq 1 ]] || return "$obs_rc"
+  fi
   local profile=""
   local profile_explicit=false
   local mcp_profile=""

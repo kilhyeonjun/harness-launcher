@@ -52,7 +52,7 @@ def identity(path):
     ]
 
 
-def config_matches(codex_home, catalog):
+def config_matches(codex_home, catalog, expected_profile):
     try:
         with open(os.path.join(codex_home, "config.toml"), "rb") as stream:
             config = tomllib.load(stream)
@@ -69,6 +69,7 @@ def config_matches(codex_home, catalog):
         "mcp_servers",
         "skills",
         "hooks",
+        "otel",
     }
     if set(config) - allowed_root_keys:
         return False
@@ -86,6 +87,40 @@ def config_matches(codex_home, catalog):
         return False
     if config.get("model_reasoning_effort") != "medium":
         return False
+    otel = config.get("otel")
+    if otel is not None:
+        profile = (otel.get("span_attributes") or {}).get("obs.profile") if isinstance(otel, dict) else None
+        if profile != expected_profile or otel != {
+            "environment": expected_profile,
+            "log_user_prompt": False,
+            "span_attributes": {
+                "service.name": "harness-agent",
+                "obs.runtime": "codex",
+                "obs.profile": profile,
+            },
+            "exporter": {
+                "otlp-http": {
+                    "endpoint": "http://127.0.0.1:4318/v1/logs",
+                    "protocol": "binary",
+                    "headers": {},
+                }
+            },
+            "trace_exporter": {
+                "otlp-http": {
+                    "endpoint": "http://127.0.0.1:4318/v1/traces",
+                    "protocol": "binary",
+                    "headers": {},
+                }
+            },
+            "metrics_exporter": {
+                "otlp-http": {
+                    "endpoint": "http://127.0.0.1:4318/v1/metrics",
+                    "protocol": "binary",
+                    "headers": {},
+                }
+            },
+        }:
+            return False
     if config.get("features") != {
         "apps": False,
         "goals": True,
@@ -294,13 +329,13 @@ def output_signatures(codex_home):
 
 
 def main():
-    if len(sys.argv) != 7:
+    if len(sys.argv) != 8:
         print(
-            "usage: codex-surface-warm.py STAMP CACHE CODEX_HOME MANIFEST SKILL_PROFILE MCP_PROFILE",
+            "usage: codex-surface-warm.py STAMP CACHE CODEX_HOME MANIFEST SKILL_PROFILE MCP_PROFILE EXPECTED_PROFILE",
             file=sys.stderr,
         )
         return 2
-    stamp_path, cache_path, codex_home, manifest_path, skill_profile, mcp_profile = sys.argv[1:]
+    stamp_path, cache_path, codex_home, manifest_path, skill_profile, mcp_profile, expected_profile = sys.argv[1:]
     stamp = load_object(stamp_path)
     cache = load_object(cache_path)
     manifest = load_object(manifest_path)
@@ -365,7 +400,7 @@ def main():
         cold()
     if (catalog.get("mcp") or {}).get("profile") != fingerprint.get("mcp_profile"):
         cold()
-    if not config_matches(codex_home, catalog):
+    if not config_matches(codex_home, catalog, expected_profile):
         cold()
     skills_root = os.path.abspath(os.path.join(codex_home, "skills"))
     expected_managed = []

@@ -19,7 +19,7 @@ for test_file in "$ROOT"/test/test-*.sh; do
     case "$test_name" in
       test-codex-config-preservation.sh|test-codex-global-mcp-drift.sh|\
         test-codex-home-lock.sh|test-codex-home-prepare.sh|\
-        test-codex-migrate-to-symlinks.sh)
+        test-codex-observability-profile.sh|test-codex-migrate-to-symlinks.sh)
         printf '==> %s (SKIP: /usr/bin/lockf unavailable)\n' "$test_name"
         skipped=$((skipped + 1))
         continue
