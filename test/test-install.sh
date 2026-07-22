@@ -21,6 +21,7 @@ for file in \
   codex-cmux-title-sync.py \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh \
+  harness-auto \
   harness-exec \
   harness-profile \
   kiro-observability-hook.py; do
@@ -39,6 +40,7 @@ for file in \
   codex-cmux-title-sync.py \
   codex-migrate-to-symlinks.sh \
   kiro-home-prepare.sh \
+  harness-auto \
   harness-exec \
   harness-profile \
   kiro-observability-hook.py; do
@@ -47,6 +49,19 @@ for file in \
     exit 1
   }
 done
+
+[[ -L "$PREFIX/bin/harness-auto" && -x "$PREFIX/bin/harness-auto" ]] || {
+  echo "FAIL: source installer did not expose harness-auto as an executable symlink" >&2
+  exit 1
+}
+[[ "$(readlink "$PREFIX/bin/harness-auto")" == "../share/harness-launcher/harness-auto" ]] || {
+  echo "FAIL: harness-auto symlink points at the wrong installed asset" >&2
+  exit 1
+}
+[[ "$(stat -f '%Lp' "$PREFIX/share/harness-launcher/harness-auto")" == "755" ]] || {
+  echo "FAIL: installed harness-auto is not world-readable and executable" >&2
+  exit 1
+}
 
 [[ -L "$PREFIX/bin/harness-exec" && -x "$PREFIX/bin/harness-exec" ]] || {
   echo "FAIL: source installer did not expose harness-exec as an executable symlink" >&2

@@ -1,0 +1,71 @@
+#!/usr/bin/env zsh
+set -u
+
+SELF_PATH="${0:A}"
+SCRIPT_DIR="${SELF_PATH:h}"
+PROFILE_HOME="${HARNESS_PROFILE_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/harness-launcher}"
+PROFILE_DIR="$PROFILE_HOME/profiles"
+
+if (( $# == 0 )); then
+  echo "harness-auto: agent command is required" >&2
+  exit 2
+fi
+agent="$1"
+shift
+case "$agent" in
+  claude)
+    agent_args=("$@")
+    ;;
+  codex|kiro-cli)
+    agent_args=("$agent" "$@")
+    ;;
+  *)
+    echo "harness-auto: unsupported agent: $agent" >&2
+    exit 2
+    ;;
+esac
+[[ -d "$PROFILE_DIR" ]] || {
+  echo "harness-auto: no registered harness contains the current directory" >&2
+  exit 2
+}
+[[ -x "$SCRIPT_DIR/harness-exec" ]] || {
+  echo "harness-auto: missing executable: $SCRIPT_DIR/harness-exec" >&2
+  exit 2
+}
+
+current_dir="${PWD:A}"
+best_harness=""
+best_length=-1
+best_count=0
+setopt local_options null_glob
+
+for profile_file in "$PROFILE_DIR"/*; do
+  [[ -f "$profile_file" && ! -L "$profile_file" ]] || continue
+  harness_dir=""
+  IFS= read -r harness_dir < "$profile_file"
+  [[ -n "$harness_dir" && -d "$harness_dir" && -f "$harness_dir/config/launcher.env" ]] || continue
+  harness_dir="${harness_dir:A}"
+  if [[ "$current_dir" != "$harness_dir" && "$current_dir" != "$harness_dir/"* ]]; then
+    continue
+  fi
+
+  boundary_length=${#harness_dir}
+  if (( boundary_length > best_length )); then
+    best_harness="$harness_dir"
+    best_length=$boundary_length
+    best_count=1
+  elif (( boundary_length == best_length )); then
+    (( best_count += 1 ))
+  fi
+done
+
+(( best_count > 0 )) || {
+  echo "harness-auto: no registered harness contains the current directory" >&2
+  exit 2
+}
+(( best_count == 1 )) || {
+  echo "harness-auto: ambiguous registered harness boundary: $current_dir" >&2
+  exit 2
+}
+
+exec "$SCRIPT_DIR/harness-exec" "$best_harness" "${agent_args[@]}"

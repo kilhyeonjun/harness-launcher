@@ -37,6 +37,8 @@ select_harness_python3() {
 select_harness_python3 >/dev/null || exit 1
 
 for destination in \
+  "$BIN_DIR/harness-auto" \
+  "$SHARE_DIR/harness-auto" \
   "$BIN_DIR/harness-exec" \
   "$SHARE_DIR/harness-exec" \
   "$BIN_DIR/harness-profile" \
@@ -62,6 +64,7 @@ cp "$LAUNCHER_DIR/bin/codex-hook-adapter.sh"      "$SHARE_DIR/codex-hook-adapter
 cp "$LAUNCHER_DIR/bin/codex-cmux-title-sync.py"   "$SHARE_DIR/codex-cmux-title-sync.py"
 cp "$LAUNCHER_DIR/bin/codex-migrate-to-symlinks.sh" "$SHARE_DIR/codex-migrate-to-symlinks.sh"
 cp "$LAUNCHER_DIR/bin/kiro-home-prepare.sh"       "$SHARE_DIR/kiro-home-prepare.sh"
+cp "$LAUNCHER_DIR/bin/harness-auto"               "$SHARE_DIR/harness-auto"
 cp "$LAUNCHER_DIR/bin/harness-exec"               "$SHARE_DIR/harness-exec"
 cp "$LAUNCHER_DIR/bin/harness-profile"            "$SHARE_DIR/harness-profile"
 cp "$LAUNCHER_DIR/bin/kiro-observability-hook.py" "$SHARE_DIR/kiro-observability-hook.py"
@@ -74,9 +77,11 @@ chmod 755 \
   "$SHARE_DIR/codex-cmux-title-sync.py" \
   "$SHARE_DIR/codex-migrate-to-symlinks.sh" \
   "$SHARE_DIR/kiro-home-prepare.sh" \
+  "$SHARE_DIR/harness-auto" \
   "$SHARE_DIR/harness-exec" \
   "$SHARE_DIR/harness-profile" \
   "$SHARE_DIR/kiro-observability-hook.py"
+ln -sfn "../share/harness-launcher/harness-auto" "$BIN_DIR/harness-auto"
 ln -sfn "../share/harness-launcher/harness-exec" "$BIN_DIR/harness-exec"
 ln -sfn "../share/harness-launcher/harness-profile" "$BIN_DIR/harness-profile"
 

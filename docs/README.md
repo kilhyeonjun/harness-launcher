@@ -23,6 +23,7 @@ The README covers installation and the first registered project. These documents
 | Path | Responsibility |
 | --- | --- |
 | `bin/aliases.zsh` | Project registration, shortcuts, completion, runtime wrappers |
+| `bin/harness-auto` | Current-workspace profile resolver for external agent launchers |
 | `bin/harness-exec` | Non-interactive executable entrypoint and canonical cwd resolver for external orchestrators |
 | `bin/harness-profile` | Durable profile registry and executable prefix installer |
 | `bin/launcher.sh` | Interactive runtime/session/mode/safety picker |

@@ -66,7 +66,7 @@ cd harness-launcher
 HARNESS_LAUNCHER_PREFIX="$HOME/.local" ./install.sh
 ```
 
-The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-exec` plus `harness-profile` under `$HARNESS_LAUNCHER_PREFIX/bin`. Homebrew is the recommended installation path on macOS.
+The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-auto`, `harness-exec`, and `harness-profile` under `$HARNESS_LAUNCHER_PREFIX/bin`. Homebrew is the recommended installation path on macOS.
 
 ## Quick start
 
@@ -112,6 +112,16 @@ harness-profile register "$HOME/work-harness"
 This installs a profile entry under `~/.config/harness-launcher/profiles/` and a command symlink under `~/.local/bin/` without copying project policy.
 
 Registered commands are workspace-aware. If the current directory resolves inside the owning harness, the launcher uses it automatically; otherwise it preserves the legacy harness-root default. An explicit `--cwd` still takes precedence.
+
+Workspace managers that need to choose the profile instead of naming it can use `harness-auto`. It resolves the current directory against the private profile registry, selects the single most-specific owning harness, and fails closed outside or across ambiguous boundaries:
+
+```bash
+harness-auto codex base
+harness-auto claude base
+harness-auto kiro-cli base
+```
+
+This is the supported command override for Orca's built-in Claude, Codex, and Kiro agent entries. It does not infer a profile from repository names or remotes; the worktree must live below its registered harness boundary.
 
 External orchestrators and non-interactive shells can bypass `.zshrc` while keeping the same project policy:
 

@@ -57,6 +57,16 @@ command -v <prefix>
 
 The executable reads only the canonical harness path from `~/.config/harness-launcher/profiles/<prefix>` and delegates to `harness-exec`. Registration is idempotent for the same canonical harness and launcher-owned command, but fails closed on regular files, foreign symlinks, registry symlinks, or a prefix already owned by another harness.
 
+For Orca command overrides, also verify the path-aware adapter:
+
+```zsh
+command -v harness-auto
+cd /path/inside/a/registered/harness
+harness-auto codex --version
+```
+
+`no registered harness contains the current directory` means the Orca worktree is outside every registered harness boundary. Move only the disposable worktree base into the owning harness; do not move the harness or dirty source repository. `ambiguous registered harness boundary` means duplicate registry entries resolve to the same most-specific path and must be corrected before launch.
+
 ## `codex` reports `ENOENT`
 
 A version-manager shim can exist while its platform package is missing. Check the executable selected by the login shell:
