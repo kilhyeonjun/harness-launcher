@@ -25,7 +25,7 @@ HARNESS_NAME="gd test"
 HARNESS_PREFIX="gd"
 EOF
 
-HARNESS_LAUNCHER_PREFIX="$PREFIX" "$ROOT/install.sh" >/dev/null
+bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$PREFIX"
 HOME="$HOME_DIR" HARNESS_PROFILE_BIN_DIR="$BIN_DIR" \
   "$PREFIX/bin/harness-profile" register "$KH" >/dev/null
 HOME="$HOME_DIR" HARNESS_PROFILE_BIN_DIR="$BIN_DIR" \

@@ -44,7 +44,7 @@ command -v harness-exec
 harness-exec "/path/to/harness" --cwd "/path/to/harness/.worktrees/example" codex --version
 ```
 
-For a source install, ensure `$HARNESS_LAUNCHER_PREFIX/bin` is on `PATH` and rerun `install.sh`. For Homebrew, upgrade or reinstall the formula. A rejected `--cwd` must be moved under the owning harness; do not bypass the boundary with a symlink because canonical symlink targets outside the harness are rejected.
+Homebrew installations should be upgraded or reinstalled with `brew upgrade harness-launcher` or `brew reinstall harness-launcher`. Standalone source installation is disabled. A rejected `--cwd` must be moved under the owning harness; do not bypass the boundary with a symlink because canonical symlink targets outside the harness are rejected.
 
 ## The profile prefix works in Zsh but not in Orca or automation
 

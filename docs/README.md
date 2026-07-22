@@ -32,6 +32,6 @@ The README covers installation and the first registered project. These documents
 | `bin/codex-hook-adapter.sh` | Supported hook translation into harness hooks |
 | `test/` | Isolated shell regression tests |
 | `templates/project.gitignore` | Copyable generated-state and local-config ignore entries |
-| `install.sh` | Standalone source installer |
+| `install.sh` | Disabled source-install migration stub; use Homebrew |
 
 Generated files under a registered project's `.harness/` directory are runtime output, not documentation or configuration sources.
