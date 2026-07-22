@@ -7,6 +7,7 @@
 Installations expose a non-interactive primitive and registered profile commands:
 
 ```text
+harness-auto <agent> [agent arguments...]
 harness-exec <harness-dir> [--cwd <dir>] [launcher arguments...]
 harness-profile register <harness-dir>
 <profile-prefix> [launcher arguments...]
@@ -23,7 +24,7 @@ wh codex base work
 wh kiro-cli base
 ```
 
-Orca starts project terminals in the selected worktree, so the registered profile command automatically preserves that workspace. Use `harness-exec <harness-dir> --cwd . ...` only for automation that cannot use the registered profile command.
+Orca starts project terminals in the selected worktree. `harness-auto` resolves that canonical directory against the registered profile boundaries and delegates to the single most-specific harness. Use a named profile command for manual terminals, and use `harness-exec <harness-dir> --cwd . ...` only for automation that cannot use either public adapter.
 
 ## Project and worktree layout
 
@@ -47,10 +48,18 @@ For each profile:
 
 1. Add only the owning harness's child code repositories.
 2. Configure the profile-local worktree base path.
-3. Open an Orca terminal in the selected worktree and start the agent with its registered profile command (`kh`, `gp`, `gd`, or another `HARNESS_PREFIX`).
-4. Keep Orca's built-in task-agent dispatch disabled during the initial pilot. It starts Orca's own raw `claude`, `codex`, or `kiro-cli` command and can bypass launcher ownership.
+3. Override Orca's built-in agent commands with the absolute path returned by `command -v harness-auto` (Homebrew on Apple Silicon normally installs `/opt/homebrew/bin/harness-auto`):
 
-Do not replace the built-in agent binaries with recursive PATH shims. Native Orca task dispatch requires a separately reviewed adapter because Orca appends runtime-specific prompt, resume, and permission arguments.
+   ```text
+   Claude command: harness-auto     arguments: claude base
+   Codex command:  harness-auto     arguments: codex
+   Kiro command:   harness-auto     arguments: kiro-cli
+   ```
+
+4. Select one reviewed default runtime; **Codex** is the conservative default for mixed kh/gp/gd projects. Do not select Orca's **Auto** mode unless every agent it may choose is either mapped through `harness-auto` or disabled.
+5. Keep Agent Permissions on **Manual** and keep Orca-managed hooks off.
+
+Do not replace the native binaries with same-name recursive PATH shims. `harness-auto` is a separate launcher-owned command: the first fixed argument names the real runtime, and Orca's remaining prompt, resume, and permission arguments stay in order. It fails closed when a worktree is outside every registered boundary or matches more than one equally specific registration.
 
 ## Required safety settings
 
@@ -69,7 +78,7 @@ Orca's worktree isolation is not a security sandbox. Runtime approval and sandbo
 Use a disposable repository before registering production or company code.
 
 1. Create a worktree under `<harness>/.worktrees/<repo-name>/`.
-2. Launch Claude, Codex, and Kiro through the registered profile command.
+2. Launch Claude, Codex, and Kiro through `harness-auto` and verify the selected harness prefix.
 3. Verify the process working directory is the worktree.
 4. Verify `CODEX_HOME` and `KIRO_HOME` remain rooted in the owning harness.
 5. Verify no other harness's skills, MCP servers, account state, or generated files appear.

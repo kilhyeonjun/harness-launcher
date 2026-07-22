@@ -4,6 +4,22 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-07-22
+
+### Added
+
+- Add `harness-auto`, a fail-closed external-agent adapter that selects the
+  single most-specific registered harness from the canonical current directory
+  and then delegates unchanged agent arguments to `harness-exec`. It rejects
+  unmatched workspaces, symlink escapes, registry symlinks, and ambiguous
+  profile registrations.
+
+### Changed
+
+- Orca may now use `harness-auto` as its Claude, Codex, and Kiro command
+  override, so built-in agent startup preserves kh/gp/gd policy without a
+  manually selected profile command.
+
 ## [0.18.0] — 2026-07-21
 
 ### Added
