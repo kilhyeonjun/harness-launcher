@@ -50,6 +50,20 @@ _harness_launcher_export_codex_runtime_env() {
   harness_export_local_env "$HARNESS_DIR"
 }
 
+_harness_launcher_codex_synthetic_smoke() {
+  local HARNESS_DIR="$1" obs_rc
+  if harness_observability_load "$HARNESS_DIR"; then
+    "$_HARNESS_LAUNCHER_BIN/codex-synthetic-smoke.py" \
+      "$HARNESS_OBSERVABILITY_PROFILE" "$HARNESS_OTLP_HTTP_ENDPOINT"
+    return $?
+  else
+    obs_rc=$?
+  fi
+  [[ "$obs_rc" -eq 1 ]] || return "$obs_rc"
+  echo "harness-launcher: observability is not enabled for this profile" >&2
+  return 2
+}
+
 _harness_launcher_kiro_bin() { harness_kiro_bin_resolve "$@"; }
 
 _harness_launcher_export_kiro_runtime_env() {
@@ -218,6 +232,12 @@ _harness_launcher_run() {
     codex)
       shift
       _harness_launcher_run_codex_cli "$HARNESS_DIR" "$@"
+      return $?
+      ;;
+    codex-smoke)
+      shift
+      [[ $# -eq 0 ]] || { echo "harness-launcher: codex-smoke takes no arguments" >&2; return 2; }
+      _harness_launcher_codex_synthetic_smoke "$HARNESS_DIR"
       return $?
       ;;
     kiro-cli)
@@ -561,6 +581,7 @@ _harness_launcher_complete() {
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
     'codex:Codex CLI native (fast/base/sol/plan/rich · work surface · fork · full-auto/never/bypass)'
+    'codex-smoke:Send one bounded metadata-only Codex verification event'
     'kiro-cli:Kiro CLI native'
     'happy:Use Happy mobile wrapper for Codex CLI'
   )
