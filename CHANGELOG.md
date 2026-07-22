@@ -4,6 +4,15 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-07-22
+
+### Fixed
+
+- Made the standalone source installer transactional: all assets and entrypoints are staged before commit, and a late failure restores the prior managed installation.
+- Refused foreign regular files, foreign symlinks, and share-path symlinks instead of replacing or following them.
+- Added a managed-share ownership marker while retaining verified upgrades from pre-marker installations.
+- Added a real `harness-auto` → `harness-exec` → Claude policy-path test for prompt, resume, and permission argument preservation.
+
 ## [0.19.0] — 2026-07-22
 
 ### Added
