@@ -87,14 +87,19 @@ done
 
 grep -q "Installed to $SHARE" "$TEMP_DIR/install.log"
 
-printf 'OLD-INSTALL\n' > "$SHARE/harness-auto"
+REINSTALL_IDENTITY="$(stat -f '%i:%Lp' "$SHARE/harness-auto")"
+printf 'legacy-marker-must-be-ignored\n' > "$SHARE/.harness-launcher-managed"
 HARNESS_LAUNCHER_PREFIX="$PREFIX" "$ROOT/install.sh" >"$TEMP_DIR/reinstall.log"
-grep -Fq '#!/usr/bin/env zsh' "$SHARE/harness-auto" || {
-  echo "FAIL: source installer did not upgrade a verified managed installation" >&2
+cmp -s "$ROOT/bin/harness-auto" "$SHARE/harness-auto" || {
+  echo "FAIL: source installer changed an identical existing asset" >&2
   exit 1
 }
-[[ -f "$SHARE/.harness-launcher-managed" && ! -L "$SHARE/.harness-launcher-managed" ]] || {
-  echo "FAIL: source installer did not record managed share ownership" >&2
+[[ "$(stat -f '%i:%Lp' "$SHARE/harness-auto")" == "$REINSTALL_IDENTITY" ]] || {
+  echo "FAIL: source installer replaced an identical existing asset" >&2
+  exit 1
+}
+[[ "$(<"$SHARE/.harness-launcher-managed")" == "legacy-marker-must-be-ignored" ]] || {
+  echo "FAIL: source installer trusted or changed a legacy marker" >&2
   exit 1
 }
 
@@ -240,10 +245,60 @@ fi
   exit 1
 }
 
+IDENTICAL_SHARE_PREFIX="$TEMP_DIR/identical-share-prefix"
+mkdir -p "$IDENTICAL_SHARE_PREFIX/share/harness-launcher"
+cp "$ROOT/bin/harness-auto" "$IDENTICAL_SHARE_PREFIX/share/harness-launcher/harness-auto"
+chmod 600 "$IDENTICAL_SHARE_PREFIX/share/harness-launcher/harness-auto"
+IDENTICAL_SHARE_ID="$(stat -f '%i:%Lp' "$IDENTICAL_SHARE_PREFIX/share/harness-launcher/harness-auto")"
+HARNESS_LAUNCHER_PREFIX="$IDENTICAL_SHARE_PREFIX" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-identical-share.log"
+[[ "$(stat -f '%i:%Lp' "$IDENTICAL_SHARE_PREFIX/share/harness-launcher/harness-auto")" == "$IDENTICAL_SHARE_ID" ]] || {
+  echo "FAIL: installer replaced or chmodded an identical existing share file" >&2
+  exit 1
+}
+
+FORGED_MARKER_PREFIX="$TEMP_DIR/forged-marker-prefix"
+mkdir -p "$FORGED_MARKER_PREFIX/share/harness-launcher"
+printf 'harness-launcher\n' > "$FORGED_MARKER_PREFIX/share/harness-launcher/.harness-launcher-managed"
+printf 'FORGED-MARKER-FOREIGN\n' > "$FORGED_MARKER_PREFIX/share/harness-launcher/harness-auto"
+chmod 600 "$FORGED_MARKER_PREFIX/share/harness-launcher/harness-auto"
+if HARNESS_LAUNCHER_PREFIX="$FORGED_MARKER_PREFIX" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-forged-marker.log" 2>&1; then
+  echo "FAIL: source installer trusted a forgeable ownership marker" >&2
+  exit 1
+fi
+[[ "$(<"$FORGED_MARKER_PREFIX/share/harness-launcher/harness-auto")" == "FORGED-MARKER-FOREIGN" ]] || {
+  echo "FAIL: forged marker allowed foreign share content loss" >&2
+  exit 1
+}
+[[ "$(stat -f '%Lp' "$FORGED_MARKER_PREFIX/share/harness-launcher/harness-auto")" == "600" ]] || {
+  echo "FAIL: forged marker allowed foreign share mode loss" >&2
+  exit 1
+}
+
+FORGED_LEGACY_PREFIX="$TEMP_DIR/forged-legacy-prefix"
+mkdir -p "$FORGED_LEGACY_PREFIX/share/harness-launcher"
+printf 'FOREIGN-LAUNCHER\n' > "$FORGED_LEGACY_PREFIX/share/harness-launcher/launcher.sh"
+printf 'FOREIGN-ALIASES\n' > "$FORGED_LEGACY_PREFIX/share/harness-launcher/aliases.zsh"
+printf 'FORGED-LEGACY-FOREIGN\n' > "$FORGED_LEGACY_PREFIX/share/harness-launcher/harness-auto"
+chmod 600 "$FORGED_LEGACY_PREFIX/share/harness-launcher/harness-auto"
+if HARNESS_LAUNCHER_PREFIX="$FORGED_LEGACY_PREFIX" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-forged-legacy.log" 2>&1; then
+  echo "FAIL: source installer trusted forgeable legacy filenames" >&2
+  exit 1
+fi
+[[ "$(<"$FORGED_LEGACY_PREFIX/share/harness-launcher/harness-auto")" == "FORGED-LEGACY-FOREIGN" ]] || {
+  echo "FAIL: forged legacy proof allowed foreign share content loss" >&2
+  exit 1
+}
+[[ "$(stat -f '%Lp' "$FORGED_LEGACY_PREFIX/share/harness-launcher/harness-auto")" == "600" ]] || {
+  echo "FAIL: forged legacy proof allowed foreign share mode loss" >&2
+  exit 1
+}
+
 ROLLBACK_PREFIX="$TEMP_DIR/rollback-prefix"
 HARNESS_LAUNCHER_PREFIX="$ROLLBACK_PREFIX" "$ROOT/install.sh" >"$TEMP_DIR/install-rollback-seed.log"
-printf 'OLD-MANAGED\n' > "$ROLLBACK_PREFIX/share/harness-launcher/harness-auto"
-chmod 700 "$ROLLBACK_PREFIX/share/harness-launcher/harness-auto"
+rm "$ROLLBACK_PREFIX/share/harness-launcher/harness-auto" "$ROLLBACK_PREFIX/bin/harness-auto"
 chmod 500 "$ROLLBACK_PREFIX/bin"
 if HARNESS_LAUNCHER_PREFIX="$ROLLBACK_PREFIX" \
   "$ROOT/install.sh" >"$TEMP_DIR/install-rollback.log" 2>&1; then
@@ -252,27 +307,26 @@ if HARNESS_LAUNCHER_PREFIX="$ROLLBACK_PREFIX" \
   exit 1
 fi
 chmod 755 "$ROLLBACK_PREFIX/bin"
-[[ "$(<"$ROLLBACK_PREFIX/share/harness-launcher/harness-auto")" == "OLD-MANAGED" ]] || {
-  echo "FAIL: late installer failure did not restore the previous share asset" >&2
+[[ ! -e "$ROLLBACK_PREFIX/share/harness-launcher/harness-auto" ]] || {
+  echo "FAIL: late installer failure left a new share asset" >&2
   exit 1
 }
-[[ "$(stat -f '%Lp' "$ROLLBACK_PREFIX/share/harness-launcher/harness-auto")" == "700" ]] || {
-  echo "FAIL: late installer failure did not restore the previous share asset mode" >&2
+[[ ! -e "$ROLLBACK_PREFIX/bin/harness-auto" && ! -L "$ROLLBACK_PREFIX/bin/harness-auto" ]] || {
+  echo "FAIL: late installer failure left a new bin entrypoint" >&2
   exit 1
 }
-[[ "$(readlink "$ROLLBACK_PREFIX/bin/harness-auto")" == "../share/harness-launcher/harness-auto" ]] || {
-  echo "FAIL: late installer failure altered the previous bin entrypoint" >&2
+[[ "$(readlink "$ROLLBACK_PREFIX/bin/harness-exec")" == "../share/harness-launcher/harness-exec" ]] || {
+  echo "FAIL: late installer failure altered an existing bin entrypoint" >&2
   exit 1
 }
 
 COMMIT_ROLLBACK_PREFIX="$TEMP_DIR/commit-rollback-prefix"
 HARNESS_LAUNCHER_PREFIX="$COMMIT_ROLLBACK_PREFIX" "$ROOT/install.sh" >"$TEMP_DIR/install-commit-seed.log"
-printf 'OLD-COMMIT\n' > "$COMMIT_ROLLBACK_PREFIX/share/harness-launcher/harness-auto"
-chmod 700 "$COMMIT_ROLLBACK_PREFIX/share/harness-launcher/harness-auto"
+rm "$COMMIT_ROLLBACK_PREFIX/share/harness-launcher/harness-auto" "$COMMIT_ROLLBACK_PREFIX/bin/harness-exec"
 FAKE_BIN="$TEMP_DIR/fail-mv-bin"
 FAIL_ONCE="$TEMP_DIR/fail-mv-once"
 mkdir -p "$FAKE_BIN"
-printf '%s\n' '#!/bin/sh' 'if [ "${2:-}" = "$HARNESS_FAIL_DEST" ] && [ ! -e "$HARNESS_FAIL_ONCE" ]; then : > "$HARNESS_FAIL_ONCE"; exit 73; fi' 'exec /bin/mv "$@"' > "$FAKE_BIN/mv"
+printf '%s\n' '#!/bin/sh' 'for last do :; done' 'if [ "$last" = "$HARNESS_FAIL_DEST" ] && [ ! -e "$HARNESS_FAIL_ONCE" ]; then : > "$HARNESS_FAIL_ONCE"; exit 73; fi' 'exec /bin/mv "$@"' > "$FAKE_BIN/mv"
 chmod 755 "$FAKE_BIN/mv"
 if PATH="$FAKE_BIN:$PATH" \
   HARNESS_FAIL_DEST="$COMMIT_ROLLBACK_PREFIX/bin/harness-exec" \
@@ -286,20 +340,45 @@ fi
   echo "FAIL: commit rollback probe did not reach the intended commit step" >&2
   exit 1
 }
-[[ "$(<"$COMMIT_ROLLBACK_PREFIX/share/harness-launcher/harness-auto")" == "OLD-COMMIT" ]] || {
-  echo "FAIL: commit failure did not restore the previous share asset" >&2
+[[ ! -e "$COMMIT_ROLLBACK_PREFIX/share/harness-launcher/harness-auto" ]] || {
+  echo "FAIL: commit failure left a newly installed share asset" >&2
   exit 1
 }
-[[ "$(stat -f '%Lp' "$COMMIT_ROLLBACK_PREFIX/share/harness-launcher/harness-auto")" == "700" ]] || {
-  echo "FAIL: commit failure did not restore the previous share asset mode" >&2
+[[ ! -e "$COMMIT_ROLLBACK_PREFIX/bin/harness-exec" && ! -L "$COMMIT_ROLLBACK_PREFIX/bin/harness-exec" ]] || {
+  echo "FAIL: commit failure left a newly installed bin entrypoint" >&2
   exit 1
 }
-for file in harness-auto harness-exec harness-profile; do
+for file in harness-auto harness-profile; do
   [[ "$(readlink "$COMMIT_ROLLBACK_PREFIX/bin/$file")" == "../share/harness-launcher/$file" ]] || {
-    echo "FAIL: commit failure did not restore bin/$file" >&2
+    echo "FAIL: commit failure altered existing bin/$file" >&2
     exit 1
   }
 done
+
+RACE_PREFIX="$TEMP_DIR/race-prefix"
+RACE_BIN="$TEMP_DIR/race-mv-bin"
+mkdir -p "$RACE_BIN"
+printf '%s\n' '#!/bin/sh' 'for last do :; done' 'if [ "$last" = "$HARNESS_RACE_DEST" ]; then printf "RACE-FOREIGN\\n" > "$last"; chmod 600 "$last"; fi' 'exec /bin/mv "$@"' > "$RACE_BIN/mv"
+chmod 755 "$RACE_BIN/mv"
+if PATH="$RACE_BIN:$PATH" \
+  HARNESS_RACE_DEST="$RACE_PREFIX/share/harness-launcher/harness-auto" \
+  HARNESS_LAUNCHER_PREFIX="$RACE_PREFIX" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-race.log" 2>&1; then
+  echo "FAIL: source installer ignored a commit-time destination collision" >&2
+  exit 1
+fi
+[[ "$(<"$RACE_PREFIX/share/harness-launcher/harness-auto")" == "RACE-FOREIGN" ]] || {
+  echo "FAIL: installer overwrote a destination that appeared during commit" >&2
+  exit 1
+}
+[[ "$(stat -f '%Lp' "$RACE_PREFIX/share/harness-launcher/harness-auto")" == "600" ]] || {
+  echo "FAIL: installer chmodded a destination that appeared during commit" >&2
+  exit 1
+}
+[[ ! -e "$RACE_PREFIX/share/harness-launcher/aliases.zsh" ]] || {
+  echo "FAIL: commit collision rollback left an earlier new asset" >&2
+  exit 1
+}
 
 EXPLICIT_PREFIX="$TEMP_DIR/explicit-python-prefix"
 GOOD_PYTHON=""

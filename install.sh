@@ -68,29 +68,21 @@ EXECUTABLE_FILES=(
   kiro-observability-hook.py
 )
 BIN_FILES=(harness-auto harness-exec harness-profile)
-MANAGED_MARKER=".harness-launcher-managed"
 
-for managed_dir in "$SHARE_DIR" "$BIN_DIR"; do
-  if [[ -L "$managed_dir" ]]; then
-    echo "ERROR: refusing symlinked install directory: $managed_dir" >&2
+for install_dir in "$SHARE_DIR" "$BIN_DIR"; do
+  if [[ -L "$install_dir" ]]; then
+    echo "ERROR: refusing symlinked install directory: $install_dir" >&2
     exit 1
   fi
-  if [[ -e "$managed_dir" && ! -d "$managed_dir" ]]; then
-    echo "ERROR: install destination is not a directory: $managed_dir" >&2
+  if [[ -e "$install_dir" && ! -d "$install_dir" ]]; then
+    echo "ERROR: install destination is not a directory: $install_dir" >&2
     exit 1
   fi
 done
 
-share_is_managed=false
-if [[ -f "$SHARE_DIR/$MANAGED_MARKER" && ! -L "$SHARE_DIR/$MANAGED_MARKER" ]]; then
-  share_is_managed=true
-elif [[ -f "$SHARE_DIR/launcher.sh" && ! -L "$SHARE_DIR/launcher.sh" && \
-        -f "$SHARE_DIR/aliases.zsh" && ! -L "$SHARE_DIR/aliases.zsh" ]]; then
-  # Backward-compatible ownership proof for releases before the marker existed.
-  share_is_managed=true
-fi
-
-for file in "${SHARE_FILES[@]}" "$MANAGED_MARKER"; do
+SHARE_INSTALL_FILES=()
+for file in "${SHARE_FILES[@]}"; do
+  source="$LAUNCHER_DIR/bin/$file"
   destination="$SHARE_DIR/$file"
   if [[ -L "$destination" ]]; then
     echo "ERROR: refusing foreign share symlink: $destination" >&2
@@ -100,12 +92,22 @@ for file in "${SHARE_FILES[@]}" "$MANAGED_MARKER"; do
     echo "ERROR: executable destination is a directory: $destination" >&2
     exit 1
   fi
-  if [[ -e "$destination" && "$share_is_managed" != true ]]; then
-    echo "ERROR: refusing foreign share file: $destination" >&2
+  if [[ -e "$destination" && ! -f "$destination" ]]; then
+    echo "ERROR: refusing non-regular share file: $destination" >&2
     exit 1
+  fi
+  if [[ -e "$destination" ]]; then
+    if ! cmp -s "$source" "$destination"; then
+      echo "ERROR: refusing to replace existing share file: $destination" >&2
+      echo "Move the existing installation aside or use Homebrew for managed upgrades." >&2
+      exit 1
+    fi
+  else
+    SHARE_INSTALL_FILES+=("$file")
   fi
 done
 
+BIN_INSTALL_FILES=()
 for file in "${BIN_FILES[@]}"; do
   destination="$BIN_DIR/$file"
   expected="../share/harness-launcher/$file"
@@ -121,6 +123,8 @@ for file in "${BIN_FILES[@]}"; do
   elif [[ -e "$destination" ]]; then
     echo "ERROR: refusing foreign bin file: $destination" >&2
     exit 1
+  else
+    BIN_INSTALL_FILES+=("$file")
   fi
 done
 
@@ -141,15 +145,19 @@ rollback_install() {
   set +e
   for file in "${INSTALLED_BIN[@]}"; do rm -f "$BIN_DIR/$file"; done
   for file in "${INSTALLED_SHARE[@]}"; do rm -f "$SHARE_DIR/$file"; done
-  for file in "${SHARE_FILES[@]}" "$MANAGED_MARKER"; do
-    [[ -e "$TXN_DIR/backup/share/$file" ]] && mv "$TXN_DIR/backup/share/$file" "$SHARE_DIR/$file"
-  done
-  for file in "${BIN_FILES[@]}"; do
-    [[ -L "$TXN_DIR/backup/bin/$file" ]] && mv "$TXN_DIR/backup/bin/$file" "$BIN_DIR/$file"
-  done
   [[ "$share_dir_existed" == true ]] || rmdir "$SHARE_DIR" 2>/dev/null || true
   [[ "$bin_dir_existed" == true ]] || rmdir "$BIN_DIR" 2>/dev/null || true
   [[ "$prefix_existed" == true ]] || rmdir "$PREFIX" 2>/dev/null || true
+}
+
+move_new_file() {
+  local source="$1"
+  local destination="$2"
+  mv -n "$source" "$destination"
+  if [[ -e "$source" || -L "$source" ]]; then
+    echo "ERROR: install destination appeared during commit: $destination" >&2
+    return 1
+  fi
 }
 
 finish_install() {
@@ -163,30 +171,25 @@ finish_install() {
 trap finish_install EXIT
 trap 'exit 130' HUP INT TERM
 
-mkdir -p "$TXN_DIR/share" "$TXN_DIR/bin" "$TXN_DIR/backup/share" "$TXN_DIR/backup/bin"
-for file in "${SHARE_FILES[@]}"; do
+mkdir -p "$TXN_DIR/share" "$TXN_DIR/bin"
+for file in "${SHARE_INSTALL_FILES[@]}"; do
   cp "$LAUNCHER_DIR/bin/$file" "$TXN_DIR/share/$file"
 done
-printf 'harness-launcher\n' > "$TXN_DIR/share/$MANAGED_MARKER"
-for file in "${EXECUTABLE_FILES[@]}"; do chmod 755 "$TXN_DIR/share/$file"; done
-for file in "${BIN_FILES[@]}"; do
+for file in "${EXECUTABLE_FILES[@]}"; do
+  if [[ -f "$TXN_DIR/share/$file" ]]; then chmod 755 "$TXN_DIR/share/$file"; fi
+done
+for file in "${BIN_INSTALL_FILES[@]}"; do
   ln -s "../share/harness-launcher/$file" "$TXN_DIR/bin/$file"
 done
 
 ROLLBACK_ACTIVE=true
 mkdir -p "$SHARE_DIR" "$BIN_DIR"
-for file in "${SHARE_FILES[@]}" "$MANAGED_MARKER"; do
-  [[ -e "$SHARE_DIR/$file" ]] && mv "$SHARE_DIR/$file" "$TXN_DIR/backup/share/$file"
-done
-for file in "${BIN_FILES[@]}"; do
-  [[ -L "$BIN_DIR/$file" ]] && mv "$BIN_DIR/$file" "$TXN_DIR/backup/bin/$file"
-done
-for file in "${SHARE_FILES[@]}" "$MANAGED_MARKER"; do
-  mv "$TXN_DIR/share/$file" "$SHARE_DIR/$file"
+for file in "${SHARE_INSTALL_FILES[@]}"; do
+  move_new_file "$TXN_DIR/share/$file" "$SHARE_DIR/$file"
   INSTALLED_SHARE+=("$file")
 done
-for file in "${BIN_FILES[@]}"; do
-  mv "$TXN_DIR/bin/$file" "$BIN_DIR/$file"
+for file in "${BIN_INSTALL_FILES[@]}"; do
+  move_new_file "$TXN_DIR/bin/$file" "$BIN_DIR/$file"
   INSTALLED_BIN+=("$file")
 done
 ROLLBACK_ACTIVE=false

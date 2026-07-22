@@ -66,7 +66,7 @@ cd harness-launcher
 HARNESS_LAUNCHER_PREFIX="$HOME/.local" ./install.sh
 ```
 
-The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-auto`, `harness-exec`, and `harness-profile` from `$HARNESS_LAUNCHER_PREFIX/bin`. It stages the complete install before replacing a verified managed installation, rolls back late failures, and refuses foreign files or symlinks at managed destinations.
+The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-auto`, `harness-exec`, and `harness-profile` from `$HARNESS_LAUNCHER_PREFIX/bin`. It installs only missing assets, leaves byte-identical existing assets untouched, and aborts before writing when any managed destination differs or is a symlink. Use Homebrew for in-place managed upgrades; for a source upgrade with changed assets, move the old prefix aside and reinstall.
 
 ## Quick start
 
