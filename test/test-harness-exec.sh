@@ -206,6 +206,42 @@ fi
 
 echo "PASS: harness-exec launches Claude in the explicit worktree"
 
+PROFILE_HOME="$TMP/profile-home"
+PROFILE_BIN="$TMP/profile-bin"
+HARNESS_PROFILE_HOME="$PROFILE_HOME" HARNESS_PROFILE_BIN_DIR="$PROFILE_BIN" \
+  "$PREFIX/bin/harness-profile" register "$HARNESS" >/dev/null
+: > "$CLAUDE_LOG"
+(
+  cd "$WORKTREE"
+  PATH="$STUB_BIN:/usr/bin:/bin" \
+  HOME="$FAKE_HOME" \
+  HARNESS_PROFILE_HOME="$PROFILE_HOME" \
+  HARNESS_EXEC_CLAUDE_LOG="$CLAUDE_LOG" \
+    "$PREFIX/bin/harness-auto" claude base resume acceptEdits 'orca prompt'
+)
+if ! grep -Fqx "PWD:$WORKTREE_REAL" "$CLAUDE_LOG"; then
+  echo "FAIL: harness-auto did not launch Claude in the selected worktree" >&2
+  sed 's/^/  /' "$CLAUDE_LOG" >&2
+  exit 1
+fi
+grep -Fq 'ARGV: <--resume>' "$CLAUDE_LOG" || {
+  echo "FAIL: harness-auto did not preserve the Claude resume selector" >&2
+  sed 's/^/  /' "$CLAUDE_LOG" >&2
+  exit 1
+}
+grep -Fq '<--permission-mode> <acceptEdits>' "$CLAUDE_LOG" || {
+  echo "FAIL: harness-auto did not preserve the Claude permission selector" >&2
+  sed 's/^/  /' "$CLAUDE_LOG" >&2
+  exit 1
+}
+grep -Fq '<orca prompt>' "$CLAUDE_LOG" || {
+  echo "FAIL: harness-auto did not preserve the Claude prompt" >&2
+  sed 's/^/  /' "$CLAUDE_LOG" >&2
+  exit 1
+}
+
+echo "PASS: harness-auto launches Claude through the real shared policy path"
+
 KIRO_LOG="$TMP/kiro.log"
 cat > "$PREFIX/share/harness-launcher/kiro-home-prepare.sh" <<'EOF'
 #!/usr/bin/env bash

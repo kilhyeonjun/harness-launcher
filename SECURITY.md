@@ -51,6 +51,7 @@ Important boundaries:
 - Workspace-aware profile commands use the current directory only when its canonical path remains inside the registered project. Explicit `harness-exec --cwd` follows the same resolver; symlink escapes and outside directories are rejected.
 - `harness-auto` reads regular, non-symlink profile entries only. It selects the single longest canonical boundary containing the current directory and fails closed for unmatched or equally specific duplicate registrations before starting an agent.
 - Executable profile registration refuses foreign command/registry symlinks and cross-harness prefix rebinding; replacement requires removing the conflicting registration explicitly.
+- The standalone installer replaces only verified launcher-managed share assets and exact launcher-owned bin symlinks. It stages all files and restores the previous managed installation if commit fails.
 - A workspace manager does not become the owner of launcher-managed auth, runtime homes, MCP, skills, hooks, approval modes, or observability merely because it starts `harness-exec`.
 
 ## Out of scope

@@ -66,7 +66,7 @@ cd harness-launcher
 HARNESS_LAUNCHER_PREFIX="$HOME/.local" ./install.sh
 ```
 
-The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-auto`, `harness-exec`, and `harness-profile` under `$HARNESS_LAUNCHER_PREFIX/bin`. Homebrew is the recommended installation path on macOS.
+The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-auto`, `harness-exec`, and `harness-profile` from `$HARNESS_LAUNCHER_PREFIX/bin`. It stages the complete install before replacing a verified managed installation, rolls back late failures, and refuses foreign files or symlinks at managed destinations.
 
 ## Quick start
 
