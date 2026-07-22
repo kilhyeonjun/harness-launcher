@@ -4,6 +4,14 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.19.2] — 2026-07-22
+
+### Fixed
+
+- Removed marker- and filename-based share ownership classification because either proof was forgeable.
+- Made source installation additive and fail-closed: missing assets are staged and installed, byte-identical existing assets are left untouched, and differing existing assets abort before any write.
+- Kept rollback only for newly added assets, eliminating overwrite and restore paths for pre-existing share files.
+
 ## [0.19.1] — 2026-07-22
 
 ### Fixed
