@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEMP_DIR="$(mktemp -d)"
+TEMP_DIR="$(cd "$TEMP_DIR" && pwd -P)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 PREFIX="$TEMP_DIR/prefix"
 
@@ -193,6 +194,66 @@ fi
 }
 
 FOREIGN_SHARE_PREFIX="$TEMP_DIR/foreign-share-prefix"
+
+PREFIX_LINK_TARGET="$TEMP_DIR/prefix-link-target"
+PREFIX_LINK="$TEMP_DIR/prefix-link"
+mkdir -p "$PREFIX_LINK_TARGET"
+ln -s "$PREFIX_LINK_TARGET" "$PREFIX_LINK"
+if HARNESS_LAUNCHER_PREFIX="$PREFIX_LINK" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-prefix-link.log" 2>&1; then
+  echo "FAIL: source installer followed a symlinked prefix" >&2
+  exit 1
+fi
+[[ ! -e "$PREFIX_LINK_TARGET/share/harness-launcher/aliases.zsh" ]] || {
+  echo "FAIL: installer wrote through a symlinked prefix" >&2
+  exit 1
+}
+
+SHARE_PARENT_PREFIX="$TEMP_DIR/share-parent-prefix"
+SHARE_PARENT_TARGET="$TEMP_DIR/share-parent-target"
+mkdir -p "$SHARE_PARENT_PREFIX" "$SHARE_PARENT_TARGET"
+ln -s "$SHARE_PARENT_TARGET" "$SHARE_PARENT_PREFIX/share"
+if HARNESS_LAUNCHER_PREFIX="$SHARE_PARENT_PREFIX" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-share-parent-link.log" 2>&1; then
+  echo "FAIL: source installer followed a symlinked share parent" >&2
+  exit 1
+fi
+[[ ! -e "$SHARE_PARENT_TARGET/harness-launcher/aliases.zsh" ]] || {
+  echo "FAIL: installer wrote through a symlinked share parent" >&2
+  exit 1
+}
+
+ANCESTOR_TARGET="$TEMP_DIR/ancestor-target"
+ANCESTOR_LINK="$TEMP_DIR/ancestor-link"
+mkdir -p "$ANCESTOR_TARGET"
+ln -s "$ANCESTOR_TARGET" "$ANCESTOR_LINK"
+if HARNESS_LAUNCHER_PREFIX="$ANCESTOR_LINK/prefix" \
+  "$ROOT/install.sh" >"$TEMP_DIR/install-ancestor-link.log" 2>&1; then
+  echo "FAIL: source installer followed a symlinked prefix ancestor" >&2
+  exit 1
+fi
+[[ ! -e "$ANCESTOR_TARGET/prefix/share/harness-launcher/aliases.zsh" ]] || {
+  echo "FAIL: installer wrote through a symlinked prefix ancestor" >&2
+  exit 1
+}
+
+DOTDOT_TARGET="$TEMP_DIR/dotdot-target"
+DOTDOT_LINK="$TEMP_DIR/dotdot-link"
+mkdir -p "$DOTDOT_TARGET/deep"
+ln -s "$DOTDOT_TARGET/deep" "$DOTDOT_LINK"
+if (
+  cd "$TEMP_DIR"
+  HARNESS_LAUNCHER_PREFIX="dotdot-link/../escaped-prefix" \
+    "$ROOT/install.sh" >"$TEMP_DIR/install-dotdot-link.log" 2>&1
+); then
+  echo "FAIL: source installer accepted a symlink-plus-dotdot prefix" >&2
+  exit 1
+fi
+[[ ! -e "$DOTDOT_TARGET/escaped-prefix/share/harness-launcher/aliases.zsh" ]] || {
+  echo "FAIL: installer escaped through a symlink-plus-dotdot prefix" >&2
+  exit 1
+}
+
 mkdir -p "$FOREIGN_SHARE_PREFIX/share" "$FOREIGN_SHARE_PREFIX/external-share"
 ln -s "$FOREIGN_SHARE_PREFIX/external-share" "$FOREIGN_SHARE_PREFIX/share/harness-launcher"
 if HARNESS_LAUNCHER_PREFIX="$FOREIGN_SHARE_PREFIX" \

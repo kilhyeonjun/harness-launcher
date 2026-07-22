@@ -34,7 +34,30 @@ select_harness_python3() {
   return 1
 }
 
-select_harness_python3 >/dev/null || exit 1
+HARNESS_PYTHON_BIN="$(select_harness_python3)" || exit 1
+
+reject_symlink_components() {
+  "$HARNESS_PYTHON_BIN" -c '
+import os
+import sys
+
+raw_path = sys.argv[1]
+if ".." in raw_path.split(os.path.sep):
+    print(f"ERROR: refusing parent traversal in install path: {raw_path}", file=sys.stderr)
+    raise SystemExit(1)
+path = os.path.abspath(raw_path)
+current = os.path.sep
+for component in path.split(os.path.sep)[1:]:
+    current = os.path.join(current, component)
+    if os.path.islink(current):
+        print(f"ERROR: refusing symlinked install path component: {current}", file=sys.stderr)
+        raise SystemExit(1)
+' "$1"
+}
+
+for install_path in "$PREFIX" "$SHARE_DIR" "$BIN_DIR"; do
+  reject_symlink_components "$install_path"
+done
 
 SHARE_FILES=(
   aliases.zsh
@@ -135,6 +158,7 @@ bin_dir_existed=false
 [[ -d "$SHARE_DIR" ]] && share_dir_existed=true
 [[ -d "$BIN_DIR" ]] && bin_dir_existed=true
 mkdir -p "$PREFIX"
+reject_symlink_components "$PREFIX"
 TXN_DIR="$(mktemp -d "$PREFIX/.harness-launcher-install.XXXXXX")"
 ROLLBACK_ACTIVE=false
 INSTALLED_SHARE=()
@@ -184,6 +208,9 @@ done
 
 ROLLBACK_ACTIVE=true
 mkdir -p "$SHARE_DIR" "$BIN_DIR"
+for install_path in "$PREFIX" "$SHARE_DIR" "$BIN_DIR"; do
+  reject_symlink_components "$install_path"
+done
 for file in "${SHARE_INSTALL_FILES[@]}"; do
   move_new_file "$TXN_DIR/share/$file" "$SHARE_DIR/$file"
   INSTALLED_SHARE+=("$file")
