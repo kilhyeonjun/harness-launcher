@@ -4,6 +4,13 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.19.3] — 2026-07-22
+
+### Fixed
+
+- Reject every existing symlink component and any `..` traversal in the install prefix, share path, and bin path before staging and again immediately before commit.
+- Cover symlinked prefixes, symlinked `share` parents, and symlinked prefix ancestors without writing through them.
+
 ## [0.19.2] — 2026-07-22
 
 ### Fixed
