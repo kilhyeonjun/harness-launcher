@@ -52,8 +52,8 @@ bin/                       launcher and runtime adapters
   codex-home-prepare.sh     generated per-project Codex home
   kiro-home-prepare.sh      generated per-project Kiro home
 test/                      shell regression tests
-docs/                      architecture and runtime documentation
-install.sh                 source installer
+ docs/                      architecture and runtime documentation
+ install.sh                 disabled source-install migration stub
 ```
 
 Installed Homebrew files and `<project>/.harness/**` are generated outputs. Change the canonical files in this repository instead.

@@ -4,6 +4,17 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.19.4] — 2026-07-22
+
+### Changed
+
+- Disabled standalone source installation. `install.sh` now exits without writing and directs users to Homebrew.
+- Moved runtime-copy setup used by integration tests into a test-only fixture helper.
+
+### Security
+
+- Eliminated the source installer's multi-file commit and rollback surface, including parent-swap TOCTOU writes and cleanup outside the intended prefix.
+
 ## [0.19.3] — 2026-07-22
 
 ### Fixed

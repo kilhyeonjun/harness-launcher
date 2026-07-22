@@ -58,15 +58,15 @@ brew update
 brew upgrade harness-launcher
 ```
 
-### From source
+### From source (disabled)
+
+Standalone source installation is disabled due to an unfixable TOCTOU vulnerability in portable shell installers. Use Homebrew instead. Existing source installations should migrate:
 
 ```bash
-git clone https://github.com/kilhyeonjun/harness-launcher.git
-cd harness-launcher
-HARNESS_LAUNCHER_PREFIX="$HOME/.local" ./install.sh
+brew tap kilhyeonjun/tap
+brew install harness-launcher
+# Then remove the old source-installed files from $HARNESS_LAUNCHER_PREFIX
 ```
-
-The source installer copies the launcher into `$HARNESS_LAUNCHER_PREFIX/share/harness-launcher` and exposes `harness-auto`, `harness-exec`, and `harness-profile` from `$HARNESS_LAUNCHER_PREFIX/bin`. It rejects `..` traversal and symlinks in every existing prefix/share/bin path component, installs only missing assets, leaves byte-identical existing assets untouched, and aborts before writing when any managed destination differs or is a symlink. Use Homebrew for in-place managed upgrades; for a source upgrade with changed assets, move the old prefix aside and reinstall.
 
 ## Quick start
 

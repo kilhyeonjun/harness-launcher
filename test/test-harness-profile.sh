@@ -19,7 +19,7 @@ HARNESS_NAME="test harness"
 HARNESS_PREFIX="th"
 EOF
 
-HARNESS_LAUNCHER_PREFIX="$PREFIX" "$ROOT/install.sh" >/dev/null
+bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$PREFIX"
 
 cat > "$PREFIX/share/harness-launcher/codex-home-prepare.sh" <<'EOF'
 #!/usr/bin/env bash
