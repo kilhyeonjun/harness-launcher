@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory() as tmp:
     spawn_worker = module._spawn_worker
     module._spawn_worker = lambda *_args, **_kwargs: None
     started = time.monotonic()
-    rc = module.handle("postToolUse", "kh", json.dumps({"tool_name": "fs_read", "secret": "must-not-persist"}), queue)
+    rc = module.handle("postToolUse", "alpha", json.dumps({"tool_name": "fs_read", "secret": "must-not-persist"}), queue)
     elapsed = time.monotonic() - started
     assert rc == 0
     assert elapsed < 0.1, elapsed
@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory() as tmp:
         return object()
     module.subprocess.Popen = fake_popen
     for _ in range(5):
-        assert module.handle("agentSpawn", "gp", "{}", queue) == 0
+        assert module.handle("agentSpawn", "beta", "{}", queue) == 0
     module.subprocess.Popen = real_popen
     assert len(list(queue.glob("*.json"))) <= 2
     assert len(popen_calls) == 1, f"burst spawned {len(popen_calls)} workers"
@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory() as tmp:
 with tempfile.TemporaryDirectory() as tmp:
     queue = pathlib.Path(tmp)
     module._spawn_worker = lambda *_args, **_kwargs: None
-    module.handle("agentSpawn", "gd", "{}", queue)
+    module.handle("agentSpawn", "gamma", "{}", queue)
     sent = []
     post_json = module._post_json
     module._post_json = lambda payload: sent.append(payload) or True
@@ -67,8 +67,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert len(sent) == 1
     assert not list(queue.glob("*.json"))
 
-assert module.handle("unknown", "kh", "{}") == 0
-assert module.handle("agentSpawn", "bad", "{}") == 0
+assert module.handle("unknown", "alpha", "{}") == 0
+assert module.handle("agentSpawn", "bad profile", "{}") == 0
 assert module.main(["hook.py"]) == 0
 
 redirect_hits = []
@@ -91,7 +91,7 @@ redirect = HTTPServer(("127.0.0.1", 0), RedirectHandler)
 for server in (trap, redirect):
     threading.Thread(target=server.serve_forever, daemon=True).start()
 module.OTLP_PORT = redirect.server_port
-assert module._post_json(module._payload("kiro.session.start", "kh")) is False
+assert module._post_json(module._payload("kiro.session.start", "alpha")) is False
 for server in (redirect, trap): server.shutdown(); server.server_close()
 assert redirect_hits == ["/v1/logs"]
 assert trap_hits == [], "loopback collector redirects must never be followed"

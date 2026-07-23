@@ -6,7 +6,7 @@ source "$ROOT/bin/harness-common.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/config/.local"
-printf 'HARNESS_PREFIX=kh\n' > "$TMP/config/launcher.env"
+printf 'HARNESS_PREFIX=alpha\n' > "$TMP/config/launcher.env"
 
 check_disabled() {
   local value="$1"
@@ -33,7 +33,7 @@ HARNESS_OTLP_HTTP_ENDPOINT=http://127.0.0.1:4318
 EOF
 harness_observability_load "$TMP"
 [[ "$HARNESS_OBSERVABILITY_ACTIVE" -eq 1 ]]
-[[ "$HARNESS_OBSERVABILITY_PROFILE" == kh ]]
+[[ "$HARNESS_OBSERVABILITY_PROFILE" == alpha ]]
 [[ "$HARNESS_OTLP_HTTP_ENDPOINT" == "http://127.0.0.1:4318" ]]
 [[ "$HARNESS_OBSERVABILITY_ENABLED" == sentinel ]]
 

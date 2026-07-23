@@ -24,7 +24,7 @@ export BROKER_LOG
 source "$ROOT/bin/harness-common.sh"
 
 export CODEX_HOME="$TMP/codex-home"
-export HARNESS_PREFIX="kh"
+export HARNESS_PREFIX="alpha"
 export CMUX_WORKSPACE_ID="workspace:7"
 export CMUX_TAB_ID="tab:24"
 export CMUX_SURFACE_ID="surface:24"
@@ -42,7 +42,7 @@ for _ in $(seq 1 40); do
   [[ -s "$BROKER_LOG" ]] && break
   sleep 0.05
 done
-grep -q -- "--broker $CODEX_CMUX_TITLE_REQUEST_FILE surface:24 kh $CODEX_HOME" "$BROKER_LOG" || {
+grep -q -- "--broker $CODEX_CMUX_TITLE_REQUEST_FILE surface:24 alpha $CODEX_HOME" "$BROKER_LOG" || {
   echo "FAIL: helper did not receive exact broker target"
   cat "$BROKER_LOG"
   exit 1

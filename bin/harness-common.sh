@@ -113,7 +113,7 @@ harness_mode_label() {
 }
 
 # --- kiro-native mode table -------------------------------------------------
-# Kiro CLI takes literal model IDs; shared by the TUI menu and `kh kiro-cli`.
+# Kiro CLI takes literal model IDs; shared by the TUI menu and `<prefix> kiro-cli`.
 harness_kiro_mode_resolve() {
   local mode="$1"
   HARNESS_KIRO_MODEL=""
@@ -185,8 +185,7 @@ harness_codex_cmux_broker_start() {
   [ -n "${CMUX_TAB_ID:-}" ] || return 0
   [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
   case "${HARNESS_PREFIX:-}" in
-    kh|gp|gd) ;;
-    *) return 0 ;;
+    ''|[0-9-]*|*[!A-Za-z0-9_-]*) return 0 ;;
   esac
 
   state_dir="${CODEX_CMUX_TITLE_STATE_DIR:-$CODEX_HOME/.cmux-title-sync}"
@@ -263,8 +262,7 @@ harness_observability_load() {
   fi
 
   case "$prefix" in
-    kh|gp|gd) ;;
-    *) return 1 ;;
+    ''|[0-9-]*|*[!A-Za-z0-9_-]*) return 1 ;;
   esac
   config_file="$harness_dir/config/.local/observability.env"
   [ -f "$config_file" ] || return 1

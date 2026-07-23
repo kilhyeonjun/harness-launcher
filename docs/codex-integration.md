@@ -210,8 +210,8 @@ not in a generated project `config.toml`.
 Inside cmux, the launcher starts a fail-open title broker under the live
 launcher/Codex process ancestry. The short-lived `SessionStart` hook hands the
 broker only the exact session ID and Codex owner PID; the broker then replaces
-the native composite title with `<thread name> | kh`, `<thread name> | gp`,
-or `<thread name> | gd`. It reads only that session ID from the project's
+the native composite title with `<thread name> | <profile>`. It reads only that
+session ID from the project's
 `session_index.jsonl`, targets the exact starting tab surface, and never
 renames the workspace. Missing cmux state or thread metadata is a silent no-op.
 Because Codex trusts hook commands by hash, review a newly generated or changed

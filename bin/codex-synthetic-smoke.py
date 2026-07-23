@@ -2,6 +2,7 @@
 """Send one bounded metadata-only Codex smoke event to the launcher Collector."""
 import http.client
 import json
+import re
 import secrets
 import sys
 import time
@@ -9,7 +10,7 @@ import time
 EVENT = "codex.synthetic_smoke"
 VERIFICATION_EVENT = "codex.instrumentation_verified"
 ENDPOINT = "http://127.0.0.1:4318"
-PROFILES = {"kh", "gp", "gd"}
+PROFILE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 
 
 def _attribute(key, value):
@@ -43,8 +44,8 @@ def _payload(profile, marker):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 2 or argv[0] not in PROFILES or argv[1] != ENDPOINT:
-        print("usage: codex-synthetic-smoke.py <kh|gp|gd> http://127.0.0.1:4318", file=sys.stderr)
+    if len(argv) != 2 or not PROFILE.fullmatch(argv[0]) or argv[1] != ENDPOINT:
+        print("usage: codex-synthetic-smoke.py <profile> http://127.0.0.1:4318", file=sys.stderr)
         return 2
 
     profile = argv[0]

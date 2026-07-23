@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -15,7 +16,7 @@ import time
 from pathlib import Path
 
 
-VALID_PREFIXES = {"kh", "gp", "gd"}
+VALID_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 CMUX_COMMAND_TIMEOUT_SECONDS = 8
 BROKER_REQUEST_TIMEOUT_SECONDS = 120
 
@@ -24,6 +25,10 @@ def sanitize_title(value: str) -> str:
     return "".join(
         ch for ch in value if not (ord(ch) < 32 or 127 <= ord(ch) < 160)
     ).strip()
+
+
+def valid_prefix(value: str) -> bool:
+    return bool(VALID_PREFIX.fullmatch(value))
 
 
 def latest_thread_name(index_path: Path, session_id: str) -> str | None:
@@ -203,7 +208,7 @@ def broker(
         request_is_owned = True
     except OSError:
         return 0
-    if prefix not in VALID_PREFIXES or not launcher_pid_raw.isdecimal():
+    if not valid_prefix(prefix) or not launcher_pid_raw.isdecimal():
         return finish()
     launcher_pid = int(launcher_pid_raw)
     cmux = resolve_cmux()
@@ -251,7 +256,7 @@ def watch(
     state_dir_raw: str,
     poll_seconds_raw: str,
 ) -> int:
-    if prefix not in VALID_PREFIXES or not owner_pid_raw.isdecimal():
+    if not valid_prefix(prefix) or not owner_pid_raw.isdecimal():
         return 0
     owner_pid = int(owner_pid_raw)
     try:
@@ -305,7 +310,7 @@ def session_start() -> int:
     surface = os.environ.get("CMUX_SURFACE_ID", "")
     if not isinstance(session_id, str) or not session_id:
         return 0
-    if prefix not in VALID_PREFIXES or not codex_home or not surface:
+    if not valid_prefix(prefix) or not codex_home or not surface:
         return 0
 
     owner_pid = discover_codex_owner_pid()

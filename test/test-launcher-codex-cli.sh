@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # test-launcher-codex-cli.sh — verify Codex CLI native launch (NOT the gateway).
 #
-# Asserts that `kh codex <mode>` (and gd/gp counterparts):
+# Asserts that `<prefix> codex <mode>`:
 #   - executes `codex` (not `claude`)
 #   - sets CODEX_HOME=$HARNESS_DIR/.harness/codex
 #   - passes -C/--cd $HARNESS_DIR
@@ -337,7 +337,7 @@ echo "PASS: codex CLI happy work fails closed"
 run_session "resume"   "resume"           ""        || exit 1
 run_session "continue" "resume"           "--last"  || exit 1
 
-# `gd codex <mode>` routes through THIS aliases.zsh path (not launcher.sh), so it
+# The profile command routes through THIS aliases.zsh path (not launcher.sh), so it
 # must export MCP secrets from .claude/settings.local.json `env` — otherwise
 # native codex sees e.g. HYPERDX_API_KEY unset and streamable_http bearer auth
 # (bearer_token_env_var) cannot resolve. Earlier runs above had no
@@ -355,7 +355,7 @@ if [[ "$mcp_key" != "secret-from-settings-xyz" ]]; then
   sed 's/^/    /' "$STUB_ENV"
   exit 1
 fi
-echo "PASS: codex CLI base → settings.local.json env exported to codex (gd codex MCP auth)"
+echo "PASS: codex CLI base → settings.local.json env exported to codex"
 
 STUB_RAW="$TEST_TEMP/output-raw-codex-wrapper.txt"
 : > "$STUB_RAW"
