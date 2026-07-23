@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import sys
@@ -20,7 +21,7 @@ MAX_INPUT_BYTES = 1_048_576
 MAX_QUEUE_FILES = 256
 MAX_DRAIN_FILES = 64
 QUEUE_TTL_SECONDS = 3600
-_ALLOWED_PROFILES = {"kh", "gp", "gd"}
+_PROFILE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _SAFE_TOOL_NAMES = {
     "execute_bash", "fs_read", "fs_write", "web_search", "use_aws",
     "knowledge", "thinking", "todo_list", "introspect",
@@ -214,7 +215,7 @@ def drain(queue_dir: Path | None = None, inherited_lock_fd: int | None = None) -
 
 
 def handle(event: str, profile: str, raw: str, queue_dir: Path | None = None) -> int:
-    if profile not in _ALLOWED_PROFILES or event not in _ALLOWED_EVENTS:
+    if not _PROFILE.fullmatch(profile) or event not in _ALLOWED_EVENTS:
         return 0
     if len(raw.encode("utf-8", "replace")) > MAX_INPUT_BYTES:
         return 0

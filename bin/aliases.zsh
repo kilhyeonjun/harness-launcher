@@ -168,7 +168,7 @@ harness_register() {
   }
   [[ -z "$HARNESS_NAME" ]] && { echo "harness_register: HARNESS_NAME required in $env_file" >&2; return 1; }
 
-  # Remove any pre-existing alias that shadows the prefix (e.g., oh-my-zsh gd/gp aliases)
+  # Remove any pre-existing alias that shadows the configured prefix.
   unalias "$HARNESS_PREFIX" 2>/dev/null || true
 
   # Define <prefix>() as a thin wrapper around the same executable contract used
@@ -196,7 +196,7 @@ harness_register() {
 }
 
 # _harness_launcher_run <harness-dir> [args...]
-#   Mirrors the behavior of the old kh/gd/gp function.
+#   Shared implementation for every registered profile function.
 _harness_launcher_run() {
   local HARNESS_DIR="$1"; shift
   local HARNESS_NAME HARNESS_PREFIX

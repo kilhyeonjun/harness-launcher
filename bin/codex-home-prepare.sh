@@ -836,7 +836,7 @@ for name in sorted(servers):
         env["NODE_REPL_UNTRUSTED_ENV_ALLOWLIST"] = ",".join(merged_allowlist)
         if codex_home:
             env.setdefault("CODEX_HOME", codex_home)
-        env["NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER"] = "Terminal kh/gd/gp Codex sessions do not receive Codex Desktop's in-app Browser/IAB backend. Do not use @Browser from terminal Codex."
+        env["NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER"] = "Terminal Codex sessions do not receive Codex Desktop's in-app Browser/IAB backend. Do not use @Browser from terminal Codex."
         env["NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME"] = "Chrome plugin cache and native host are prepared, but terminal codex exec/TUI currently may not receive the extension backend. Verify agent.browsers.list() before claiming @Chrome works; Codex Desktop @Chrome remains the supported path."
     if env:
         print(f"[mcp_servers.{name}.env]")
@@ -1254,7 +1254,7 @@ prepare_bundled_plugins() {
   fi
   # Chrome's native messaging manifest is global and points at
   # ~/.codex/plugins/cache/openai-bundled/chrome/latest. Keep that link valid
-  # even when kh/gd/gp run with a per-harness CODEX_HOME. This touches global
+  # even when profiles use a per-harness CODEX_HOME. This touches global
   # cache state, so callers may run it under with_global_codex_lock.
   ensure_global_bundled_plugin_latest "chrome"
   write_global_chrome_extension_host_config

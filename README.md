@@ -281,6 +281,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for project scope, test expectations, por
 
 ## Documentation
 
+- [Public-safe contract demo](https://github.com/kilhyeonjun/harness-launcher-demo)
 - [Documentation index](docs/README.md)
 - [Architecture and trust boundaries](docs/architecture.md)
 - [Codex integration](docs/codex-integration.md)

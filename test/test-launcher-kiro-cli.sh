@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # test-launcher-kiro-cli.sh — verify Kiro CLI native launch.
 #
-# Asserts that `kh kiro-cli <mode>`:
+# Asserts that `<prefix> kiro-cli <mode>`:
 #   - executes `kiro-cli chat` (not `claude`)
 #   - sets KIRO_HOME=$HARNESS_DIR/.harness/kiro
 #   - passes --model and --effort correctly

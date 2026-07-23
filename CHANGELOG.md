@@ -4,6 +4,16 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+### Changed
+
+- Generalized cmux title and metadata-only observability profile validation to
+  every valid registered prefix instead of a private fixed alias set.
+
+### Security
+
+- Removed private profile aliases from tracked code, tests, and documentation,
+  with a repository-wide public-sanitization regression gate.
+
 ## [0.19.4] — 2026-07-22
 
 ### Changed
@@ -52,8 +62,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 ### Changed
 
 - Orca may now use `harness-auto` as its Claude, Codex, and Kiro command
-  override, so built-in agent startup preserves kh/gp/gd policy without a
-  manually selected profile command.
+  override, so built-in agent startup preserves the selected profile policy
+  without a manually selected profile command.
 
 ## [0.18.0] — 2026-07-21
 
@@ -104,10 +114,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - **Codex puts actionable context first.** The native terminal title now uses
   `activity | thread-title | project-name`, while the footer places
   `context-remaining` before `branch-changes`.
-- **cmux tabs use the short harness alias after the thread name.** Native kh,
-  gp, and gd launches export their dynamically scoped prefix, and a fail-open
+- **cmux tabs use the short harness alias after the thread name.** Registered
+  profile launches export their dynamically scoped prefix, and a fail-open
   SessionStart watcher labels only the exact starting tab as
-  `<thread name> | kh/gp/gd`. The watcher reads the matching session ID only,
+  `<thread name> | <profile>`. The watcher reads the matching session ID only,
   sanitizes controls, suppresses duplicate writes, and stops with its Codex
   owner or an unavailable cmux surface.
 

@@ -56,7 +56,7 @@ For each profile:
    Kiro command:   harness-auto     arguments: kiro-cli
    ```
 
-4. Select one reviewed default runtime; **Codex** is the conservative default for mixed kh/gp/gd projects. Do not select Orca's **Auto** mode unless every agent it may choose is either mapped through `harness-auto` or disabled.
+4. Select one reviewed default runtime; **Codex** is the conservative default for mixed-profile projects. Do not select Orca's **Auto** mode unless every agent it may choose is either mapped through `harness-auto` or disabled.
 5. Keep Agent Permissions on **Manual** and keep Orca-managed hooks off.
 
 Do not replace the native binaries with same-name recursive PATH shims. `harness-auto` is a separate launcher-owned command: the first fixed argument names the real runtime, and Orca's remaining prompt, resume, and permission arguments stay in order. It fails closed when a worktree is outside every registered boundary or matches more than one equally specific registration.
