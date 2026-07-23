@@ -4,6 +4,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-07-23
+
 ### Changed
 
 - Generalized cmux title and metadata-only observability profile validation to
