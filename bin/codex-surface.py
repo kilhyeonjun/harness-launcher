@@ -1002,9 +1002,18 @@ def resolve_mcp(manifest: dict, *, profile: str, home: Path, repo_root: Path, co
             owners[name] = str(path)
     enabled = set(mcp["profiles"][profile]["enabled"])
     unresolved = enabled - servers
-    invalid = unresolved - PRODUCT_MCP_SERVERS
-    if invalid:
-        fail(f"MCP profile {profile!r} enables servers with no definition: {sorted(invalid)}")
+    undefined = unresolved - PRODUCT_MCP_SERVERS
+    if undefined:
+        # enabled is a wish-list, not a contract: a server enabled without a
+        # definition (e.g. a host-local MCP absent on this machine) is dropped,
+        # not fatal. mcp.local.json (gitignored) thereby decides per-host exposure.
+        # A stderr note keeps a typo visible without blocking the launcher.
+        print(
+            f"note: MCP profile {profile!r} drops undefined servers: {sorted(undefined)}",
+            file=sys.stderr,
+        )
+        enabled -= undefined
+        unresolved = enabled - servers
     return {
         "profile": profile,
         "enabled": sorted(enabled),

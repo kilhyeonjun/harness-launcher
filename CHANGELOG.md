@@ -4,6 +4,16 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-07-24
+
+### Changed
+
+- MCP profile resolution now treats `enabled` as a wish-list: a server enabled in
+  a profile but absent from every definition source is dropped with a stderr note
+  instead of failing the launcher. A gitignored `mcp.local.json` thereby decides
+  per-host MCP exposure — a machine without access to a given server (e.g. a
+  host-local RAG backend) starts cleanly instead of dropping to the menu.
+
 ## [0.20.0] — 2026-07-23
 
 ### Changed

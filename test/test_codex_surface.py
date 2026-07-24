@@ -334,6 +334,20 @@ class ResolverTests(SurfaceFixture):
         result = self.run_resolver("--mcp-profile", "work", expect=2)
         self.assertIn("required_in_all_profiles", result.stderr)
 
+    def test_enabled_without_definition_is_dropped_not_fatal(self):
+        # A server enabled in a profile but absent from every definition source
+        # (e.g. a host-local MCP not present on this machine) is dropped, not fatal.
+        # mcp.local.json (gitignored) thereby decides per-host exposure. A stderr
+        # note keeps the drop visible so a typo does not vanish silently.
+        manifest = base_manifest()
+        manifest["mcp"]["profiles"]["default"]["enabled"].append("host-local-rag")
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        result = self.run_resolver("--mcp-profile", "default")
+        catalog = self.read_catalog()
+        self.assertEqual(catalog["mcp"]["enabled"], ["context7", "harness-rag"])
+        self.assertNotIn("host-local-rag", catalog["mcp"]["enabled"])
+        self.assertIn("host-local-rag", result.stderr)
+
 
 @unittest.skipUnless(Path("/usr/bin/lockf").is_file(), "requires macOS /usr/bin/lockf")
 class PrepareIntegrationTests(unittest.TestCase):
