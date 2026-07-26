@@ -110,6 +110,12 @@ run_prefix "$TEST_TEMP/th" "th" ultracode
   || { echo "FAIL: ultracode must NOT pass '--effort ultracode' (CLI rejects it): $RUN_ARGS"; exit 1; }
 echo "PASS: direct ultracode → --model opus[1m] --effort xhigh (no --effort ultracode)"
 
+# 1b. xhigh needs thinking enabled or the API 400s on the first prompt, so the
+#     launch must force it rather than trusting the user's settings.json.
+[[ "$RUN_ARGS" == *'--settings {"alwaysThinkingEnabled":true}'* ]] \
+  || { echo "FAIL: direct ultracode must force thinking on for xhigh: $RUN_ARGS"; exit 1; }
+echo "PASS: direct ultracode forces alwaysThinkingEnabled for xhigh"
+
 # 2. a hint about session-only /effort is surfaced to the user
 [[ "$RUN_STDERR" == *"/effort"* ]] \
   || { echo "FAIL: direct ultracode should print a /effort hint, stderr was: '$RUN_STDERR'"; exit 1; }

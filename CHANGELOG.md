@@ -4,6 +4,19 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.20.2] — 2026-07-27
+
+### Fixed
+
+- `rich` and `ultracode` resolve to `xhigh` (and kiro `rich` to `max`), which the
+  API rejects while thinking is disabled: `output_config.effort 'xhigh' is not
+  supported when thinking is disabled on this model`. A machine with
+  `alwaysThinkingEnabled: false` in `settings.json` therefore 400'd on the first
+  prompt of every rich session. Those two efforts now launch with
+  `--settings '{"alwaysThinkingEnabled":true}'` so the mode no longer depends on
+  per-machine settings. `high` and below are untouched and keep the user's own
+  choice; `--settings` merges, so unrelated settings survive.
+
 ## [0.20.1] — 2026-07-24
 
 ### Changed

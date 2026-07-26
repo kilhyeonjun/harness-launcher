@@ -5,7 +5,10 @@
 #   fast  → --model haiku --effort low
 #   base  → --model sonnet --effort high
 #   plan  → --model opusplan --effort high
-#   rich  → --model opus[1m] --effort xhigh
+#   rich  → --model opus[1m] --effort xhigh + forced thinking via --settings
+# xhigh/max are rejected by the API when thinking is disabled, so the launcher
+# forces alwaysThinkingEnabled for those efforts instead of relying on the
+# user's settings.json.
 
 set -e
 
@@ -61,9 +64,21 @@ extract_has_flag() {
   fi
 }
 
+# Helper: check whether the launch forces thinking on via --settings.
+# xhigh/max are rejected by the API when thinking is disabled, so the launcher
+# must not depend on the user's settings.json for those efforts.
+extract_forces_thinking() {
+  local args="$1"
+  if echo "$args" | grep -q -- '--settings {"alwaysThinkingEnabled":true}'; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
 # Helper: run a mode and capture output
 run_mode() {
-  local mode="$1" expected_model="$2" expected_effort="$3"
+  local mode="$1" expected_model="$2" expected_effort="$3" expected_thinking="$4"
   local stub_file="$TEST_TEMP/output-$mode.txt"
 
   # Run in subshell with stub claude in PATH
@@ -85,6 +100,7 @@ run_mode() {
   local actual_model=$(extract_model "$args_line")
   local actual_effort=$(extract_effort "$args_line")
   local has_flag=$(extract_has_flag "$args_line")
+  local forces_thinking=$(extract_forces_thinking "$args_line")
 
   if [[ "$actual_model" != "$expected_model" ]]; then
     echo "FAIL: $mode — expected --model $expected_model, got '$actual_model'"
@@ -104,15 +120,49 @@ run_mode() {
     return 1
   fi
 
-  echo "PASS: $mode → --model $expected_model --effort $expected_effort + flag"
+  if [[ "$forces_thinking" != "$expected_thinking" ]]; then
+    echo "FAIL: $mode — expected forced-thinking $expected_thinking, got '$forces_thinking'"
+    echo "  Full args: $args_line"
+    return 1
+  fi
+
+  echo "PASS: $mode → --model $expected_model --effort $expected_effort + flag (thinking forced: $expected_thinking)"
   return 0
 }
 
-# Run mode tests
-run_mode "fast" "haiku" "low"       || exit 1
-run_mode "base" "sonnet" "high"     || exit 1
-run_mode "plan" "opusplan" "high"   || exit 1
-run_mode "rich" "opus[1m]" "xhigh"  || exit 1
+# Run mode tests. rich uses xhigh, which the API rejects when thinking is
+# disabled, so only rich must carry the forced-thinking --settings override.
+run_mode "fast" "haiku" "low"      false || exit 1
+run_mode "base" "sonnet" "high"    false || exit 1
+run_mode "plan" "opusplan" "high"  false || exit 1
+run_mode "rich" "opus[1m]" "xhigh" true  || exit 1
+
+# Explicit effort tokens must get the same treatment as mode-derived efforts.
+run_effort_token() {  # <token> <expected_thinking>
+  local token="$1" expected_thinking="$2"
+  local stub_file="$TEST_TEMP/output-effort-$token.txt"
+  (
+    export TEST_STUB_FILE="$stub_file"
+    export PATH="$TEST_TEMP:$PATH"
+    source "$LAUNCHER_DIR/bin/aliases.zsh"
+    _harness_launcher_run "$TEST_HARNESS" "$token"
+  ) 2>/dev/null || true
+  local args_line=$(grep "^ARGS:" "$stub_file" | head -1 | cut -d: -f2-)
+  local forces_thinking=$(extract_forces_thinking "$args_line")
+  if [[ "$forces_thinking" != "$expected_thinking" ]]; then
+    echo "FAIL: effort '$token' — expected forced-thinking $expected_thinking, got '$forces_thinking'"
+    echo "  Full args: $args_line"
+    return 1
+  fi
+  echo "PASS: effort '$token' → forced-thinking $expected_thinking"
+  return 0
+}
+
+run_effort_token low    false || exit 1
+run_effort_token medium false || exit 1
+run_effort_token high   false || exit 1
+run_effort_token xhigh  true  || exit 1
+run_effort_token max    true  || exit 1
 
 # Local MCP overlay: Claude Code should receive local/private MCP config files
 # in addition to its normal project .mcp.json auto-discovery. Duplicate server

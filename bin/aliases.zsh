@@ -350,7 +350,17 @@ _harness_launcher_run() {
         [[ -n "${CODEX_HAIKU_MODEL:-}" ]]  && export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CODEX_HAIKU_MODEL"
       fi
     fi
-    [[ -n "$env_effort" ]] && claude_args+=(--effort "$env_effort")
+    if [[ -n "$env_effort" ]]; then
+      claude_args+=(--effort "$env_effort")
+      # The API rejects xhigh/max while thinking is disabled ("effort 'xhigh' is
+      # not supported when thinking is disabled on this model"). rich/ultracode
+      # both resolve to xhigh, so a user with alwaysThinkingEnabled=false in
+      # settings.json got a 400 at first prompt. Force it on for those efforts
+      # instead of depending on per-machine settings; high and below are
+      # unaffected and keep the user's own choice.
+      [[ "$env_effort" == (xhigh|max) ]] \
+        && claude_args+=(--settings '{"alwaysThinkingEnabled":true}')
+    fi
     claude_args+=(--exclude-dynamic-system-prompt-sections)
     harness_autocompact_pct "${provider_name:-direct}" "${claude_args[@]}"
     # Shared-table globals must not linger in the interactive shell.
