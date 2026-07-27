@@ -4,6 +4,22 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.20.3] — 2026-07-27
+
+### Added
+
+- Each harness now derives its own `GH_TOKEN` on launch. `gh` keeps a single
+  global active account, but the harnesses legitimately expect different GitHub
+  users (`kh` → `kilhyeonjun`, `gp`/`gd` → `kil-penguin`), so whichever harness
+  switched last decided whether the others' `gh` commands succeeded. On entry
+  `harness_gh_token_load` reads `github_user` from the harness' own
+  `config/.local/config.yaml` (falling back to `config/config.yaml`) and exports
+  the matching `gh auth token --user` value, which takes precedence over the
+  stored credentials. Strictly fail-open: a missing config, an unknown user, a
+  malformed `github_user`, or no `gh` on `PATH` exports nothing and leaves the
+  `pre-bash-gh-auth` hook as the backstop — an empty `GH_TOKEN` would override
+  the stored credentials with nothing. The token value is never printed.
+
 ## [0.20.2] — 2026-07-27
 
 ### Fixed

@@ -130,6 +130,9 @@ codex() {
       local HARNESS_NAME HARNESS_PREFIX
       source "$harness_dir/config/launcher.env"
       export HARNESS_PREFIX
+      # Per-harness GitHub identity: fail-open, never overrides with an empty token.
+      local GH_TOKEN HARNESS_GH_USER
+      harness_gh_token_load "$harness_dir" || true
       if harness_observability_load "$harness_dir"; then
         OTEL_RESOURCE_ATTRIBUTES="service.name=codex_exec,obs.runtime=codex,obs.profile=$HARNESS_OBSERVABILITY_PROFILE"
         export OTEL_RESOURCE_ATTRIBUTES
@@ -307,6 +310,9 @@ _harness_launcher_run() {
     # returned above; no-argument TUI selection is handled inside launcher.sh.
     local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE
     local HARNESS_OTLP_HTTP_ENDPOINT obs_rc
+    # Per-harness GitHub identity: fail-open, never overrides with an empty token.
+    local GH_TOKEN HARNESS_GH_USER
+    harness_gh_token_load "$HARNESS_DIR" || true
     if harness_observability_load "$HARNESS_DIR"; then
       local CLAUDE_CODE_ENABLE_TELEMETRY=1
       local OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none
@@ -405,6 +411,9 @@ _harness_launcher_run_codex_cli() {
   export HARNESS_PREFIX
   local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE HARNESS_OTLP_HTTP_ENDPOINT
   local OTEL_RESOURCE_ATTRIBUTES obs_rc
+  # Per-harness GitHub identity: fail-open, never overrides with an empty token.
+  local GH_TOKEN HARNESS_GH_USER
+  harness_gh_token_load "$HARNESS_DIR" || true
   if harness_observability_load "$HARNESS_DIR"; then
     OTEL_RESOURCE_ATTRIBUTES="service.name=codex_exec,obs.runtime=codex,obs.profile=$HARNESS_OBSERVABILITY_PROFILE"
     export OTEL_RESOURCE_ATTRIBUTES

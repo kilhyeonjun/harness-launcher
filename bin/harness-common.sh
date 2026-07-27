@@ -302,6 +302,39 @@ harness_observability_load() {
   return 0
 }
 
+# --- per-harness GitHub identity ------------------------------------------------
+# gh keeps ONE global active account, but the harnesses expect different GitHub
+# users (kh kilhyeonjun; gp/gd kil-penguin), so whichever harness switched last
+# decides whether the others' gh commands succeed. GH_TOKEN takes precedence over
+# gh's stored credentials, so deriving it per harness removes that arbitration.
+# Optional and fail-open: on any doubt export nothing and leave the pre-bash
+# gh-auth hook as the backstop — an empty GH_TOKEN would override the stored
+# credentials with nothing. The token value is never printed.
+harness_gh_token_load() {
+  local harness_dir="$1" cfg user="" token=""
+  HARNESS_GH_USER=""
+  # Same resolution order as the harness gh-auth hook: gp/gd keep github_user in
+  # the gitignored per-machine config, kh in the committed shared config.
+  for cfg in "$harness_dir/config/.local/config.yaml" "$harness_dir/config/config.yaml"; do
+    [ -f "$cfg" ] || continue
+    user="$(sed -n 's/^github_user:[[:space:]]*//p' "$cfg" 2>/dev/null | head -1 | tr -d '[:space:]')"
+    [ -n "$user" ] && break
+  done
+  [ -n "$user" ] || return 1
+  # GitHub logins are alphanumeric with internal hyphens, at most 39 characters.
+  # Reject anything else instead of passing it to gh.
+  case "$user" in
+    -*|*-|*[!A-Za-z0-9-]*) return 1 ;;
+  esac
+  [ "${#user}" -le 39 ] || return 1
+  command -v gh >/dev/null 2>&1 || return 1
+  token="$(gh auth token --user "$user" 2>/dev/null)" || return 1
+  [ -n "$token" ] || return 1
+  export GH_TOKEN="$token"
+  HARNESS_GH_USER="$user"
+  return 0
+}
+
 # --- per-harness env ------------------------------------------------------------
 # Export MCP secrets from .claude/settings.local.json env so gateway/native
 # runtimes resolve bearer_token_env_var etc. (they inherit no other harness env).

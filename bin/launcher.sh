@@ -703,6 +703,9 @@ launch_claude() {
   local provider_url="" gateway_api_key=""
   local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED
   local HARNESS_OTLP_HTTP_ENDPOINT obs_rc
+  # Per-harness GitHub identity: fail-open, never overrides with an empty token.
+  local GH_TOKEN HARNESS_GH_USER
+  harness_gh_token_load "$HARNESS_DIR" || true
   if harness_observability_load "$HARNESS_DIR"; then
     local CLAUDE_CODE_ENABLE_TELEMETRY=1
     local OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none
