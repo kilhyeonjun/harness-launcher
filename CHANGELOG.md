@@ -4,6 +4,12 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+### Changed
+
+- Codex subagents mapped from the Claude `opus` tier now default to GPT-5.6 Sol
+  with medium reasoning effort. High effort remains an explicit escalation for
+  unusually risky or complex reviews instead of the baseline for every review.
+
 ## [0.20.3] — 2026-07-27
 
 ### Added

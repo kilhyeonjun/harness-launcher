@@ -1132,7 +1132,7 @@ mtime_h_after=$(stat -f %m "$hooks_json" 2>/dev/null || stat -c %Y "$hooks_json"
 echo "PASS: hooks.json idempotent on no-op re-run"
 
 # Subagents: .claude/agents/*.md should be converted to $CODEX_HOME/agents/*.toml
-# with model mapping (haiku→Luna+low, sonnet→Terra+medium, opus→Sol+high)
+# with model mapping (haiku→Luna+low, sonnet→Terra+medium, opus→Sol+medium)
 # and sandbox derived from tools/disallowedTools.
 TEST_HARNESS4="$TEST_TEMP/fake-harness-agents"
 mkdir -p "$TEST_HARNESS4/.claude/agents"
@@ -1202,11 +1202,11 @@ grep -q '^developer_instructions = """' "$agents_out/explorer.toml" || { echo "F
 grep -q 'Quickly search and analyze' "$agents_out/explorer.toml" || { echo "FAIL: explorer body content"; exit 1; }
 echo "PASS: explorer (haiku) → Luna + low + read-only"
 
-# reviewer: opus → Sol+high, read-only sandbox
+# reviewer: opus → Sol+medium, read-only sandbox
 grep -q '^model = "gpt-5.6-sol"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer model"; exit 1; }
-grep -q '^model_reasoning_effort = "high"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer effort"; exit 1; }
+grep -q '^model_reasoning_effort = "medium"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer effort"; exit 1; }
 grep -q '^sandbox_mode = "read-only"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer sandbox"; exit 1; }
-echo "PASS: reviewer (opus) → Sol + high + read-only"
+echo "PASS: reviewer (opus) → Sol + medium + read-only"
 
 # implementer: sonnet → Terra+medium, workspace-write sandbox
 grep -q '^model = "gpt-5.6-terra"' "$agents_out/implementer.toml" || { echo "FAIL: implementer model"; exit 1; }

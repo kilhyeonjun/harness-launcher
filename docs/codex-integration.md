@@ -85,7 +85,7 @@ Current routing:
 
 These profiles are task-oriented operational presets, not OpenAI default-effort claims. This launcher deliberately uses Luna/low for the speed preset and Sol/high for the deep plan and rich presets; an unscoped model picker may use a different general starting effort. Effort can still be overridden independently in native Codex. Reserve max or multi-agent ultra execution for exceptional workloads rather than normal profile defaults.
 
-The main profile does not downgrade reviewers: reviewer subagents may still route to Sol/high.
+The main profile does not downgrade reviewers: reviewer subagents route independently to Sol/medium by default and may explicitly escalate effort for unusually risky work.
 
 Context-window and auto-compaction values are not pinned. Codex model metadata controls them.
 
@@ -153,7 +153,7 @@ Portable Claude agent definitions can be converted into Codex agent TOML. Model 
 ```text
 haiku  → GPT-5.6 Luna, low
 sonnet → GPT-5.6 Terra, medium
-opus   → GPT-5.6 Sol, high
+opus   → GPT-5.6 Sol, medium
 ```
 
 Generated agent files are output. Edit the source agent definition instead.

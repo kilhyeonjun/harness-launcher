@@ -187,7 +187,7 @@ combinable with any profile: `default` keeps the minimal project surface, while
 
 These are task-oriented operational presets, not claims about OpenAI's model defaults. The launcher deliberately lowers `fast` for speed and raises `plan`/`rich` for deeper work; an unscoped model picker may use a different general starting effort. Model names follow the capabilities exposed by the installed runtime. The launcher does not pin Codex context-window or auto-compaction values; Codex model metadata remains the source of truth.
 
-The main profile does not downgrade reviewers: reviewer subagents may still route to Sol/high.
+The main profile does not downgrade reviewers: reviewer subagents route independently to Sol/medium by default and may explicitly escalate effort for unusually risky work.
 
 ## Project layout
 

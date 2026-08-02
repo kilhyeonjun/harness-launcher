@@ -21,13 +21,13 @@
 #                              for 2x cost. Terra is the cost/quality sweet spot
 #                              here — the "terra is Pareto-dominated" vendor
 #                              benchmark did not hold for this workload.
-#   - opus   -> sol/high     : deep-judgment roles (review, design) only, where
-#                              failure cost is high and invocation frequency low,
-#                              so sol's premium is immaterial.
+#   - opus   -> sol/medium   : review/design roles benefit from Sol's capability,
+#                              while high reasoning stays an explicit escalation
+#                              for unusually risky or complex work.
 #
 # Columns (tab-separated): claude_tier  codex_model  codex_effort  kiro_model
 # claude_tier "default" applies to any agent with no/unknown model: field.
 haiku	gpt-5.6-luna	low	claude-haiku-4.5
 sonnet	gpt-5.6-terra	medium	claude-sonnet-4.6
-opus	gpt-5.6-sol	high	claude-opus-4.6
+opus	gpt-5.6-sol	medium	claude-opus-4.6
 default	gpt-5.6-terra	medium	claude-sonnet-4.6
