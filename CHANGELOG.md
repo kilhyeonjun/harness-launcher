@@ -9,6 +9,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - Codex subagents mapped from the Claude `opus` tier now default to GPT-5.6 Sol
   with medium reasoning effort. High effort remains an explicit escalation for
   unusually risky or complex reviews instead of the baseline for every review.
+- Native Codex launch entrypoints now normalize and isolate the optional
+  `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST` from each trusted `launcher.env` before
+  preparation, preventing configured, empty, or inherited values from leaking
+  across launches.
 
 ## [0.20.3] — 2026-07-27
 

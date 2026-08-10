@@ -125,6 +125,17 @@ Generated TOML uses `[mcp_servers.<name>]` and optional `.env` tables. Authoriza
 
 Local environment values can be inherited from `.claude/settings.local.json`. Keep that file out of version control and never log its contents.
 
+### Allowlisted global MCPs
+
+`$HOME/.codex/config.toml` remains the sole authority for user-global Codex MCP definitions. A project can project specific definitions only when both boundaries agree:
+
+1. its trusted `config/launcher.env` sets `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST`, such as `"docs,jira"`; and
+2. `config/codex-surface.json` includes `codex-global-allowlist` in `mcp.definition_sources`.
+
+Every native entrypoint (prefix shortcuts, the direct `codex --cd` wrapper, and the TUI) normalizes the setting after loading `launcher.env`: whitespace is trimmed, duplicates preserve first occurrence, and an empty or absent value is unset before `codex-home-prepare.sh` runs. The preparer does not execute `launcher.env` itself. Exact profiles decide which projected names are enabled; a global definition never silently bypasses that profile boundary. A selected global name that duplicates a project, local, or product-managed definition fails closed.
+
+Global definitions accept only portable Codex MCP fields. Static `env` and `http_headers` are rejected; use `env_vars`, `env_http_headers`, or `bearer_token_env_var` references instead. This keeps credentials in the process environment rather than generated TOML.
+
 ## AGENTS.md, rules, and hooks
 
 `CODEX_HOME/AGENTS.md` is a generated file, not a symlink. Preparation uses the project's Codex-native rule compiler when available, then falls back to compatible project rules or `CLAUDE.md`. A Codex response-language supplement is appended without changing the source files.
@@ -236,6 +247,8 @@ manifest's minimal default surface; `work` exports
 and the launched process use the same approved work integrations. The Happy
 wrapper and the work surface are mutually exclusive (the later toggle wins).
 Backing out never silently upgrades the surface.
+
+The global MCP projection is part of the exact-surface warm fingerprint. A changed allowlist or selected `$HOME/.codex/config.toml` definition triggers cold preparation; unrelated global MCPs do not. `CODEX_HOME` remains project-scoped, so one harness cannot publish another harness's generated MCP state (including the `kh` harness).
 
 ## Verification
 

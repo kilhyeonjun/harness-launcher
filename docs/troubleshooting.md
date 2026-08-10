@@ -132,6 +132,15 @@ Rename the local server or remove the duplicate. Local files extend committed co
 
 Do not solve this by moving credentials into `.mcp.json`.
 
+If the duplicate names a selected global Codex MCP, inspect both the project's configured allowlist and the exact surface source list:
+
+```zsh
+grep HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST /path/to/project/config/launcher.env
+grep -n codex-global-allowlist /path/to/project/config/codex-surface.json
+```
+
+The definition itself belongs in `$HOME/.codex/config.toml`; remove or rename the conflicting project/local/product definition. Do not use static `env` or `http_headers` to work around the validation error—use `env_vars`, `env_http_headers`, or `bearer_token_env_var` references instead.
+
 ## Generated Codex config looks stale
 
 Do not edit `.harness/codex/*.toml` directly. Trigger preparation again:
@@ -139,6 +148,8 @@ Do not edit `.harness/codex/*.toml` directly. Trigger preparation again:
 ```zsh
 wh codex --help >/dev/null
 ```
+
+For an exact surface, selected global MCP allowlist membership and the selected definitions in `$HOME/.codex/config.toml` are warm-path inputs. A change to either triggers regeneration automatically; unrelated global definitions do not. If diagnostics report a global MCP name as missing or invalid, correct `config/launcher.env` and the authoritative global TOML, then relaunch. An empty or omitted allowlist intentionally removes that projection on the next native launch.
 
 If you need a clean disposable runtime home, first make sure no Codex session is using it, then move the generated directory aside:
 

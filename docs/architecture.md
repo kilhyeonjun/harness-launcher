@@ -41,6 +41,8 @@ HARNESS_PREFIX="ex"
 
 Because `launcher.env` is sourced, registration is a trust decision. The launcher does not attempt to parse or sandbox arbitrary shell code in that file.
 
+Native Codex entrypoints treat `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST` as trusted launcher configuration, not an ambient user-shell setting. Immediately before each `codex-home-prepare.sh` child, they trim and deduplicate it and either export the resulting nonempty comma-separated list or unset it. This makes consecutive configured, explicitly empty, and absent values independent.
+
 ## Command routing
 
 The prefix function and executable profile both delegate through `harness-exec` to `_harness_launcher_run`:
@@ -126,6 +128,8 @@ args = ["-y", "@example/docs-mcp"]
 
 HTTP bearer values should be represented through environment-variable references. Generated config stores the variable name, not the secret value.
 
+An exact Codex surface can additionally declare `codex-global-allowlist` as an MCP definition source. That source projects only names selected by `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST` from `$HOME/.codex/config.toml`; the global file is the definition authority, while the exact profile remains the enablement authority. The launcher rejects duplicate names across every selected source instead of selecting one implicitly. Static `env` and `http_headers` fields are rejected: use `env_vars`, `env_http_headers`, or `bearer_token_env_var` references so generated project state never copies secret values.
+
 ## Global state and concurrency
 
 Most Codex state is project-scoped, but bundled plugin caches and the Chrome native-host bridge can use global `~/.codex` paths. These writes are a cross-project critical section.
@@ -134,7 +138,7 @@ On macOS, preparation opens a persistent lock file and acquires `/usr/bin/lockf`
 
 Do not replace this with PID files, mtime-based stale reclamation, or signal cleanup that removes a directory while child work continues.
 
-Manifest-enabled homes also keep an atomic successful-input fingerprint plus a source-identity watch snapshot. The lean warm path validates watched file identities, semantic TOML policy, launcher-owned output hashes, product-plugin skill digests, explicit-only policies, skill/plugin directory topology, and every managed skill link before returning; it does not rescan plugin tests/docs/assets. Unexpected generated-home skill routes force a cold rebuild and reversible quarantine, and marker membership alone never proves ownership. Auth contents, sessions, hook trust state, and generated output mtimes remain runtime state and do not invalidate source generation. Any cold rebuild removes its old success stamp before mutation.
+Manifest-enabled homes also keep an atomic successful-input fingerprint plus a source-identity watch snapshot. The lean warm path validates watched file identities, semantic TOML policy, launcher-owned output hashes, product-plugin skill digests, explicit-only policies, skill/plugin directory topology, every managed skill link, and the normalized global-MCP definition digest before returning; it does not rescan plugin tests/docs/assets. Changing selected global definitions or allowlist membership therefore invalidates the warm path. Unexpected generated-home skill routes force a cold rebuild and reversible quarantine, and marker membership alone never proves ownership. Auth contents, sessions, hook trust state, and generated output mtimes remain runtime state and do not invalidate source generation. Any cold rebuild removes its old success stamp before mutation.
 
 ## Browser and plugin trust
 

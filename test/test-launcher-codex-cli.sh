@@ -72,6 +72,7 @@ cat > "$PREPARE_STUB" <<'EOF'
 #!/usr/bin/env bash
 echo "PREPARE_ARGV:$*" >> "$TEST_STUB_FILE"
 echo "PREPARE_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}" >> "$TEST_STUB_FILE"
+echo "PREPARE_GLOBAL_MCP_ALLOWLIST:${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
 mkdir -p "$1/.harness/codex"
 exit 0
 EOF
@@ -281,6 +282,41 @@ if [[ "$(get_field MCP_PROFILE "$STUB_EXEC_WORK")" != "<UNSET>" ]]; then
 fi
 echo "PASS: codex exec work → prompt preserved without work MCP surface"
 
+# Global MCP allowlist comes only from the trusted launcher config, is
+# normalized before preparation, and cannot leak between consecutive native
+# default/work/raw-exec launches in the same shell.
+STUB_GLOBAL_SEQUENCE="$TEST_TEMP/output-codex-cli-global-sequence.txt"
+: > "$STUB_GLOBAL_SEQUENCE"
+(
+  export TEST_STUB_FILE="$STUB_GLOBAL_SEQUENCE"
+  export PATH="$TEST_BIN:$PATH"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  export HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="inherited-only"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=" global-one, global-two,global-one "' \
+    > "$TEST_HARNESS/config/launcher.env"
+  _harness_launcher_run "$TEST_HARNESS" codex base
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    > "$TEST_HARNESS/config/launcher.env"
+  _harness_launcher_run "$TEST_HARNESS" codex work
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=""' \
+    > "$TEST_HARNESS/config/launcher.env"
+  _harness_launcher_run "$TEST_HARNESS" codex exec prompt
+) 2>/dev/null || exit 1
+global_prepare_values=("${(@f)$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$STUB_GLOBAL_SEQUENCE")}")
+[[ "${global_prepare_values[*]}" = "global-one,global-two <UNSET> <UNSET>" ]] || {
+  echo "FAIL: native Codex allowlist leaked or was not normalized across consecutive launches"
+  cat "$STUB_GLOBAL_SEQUENCE"
+  exit 1
+}
+echo "PASS: native Codex shortcut default/work/raw exec isolate global MCP allowlist"
+
 # work is a surface keyword combinable with any model profile (same UX as the
 # claude `light` keyword) — both orders must select the profile AND the surface.
 for combo_args in "work rich" "rich work" "work sol" "sol work"; do
@@ -357,6 +393,11 @@ if [[ "$mcp_key" != "secret-from-settings-xyz" ]]; then
 fi
 echo "PASS: codex CLI base → settings.local.json env exported to codex"
 
+printf '%s\n' \
+  'HARNESS_NAME="test harness"' \
+  'HARNESS_PREFIX="test"' \
+  'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=" raw-one,raw-one "' \
+  > "$TEST_HARNESS/config/launcher.env"
 STUB_RAW="$TEST_TEMP/output-raw-codex-wrapper.txt"
 : > "$STUB_RAW"
 run_raw_codex "$STUB_RAW" --cd "$TEST_HARNESS" -p rich exec smoke
@@ -380,6 +421,11 @@ case "$raw_argv" in
 esac
 if [[ "$raw_mcp_key" != "secret-from-settings-xyz" ]]; then
   echo "FAIL: raw codex wrapper — settings.local.json env not exported (got '$raw_mcp_key')"
+  sed 's/^/    /' "$STUB_RAW"
+  exit 1
+fi
+if [[ "$(get_field PREPARE_GLOBAL_MCP_ALLOWLIST "$STUB_RAW")" != "raw-one" ]]; then
+  echo "FAIL: raw codex wrapper — global MCP allowlist was not normalized before prepare"
   sed 's/^/    /' "$STUB_RAW"
   exit 1
 fi

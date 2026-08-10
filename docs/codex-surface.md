@@ -2,6 +2,8 @@
 
 Projects with many skills or MCP servers can opt into an exact runtime surface by adding `config/codex-surface.json`. The launcher validates schema version `1`, expands host paths locally, and generates the project-scoped Codex home. Projects without a manifest keep the legacy merge behavior.
 
+`codex-global-allowlist` is an optional MCP definition source. It never imports all of `$HOME/.codex/config.toml`: launcher-owned native entrypoints forward only the normalized nonempty `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST` loaded from the project's trusted `config/launcher.env`. The global TOML is authoritative for definition fields, while this manifest's exact profiles remain authoritative for enablement.
+
 ## Contract
 
 Every membership list is an allowlist and every `unlisted` policy must be `"disabled"`. Portable paths may use `${HOME}`, `${REPO_ROOT}`, and `${CODEX_HOME}`; committed absolute home paths are unnecessary.
@@ -83,6 +85,8 @@ HARNESS_CODEX_SKILL_PROFILE=design wh codex rich
 
 An unknown profile, a missing profile-only skill, a missing non-product MCP definition, or a profile that omits `required_in_all_profiles` fails before Codex starts. Every MCP definition is rendered with an explicit `enabled = true` or `false`; `computer-use` is the currently recognized product-managed MCP name. When enabled, its bundled plugin skill is reconciled into `skill-catalog.json` after plugin materialization so work-profile prompt audits remain exact.
 
+Selected global definitions use the same duplicate detection as project, local, and product-managed sources; any repeated server name fails rather than being overridden. Their supported static fields are intentionally narrow: `env` and `http_headers` are rejected. Use `env_vars`, `env_http_headers`, or `bearer_token_env_var` for runtime credentials.
+
 ## Generated state and warm launches
 
 The generated home adds:
@@ -94,6 +98,6 @@ surface.config.toml      exact disabled skill paths
 .surface-fingerprint-cache.json  source identities and warm watch snapshot
 ```
 
-The cold fingerprint covers the manifest, relevant launcher code, Claude source/rules/skills/agents/commands, MCP definitions, every installed plugin package's latest skill metadata, and bundled marketplace identity. Skill scripts, references, tests, docs, and assets remain source-linked and do not need regeneration. A lean warm probe validates cached file identities, explicit-only policy files, the semantic TOML skill/MCP/plugin/config policy, managed skill inventory, watched directory topology, bundled product-skill digests, and hashes of launcher-owned outputs such as `AGENTS.md` and `hooks.json`. Curated remote-plugin version directories use an exact entry-name snapshot, so a metadata file rewrite is ignored while a new version still invalidates the surface. New unapproved plugins, poisoned markers, hidden MCP tables, and generated-home drift therefore force full resolution without rescanning plugin payloads. Auth contents, sessions, hook trust state, and generated output mtimes do not invalidate it. A missing managed skill link also forces a rebuild. The previous success stamp is removed before mutation, so an interrupted or failed rebuild cannot advertise a warm success.
+The cold fingerprint covers the manifest, relevant launcher code, Claude source/rules/skills/agents/commands, MCP definitions, the normalized selected global-MCP definitions, every installed plugin package's latest skill metadata, and bundled marketplace identity. Skill scripts, references, tests, docs, and assets remain source-linked and do not need regeneration. A lean warm probe validates cached file identities, explicit-only policy files, the semantic TOML skill/MCP/plugin/config policy, managed skill inventory, watched directory topology, bundled product-skill digests, global-MCP digest, and hashes of launcher-owned outputs such as `AGENTS.md` and `hooks.json`. Curated remote-plugin version directories use an exact entry-name snapshot, so a metadata file rewrite is ignored while a new version still invalidates the surface. New unapproved plugins, poisoned markers, hidden MCP tables, changed selected global MCPs, and generated-home drift therefore force full resolution without rescanning plugin payloads. Auth contents, sessions, hook trust state, and generated output mtimes do not invalidate it. A missing managed skill link also forces a rebuild. The previous success stamp is removed before mutation, so an interrupted or failed rebuild cannot advertise a warm success.
 
 Do not edit generated files. Change the manifest or source and run the launcher again.

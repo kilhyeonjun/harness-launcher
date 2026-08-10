@@ -34,12 +34,14 @@ set -e
 mkdir -p "$1/.harness/codex"
 printf '# prepared by test stub\n' > "$1/.harness/codex/AGENTS.md"
 echo "PREPARE_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}" >> "$TEST_STUB_FILE"
+echo "PREPARE_GLOBAL_MCP_ALLOWLIST:${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
 EOF
 chmod +x "$TEST_LAUNCHER_BIN/launcher.sh" "$TEST_LAUNCHER_BIN/codex-home-prepare.sh"
 
 cat > "$TEST_HARNESS/config/launcher.env" <<'EOF'
 HARNESS_NAME="test harness"
 HARNESS_PREFIX="test"
+HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=" tui-one, tui-two,tui-one "
 EOF
 echo "# fake rules" > "$TEST_HARNESS/CLAUDE.md"
 
@@ -124,6 +126,9 @@ grep -q "^CODEX_HOME:$TEST_HARNESS/.harness/codex\$" "$STUB1" || {
 }
 grep -q '^PREPARE_MCP_PROFILE:<UNSET>$' "$STUB1" || {
   echo "FAIL: case1 — default MCP surface leaked into Codex preparation"; cat "$STUB1"; exit 1;
+}
+grep -q '^PREPARE_GLOBAL_MCP_ALLOWLIST:tui-one,tui-two$' "$STUB1" || {
+  echo "FAIL: case1 — TUI did not normalize the launcher global MCP allowlist before prepare"; cat "$STUB1"; exit 1;
 }
 grep -q '^MCP_PROFILE:<UNSET>$' "$STUB1" || {
   echo "FAIL: case1 — default MCP surface leaked into Codex execution"; cat "$STUB1"; exit 1;
@@ -269,9 +274,9 @@ PATH="$NO_CODEX_BIN:/usr/bin:/bin" \
 HARNESS_CODEX_BIN="$TEST_TEMP/missing-codex" \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
-bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< $'1\n2\n1\n' >/dev/null 2>&1 || true
+bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< $'1\n2\n1\n' >"$STUB4.tui.log" 2>&1 || true
 grep -q "^EXEC:claude" "$STUB4" || {
-  echo "FAIL: case4 — runtime auto-skip didn't reach Claude exec"; cat "$STUB4"; exit 1;
+  echo "FAIL: case4 — runtime auto-skip didn't reach Claude exec"; cat "$STUB4"; cat "$STUB4.tui.log"; exit 1;
 }
 echo "PASS: case4 — codex absent → runtime menu auto-skips to Claude flow"
 

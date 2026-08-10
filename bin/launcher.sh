@@ -19,9 +19,37 @@
 HARNESS_DIR="${HARNESS_DIR:?HARNESS_DIR required}"
 HARNESS_NAME="${HARNESS_NAME:?HARNESS_NAME required}"
 
+# The launcher is a native Codex entrypoint as well as a TUI. Load only its
+# trusted harness configuration so global MCP selection cannot inherit from the
+# caller when the config omits it.
+unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+# shellcheck source=/dev/null
+. "$HARNESS_DIR/config/launcher.env"
+
 LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=harness-common.sh
 . "$LAUNCHER_BIN_DIR/harness-common.sh"
+
+prepare_codex_global_mcp_allowlist() {
+  local raw="${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-}" normalized
+  [ -n "$raw" ] || { unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST; return 0; }
+  normalized="$(python3 -c '
+import re
+import sys
+names = []
+for item in sys.argv[1].split(","):
+    name = item.strip()
+    if not name:
+        continue
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise SystemExit(f"invalid global MCP allowlist name: {name!r}")
+    if name not in names:
+        names.append(name)
+print(",".join(names))
+' "$raw")" || return $?
+  [ -n "$normalized" ] && export HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="$normalized" \
+    || unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+}
 
 if [ -n "${HARNESS_RUN_DIR:-}" ]; then
   HARNESS_RUN_DIR="$(harness_resolve_run_dir "$HARNESS_DIR" "$HARNESS_RUN_DIR")" || exit $?
@@ -834,6 +862,7 @@ launch_codex() {
   else
     unset HARNESS_CODEX_MCP_PROFILE
   fi
+  prepare_codex_global_mcp_allowlist || return $?
   if [ -x "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" ]; then
     echo "⏳ Codex 홈 준비 중…" >&2
     "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" "$HARNESS_DIR" || return $?

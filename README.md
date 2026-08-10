@@ -222,6 +222,8 @@ Before each native Codex launch, `bin/codex-home-prepare.sh` prepares an isolate
 - project-scoped sessions and history
 - an `auth.json` symlink to the active native Codex login
 
+To expose selected user-global MCP definitions, set `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST` in the trusted project `config/launcher.env`, for example `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="docs,jira"`. The launcher trims and deduplicates names before every native Codex preparation; an empty or omitted value is explicitly unset, so a prior launch or caller environment cannot add global MCPs. Definitions remain authoritative in `$HOME/.codex/config.toml`, while the project surface manifest must explicitly opt into `codex-global-allowlist`.
+
 The terminal `codex` from `PATH` is preferred. Set `HARNESS_CODEX_BIN` for an explicit binary. Codex.app's bundled CLI is only used when `HARNESS_CODEX_ALLOW_APP_FALLBACK=1` because app bundles can lag behind the terminal release.
 
 Browser support keeps the terminal-safe `browser-harness` path, materializes supported bundled plugins, and uses an exact browser-client SHA allowlist for `node_repl`. Shared plugin cache updates use the macOS kernel lock (`lockf`) so concurrent project launches cannot corrupt global cache state.
