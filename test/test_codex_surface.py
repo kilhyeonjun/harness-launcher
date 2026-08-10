@@ -433,6 +433,21 @@ class ResolverTests(SurfaceFixture):
 
                 self.assertIn("policies", result.stderr)
 
+    def test_product_managed_mcp_policy_without_emitted_definition_fails(self):
+        # Product/plugin-only computer-use has no generated [mcp_servers] table
+        # where a tool policy could be applied.
+        manifest = base_manifest()
+        manifest["mcp"]["profiles"]["default"]["enabled"].append("computer-use")
+        manifest["mcp"]["profiles"]["default"]["policies"] = {
+            "computer-use": {"enabled_tools": ["computer-use"]}
+        }
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+        result = self.run_resolver(expect=2)
+
+        self.assertIn("computer-use", result.stderr)
+        self.assertIn("emitted MCP definition", result.stderr)
+
     def test_enabled_without_definition_is_dropped_not_fatal(self):
         # A server enabled in a profile but absent from every definition source
         # (e.g. a host-local MCP not present on this machine) is dropped, not fatal.

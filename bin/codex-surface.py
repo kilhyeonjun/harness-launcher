@@ -1068,9 +1068,15 @@ def resolve_mcp(manifest: dict, *, profile: str, home: Path, repo_root: Path, co
         )
         enabled -= undefined
         unresolved = enabled - servers
+    profile_policies = mcp["profiles"][profile].get("policies", {})
+    for name in profile_policies:
+        if name not in owners:
+            fail(
+                f"mcp profile {profile!r}.policies server {name!r} has no emitted MCP definition"
+            )
     policies = {
         name: policy
-        for name, policy in mcp["profiles"][profile].get("policies", {}).items()
+        for name, policy in profile_policies.items()
         if name in enabled
     }
     return {

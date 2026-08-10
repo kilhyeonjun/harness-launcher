@@ -204,6 +204,27 @@ attempts = 2
         self.assertEqual(parsed["mcp_servers"]["glider"]["env_http_headers"]["retry"]["attempts"], 2)
         self.assertFalse(parsed["mcp_servers"]["glider"]["enabled"])
 
+    def test_emits_resolved_profile_policy_without_changing_source_projection(self) -> None:
+        self.write_config(
+            '[mcp_servers.glider]\ncommand = "glider"\nenabled = true\n'
+        )
+        resolution = MODULE.resolve_global_mcp(self.config, "glider", self.home)
+
+        parsed = MODULE.tomllib.loads(
+            MODULE.emit_toml(
+                resolution.definitions,
+                enabled={"glider"},
+                policies={"glider": {"disabled_tools": ["dangerous"]}},
+            )
+        )["mcp_servers"]["glider"]
+
+        self.assertEqual(parsed["enabled"], True)
+        self.assertEqual(parsed["disabled_tools"], ["dangerous"])
+        self.assertEqual(
+            MODULE.definition_projection(parsed, self.home),
+            MODULE.definition_projection(resolution.definitions["glider"], self.home),
+        )
+
     def test_compare_cli_returns_equal_invalid_and_mismatch_exit_codes(self) -> None:
         local = self.tmp / "local.json"
         local.write_text(
