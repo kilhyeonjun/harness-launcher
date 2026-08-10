@@ -22,6 +22,7 @@ import tempfile
 import time
 import tomllib
 from typing import Iterable
+import importlib.util
 
 
 SCHEMA_VERSION = 1
@@ -31,6 +32,22 @@ TOKEN_PATTERN = re.compile(r"\$\{(HOME|REPO_ROOT|CODEX_HOME)\}")
 
 class SurfaceError(RuntimeError):
     pass
+
+
+def global_mcp_resolution(home: Path):
+    """Resolve the opt-in global source without importing arbitrary config."""
+    raw = os.environ.get("HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST", "")
+    resolver_path = Path(__file__).with_name("codex_global_mcp.py")
+    spec = importlib.util.spec_from_file_location("codex_global_mcp", resolver_path)
+    if spec is None or spec.loader is None:
+        fail(f"global MCP resolver is unavailable: {resolver_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    try:
+        return module.resolve_global_mcp(home / ".codex" / "config.toml", raw, home)
+    except module.GlobalMcpError as error:
+        fail(str(error))
 
 
 @dataclass(frozen=True)
@@ -981,12 +998,28 @@ def resolve_mcp(manifest: dict, *, profile: str, home: Path, repo_root: Path, co
         fail(f"unknown MCP profile {profile!r}; expected one of {sorted(mcp['profiles'])}")
     servers = set()
     owners = {}
+    declared_owners = {}
+
+    def claim(name: str, source: str) -> None:
+        if name in declared_owners:
+            fail(f"duplicate MCP server {name!r} in {declared_owners[name]} and {source}")
+        declared_owners[name] = source
+
     definition_sources = list(mcp.get("definition_sources") or [])
     for supported in (".mcp.json", ".mcp.local.json", "mcp.local.json"):
         if (repo_root / supported).is_file() and supported not in definition_sources:
             definition_sources.append(supported)
     for raw in definition_sources:
+        if raw == "codex-global-allowlist":
+            resolution = global_mcp_resolution(home)
+            for name in resolution.definitions:
+                claim(name, "codex-global-allowlist")
+                servers.add(name)
+                owners[name] = "codex-global-allowlist"
+            continue
         if raw == "codex-product":
+            for name in PRODUCT_MCP_SERVERS:
+                claim(name, "codex-product")
             continue
         path = expand_path(raw, home=home, repo_root=repo_root, codex_home=codex_home)
         if not path.is_file():
@@ -996,8 +1029,7 @@ def resolve_mcp(manifest: dict, *, profile: str, home: Path, repo_root: Path, co
         if not isinstance(definitions, dict):
             fail(f"mcpServers must be an object in {path}")
         for name in definitions:
-            if name in servers:
-                fail(f"duplicate MCP server {name!r} in {owners[name]} and {path}")
+            claim(name, str(path))
             servers.add(name)
             owners[name] = str(path)
     enabled = set(mcp["profiles"][profile]["enabled"])
@@ -1306,6 +1338,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
     if mcp_profile not in manifest["mcp"]["profiles"]:
         fail(f"unknown MCP profile {mcp_profile!r}")
 
+    global_resolution = global_mcp_resolution(home)
     roots: list[tuple[str, Path, str]] = [
         ("manifest", manifest_path, "tree"),
         ("claude-source", repo_root / ".claude" / "source", "tree"),
@@ -1375,7 +1408,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
         if supported not in mcp_sources:
             mcp_sources.append(supported)
     for raw in mcp_sources:
-        if raw != "codex-product":
+        if raw not in {"codex-product", "codex-global-allowlist"}:
             roots.append((f"mcp:{raw}", expand_path(raw, home=home, repo_root=repo_root, codex_home=codex_home), "tree"))
     for index, raw in enumerate(args.launcher_file or []):
         roots.append((f"launcher:{index}", Path(os.path.abspath(raw)), "tree"))
@@ -1416,6 +1449,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
         "digest": digest.hexdigest(),
         "skill_profile": skill_profile,
         "mcp_profile": mcp_profile,
+        "global_mcp_digest": global_resolution.digest,
     }
     ACTIVE_FINGERPRINT_CACHE.set_fingerprint(payload)
     ACTIVE_FINGERPRINT_CACHE.save()
@@ -1537,7 +1571,7 @@ def surface_output_signatures(codex_home: Path) -> dict[str, str]:
 
 def write_stamp(args: argparse.Namespace) -> None:
     payload = load_inline_json(args.fingerprint_json, "fingerprint")
-    if set(payload) != {"schema_version", "digest", "skill_profile", "mcp_profile"}:
+    if set(payload) != {"schema_version", "digest", "skill_profile", "mcp_profile", "global_mcp_digest"}:
         fail("fingerprint payload has unexpected fields")
     codex_home = Path(args.codex_home)
     payload["config_projection_sha256"] = managed_config_projection_sha256(codex_home)

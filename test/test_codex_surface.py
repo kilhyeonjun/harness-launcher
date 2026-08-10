@@ -11,6 +11,7 @@ import tempfile
 import time
 import tomllib
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -197,7 +198,18 @@ class SurfaceFixture(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def run_resolver(self, *extra, expect=0):
+    def resolver_environment(self, **updates):
+        env = dict(os.environ)
+        for inherited in (
+            "HARNESS_CODEX_MCP_PROFILE",
+            "HARNESS_CODEX_SKILL_PROFILE",
+            "HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST",
+        ):
+            env.pop(inherited, None)
+        env.update(updates)
+        return env
+
+    def run_resolver(self, *extra, expect=0, **env_updates):
         command = [
             sys.executable,
             str(RESOLVER),
@@ -212,7 +224,12 @@ class SurfaceFixture(unittest.TestCase):
             str(self.home),
             *extra,
         ]
-        result = subprocess.run(command, text=True, capture_output=True)
+        result = subprocess.run(
+            command,
+            env=self.resolver_environment(**env_updates),
+            text=True,
+            capture_output=True,
+        )
         self.assertEqual(result.returncode, expect, result.stderr)
         return result
 
@@ -333,6 +350,60 @@ class ResolverTests(SurfaceFixture):
         self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
         result = self.run_resolver("--mcp-profile", "work", expect=2)
         self.assertIn("required_in_all_profiles", result.stderr)
+
+    def test_global_allowlist_duplicate_with_product_source_fails(self):
+        # Removing codex-product duplicate detection would silently let an
+        # allowlisted global definition override the product-managed server.
+        manifest = base_manifest()
+        manifest["mcp"]["definition_sources"].append("codex-global-allowlist")
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        global_config = self.home / ".codex" / "config.toml"
+        global_config.parent.mkdir(exist_ok=True)
+        global_config.write_text(
+            '[mcp_servers.computer-use]\ncommand = "global-computer-use"\n',
+            encoding="utf-8",
+        )
+
+        result = self.run_resolver(
+            expect=2,
+            HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="computer-use",
+        )
+
+        self.assertIn("computer-use", result.stderr)
+        self.assertIn("codex-product", result.stderr)
+
+    def test_global_allowlist_duplicate_with_each_json_source_fails(self):
+        for source_name in (".mcp.json", ".mcp.local.json", "mcp.local.json"):
+            with self.subTest(source_name=source_name):
+                server = {
+                    ".mcp.json": "context7",
+                    ".mcp.local.json": "local-dot",
+                    "mcp.local.json": "local-bare",
+                }[source_name]
+                for local_name in (".mcp.local.json", "mcp.local.json"):
+                    (self.repo / local_name).unlink(missing_ok=True)
+                if source_name != ".mcp.json":
+                    (self.repo / source_name).write_text(
+                        json.dumps({"mcpServers": {server: {"command": "duplicate"}}}),
+                        encoding="utf-8",
+                    )
+                manifest = base_manifest()
+                manifest["mcp"]["definition_sources"].append("codex-global-allowlist")
+                self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+                global_config = self.home / ".codex" / "config.toml"
+                global_config.parent.mkdir(exist_ok=True)
+                global_config.write_text(
+                    f'[mcp_servers.{server}]\ncommand = "global-{server}"\n',
+                    encoding="utf-8",
+                )
+
+                result = self.run_resolver(
+                    expect=2,
+                    HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=server,
+                )
+
+                self.assertIn(server, result.stderr)
+                self.assertIn("codex-global-allowlist", result.stderr)
 
     def test_enabled_without_definition_is_dropped_not_fatal(self):
         # A server enabled in a profile but absent from every definition source
@@ -466,6 +537,12 @@ out.mkdir(parents=True, exist_ok=True)
 
     def environment(self, **updates):
         env = dict(os.environ)
+        for inherited in (
+            "HARNESS_CODEX_MCP_PROFILE",
+            "HARNESS_CODEX_SKILL_PROFILE",
+            "HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST",
+        ):
+            env.pop(inherited, None)
         env.update(
             {
                 "HOME": str(self.home),
@@ -603,6 +680,104 @@ out.mkdir(parents=True, exist_ok=True)
             "computer-use:computer-use",
             {item["name"] for item in catalog["skills"]},
         )
+
+    def test_global_allowlist_definitions_follow_exact_profiles_and_warm_digest(self):
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        manifest["mcp"]["definition_sources"].append("codex-global-allowlist")
+        manifest["mcp"]["profiles"]["work"]["enabled"].append("global-tool")
+        self.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        global_config = self.home / ".codex" / "config.toml"
+        global_config.parent.mkdir(exist_ok=True)
+        global_config.write_text(
+            '[mcp_servers.global-tool]\ncommand = "global-v1"\nenabled = true\n\n'
+            '[mcp_servers.unselected]\ncommand = "unselected-v1"\n',
+            encoding="utf-8",
+        )
+
+        self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
+
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            config = tomllib.load(stream)
+        self.assertEqual(config["mcp_servers"]["global-tool"]["command"], "global-v1")
+        self.assertFalse(config["mcp_servers"]["global-tool"]["enabled"])
+        self.assertNotIn("unselected", config["mcp_servers"])
+        self.assertEqual(self.compiler_calls(), 1)
+
+        self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
+        self.assertEqual(self.compiler_calls(), 1, "unchanged selected global MCP was not warm")
+
+        global_config.write_text(
+            '[mcp_servers.global-tool]\ncommand = "global-v1"\nenabled = true\n\n'
+            '[mcp_servers.unselected]\ncommand = "unselected-v2"\n',
+            encoding="utf-8",
+        )
+        self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
+        self.assertEqual(self.compiler_calls(), 1, "unselected global MCP invalidated warm prepare")
+
+        global_config.write_text(
+            '[mcp_servers.global-tool]\ncommand = "global-v2"\nenabled = true\n\n'
+            '[mcp_servers.unselected]\ncommand = "unselected-v2"\n',
+            encoding="utf-8",
+        )
+        self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
+        self.assertEqual(self.compiler_calls(), 2)
+
+        self.prepare(
+            HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool",
+            HARNESS_CODEX_MCP_PROFILE="work",
+        )
+        self.assertEqual(self.compiler_calls(), 3)
+        self.assertTrue(self.enabled_value("global-tool"))
+
+    def test_selected_global_definition_edits_invalidate_or_fail_closed(self):
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        manifest["mcp"]["definition_sources"].append("codex-global-allowlist")
+        manifest["mcp"]["profiles"]["default"]["enabled"].append("global-tool")
+        self.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        global_config = self.home / ".codex" / "config.toml"
+        global_config.parent.mkdir(exist_ok=True)
+        valid = '[mcp_servers.global-tool]\ncommand = "global-v1"\n'
+        global_config.write_text(valid, encoding="utf-8")
+        self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
+
+        global_config.write_text(valid + 'args = ["serve"]\n', encoding="utf-8")
+        self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
+        self.assertEqual(self.compiler_calls(), 2, "selected definition addition stayed warm")
+
+        global_config.write_text(valid.replace("v1", "v2"), encoding="utf-8")
+        self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
+        self.assertEqual(self.compiler_calls(), 3, "selected definition change stayed warm")
+
+        stamp = self.codex_home / ".surface-success.json"
+        for broken in ("", ' [mcp_servers.global-tool]\nenabled = false\n', "[mcp_servers.global-tool\n"):
+            with self.subTest(broken=broken):
+                global_config.write_text(valid, encoding="utf-8")
+                self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
+                self.assertTrue(stamp.exists())
+                global_config.write_text(broken, encoding="utf-8")
+                result = subprocess.run(
+                    ["/bin/bash", str(PREPARE), str(self.repo)],
+                    env=self.environment(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool"),
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(stamp.exists(), "failed global resolution left a warm stamp")
+
+    def test_fixture_environment_removes_inherited_surface_overrides(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HARNESS_CODEX_MCP_PROFILE": "work",
+                "HARNESS_CODEX_SKILL_PROFILE": "design",
+                "HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST": "inherited-only",
+            },
+        ):
+            self.prepare()
+
+        catalog = json.loads((self.codex_home / "skill-catalog.json").read_text())
+        self.assertEqual(catalog["mcp"]["profile"], "default")
+        self.assertFalse((self.home / ".codex" / "config.toml").exists())
 
     def test_nonlogin_system_python_path_falls_back_to_homebrew_python(self):
         if not any(

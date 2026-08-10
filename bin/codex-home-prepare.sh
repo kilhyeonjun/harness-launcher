@@ -111,6 +111,7 @@ CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/A
 TITLE_SYNC_PATH="$SCRIPT_DIR/codex-cmux-title-sync.py"
 SURFACE_RESOLVER="$SCRIPT_DIR/codex-surface.py"
 SURFACE_WARM_PROBE="$SCRIPT_DIR/codex-surface-warm.py"
+GLOBAL_MCP_RESOLVER="$SCRIPT_DIR/codex_global_mcp.py"
 SURFACE_MANIFEST="$HARNESS_DIR/config/codex-surface.json"
 SURFACE_STAMP="$CODEX_HOME/.surface-success.json"
 SURFACE_FINGERPRINT_CACHE="$CODEX_HOME/.surface-fingerprint-cache.json"
@@ -161,6 +162,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --skill-profile "$SURFACE_SKILL_PROFILE"
     --launcher-file "$SURFACE_RESOLVER"
     --launcher-file "$SURFACE_WARM_PROBE"
+    --launcher-file "$GLOBAL_MCP_RESOLVER"
     --launcher-file "$0"
     --launcher-file "$SCRIPT_DIR/harness-common.sh"
     --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
@@ -844,6 +846,25 @@ for name in sorted(servers):
             print(f"{k} = {json.dumps(env[k])}")
         print()
 PY
+fi
+
+# Global definitions remain source-owned by ~/.codex/config.toml. They are
+# emitted only when the exact surface explicitly registers the allowlist source;
+# profile enablement is injected after the resolver's round-trip validation.
+if [[ "$SURFACE_ENABLED" -eq 1 && -n "${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-}" ]]; then
+  global_enabled="$(python3 - "$surface_catalog" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    catalog = json.load(stream)
+definitions = (catalog.get("mcp") or {}).get("definitions") or {}
+if any(owner == "codex-global-allowlist" for owner in definitions.values()):
+    print("registered:" + ",".join((catalog.get("mcp") or {}).get("enabled") or []))
+PY
+)"
+  if [[ "$global_enabled" == registered:* ]]; then
+    python3 "$GLOBAL_MCP_RESOLVER" emit "$HOME/.codex/config.toml" \
+      "$HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST" "$HOME" "${global_enabled#registered:}" >> "$tmp_config"
+  fi
 fi
 
 if [[ "$SURFACE_ENABLED" -eq 1 && -f "$CODEX_HOME/surface.config.toml" ]]; then

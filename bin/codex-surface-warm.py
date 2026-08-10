@@ -4,9 +4,11 @@
 import json
 import hashlib
 import os
+from pathlib import Path
 import re
 import sys
 import tomllib
+import importlib.util
 
 
 SURFACE_FIXED_OUTPUTS = (
@@ -24,6 +26,24 @@ SURFACE_FIXED_OUTPUTS = (
 
 def cold():
     raise SystemExit(3)
+
+
+def global_mcp_digest():
+    resolver_path = os.path.join(os.path.dirname(__file__), "codex_global_mcp.py")
+    spec = importlib.util.spec_from_file_location("codex_global_mcp_warm", resolver_path)
+    if spec is None or spec.loader is None:
+        cold()
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    try:
+        return module.resolve_global_mcp(
+            Path(os.path.expanduser("~")) / ".codex" / "config.toml",
+            os.environ.get("HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST", ""),
+            Path(os.path.expanduser("~")),
+        ).digest
+    except module.GlobalMcpError:
+        cold()
 
 
 def load_object(path):
@@ -352,9 +372,11 @@ def main():
     expected_mcp = mcp_profile or (manifest.get("mcp") or {}).get("default_profile")
     if fingerprint.get("skill_profile") != skill_profile or fingerprint.get("mcp_profile") != expected_mcp:
         cold()
-    for key in ("schema_version", "digest", "skill_profile", "mcp_profile"):
+    for key in ("schema_version", "digest", "skill_profile", "mcp_profile", "global_mcp_digest"):
         if stamp.get(key) != fingerprint.get(key):
             cold()
+    if fingerprint.get("global_mcp_digest") != global_mcp_digest():
+        cold()
     for path, expected in watch.items():
         if identity(path) != expected:
             cold()
