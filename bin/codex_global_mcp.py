@@ -77,7 +77,39 @@ def validate_value(value: Any, *, path: Path, server: str, field: str) -> None:
     fail(path, server, field, "has an unsupported value type")
 
 
-def validate_definition(value: Any, *, path: Path, server: str) -> dict[str, Any]:
+def is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def validate_field(value: Any, *, path: Path, server: str, field: str) -> None:
+    if field in {"type", "command", "url", "bearer_token_env_var"}:
+        if not isinstance(value, str) or not value:
+            fail(path, server, field, "must be a non-empty string")
+        return
+    if field == "enabled":
+        if type(value) is not bool:
+            fail(path, server, field, "must be a boolean")
+        return
+    if field == "args":
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            fail(path, server, field, "must be an array of strings")
+        return
+    if field == "env_vars":
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            fail(path, server, field, "must be an array of strings")
+        return
+    if field == "env_http_headers":
+        if not isinstance(value, dict):
+            fail(path, server, field, "must be a table")
+        validate_value(value, path=path, server=server, field=field)
+        return
+    if not is_number(value) or not math.isfinite(value):
+        fail(path, server, field, "must be a finite number")
+
+
+def validate_definition(
+    value: Any, *, path: Path, server: str, allow_disabled: bool = False
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail(path, server, "definition", "must be a table")
     for field, nested in value.items():
@@ -85,19 +117,15 @@ def validate_definition(value: Any, *, path: Path, server: str) -> dict[str, Any
             fail(path, server, field, "is not permitted")
         if field not in SUPPORTED_FIELDS:
             fail(path, server, field, "is not supported")
-        validate_value(nested, path=path, server=server, field=field)
+        validate_field(nested, path=path, server=server, field=field)
     command, url = value.get("command"), value.get("url")
-    if bool(command) == bool(url):
+    if (command is None) == (url is None):
         fail(path, server, "transport", "requires exactly one of command or url")
-    if not isinstance(command, str) and command is not None:
-        fail(path, server, "command", "must be a string")
-    if not isinstance(url, str) and url is not None:
-        fail(path, server, "url", "must be a string")
     declared_type = value.get("type")
     expected_type = "stdio" if command else "streamable_http"
     if declared_type is not None and declared_type != expected_type:
         fail(path, server, "type", f"must be {expected_type!r}")
-    if value.get("enabled") is False:
+    if value.get("enabled") is False and not allow_disabled:
         fail(path, server, "enabled", "must not be false")
     return {key: value[key] for key in sorted(value)}
 
@@ -186,9 +214,21 @@ def emit_toml(definitions: dict[str, dict[str, Any]], *, enabled: set[str]) -> s
 
 def compare(local_json: Path, global_toml: Path, name: str, home: Path) -> int:
     try:
-        local = json.loads(local_json.read_text(encoding="utf-8"))["mcpServers"][name]
+        document = json.loads(local_json.read_text(encoding="utf-8"))
+        if not isinstance(document, dict):
+            raise GlobalMcpError(f"local MCP JSON {local_json} must be an object")
+        servers = document.get("mcpServers")
+        if not isinstance(servers, dict) or name not in servers:
+            raise GlobalMcpError(f"local MCP {name!r} is missing from {local_json}")
+        local = validate_definition(
+            {key: value for key, value in servers[name].items() if key not in PROFILE_FIELDS}
+            if isinstance(servers[name], dict) else servers[name],
+            path=local_json,
+            server=name,
+            allow_disabled=True,
+        )
         global_value = resolve_global_mcp(global_toml, name, home).definitions[name]
-    except (OSError, KeyError, json.JSONDecodeError, GlobalMcpError) as error:
+    except (OSError, TypeError, KeyError, json.JSONDecodeError, GlobalMcpError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     return 0 if definition_projection(local, home) == definition_projection(global_value, home) else 3

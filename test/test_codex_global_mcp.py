@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -52,6 +53,12 @@ url = "https://other.example/mcp"
         self.assertEqual(result.definitions["glider"]["command"], "/Users/example/.local/bin/glider")
         self.assertEqual(len(result.digest), 64)
         self.assertNotIn("other", result.definitions)
+        canonical = json.dumps(
+            {"allowlist": ["glider"], "definitions": result.definitions},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self.assertEqual(result.digest, hashlib.sha256(canonical.encode()).hexdigest())
 
     def test_rejects_disabled_or_ambiguous_or_missing_transport(self) -> None:
         for name, body in {
@@ -97,6 +104,22 @@ Authorization = "Bearer very-secret"
             MODULE.resolve_global_mcp(self.config, "glider", self.home)
         self.assertIn("http_headers", str(raised.exception))
         self.assertNotIn("very-secret", str(raised.exception))
+
+    def test_rejects_missing_selected_name_unsupported_field_and_malformed_toml(self) -> None:
+        self.write_config('[mcp_servers.other]\ncommand = "safe"\n')
+        with self.assertRaises(MODULE.GlobalMcpError):
+            MODULE.resolve_global_mcp(self.config, "glider", self.home)
+
+        self.write_config('[mcp_servers.glider]\ncommand = "safe"\nunapproved = "fixture-secret"\n')
+        with self.assertRaises(MODULE.GlobalMcpError) as raised:
+            MODULE.resolve_global_mcp(self.config, "glider", self.home)
+        self.assertIn("unapproved", str(raised.exception))
+        self.assertNotIn("fixture-secret", str(raised.exception))
+
+        self.write_config('[mcp_servers.glider\ncommand = "safe"\n')
+        with self.assertRaises(MODULE.GlobalMcpError) as raised:
+            MODULE.resolve_global_mcp(self.config, "glider", self.home)
+        self.assertIn(str(self.config), str(raised.exception))
 
     def test_projection_normalizes_type_and_home_prefix_without_profile_fields(self) -> None:
         projected = MODULE.definition_projection(
@@ -147,7 +170,7 @@ Authorization = "Bearer very-secret"
 [mcp_servers.glider]
 command = "/Users/example/.local/bin/glider"
 args = ["mcp", "serve"]
-env_vars = { LOG_LEVEL = "debug", RETRIES = 2 }
+env_vars = ["LOG_LEVEL", "RETRIES"]
 tool_timeout_sec = 1.5
 """.lstrip()
         )
@@ -161,16 +184,16 @@ tool_timeout_sec = 1.5
             MODULE.definition_projection(result.definitions["glider"], self.home),
         )
         self.assertTrue(parsed["enabled"])
-        self.assertEqual(parsed["env_vars"], {"LOG_LEVEL": "debug", "RETRIES": 2})
+        self.assertEqual(parsed["env_vars"], ["LOG_LEVEL", "RETRIES"])
 
     def test_emits_nested_tables_with_scalar_values(self) -> None:
         self.write_config(
             """
 [mcp_servers.glider]
 command = "glider"
-[mcp_servers.glider.env_vars]
+[mcp_servers.glider.env_http_headers]
 LOG_LEVEL = "debug"
-[mcp_servers.glider.env_vars.retry]
+[mcp_servers.glider.env_http_headers.retry]
 attempts = 2
 """.lstrip()
         )
@@ -178,7 +201,7 @@ attempts = 2
 
         parsed = MODULE.tomllib.loads(MODULE.emit_toml(result.definitions, enabled=set()))
 
-        self.assertEqual(parsed["mcp_servers"]["glider"]["env_vars"]["retry"]["attempts"], 2)
+        self.assertEqual(parsed["mcp_servers"]["glider"]["env_http_headers"]["retry"]["attempts"], 2)
         self.assertFalse(parsed["mcp_servers"]["glider"]["enabled"])
 
     def test_compare_cli_returns_equal_invalid_and_mismatch_exit_codes(self) -> None:
@@ -204,6 +227,94 @@ attempts = 2
             MODULE.definition_projection({"url": "https://example.test/mcp"}, self.home)["type"],
             "streamable_http",
         )
+
+    def test_rejects_invalid_field_types_without_accepting_bool_as_a_number(self) -> None:
+        cases = {
+            "type": 'type = 1\ncommand = "safe"',
+            "command": 'command = true',
+            "url": 'url = false',
+            "args": 'command = "safe"\nargs = ["ok", 2]',
+            "enabled": 'command = "safe"\nenabled = "true"',
+            "env_vars": 'command = "safe"\nenv_vars = ["TOKEN", 2]',
+            "bearer_token_env_var": 'url = "https://example.test/mcp"\nbearer_token_env_var = 2',
+            "env_http_headers": 'url = "https://example.test/mcp"\nenv_http_headers = ["TOKEN"]',
+            "startup_timeout_sec": 'command = "safe"\nstartup_timeout_sec = true',
+            "tool_timeout_sec": 'command = "safe"\ntool_timeout_sec = false',
+        }
+        for name, body in cases.items():
+            with self.subTest(name=name):
+                self.write_config(f"[mcp_servers.glider]\n{body}\n")
+                with self.assertRaises(MODULE.GlobalMcpError) as raised:
+                    MODULE.resolve_global_mcp(self.config, "glider", self.home)
+                self.assertIn(name, str(raised.exception))
+
+    def test_accepts_env_var_names_as_an_ordered_string_array(self) -> None:
+        self.write_config('[mcp_servers.glider]\ncommand = "safe"\nenv_vars = ["FIRST", "SECOND"]\n')
+        result = MODULE.resolve_global_mcp(self.config, "glider", self.home)
+        self.assertEqual(result.definitions["glider"]["env_vars"], ["FIRST", "SECOND"])
+
+    def test_compare_rejects_every_invalid_local_json_shape_or_definition(self) -> None:
+        self.write_config('[mcp_servers.glider]\ncommand = "glider"\nargs = ["mcp"]\n')
+        cases = [
+            [],
+            {},
+            {"mcpServers": []},
+            {"mcpServers": {}},
+            {"mcpServers": {"glider": []}},
+            {"mcpServers": {"glider": {"command": 2}}},
+            {"mcpServers": {"glider": {"command": "glider", "unsupported": "x"}}},
+        ]
+        command = [sys.executable, str(MODULE_PATH), "compare"]
+        for index, value in enumerate(cases):
+            with self.subTest(index=index):
+                local = self.tmp / f"invalid-{index}.json"
+                local.write_text(json.dumps(value), encoding="utf-8")
+                result = subprocess.run(
+                    [*command, str(local), str(self.config), "glider", str(self.home)],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_projection_preserves_url_remaining_fields_and_argument_order(self) -> None:
+        value = {
+            "url": str(self.home / "mcp"),
+            "args": ["first", "second"],
+            "bearer_token_env_var": "TOKEN",
+            "enabled": False,
+        }
+        projected = MODULE.definition_projection(value, self.home)
+        self.assertEqual(projected["url"], "${HOME}/mcp")
+        self.assertEqual(projected["args"], ["first", "second"])
+        self.assertEqual(projected["bearer_token_env_var"], "TOKEN")
+        self.assertNotIn("enabled", projected)
+
+    def test_compare_ignores_only_profile_owned_fields(self) -> None:
+        local = self.tmp / "local-profile.json"
+        local.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "glider": {
+                            "type": "stdio",
+                            "command": "${HOME}/bin/glider",
+                            "args": ["first", "second"],
+                            "enabled": False,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.write_config(
+            f'[mcp_servers.glider]\ncommand = "{self.home}/bin/glider"\nargs = ["first", "second"]\n'
+        )
+        result = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "compare", str(local), str(self.config), "glider", str(self.home)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
