@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import shlex
 import shutil
 import statistics
@@ -649,6 +650,50 @@ out.mkdir(parents=True, exist_ok=True)
     def staging_artifacts(self):
         return sorted(self.codex_home.parent.glob(".codex-home-prepare-stage.*"))
 
+    def snapshot_tree(self, root):
+        snapshot = {}
+
+        def capture(path, relative):
+            if path.is_symlink():
+                snapshot[relative] = ["symlink", os.readlink(path)]
+            elif path.is_file():
+                snapshot[relative] = ["file", hashlib.sha256(path.read_bytes()).hexdigest()]
+            elif path.is_dir():
+                snapshot[relative] = ["directory"]
+                for child in sorted(path.iterdir(), key=lambda item: item.name):
+                    capture(child, f"{relative}/{child.name}")
+            else:
+                snapshot[relative] = ["missing"]
+
+        capture(root, ".")
+        return snapshot
+
+    def start_prepare(self, *, start_new_session=False, **env_updates):
+        return subprocess.Popen(
+            ["/bin/bash", str(PREPARE), str(self.repo)],
+            env=self.environment(**env_updates),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=start_new_session,
+        )
+
+    def wait_for_gate(self, process, gate, *, timeout=10):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if gate.exists():
+                return
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail(
+                    f"prepare exited before gate {gate}\n"
+                    f"returncode={process.returncode}\nstdout={stdout}\nstderr={stderr}"
+                )
+            time.sleep(0.01)
+        process.kill()
+        stdout, stderr = process.communicate()
+        self.fail(f"prepare did not reach gate {gate}\nstdout={stdout}\nstderr={stderr}")
+
     def enabled_value(self, server):
         config = (self.codex_home / "config.toml").read_text(encoding="utf-8")
         match = re.search(
@@ -1073,7 +1118,6 @@ out.mkdir(parents=True, exist_ok=True)
             "history.jsonl": "history\n",
             "auth.json": "local-auth\n",
             "plugins/cache/user-runtime/state.json": "runtime-plugin\n",
-            "skills/user-owned/SKILL.md": "---\nname: user-owned\n---\n",
         }
         for relative, content in runtime.items():
             path = self.codex_home / relative
@@ -1099,6 +1143,183 @@ out.mkdir(parents=True, exist_ok=True)
 
         self.assertEqual(self.snapshot_paths(managed), before)
         self.assertEqual(self.staging_artifacts(), [])
+
+    def test_concurrent_runtime_config_write_is_merged_before_publish(self):
+        self.prepare()
+        alpha = self.repo / ".claude" / "skills" / "alpha" / "SKILL.md"
+        alpha.write_text(alpha.read_text(encoding="utf-8") + "config race\n", encoding="utf-8")
+        ready = self.tmp / "config-merge-ready"
+        release = self.tmp / "config-merge-release"
+        process = self.start_prepare(
+            HARNESS_TEST_CODEX_CONFIG_MERGE_READY=str(ready),
+            HARNESS_TEST_CODEX_CONFIG_MERGE_RELEASE=str(release),
+        )
+        self.wait_for_gate(process, ready)
+        with (self.codex_home / "config.toml").open("a", encoding="utf-8") as stream:
+            stream.write(
+                '\n[hooks.state."concurrent-hook"]\n'
+                'trusted_hash = "concurrent"\n'
+                '\n[[skills.config]]\n'
+                'path = "/tmp/concurrent-skill"\n'
+                'enabled = false\n'
+                '\n[marketplaces.concurrent-external]\n'
+                'source_type = "local"\n'
+                'source = "/tmp/concurrent-marketplace"\n'
+                '\n[plugins."concurrent@external"]\n'
+                'enabled = true\n'
+            )
+        release.touch()
+        stdout, stderr = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0, f"stdout={stdout}\nstderr={stderr}")
+
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            config = tomllib.load(stream)
+        self.assertEqual(config["hooks"]["state"]["concurrent-hook"]["trusted_hash"], "concurrent")
+        self.assertIn(
+            {"path": "/tmp/concurrent-skill", "enabled": False},
+            config["skills"]["config"],
+        )
+        self.assertEqual(
+            config["marketplaces"]["concurrent-external"]["source"],
+            "/tmp/concurrent-marketplace",
+        )
+        self.assertTrue(config["plugins"]["concurrent@external"]["enabled"])
+
+    def test_invalid_live_config_fails_preflight_before_staging(self):
+        self.prepare()
+        managed = self.managed_output_paths()
+        before = self.snapshot_paths(managed)
+        (self.codex_home / "config.toml").write_text("invalid = [\n", encoding="utf-8")
+        invalid_before = (self.codex_home / "config.toml").read_bytes()
+        alpha = self.repo / ".claude" / "skills" / "alpha" / "SKILL.md"
+        alpha.write_text(alpha.read_text(encoding="utf-8") + "invalid config\n", encoding="utf-8")
+
+        result = self.prepare(expect=2)
+
+        self.assertIn("live Codex config", result.stderr)
+        self.assertEqual((self.codex_home / "config.toml").read_bytes(), invalid_before)
+        self.assertEqual(
+            self.snapshot_paths(path for path in managed if path != "config.toml"),
+            {key: value for key, value in before.items() if key != "config.toml"},
+        )
+        self.assertEqual(self.staging_artifacts(), [])
+
+    def test_fresh_home_gets_auth_symlink_without_managing_auth(self):
+        global_auth = self.home / ".codex" / "auth.json"
+        global_auth.parent.mkdir(parents=True)
+        global_auth.write_text("global-auth\n", encoding="utf-8")
+
+        self.prepare()
+
+        auth = self.codex_home / "auth.json"
+        self.assertTrue(auth.is_symlink())
+        self.assertEqual(os.readlink(auth), str(global_auth))
+        self.assertNotIn("auth.json", self.managed_output_paths())
+
+    def test_existing_auth_file_is_never_overwritten_on_warm_prepare(self):
+        global_auth = self.home / ".codex" / "auth.json"
+        global_auth.parent.mkdir(parents=True)
+        global_auth.write_text("global-auth\n", encoding="utf-8")
+        self.prepare()
+        auth = self.codex_home / "auth.json"
+        if auth.exists() or auth.is_symlink():
+            auth.unlink()
+        auth.write_text("existing-local-auth\n", encoding="utf-8")
+
+        self.prepare()
+
+        self.assertFalse(auth.is_symlink())
+        self.assertEqual(auth.read_text(encoding="utf-8"), "existing-local-auth\n")
+
+    def test_concurrent_auth_create_wins_post_publish_repair(self):
+        global_auth = self.home / ".codex" / "auth.json"
+        global_auth.parent.mkdir(parents=True)
+        global_auth.write_text("global-auth\n", encoding="utf-8")
+        self.prepare()
+        auth = self.codex_home / "auth.json"
+        if auth.exists() or auth.is_symlink():
+            auth.unlink()
+        alpha = self.repo / ".claude" / "skills" / "alpha" / "SKILL.md"
+        alpha.write_text(alpha.read_text(encoding="utf-8") + "auth race\n", encoding="utf-8")
+        ready = self.tmp / "auth-repair-ready"
+        release = self.tmp / "auth-repair-release"
+        process = self.start_prepare(
+            HARNESS_TEST_CODEX_AUTH_REPAIR_READY=str(ready),
+            HARNESS_TEST_CODEX_AUTH_REPAIR_RELEASE=str(release),
+        )
+        self.wait_for_gate(process, ready)
+        auth.write_text("concurrent-auth\n", encoding="utf-8")
+        release.touch()
+        stdout, stderr = process.communicate(timeout=10)
+
+        self.assertEqual(process.returncode, 0, f"stdout={stdout}\nstderr={stderr}")
+        self.assertFalse(auth.is_symlink())
+        self.assertEqual(auth.read_text(encoding="utf-8"), "concurrent-auth\n")
+
+    def test_local_publish_failure_rolls_back_global_marketplace(self):
+        self.prepare()
+        global_marketplace = (
+            self.home / ".codex" / ".tmp" / "bundled-marketplaces" / "openai-bundled"
+        )
+        before = self.snapshot_tree(global_marketplace)
+        source_skill = (
+            self.no_marketplace
+            / "plugins"
+            / "computer-use"
+            / "skills"
+            / "computer-use"
+            / "SKILL.md"
+        )
+        source_skill.write_text(
+            source_skill.read_text(encoding="utf-8") + "global transaction update\n",
+            encoding="utf-8",
+        )
+        alpha = self.repo / ".claude" / "skills" / "alpha" / "SKILL.md"
+        alpha.write_text(alpha.read_text(encoding="utf-8") + "global rollback\n", encoding="utf-8")
+
+        self.prepare(expect=1, HARNESS_TEST_CODEX_PREPARE_FAIL_DURING_PUBLISH="1")
+
+        self.assertEqual(self.snapshot_tree(global_marketplace), before)
+        self.assertEqual(
+            list(global_marketplace.parent.glob(".openai-bundled-candidate.*")), []
+        )
+
+    def test_signal_after_global_exchange_rolls_back_global_marketplace(self):
+        self.prepare()
+        global_marketplace = (
+            self.home / ".codex" / ".tmp" / "bundled-marketplaces" / "openai-bundled"
+        )
+        before = self.snapshot_tree(global_marketplace)
+        source_skill = (
+            self.no_marketplace
+            / "plugins"
+            / "computer-use"
+            / "skills"
+            / "computer-use"
+            / "SKILL.md"
+        )
+        source_skill.write_text(
+            source_skill.read_text(encoding="utf-8") + "global signal update\n",
+            encoding="utf-8",
+        )
+        alpha = self.repo / ".claude" / "skills" / "alpha" / "SKILL.md"
+        alpha.write_text(alpha.read_text(encoding="utf-8") + "global signal\n", encoding="utf-8")
+        ready = self.tmp / "global-publish-ready"
+        release = self.tmp / "global-publish-release"
+        process = self.start_prepare(
+            start_new_session=True,
+            HARNESS_TEST_CODEX_GLOBAL_PUBLISH_READY=str(ready),
+            HARNESS_TEST_CODEX_GLOBAL_PUBLISH_RELEASE=str(release),
+        )
+        self.wait_for_gate(process, ready)
+        os.killpg(process.pid, signal.SIGTERM)
+        process.communicate(timeout=10)
+
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(self.snapshot_tree(global_marketplace), before)
+        self.assertEqual(
+            list(global_marketplace.parent.glob(".openai-bundled-candidate.*")), []
+        )
 
     def test_hook_commands_shell_quote_special_harness_path(self):
         special = self.tmp / "repo 'quoted' $(not-executed) `still-not-executed`"
@@ -1211,7 +1432,7 @@ out.mkdir(parents=True, exist_ok=True)
             any(item.get("path") == selected["exposed_path"] for item in configured)
         )
 
-    def test_unowned_generated_skill_is_preserved(self):
+    def test_unowned_generated_skill_is_quarantined_and_next_prepare_is_warm(self):
         self.prepare()
         rogue = write_skill(
             self.codex_home / "skills",
@@ -1219,15 +1440,18 @@ out.mkdir(parents=True, exist_ok=True)
             "rogue-copy",
             "unowned generated-home drift",
         )
+        before = self.snapshot_tree(rogue.parent)
 
         self.prepare()
 
         self.assertEqual(self.compiler_calls(), 2)
-        self.assertTrue(rogue.parent.exists())
+        self.assertFalse(rogue.parent.exists())
         quarantined = self.codex_home / ".surface-quarantine" / "skills" / "rogue-copy"
-        self.assertFalse(quarantined.exists())
+        self.assertEqual(self.snapshot_tree(quarantined), before)
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2, "quarantined skill forced perpetual cold rebuilds")
 
-    def test_poisoned_managed_marker_cannot_claim_unowned_skill(self):
+    def test_poisoned_managed_marker_quarantines_unowned_skill(self):
         self.prepare()
         rogue = write_skill(
             self.codex_home / "skills",
@@ -1242,21 +1466,22 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
 
         self.assertEqual(self.compiler_calls(), 2)
-        self.assertTrue(rogue.parent.exists())
+        self.assertFalse(rogue.parent.exists())
         quarantined = (
             self.codex_home
             / ".surface-quarantine"
             / "skills"
             / "rogue-marker-bypass"
         )
-        self.assertFalse(quarantined.exists())
+        self.assertTrue((quarantined / "SKILL.md").is_file())
         self.assertNotIn("rogue-marker-bypass", marker.read_text(encoding="utf-8"))
 
-    def test_poisoned_agent_marker_cannot_claim_unowned_agent(self):
+    def test_poisoned_agent_marker_quarantines_unowned_agent_and_next_prepare_is_warm(self):
         self.prepare()
         agents = self.codex_home / "agents"
         rogue = agents / "rogue.toml"
         rogue.write_text('name = "rogue"\n', encoding="utf-8")
+        before = rogue.read_bytes()
         marker = agents / ".harness-managed"
         with marker.open("a", encoding="utf-8") as stream:
             stream.write("rogue.toml\n")
@@ -1264,12 +1489,14 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
 
         self.assertEqual(self.compiler_calls(), 2)
-        self.assertTrue(rogue.exists())
+        self.assertFalse(rogue.exists())
         quarantined = (
             self.codex_home / ".surface-quarantine" / "agents" / "rogue.toml"
         )
-        self.assertFalse(quarantined.exists())
+        self.assertEqual(quarantined.read_bytes(), before)
         self.assertNotIn("rogue.toml", marker.read_text(encoding="utf-8"))
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2, "quarantined agent forced perpetual cold rebuilds")
 
     def test_product_plugin_skill_drift_forces_rebuild(self):
         self.prepare(HARNESS_CODEX_MCP_PROFILE="work")

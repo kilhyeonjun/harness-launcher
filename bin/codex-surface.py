@@ -1561,13 +1561,8 @@ def print_managed_output_paths(args: argparse.Namespace) -> None:
     print(json.dumps(managed_output_roots(Path(args.codex_home))))
 
 
-def managed_config_projection(codex_home: Path) -> dict:
-    config_path = codex_home / "config.toml"
-    try:
-        with config_path.open("rb") as stream:
-            config = tomllib.load(stream)
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        fail(f"cannot parse generated Codex config for success stamp: {error}")
+def managed_config_projection_from_value(config: dict) -> dict:
+    config = dict(config)
     config.pop("hooks", None)
     config.pop("skills", None)
     marketplaces = config.get("marketplaces")
@@ -1583,6 +1578,142 @@ def managed_config_projection(codex_home: Path) -> dict:
             if isinstance(key, str) and key.endswith("@openai-bundled")
         }
     return config
+
+
+def parse_toml_file(path: Path, label: str) -> dict:
+    try:
+        with path.open("rb") as stream:
+            config = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        fail(f"cannot parse {label}: {error}")
+    if not isinstance(config, dict):
+        fail(f"{label} must contain a TOML table")
+    return config
+
+
+def validate_live_config(path: Path) -> None:
+    if not path.exists():
+        return
+    config = parse_toml_file(path, "live Codex config")
+    try:
+        json.dumps(managed_config_projection_from_value(config), sort_keys=True)
+    except TypeError as error:
+        fail(f"live Codex config contains unsupported TOML values: {error}")
+
+
+def managed_config_projection(codex_home: Path) -> dict:
+    config_path = codex_home / "config.toml"
+    config = parse_toml_file(config_path, "generated Codex config for success stamp")
+    return managed_config_projection_from_value(config)
+
+
+def merge_runtime_config(
+    candidate_content: str,
+    live_content: str,
+    catalog: dict,
+    published_codex_home: Path,
+) -> str:
+    """Merge only runtime-owned TOML sections into a generated candidate."""
+    try:
+        candidate_value = tomllib.loads(candidate_content)
+        tomllib.loads(live_content)
+    except tomllib.TOMLDecodeError as error:
+        fail(f"cannot parse live Codex config during publication: {error}")
+
+    managed_skill_paths = set(catalog.get("disabled_skill_paths") or [])
+    for skill in catalog.get("skills") or []:
+        managed_skill_paths.add(skill.get("source_path"))
+        managed_skill_paths.add(skill.get("exposed_path"))
+    managed_skill_paths.discard(None)
+    managed_plugin_root = published_codex_home / "plugins" / "cache" / "openai-bundled"
+    section_header = re.compile(r"^\[.*\]\s*$")
+    hooks_state_header = re.compile(r"^\[hooks\.state(?:\.|\])")
+    preserved: list[str] = []
+    current: list[str] = []
+    in_preserved_section = False
+
+    def first_toml_key(raw: str) -> str:
+        raw = raw.strip()
+        if not raw:
+            return ""
+        if raw[0] in ('"', "'"):
+            quote = raw[0]
+            escaped = False
+            for index in range(1, len(raw)):
+                char = raw[index]
+                if quote == '"' and char == "\\" and not escaped:
+                    escaped = True
+                    continue
+                if char == quote and not escaped:
+                    return raw[1:index]
+                escaped = False
+        return raw.split(".", 1)[0]
+
+    def is_managed_plugin_path(value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        try:
+            return os.path.commonpath(
+                (os.path.abspath(value), os.path.abspath(managed_plugin_root))
+            ) == os.path.abspath(managed_plugin_root)
+        except ValueError:
+            return False
+
+    def should_preserve(header: str) -> bool:
+        header = header.strip()
+        if hooks_state_header.match(header):
+            return True
+        if header == "[[skills.config]]":
+            return True
+        if header.startswith("[marketplaces.") and header.endswith("]") and not header.startswith("[["):
+            key = first_toml_key(header[len("[marketplaces.") : -1])
+            return key != "openai-bundled"
+        if header.startswith("[plugins.") and header.endswith("]") and not header.startswith("[["):
+            key = first_toml_key(header[len("[plugins.") : -1])
+            return not key.endswith("@openai-bundled")
+        return False
+
+    def flush_current() -> None:
+        if not in_preserved_section or not current:
+            return
+        if current[0].strip() == "[[skills.config]]":
+            if any("launcher-managed-surface" in line for line in current):
+                return
+            try:
+                parsed = tomllib.loads("".join(current))
+                entries = (parsed.get("skills") or {}).get("config") or []
+            except tomllib.TOMLDecodeError:
+                entries = []
+            if len(entries) == 1 and isinstance(entries[0], dict):
+                configured_path = entries[0].get("path")
+                if configured_path in managed_skill_paths or is_managed_plugin_path(configured_path):
+                    return
+        preserved.extend(current)
+
+    for line in live_content.splitlines(keepends=True):
+        if section_header.match(line):
+            flush_current()
+            current = []
+            in_preserved_section = should_preserve(line)
+        if in_preserved_section:
+            current.append(line)
+    flush_current()
+
+    merged = candidate_content.rstrip() + "\n"
+    if preserved:
+        merged += "\n# Preserved Codex runtime state (hooks, skill choices, external plugins).\n"
+        merged += "".join(preserved)
+        if not merged.endswith("\n"):
+            merged += "\n"
+    try:
+        merged_value = tomllib.loads(merged)
+    except tomllib.TOMLDecodeError as error:
+        fail(f"late merged Codex config is invalid: {error}")
+    if managed_config_projection_from_value(merged_value) != managed_config_projection_from_value(
+        candidate_value
+    ):
+        fail("late runtime config merge changed launcher-managed TOML projection")
+    return merged
 
 
 def managed_config_projection_sha256(codex_home: Path) -> str:
@@ -1712,6 +1843,8 @@ def preflight(args: argparse.Namespace) -> None:
     home = Path(os.path.abspath(args.home))
     manifest = load_json(manifest_path)
     validate_manifest(manifest)
+    if args.live_config:
+        validate_live_config(Path(args.live_config))
     skill_profile = args.skill_profile or "default"
     mcp_profile = args.mcp_profile or manifest["mcp"]["default_profile"]
     by_source, all_candidates = collect_candidates(
@@ -1756,6 +1889,7 @@ def parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--home", default=str(Path.home()))
     preflight_parser.add_argument("--skill-profile")
     preflight_parser.add_argument("--mcp-profile")
+    preflight_parser.add_argument("--live-config")
     preflight_parser.set_defaults(function=preflight)
 
     fingerprint_parser = subcommands.add_parser("fingerprint", help="calculate the launcher-owned input fingerprint")

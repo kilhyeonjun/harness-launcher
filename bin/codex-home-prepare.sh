@@ -121,6 +121,19 @@ SURFACE_FINGERPRINT_JSON=""
 SURFACE_SKILL_PROFILE="${HARNESS_CODEX_SKILL_PROFILE:-default}"
 SURFACE_MCP_PROFILE="${HARNESS_CODEX_MCP_PROFILE:-}"
 
+repair_auth_link_no_clobber() {
+  local source="$HOME/.codex/auth.json"
+  local destination="$FINAL_CODEX_HOME/auth.json"
+  [[ -f "$source" ]] || return 0
+  [[ ! -e "$destination" && ! -L "$destination" ]] || return 0
+  if ln -s "$source" "$destination" 2>/dev/null; then
+    return 0
+  fi
+  [[ -e "$destination" || -L "$destination" ]] && return 0
+  echo "ERROR: failed to create Codex auth link: $destination" >&2
+  return 1
+}
+
 if [[ -f "$SURFACE_MANIFEST" ]]; then
   [[ -x "$SURFACE_RESOLVER" && -x "$SURFACE_WARM_PROBE" ]] || {
     echo "ERROR: Codex surface manifest requires executable resolver and warm probe" >&2
@@ -138,9 +151,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     existing_observability=0
     [[ -f "$CODEX_HOME/config.toml" ]] && grep -q '^\[otel\]$' "$CODEX_HOME/config.toml" && existing_observability=1
     if [[ "$existing_observability" -eq "$HARNESS_OBSERVABILITY_ACTIVE" ]]; then
-      if [[ -f "$HOME/.codex/auth.json" ]]; then
-        ln -sfn "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
-      fi
+      repair_auth_link_no_clobber
       exit 0
     fi
   else
@@ -158,6 +169,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --codex-home "$FINAL_CODEX_HOME"
     --home "$HOME"
     --skill-profile "$SURFACE_SKILL_PROFILE"
+    --live-config "$FINAL_CODEX_HOME/config.toml"
   )
   [[ -z "$SURFACE_MCP_PROFILE" ]] || preflight_args+=(--mcp-profile "$SURFACE_MCP_PROFILE")
   python3 "$SURFACE_RESOLVER" "${preflight_args[@]}"
@@ -169,6 +181,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
   CODEX_PREPARE_STAGE="$(mktemp -d "$(dirname "$FINAL_CODEX_HOME")/.codex-home-prepare-stage.XXXXXX")"
   cleanup_codex_prepare_stage() {
     [[ -z "${CODEX_PREPARE_STAGE:-}" ]] || rm -rf "$CODEX_PREPARE_STAGE"
+    [[ -z "${GLOBAL_MARKETPLACE_STAGE:-}" ]] || rm -rf "$GLOBAL_MARKETPLACE_STAGE"
   }
   trap cleanup_codex_prepare_stage EXIT
   trap 'exit 130' INT
@@ -194,12 +207,6 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
   [[ -z "$SURFACE_MCP_PROFILE" ]] || fingerprint_args+=(--mcp-profile "$SURFACE_MCP_PROFILE")
   SURFACE_FINGERPRINT_JSON="$(python3 "$SURFACE_RESOLVER" "${fingerprint_args[@]}")"
 
-  # config.toml contains explicitly preserved runtime sections. Seed only this
-  # launcher-owned file; sessions, history, auth and runtime/plugin state never
-  # enter the candidate area.
-  if [[ -f "$FINAL_CODEX_HOME/config.toml" ]]; then
-    cp -p "$FINAL_CODEX_HOME/config.toml" "$CODEX_PREPARE_STAGE/config.toml"
-  fi
   CODEX_HOME="$CODEX_PREPARE_STAGE"
   SURFACE_STAMP="$CODEX_HOME/.surface-success.json"
   SURFACE_FINGERPRINT_CACHE="$CODEX_HOME/.surface-fingerprint-cache.json"
@@ -372,7 +379,7 @@ if [[ -n "$prev_agents_snapshot" ]]; then
   rm -f "$prev_agents_snapshot"
 fi
 
-if [[ -f "$HOME/.codex/auth.json" ]]; then
+if [[ "$SURFACE_ENABLED" -eq 0 && -f "$HOME/.codex/auth.json" ]]; then
   ln -sfn "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
 fi
 
@@ -677,6 +684,25 @@ with_global_codex_lock() {
     fi
     "$@"
   ) 9>"$lock_file"
+}
+
+with_global_codex_lock_current_shell() {
+  local lock_file="$HOME/.codex/.codex-home-prepare-global.lock"
+  local status
+  mkdir -p "$HOME/.codex"
+  [[ -x /usr/bin/lockf ]] || {
+    echo "ERROR: /usr/bin/lockf is required for safe Codex global cache locking" >&2
+    return 1
+  }
+  exec 9>"$lock_file"
+  if ! /usr/bin/lockf -s -t 20 9; then
+    exec 9>&-
+    echo "ERROR: timed out waiting for Codex global cache lock: $lock_file" >&2
+    return 1
+  fi
+  "$@" && status=0 || status=$?
+  exec 9>&-
+  return "$status"
 }
 
 sync_bundled_marketplace_from_app_bundle() {
@@ -1867,23 +1893,37 @@ PY
     while :; do sleep 1; done
   fi
 
-  # The global marketplace cache is launcher-owned but not part of a harness
-  # CODEX_HOME. Its helper already publishes transactionally; run it only after
-  # the harness candidate has fully validated.
-  if [[ -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
-    with_global_codex_lock sync_bundled_marketplace_from_app_bundle
-  fi
-
   old_managed="$(python3 "$SURFACE_RESOLVER" managed-output-paths --codex-home "$FINAL_CODEX_HOME")"
   new_managed="$(python3 "$SURFACE_RESOLVER" managed-output-paths --codex-home "$CODEX_HOME")"
-  python3 - "$CODEX_HOME" "$FINAL_CODEX_HOME" "$old_managed" "$new_managed" \
-    "${HARNESS_TEST_CODEX_PREPARE_FAIL_DURING_PUBLISH:-0}" <<'PY'
+
+  publish_surface_transaction() {
+    local global_marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
+    local publish_status
+    GLOBAL_MARKETPLACE_STAGE=""
+    if [[ -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
+      mkdir -p "$(dirname "$global_marketplace")"
+      if [[ ! -d "$global_marketplace" ]] \
+         || ! diff -qr "$CODEX_BUNDLED_MARKETPLACE_SOURCE" "$global_marketplace" >/dev/null 2>&1; then
+        GLOBAL_MARKETPLACE_STAGE="$(mktemp -d "$(dirname "$global_marketplace")/.openai-bundled-candidate.XXXXXX")"
+        cp -pR "$CODEX_BUNDLED_MARKETPLACE_SOURCE/." "$GLOBAL_MARKETPLACE_STAGE/"
+      fi
+    fi
+
+    python3 - "$CODEX_HOME" "$FINAL_CODEX_HOME" "$old_managed" "$new_managed" \
+      "${HARNESS_TEST_CODEX_PREPARE_FAIL_DURING_PUBLISH:-0}" \
+      "$SURFACE_RESOLVER" "$GLOBAL_MARKETPLACE_STAGE" "$global_marketplace" \
+      "${HARNESS_TEST_CODEX_CONFIG_MERGE_READY:-}" \
+      "${HARNESS_TEST_CODEX_CONFIG_MERGE_RELEASE:-}" \
+      "${HARNESS_TEST_CODEX_GLOBAL_PUBLISH_READY:-}" \
+      "${HARNESS_TEST_CODEX_GLOBAL_PUBLISH_RELEASE:-}" <<'PY'
 import ctypes
 import errno
+import importlib.util
 import json
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 
 candidate = Path(sys.argv[1])
@@ -1891,11 +1931,25 @@ published = Path(sys.argv[2])
 old_paths = set(json.loads(sys.argv[3]))
 new_paths = set(json.loads(sys.argv[4]))
 inject_failure = sys.argv[5] == "1"
+resolver_path = Path(sys.argv[6])
+global_candidate = Path(sys.argv[7]) if sys.argv[7] else None
+global_published = Path(sys.argv[8])
+config_ready = Path(sys.argv[9]) if sys.argv[9] else None
+config_release = Path(sys.argv[10]) if sys.argv[10] else None
+global_ready = Path(sys.argv[11]) if sys.argv[11] else None
+global_release = Path(sys.argv[12]) if sys.argv[12] else None
 paths = sorted(old_paths | new_paths, key=lambda value: (value == ".surface-success.json", value))
 rollback = candidate / ".publish-rollback"
 rollback.mkdir()
 if candidate.stat().st_dev != published.stat().st_dev:
     raise SystemExit("candidate and published Codex homes are on different filesystems")
+
+spec = importlib.util.spec_from_file_location("codex_surface_publish", resolver_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(f"cannot load Codex surface resolver: {resolver_path}")
+surface = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = surface
+spec.loader.exec_module(surface)
 
 class PublishSignal(Exception):
     pass
@@ -1908,42 +1962,153 @@ for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
 
 libc = ctypes.CDLL(None, use_errno=True)
 
-def exchange(left: Path, right: Path) -> None:
+def rename_with_flags(left: Path, right: Path, darwin_flags: int, linux_flags: int) -> None:
     left_raw = os.fsencode(left)
     right_raw = os.fsencode(right)
     if sys.platform == "darwin" and hasattr(libc, "renameatx_np"):
-        result = libc.renameatx_np(-2, left_raw, -2, right_raw, 0x00000002)
+        result = libc.renameatx_np(-2, left_raw, -2, right_raw, darwin_flags)
     elif hasattr(libc, "renameat2"):
-        result = libc.renameat2(-100, left_raw, -100, right_raw, 0x00000002)
+        result = libc.renameat2(-100, left_raw, -100, right_raw, linux_flags)
     else:
-        raise OSError(errno.ENOSYS, "atomic rename exchange is unavailable")
+        raise OSError(errno.ENOSYS, "atomic flagged rename is unavailable")
     if result != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), f"{left} <-> {right}")
 
+def exchange(left: Path, right: Path) -> None:
+    rename_with_flags(left, right, 0x00000002, 0x00000002)
+
+def rename_exclusive(left: Path, right: Path) -> None:
+    rename_with_flags(left, right, 0x00000004, 0x00000001)
+
+def identity(path: Path):
+    try:
+        stat = path.lstat()
+    except FileNotFoundError:
+        return None
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+def wait_gate(ready: Path | None, release: Path | None) -> None:
+    if ready is None:
+        return
+    ready.touch()
+    if release is None:
+        return
+    while not release.exists():
+        time.sleep(0.01)
+
+def publish_pair(source: Path, destination: Path, saved: Path):
+    source_exists = source.exists() or source.is_symlink()
+    destination_exists = destination.exists() or destination.is_symlink()
+    if source_exists:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination_exists:
+            exchange(source, destination)
+            return ("exchange", source, destination, saved)
+        rename_exclusive(source, destination)
+        return ("create", source, destination, saved)
+    if destination_exists:
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(destination, saved)
+        return ("delete", source, destination, saved)
+    return None
+
+def quarantine_conflicts():
+    moves = []
+    planned_skills = {
+        line.strip()
+        for line in (candidate / "skills" / ".harness-managed").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    planned_agents = {
+        line.strip()
+        for line in (candidate / "agents" / ".harness-managed").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    conflicts = []
+    skills_root = published / "skills"
+    if skills_root.is_dir():
+        for entry in sorted(skills_root.iterdir(), key=lambda path: path.name):
+            if entry.name.startswith(".") or entry.name in planned_skills:
+                continue
+            if (entry / "SKILL.md").is_file():
+                conflicts.append((entry, published / ".surface-quarantine" / "skills" / entry.name))
+    agents_root = published / "agents"
+    if agents_root.is_dir():
+        for entry in sorted(agents_root.glob("*.toml")):
+            if entry.name not in planned_agents:
+                conflicts.append((entry, published / ".surface-quarantine" / "agents" / entry.name))
+    for source, base_destination in conflicts:
+        destination = base_destination
+        suffix = 1
+        while destination.exists() or destination.is_symlink():
+            destination = base_destination.with_name(f"{base_destination.name}.{suffix}")
+            suffix += 1
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(source, destination)
+        moves.append(("quarantine", source, destination, destination))
+    return moves
+
+generated_config = (candidate / "config.toml").read_text(encoding="utf-8")
+catalog = json.loads((candidate / "skill-catalog.json").read_text(encoding="utf-8"))
+
+def merge_and_publish_config(saved: Path):
+    destination = published / "config.toml"
+    source = candidate / "config.toml"
+    for attempt in range(5):
+        expected = identity(destination)
+        live_content = destination.read_text(encoding="utf-8") if expected is not None else ""
+        merged = surface.merge_runtime_config(generated_config, live_content, catalog, published)
+        temporary = source.with_name(f".{source.name}.late-merge.{os.getpid()}")
+        temporary.write_text(merged, encoding="utf-8")
+        os.replace(temporary, source)
+        if attempt == 0:
+            wait_gate(config_ready, config_release)
+        if expected is None:
+            try:
+                rename_exclusive(source, destination)
+            except OSError as error:
+                if error.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                    continue
+                raise
+            return ("create", source, destination, saved)
+        exchange(source, destination)
+        if identity(source) == expected:
+            return ("exchange", source, destination, saved)
+        exchange(source, destination)
+    raise RuntimeError("live Codex config changed during five publication retries")
+
 actions = []
 try:
+    if global_candidate is not None:
+        if global_candidate.stat().st_dev != global_published.parent.stat().st_dev:
+            raise RuntimeError("global marketplace candidate is on the wrong filesystem")
+        action = publish_pair(
+            global_candidate,
+            global_published,
+            rollback / "global-marketplace",
+        )
+        if action is not None:
+            actions.append(action)
+        wait_gate(global_ready, global_release)
+
+    actions.extend(quarantine_conflicts())
     for index, relative in enumerate(paths):
         source = candidate / relative
         destination = published / relative
         saved = rollback / relative
-        source_exists = source.exists() or source.is_symlink()
-        destination_exists = destination.exists() or destination.is_symlink()
-        if source_exists:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination_exists:
-                exchange(source, destination)
-                actions.append(("exchange", source, destination, saved))
-            else:
-                os.rename(source, destination)
-                actions.append(("create", source, destination, saved))
-        elif destination_exists:
-            saved.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(destination, saved)
-            actions.append(("delete", source, destination, saved))
+        action = (
+            merge_and_publish_config(saved)
+            if relative == "config.toml"
+            else publish_pair(source, destination, saved)
+        )
+        if action is not None:
+            actions.append(action)
         if inject_failure and index == 4:
             raise OSError(errno.EIO, "injected managed-output publish failure")
 except BaseException:
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, signal.SIG_IGN)
     rollback_error = None
     for action, source, destination, saved in reversed(actions):
         try:
@@ -1954,11 +2119,36 @@ except BaseException:
                 os.rename(destination, source)
             else:
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(saved, destination)
+                if action == "delete":
+                    os.rename(saved, destination)
+                else:
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    os.rename(destination, source)
         except BaseException as error:
             rollback_error = error
     if rollback_error is not None:
         raise RuntimeError(f"managed-output rollback failed: {rollback_error}")
     raise
 PY
+    publish_status=$?
+    rm -rf "$GLOBAL_MARKETPLACE_STAGE"
+    GLOBAL_MARKETPLACE_STAGE=""
+    return "$publish_status"
+  }
+
+  if [[ -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
+    with_global_codex_lock_current_shell publish_surface_transaction
+  else
+    publish_status=0
+    publish_surface_transaction || publish_status=$?
+    [[ "$publish_status" -eq 0 ]] || exit "$publish_status"
+  fi
+
+  if [[ -n "${HARNESS_TEST_CODEX_AUTH_REPAIR_READY:-}" ]]; then
+    touch "$HARNESS_TEST_CODEX_AUTH_REPAIR_READY"
+    if [[ -n "${HARNESS_TEST_CODEX_AUTH_REPAIR_RELEASE:-}" ]]; then
+      while [[ ! -e "$HARNESS_TEST_CODEX_AUTH_REPAIR_RELEASE" ]]; do sleep 0.01; done
+    fi
+  fi
+  repair_auth_link_no_clobber
 fi
