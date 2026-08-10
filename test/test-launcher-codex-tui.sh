@@ -101,6 +101,7 @@ run_tui() {
   HARNESS_DIR="$TEST_HARNESS" \
   HARNESS_NAME="test harness" \
   HARNESS_PREFIX="test" \
+  HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="${TUI_CALLER_GLOBAL_MCP_ALLOWLIST:-}" \
   HARNESS_RUN_DIR="${HARNESS_RUN_DIR_OVERRIDE:-}" \
   bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
 }
@@ -143,6 +144,35 @@ grep -q '^HARNESS_PREFIX:test$' "$STUB1" || {
   echo "FAIL: case1 — AGENTS.md not created (prepare not invoked)"; exit 1;
 }
 echo "PASS: case1 — runtime=Codex base → direct TUI + codex --cd ... -p base + CODEX_HOME prepared"
+
+# Each TUI invocation is a fresh process, so exercise the same inherited
+# caller environment across three consecutive launches. Omitted and explicit
+# empty config values must not carry the prior normalized value to prepare.
+TUI_SEQUENCE_CONFIGURED="$TEST_TEMP/out1-global-configured.txt"
+TUI_SEQUENCE_ABSENT="$TEST_TEMP/out1-global-absent.txt"
+TUI_SEQUENCE_EMPTY="$TEST_TEMP/out1-global-empty.txt"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=" tui-sequence-one, tui-sequence-two,tui-sequence-one "' \
+  > "$TEST_HARNESS/config/launcher.env"
+TUI_CALLER_GLOBAL_MCP_ALLOWLIST="inherited-only" run_tui $'2\n1\n2\n1\n1\n' "$TUI_SEQUENCE_CONFIGURED"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  > "$TEST_HARNESS/config/launcher.env"
+TUI_CALLER_GLOBAL_MCP_ALLOWLIST="inherited-only" run_tui $'2\n1\n2\n1\n1\n' "$TUI_SEQUENCE_ABSENT"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=""' \
+  > "$TEST_HARNESS/config/launcher.env"
+TUI_CALLER_GLOBAL_MCP_ALLOWLIST="inherited-only" run_tui $'2\n1\n2\n1\n1\n' "$TUI_SEQUENCE_EMPTY"
+tui_prepare_values=(
+  "$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$TUI_SEQUENCE_CONFIGURED")"
+  "$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$TUI_SEQUENCE_ABSENT")"
+  "$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$TUI_SEQUENCE_EMPTY")"
+)
+[[ "${tui_prepare_values[*]}" = "tui-sequence-one,tui-sequence-two <UNSET> <UNSET>" ]] || {
+  echo "FAIL: TUI global MCP allowlist leaked across consecutive launches"
+  cat "$TUI_SEQUENCE_CONFIGURED" "$TUI_SEQUENCE_ABSENT" "$TUI_SEQUENCE_EMPTY"
+  exit 1
+}
+echo "PASS: TUI isolates global MCP allowlist across consecutive launches"
 
 # Case 1a: an external orchestrator can pin the Codex launch to a profile-local worktree.
 STUB1A="$TEST_TEMP/out1a-codex-worktree.txt"

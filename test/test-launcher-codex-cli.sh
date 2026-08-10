@@ -431,6 +431,42 @@ if [[ "$(get_field PREPARE_GLOBAL_MCP_ALLOWLIST "$STUB_RAW")" != "raw-one" ]]; t
 fi
 echo "PASS: raw codex --cd registered harness → prepare + CODEX_HOME + env export"
 
+# The direct wrapper must also reset its dynamic launcher.env scope for every
+# call. Keep one sourced shell to prove an inherited caller value and a prior
+# configured value cannot reach later omitted or explicitly empty launches.
+STUB_RAW_SEQUENCE="$TEST_TEMP/output-raw-codex-wrapper-sequence.txt"
+: > "$STUB_RAW_SEQUENCE"
+(
+  export TEST_STUB_FILE="$STUB_RAW_SEQUENCE"
+  export PATH="$TEST_BIN:/usr/bin:/bin"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  export HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="inherited-only"
+  compdef() { :; }
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=" direct-one, direct-two,direct-one "' \
+    > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=""' \
+    > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+) 2>/dev/null || exit 1
+raw_prepare_values=("${(@f)$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$STUB_RAW_SEQUENCE")}")
+[[ "${raw_prepare_values[*]}" = "direct-one,direct-two <UNSET> <UNSET>" ]] || {
+  echo "FAIL: direct codex wrapper global MCP allowlist leaked across launches"
+  cat "$STUB_RAW_SEQUENCE"
+  exit 1
+}
+echo "PASS: direct codex --cd wrapper isolates global MCP allowlist across launches"
+
 (
   export PATH="$TEST_BIN:/usr/bin:/bin"
   unset HARNESS_CODEX_BIN
