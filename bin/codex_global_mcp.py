@@ -202,10 +202,14 @@ def emit_table(lines: list[str], path: list[str], value: dict[str, Any]) -> None
             emit_table(lines, [*path, key], item)
 
 
-def emit_toml(definitions: dict[str, dict[str, Any]], *, enabled: set[str]) -> str:
+def emit_toml(
+    definitions: dict[str, dict[str, Any]], *, enabled: set[str], policies: dict[str, dict[str, list[str]]] | None = None
+) -> str:
+    policies = policies or {}
     lines: list[str] = []
     for name in sorted(definitions):
-        value = dict(definitions[name])
+        value = {key: item for key, item in definitions[name].items() if key not in PROFILE_FIELDS}
+        value.update(policies.get(name, {}))
         value["enabled"] = name in enabled
         emit_table(lines, ["mcp_servers", name], value)
         lines.append("")
@@ -237,21 +241,33 @@ def compare(local_json: Path, global_toml: Path, name: str, home: Path) -> int:
 def main(argv: list[str]) -> int:
     if len(argv) == 6 and argv[1] == "compare":
         return compare(Path(argv[2]), Path(argv[3]), argv[4], Path(argv[5]))
-    if len(argv) == 6 and argv[1] == "emit":
+    if len(argv) in {6, 7} and argv[1] == "emit":
         try:
             resolution = resolve_global_mcp(Path(argv[2]), argv[3], Path(argv[4]))
             enabled = set(filter(None, argv[5].split(",")))
-            emitted = emit_toml(resolution.definitions, enabled=enabled)
+            policies = {} if len(argv) == 6 else json.loads(argv[6])
+            if not isinstance(policies, dict):
+                raise GlobalMcpError("global MCP emitted policies must be an object")
+            emitted = emit_toml(resolution.definitions, enabled=enabled, policies=policies)
             parsed = tomllib.loads(emitted)
             for name, definition in resolution.definitions.items():
                 if definition_projection(parsed["mcp_servers"][name], Path(argv[4])) != definition_projection(definition, Path(argv[4])):
                     raise GlobalMcpError(f"global MCP {name!r} failed definition projection round-trip")
+                if {
+                    field: parsed["mcp_servers"][name].get(field)
+                    for field in PROFILE_FIELDS
+                    if field in parsed["mcp_servers"][name]
+                } != {
+                    "enabled": name in enabled,
+                    **policies.get(name, {}),
+                }:
+                    raise GlobalMcpError(f"global MCP {name!r} failed profile field round-trip")
             print(emitted, end="")
             return 0
-        except GlobalMcpError as error:
+        except (json.JSONDecodeError, GlobalMcpError) as error:
             print(f"ERROR: {error}", file=sys.stderr)
             return 2
-    print("usage: codex_global_mcp.py compare LOCAL_JSON GLOBAL_TOML NAME HOME | emit GLOBAL_TOML ALLOWLIST HOME ENABLED", file=sys.stderr)
+    print("usage: codex_global_mcp.py compare LOCAL_JSON GLOBAL_TOML NAME HOME | emit GLOBAL_TOML ALLOWLIST HOME ENABLED [POLICIES_JSON]", file=sys.stderr)
     return 2
 
 

@@ -455,9 +455,31 @@ def validate_manifest(manifest: dict) -> None:
     for name, profile in profiles.items():
         if not isinstance(profile, dict) or not isinstance(profile.get("enabled"), list):
             fail(f"mcp profile {name!r} needs an enabled array")
+        if set(profile) - {"enabled", "policies"}:
+            fail(f"mcp profile {name!r} has unsupported fields")
         missing = required - set(profile["enabled"])
         if missing:
             fail(f"mcp.required_in_all_profiles missing from profile {name!r}: {sorted(missing)}")
+        policies = profile.get("policies", {})
+        if not isinstance(policies, dict):
+            fail(f"mcp profile {name!r}.policies must be an object")
+        for server, policy in policies.items():
+            if not isinstance(server, str) or not server:
+                fail(f"mcp profile {name!r}.policies has an invalid server name")
+            if server not in profile["enabled"]:
+                fail(f"mcp profile {name!r}.policies server {server!r} is not enabled")
+            if not isinstance(policy, dict) or not policy or set(policy) - {
+                "enabled_tools", "disabled_tools"
+            }:
+                fail(f"mcp profile {name!r}.policies[{server!r}] has unsupported fields")
+            for field in ("enabled_tools", "disabled_tools"):
+                tools = policy.get(field, [])
+                if not isinstance(tools, list) or any(
+                    not isinstance(tool, str) or not tool for tool in tools
+                ) or len(tools) != len(set(tools)):
+                    fail(f"mcp profile {name!r}.policies[{server!r}].{field} must be a duplicate-free array of non-empty strings")
+            if set(policy.get("enabled_tools", [])) & set(policy.get("disabled_tools", [])):
+                fail(f"mcp profile {name!r}.policies[{server!r}] tool lists overlap")
 
 
 def find_requested(candidates: Iterable[Candidate], requested: str, label: str) -> Candidate:
@@ -1046,12 +1068,18 @@ def resolve_mcp(manifest: dict, *, profile: str, home: Path, repo_root: Path, co
         )
         enabled -= undefined
         unresolved = enabled - servers
+    policies = {
+        name: policy
+        for name, policy in mcp["profiles"][profile].get("policies", {}).items()
+        if name in enabled
+    }
     return {
         "profile": profile,
         "enabled": sorted(enabled),
         "disabled": sorted(servers - enabled),
         "product_managed": sorted(unresolved),
         "definitions": {name: owners[name] for name in sorted(owners)},
+        "policies": dict(sorted(policies.items())),
     }
 
 

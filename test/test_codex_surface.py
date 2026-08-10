@@ -12,11 +12,20 @@ import time
 import tomllib
 import unittest
 from unittest import mock
+import importlib.util
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOLVER = ROOT / "bin" / "codex-surface.py"
 PREPARE = ROOT / "bin" / "codex-home-prepare.sh"
+GLOBAL_MCP_MODULE_PATH = ROOT / "bin" / "codex_global_mcp.py"
+GLOBAL_MCP_SPEC = importlib.util.spec_from_file_location(
+    "codex_global_mcp_surface_test", GLOBAL_MCP_MODULE_PATH
+)
+assert GLOBAL_MCP_SPEC and GLOBAL_MCP_SPEC.loader
+GLOBAL_MCP_MODULE = importlib.util.module_from_spec(GLOBAL_MCP_SPEC)
+sys.modules[GLOBAL_MCP_SPEC.name] = GLOBAL_MCP_MODULE
+GLOBAL_MCP_SPEC.loader.exec_module(GLOBAL_MCP_MODULE)
 
 
 def write_skill(root: Path, directory: str, name: str, body: str, *, implicit=True) -> Path:
@@ -405,6 +414,25 @@ class ResolverTests(SurfaceFixture):
                 self.assertIn(server, result.stderr)
                 self.assertIn("codex-global-allowlist", result.stderr)
 
+    def test_mcp_profile_policies_reject_invalid_shapes_and_membership(self):
+        cases = {
+            "non-object": [],
+            "unknown-field": {"context7": {"tools": ["read"]}},
+            "duplicate-tool": {"context7": {"enabled_tools": ["read", "read"]}},
+            "empty-tool": {"context7": {"disabled_tools": [""]}},
+            "overlap": {"context7": {"enabled_tools": ["read"], "disabled_tools": ["read"]}},
+            "disabled-member": {"jira": {"enabled_tools": ["read"]}},
+        }
+        for label, policies in cases.items():
+            with self.subTest(label=label):
+                manifest = base_manifest()
+                manifest["mcp"]["profiles"]["default"]["policies"] = policies
+                self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+                result = self.run_resolver(expect=2)
+
+                self.assertIn("policies", result.stderr)
+
     def test_enabled_without_definition_is_dropped_not_fatal(self):
         # A server enabled in a profile but absent from every definition source
         # (e.g. a host-local MCP not present on this machine) is dropped, not fatal.
@@ -714,20 +742,87 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
         self.assertEqual(self.compiler_calls(), 1, "unselected global MCP invalidated warm prepare")
 
+        self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool,unselected")
+        self.assertEqual(self.compiler_calls(), 2, "allowlist membership mutation stayed warm")
+
         global_config.write_text(
             '[mcp_servers.global-tool]\ncommand = "global-v2"\nenabled = true\n\n'
             '[mcp_servers.unselected]\ncommand = "unselected-v2"\n',
             encoding="utf-8",
         )
         self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
-        self.assertEqual(self.compiler_calls(), 2)
+        self.assertEqual(self.compiler_calls(), 3)
 
         self.prepare(
             HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool",
             HARNESS_CODEX_MCP_PROFILE="work",
         )
-        self.assertEqual(self.compiler_calls(), 3)
+        self.assertEqual(self.compiler_calls(), 4)
         self.assertTrue(self.enabled_value("global-tool"))
+
+    def test_global_allowlist_emits_exact_profile_policies_without_source_drift(self):
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        manifest["mcp"]["definition_sources"].append("codex-global-allowlist")
+        for profile in ("default", "work"):
+            manifest["mcp"]["profiles"][profile]["enabled"].append("global-tool")
+        manifest["mcp"]["profiles"]["default"]["policies"] = {
+            "global-tool": {"enabled_tools": ["default-search"]}
+        }
+        manifest["mcp"]["profiles"]["work"]["policies"] = {
+            "global-tool": {"disabled_tools": ["work-delete"]}
+        }
+        self.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        global_config = self.home / ".codex" / "config.toml"
+        global_config.parent.mkdir(exist_ok=True)
+        global_config.write_text(
+            '[mcp_servers.global-tool]\ncommand = "global-command"\nargs = ["serve"]\n',
+            encoding="utf-8",
+        )
+
+        self.prepare(HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool")
+
+        catalog = json.loads((self.codex_home / "skill-catalog.json").read_text())
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            default_config = tomllib.load(stream)["mcp_servers"]["global-tool"]
+        self.assertEqual(
+            catalog["mcp"]["policies"],
+            {"global-tool": {"enabled_tools": ["default-search"]}},
+        )
+        self.assertEqual(default_config["enabled_tools"], ["default-search"])
+        self.assertNotIn("disabled_tools", default_config)
+        self.assertEqual(
+            GLOBAL_MCP_MODULE.definition_projection(default_config, self.home),
+            GLOBAL_MCP_MODULE.definition_projection(
+                {"command": "global-command", "args": ["serve"]}, self.home
+            ),
+        )
+
+        self.prepare(
+            HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool",
+            HARNESS_CODEX_MCP_PROFILE="work",
+        )
+
+        catalog = json.loads((self.codex_home / "skill-catalog.json").read_text())
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            work_config = tomllib.load(stream)["mcp_servers"]["global-tool"]
+        self.assertEqual(
+            catalog["mcp"]["policies"],
+            {"global-tool": {"disabled_tools": ["work-delete"]}},
+        )
+        self.assertEqual(work_config["disabled_tools"], ["work-delete"])
+        self.assertNotIn("enabled_tools", work_config)
+        self.assertEqual(
+            GLOBAL_MCP_MODULE.definition_projection(work_config, self.home),
+            GLOBAL_MCP_MODULE.definition_projection(
+                {"command": "global-command", "args": ["serve"]}, self.home
+            ),
+        )
+        calls = self.compiler_calls()
+        self.prepare(
+            HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="global-tool",
+            HARNESS_CODEX_MCP_PROFILE="work",
+        )
+        self.assertEqual(self.compiler_calls(), calls, "matching policy fields did not stay warm")
 
     def test_selected_global_definition_edits_invalidate_or_fail_closed(self):
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))

@@ -204,6 +204,9 @@ def config_matches(codex_home, catalog, expected_profile):
 
     mcp = catalog.get("mcp") or {}
     enabled_servers = set(mcp.get("enabled") or [])
+    policies = mcp.get("policies") or {}
+    if not isinstance(policies, dict):
+        return False
     definitions = mcp.get("definitions") or {}
     configured_mcp = config.get("mcp_servers") or {}
     if not isinstance(configured_mcp, dict) or set(configured_mcp) != set(definitions):
@@ -211,7 +214,13 @@ def config_matches(codex_home, catalog, expected_profile):
     for name, server in configured_mcp.items():
         if not isinstance(server, dict):
             return False
-        if server.get("enabled") is not (name in enabled_servers):
+        expected_profile = {"enabled": name in enabled_servers, **policies.get(name, {})}
+        actual_profile = {
+            field: server[field]
+            for field in ("enabled", "enabled_tools", "disabled_tools")
+            if field in server
+        }
+        if actual_profile != expected_profile:
             return False
 
     plugins = config.get("plugins") or {}

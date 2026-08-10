@@ -762,9 +762,12 @@ codex_home = sys.argv[3] if len(sys.argv) > 3 else ""
 surface_catalog = sys.argv[4] if len(sys.argv) > 4 else ""
 mcp_paths = sys.argv[5:]
 surface_enabled = None
+surface_policies = {}
 if surface_catalog:
     with open(surface_catalog, encoding="utf-8") as f:
-        surface_enabled = set((json.load(f).get("mcp") or {}).get("enabled") or [])
+        surface_mcp = json.load(f).get("mcp") or {}
+    surface_enabled = set(surface_mcp.get("enabled") or [])
+    surface_policies = surface_mcp.get("policies") or {}
 servers = {}
 owners = {}
 for path in mcp_paths:
@@ -796,6 +799,10 @@ for name in sorted(servers):
             print(f"args = [{args_repr}]")
     if surface_enabled is not None:
         print(f'enabled = {str(name in surface_enabled).lower()}')
+        for field in ("enabled_tools", "disabled_tools"):
+            if field in surface_policies.get(name, {}):
+                values = ", ".join(json.dumps(value) for value in surface_policies[name][field])
+                print(f"{field} = [{values}]")
     print()
     env = dict(spec.get("env") or {})
     if name == "node_repl" and browser_client_sha256s:
@@ -861,9 +868,23 @@ if any(owner == "codex-global-allowlist" for owner in definitions.values()):
     print("registered:" + ",".join((catalog.get("mcp") or {}).get("enabled") or []))
 PY
 )"
+  global_policies="$(python3 - "$surface_catalog" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    catalog = json.load(stream)
+mcp = catalog.get("mcp") or {}
+definitions = mcp.get("definitions") or {}
+policies = mcp.get("policies") or {}
+print(json.dumps({
+    name: policy
+    for name, policy in policies.items()
+    if definitions.get(name) == "codex-global-allowlist"
+}, sort_keys=True, separators=(",", ":")))
+PY
+)"
   if [[ "$global_enabled" == registered:* ]]; then
     python3 "$GLOBAL_MCP_RESOLVER" emit "$HOME/.codex/config.toml" \
-      "$HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST" "$HOME" "${global_enabled#registered:}" >> "$tmp_config"
+      "$HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST" "$HOME" "${global_enabled#registered:}" "$global_policies" >> "$tmp_config"
   fi
 fi
 
