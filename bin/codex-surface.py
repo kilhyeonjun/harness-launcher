@@ -1511,10 +1511,54 @@ SURFACE_FIXED_OUTPUTS = (
     "surface.config.toml",
     "fast.config.toml",
     "base.config.toml",
+    "sol.config.toml",
     "plan.config.toml",
     "rich.config.toml",
     "skills/.harness-managed",
 )
+
+MANAGED_OUTPUT_ROOTS = (
+    ".surface-fingerprint-cache.json",
+    ".surface-success.json",
+    "AGENTS.md",
+    "agents/.harness-managed",
+    "base.config.toml",
+    "config.toml",
+    "fast.config.toml",
+    "hooks.json",
+    "plan.config.toml",
+    "plugins/cache/openai-bundled/browser",
+    "plugins/cache/openai-bundled/chrome",
+    "plugins/cache/openai-bundled/computer-use",
+    "rich.config.toml",
+    "skill-catalog.json",
+    "skills/.harness-managed",
+    "sol.config.toml",
+    "surface.config.toml",
+)
+
+
+def managed_output_roots(codex_home: Path) -> list[str]:
+    """Return the exact launcher-owned publication roots for a prepared home."""
+    roots = set(MANAGED_OUTPUT_ROOTS)
+    stamp_path = codex_home / ".surface-success.json"
+    try:
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        stamp = {}
+    signatures = stamp.get("output_signatures") or {}
+    if isinstance(signatures, dict):
+        for relative in signatures:
+            parts = Path(relative).parts
+            if len(parts) >= 2 and parts[0] == "skills" and not parts[1].startswith("."):
+                roots.add(f"skills/{parts[1]}")
+            elif len(parts) == 2 and parts[0] == "agents" and parts[1].endswith(".toml"):
+                roots.add(relative)
+    return sorted(roots)
+
+
+def print_managed_output_paths(args: argparse.Namespace) -> None:
+    print(json.dumps(managed_output_roots(Path(args.codex_home))))
 
 
 def managed_config_projection(codex_home: Path) -> dict:
@@ -1660,6 +1704,37 @@ def resolve(args: argparse.Namespace) -> None:
     atomic_write(codex_home / "surface.config.toml", render_surface_config(disabled_paths))
 
 
+def preflight(args: argparse.Namespace) -> None:
+    """Validate every source/profile decision without materializing outputs."""
+    manifest_path = Path(os.path.abspath(args.manifest))
+    repo_root = Path(os.path.abspath(args.repo_root))
+    codex_home = Path(os.path.abspath(args.codex_home))
+    home = Path(os.path.abspath(args.home))
+    manifest = load_json(manifest_path)
+    validate_manifest(manifest)
+    skill_profile = args.skill_profile or "default"
+    mcp_profile = args.mcp_profile or manifest["mcp"]["default_profile"]
+    by_source, all_candidates = collect_candidates(
+        manifest, home=home, repo_root=repo_root, codex_home=codex_home
+    )
+    choose_skills(
+        manifest,
+        skill_profile=skill_profile,
+        by_source=by_source,
+        all_candidates=all_candidates,
+        home=home,
+        repo_root=repo_root,
+        codex_home=codex_home,
+    )
+    resolve_mcp(
+        manifest,
+        profile=mcp_profile,
+        home=home,
+        repo_root=repo_root,
+        codex_home=codex_home,
+    )
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     subcommands = result.add_subparsers(dest="command", required=True)
@@ -1671,6 +1746,17 @@ def parser() -> argparse.ArgumentParser:
     resolve_parser.add_argument("--skill-profile")
     resolve_parser.add_argument("--mcp-profile")
     resolve_parser.set_defaults(function=resolve)
+
+    preflight_parser = subcommands.add_parser(
+        "preflight", help="validate a surface without materializing outputs"
+    )
+    preflight_parser.add_argument("--manifest", required=True)
+    preflight_parser.add_argument("--repo-root", required=True)
+    preflight_parser.add_argument("--codex-home", required=True)
+    preflight_parser.add_argument("--home", default=str(Path.home()))
+    preflight_parser.add_argument("--skill-profile")
+    preflight_parser.add_argument("--mcp-profile")
+    preflight_parser.set_defaults(function=preflight)
 
     fingerprint_parser = subcommands.add_parser("fingerprint", help="calculate the launcher-owned input fingerprint")
     fingerprint_parser.add_argument("--manifest", required=True)
@@ -1689,6 +1775,12 @@ def parser() -> argparse.ArgumentParser:
     stamp_parser.add_argument("--fingerprint-json", required=True)
     stamp_parser.add_argument("--codex-home", required=True)
     stamp_parser.set_defaults(function=write_stamp)
+
+    managed_parser = subcommands.add_parser(
+        "managed-output-paths", help="print launcher-owned publication roots"
+    )
+    managed_parser.add_argument("--codex-home", required=True)
+    managed_parser.set_defaults(function=print_managed_output_paths)
     return result
 
 

@@ -52,7 +52,8 @@ python3() {
   "$HARNESS_PYTHON3_BIN" "$@"
 }
 
-CODEX_HOME="$HARNESS_DIR/.harness/codex"
+FINAL_CODEX_HOME="$HARNESS_DIR/.harness/codex"
+CODEX_HOME="$FINAL_CODEX_HOME"
 PROJECT_CODEX_DIR="$HARNESS_DIR/.codex"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/harness-common.sh"
@@ -148,16 +149,36 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
       exit "$surface_probe_status"
     fi
   fi
-  # A rebuild starts by invalidating the previous success record. A signal,
-  # compiler error, or resolver failure can therefore never leave a stale warm
-  # stamp behind.
-  rm -f "$SURFACE_STAMP"
+  # Resolve all ownership/profile/policy decisions before creating or changing
+  # even a private managed-output candidate.
+  preflight_args=(
+    preflight
+    --manifest "$SURFACE_MANIFEST"
+    --repo-root "$HARNESS_DIR"
+    --codex-home "$FINAL_CODEX_HOME"
+    --home "$HOME"
+    --skill-profile "$SURFACE_SKILL_PROFILE"
+  )
+  [[ -z "$SURFACE_MCP_PROFILE" ]] || preflight_args+=(--mcp-profile "$SURFACE_MCP_PROFILE")
+  python3 "$SURFACE_RESOLVER" "${preflight_args[@]}"
+
+  # Cold rebuilds are prepared away from the live home. The lock file remains
+  # in the live home; every launcher-owned candidate lives beside it so final
+  # renames stay on one filesystem. EXIT also covers compiler errors and
+  # INT/TERM/HUP, leaving the previous successful publication untouched.
+  CODEX_PREPARE_STAGE="$(mktemp -d "$(dirname "$FINAL_CODEX_HOME")/.codex-home-prepare-stage.XXXXXX")"
+  cleanup_codex_prepare_stage() {
+    [[ -z "${CODEX_PREPARE_STAGE:-}" ]] || rm -rf "$CODEX_PREPARE_STAGE"
+  }
+  trap cleanup_codex_prepare_stage EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
 
   fingerprint_args=(
     fingerprint
     --manifest "$SURFACE_MANIFEST"
     --repo-root "$HARNESS_DIR"
-    --codex-home "$CODEX_HOME"
+    --codex-home "$FINAL_CODEX_HOME"
     --home "$HOME"
     --skill-profile "$SURFACE_SKILL_PROFILE"
     --launcher-file "$SURFACE_RESOLVER"
@@ -168,10 +189,20 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
     --launcher-file "$TITLE_SYNC_PATH"
     --bundled-marketplace "$CODEX_BUNDLED_MARKETPLACE_SOURCE"
-    --fingerprint-cache "$SURFACE_FINGERPRINT_CACHE"
+    --fingerprint-cache "$CODEX_PREPARE_STAGE/.surface-fingerprint-cache.json"
   )
   [[ -z "$SURFACE_MCP_PROFILE" ]] || fingerprint_args+=(--mcp-profile "$SURFACE_MCP_PROFILE")
   SURFACE_FINGERPRINT_JSON="$(python3 "$SURFACE_RESOLVER" "${fingerprint_args[@]}")"
+
+  # config.toml contains explicitly preserved runtime sections. Seed only this
+  # launcher-owned file; sessions, history, auth and runtime/plugin state never
+  # enter the candidate area.
+  if [[ -f "$FINAL_CODEX_HOME/config.toml" ]]; then
+    cp -p "$FINAL_CODEX_HOME/config.toml" "$CODEX_PREPARE_STAGE/config.toml"
+  fi
+  CODEX_HOME="$CODEX_PREPARE_STAGE"
+  SURFACE_STAMP="$CODEX_HOME/.surface-success.json"
+  SURFACE_FINGERPRINT_CACHE="$CODEX_HOME/.surface-fingerprint-cache.json"
 fi
 
 warn_claude_global_mcp_drift() {
@@ -231,9 +262,31 @@ fi
 compiler="$HARNESS_DIR/core/scripts/harness_compile.py"
 compiled_agents=0
 if [[ -f "$compiler" && -f "$HARNESS_DIR/.claude/source/runtime-contract.yaml" ]]; then
-  if python3 "$compiler" --write-codex "$HARNESS_DIR" >/dev/null; then
+  compiler_root="$HARNESS_DIR"
+  if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+    compiler_root="$CODEX_PREPARE_STAGE/.compiler-root"
+    python3 - "$HARNESS_DIR" "$compiler_root" "$CODEX_HOME" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+source, facade, output = map(Path, sys.argv[1:])
+facade.mkdir()
+for entry in source.iterdir():
+    if entry.name in {".codex", ".harness"}:
+        continue
+    (facade / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
+(facade / ".harness").mkdir()
+(facade / ".harness" / "codex").symlink_to(output, target_is_directory=True)
+PY
+  fi
+  if python3 "$compiler" --write-codex "$compiler_root" >/dev/null; then
     compiled_agents=1
   else
+    if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+      echo "ERROR: harness compiler failed while preparing Codex candidate" >&2
+      exit 23
+    fi
     echo "WARN: harness compiler failed for Codex AGENTS.md; falling back to rule concatenation" >&2
   fi
 fi
@@ -655,7 +708,7 @@ sync_bundled_marketplace_from_app_bundle() {
 # Global Codex cache is touched only when a valid bundled marketplace is present.
 # Avoid taking a host-global lock for harness-only preparation that has no cache
 # work to serialize; when cache synchronization is needed it remains fail-closed.
-if [[ -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
+if [[ "$SURFACE_ENABLED" -eq 0 && -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
   with_global_codex_lock sync_bundled_marketplace_from_app_bundle
 fi
 
@@ -667,6 +720,9 @@ mcp_json_files=()
 [[ -f "$HARNESS_DIR/mcp.local.json" ]] && mcp_json_files+=("$HARNESS_DIR/mcp.local.json")
 tmp_config="$(mktemp "$CODEX_HOME/.config.toml.XXXXXX")"
 bundled_marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
+if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+  bundled_marketplace="$CODEX_BUNDLED_MARKETPLACE_SOURCE"
+fi
 browser_client_sha256s="$(
   client="$bundled_marketplace/plugins/chrome/scripts/browser-client.mjs"
   if [[ -f "$client" ]]; then
@@ -754,7 +810,7 @@ TOML
 surface_catalog=""
 [[ "$SURFACE_ENABLED" -eq 0 ]] || surface_catalog="$CODEX_HOME/skill-catalog.json"
 if [[ ${#mcp_json_files[@]} -gt 0 ]]; then
-  python3 - "$browser_client_sha256s" "$browser_use_app_version" "$CODEX_HOME" "$surface_catalog" "${mcp_json_files[@]}" >> "$tmp_config" <<'PY'
+  python3 - "$browser_client_sha256s" "$browser_use_app_version" "$FINAL_CODEX_HOME" "$surface_catalog" "${mcp_json_files[@]}" >> "$tmp_config" <<'PY'
 import json, re, sys
 browser_client_sha256s = re.findall(r"\b[a-fA-F0-9]{64}\b", sys.argv[1] if len(sys.argv) > 1 else "")
 browser_use_app_version = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -894,7 +950,7 @@ if [[ "$SURFACE_ENABLED" -eq 1 && -f "$CODEX_HOME/surface.config.toml" ]]; then
 fi
 
 if [[ -f "$config_file" ]]; then
-  python3 - "$config_file" "$surface_catalog" "$CODEX_HOME" >> "$tmp_config" <<'PY'
+  python3 - "$config_file" "$surface_catalog" "$CODEX_HOME" "$FINAL_CODEX_HOME" >> "$tmp_config" <<'PY'
 import json
 import os
 import re
@@ -904,7 +960,12 @@ import tomllib
 path = sys.argv[1]
 surface_catalog = sys.argv[2] if len(sys.argv) > 2 else ""
 codex_home = sys.argv[3] if len(sys.argv) > 3 else ""
-managed_plugin_root = os.path.join(codex_home, "plugins", "cache", "openai-bundled")
+published_codex_home = sys.argv[4] if len(sys.argv) > 4 else codex_home
+managed_plugin_roots = {
+    os.path.join(root, "plugins", "cache", "openai-bundled")
+    for root in (codex_home, published_codex_home)
+    if root
+}
 managed_skill_paths = set()
 if surface_catalog:
     with open(surface_catalog, encoding="utf-8") as f:
@@ -913,6 +974,9 @@ if surface_catalog:
     for skill in catalog.get("skills") or []:
         managed_skill_paths.add(skill.get("source_path"))
         managed_skill_paths.add(skill.get("exposed_path"))
+        exposed = skill.get("exposed_path")
+        if isinstance(exposed, str) and exposed.startswith(codex_home + os.sep):
+            managed_skill_paths.add(published_codex_home + exposed[len(codex_home):])
     managed_skill_paths.discard(None)
 section_header = re.compile(r"^\[.*\]\s*$")
 hooks_state_header = re.compile(r"^\[hooks\.state(?:\.|\])")
@@ -921,14 +985,17 @@ current = []
 in_preserved_section = False
 
 def is_managed_plugin_path(value):
-    if not surface_catalog or not managed_plugin_root:
+    if not surface_catalog or not managed_plugin_roots:
         return False
-    try:
-        return os.path.commonpath(
-            (os.path.abspath(value), os.path.abspath(managed_plugin_root))
-        ) == os.path.abspath(managed_plugin_root)
-    except (TypeError, ValueError):
-        return False
+    for managed_plugin_root in managed_plugin_roots:
+        try:
+            if os.path.commonpath(
+                (os.path.abspath(value), os.path.abspath(managed_plugin_root))
+            ) == os.path.abspath(managed_plugin_root):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 def first_toml_key(raw):
     raw = raw.strip()
@@ -1076,7 +1143,7 @@ update_latest_symlink() {
 
 materialize_bundled_plugin() {
   local plugin="$1"
-  local marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
+  local marketplace="$bundled_marketplace"
   local src="$marketplace/plugins/$plugin"
   local manifest="$src/.codex-plugin/plugin.json"
   [[ -f "$manifest" ]] || return 0
@@ -1305,7 +1372,11 @@ prepare_bundled_plugins() {
 
 if [[ -f "$bundled_marketplace/plugins/computer-use/.codex-plugin/plugin.json" \
    || -f "$bundled_marketplace/plugins/chrome/.codex-plugin/plugin.json" ]]; then
-  with_global_codex_lock prepare_bundled_plugins
+  if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+    prepare_bundled_plugins
+  else
+    with_global_codex_lock prepare_bundled_plugins
+  fi
 fi
 remove_bundled_plugin_cache "browser"
 
@@ -1739,8 +1810,155 @@ if not os.path.exists(marker) or open(marker).read() != new_marker:
 PY
 
 if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+  # First validate the complete candidate using its private paths. This checks
+  # generated TOML semantics, exact profiles, catalog/materialization integrity,
+  # markers and every signed launcher output before publication is possible.
   python3 "$SURFACE_RESOLVER" write-stamp \
     --stamp "$SURFACE_STAMP" \
     --fingerprint-json "$SURFACE_FINGERPRINT_JSON" \
     --codex-home "$CODEX_HOME"
+  python3 "$SURFACE_WARM_PROBE" \
+    "$SURFACE_STAMP" \
+    "$SURFACE_FINGERPRINT_CACHE" \
+    "$CODEX_HOME" \
+    "$SURFACE_MANIFEST" \
+    "$SURFACE_SKILL_PROFILE" \
+    "$SURFACE_MCP_PROFILE" \
+    "${HARNESS_OBSERVABILITY_PROFILE:-}" >/dev/null
+
+  # Candidate-only absolute paths are never published. Re-project the two
+  # generated text surfaces to the stable live CODEX_HOME, then regenerate the
+  # success stamp over those final bytes.
+  python3 - "$CODEX_HOME" "$FINAL_CODEX_HOME" \
+    "$CODEX_HOME/config.toml" "$CODEX_HOME/skill-catalog.json" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+candidate, published = sys.argv[1:3]
+replacements = [
+    (candidate.encode(), published.encode()),
+    (os.path.abspath(candidate).encode(), os.path.abspath(published).encode()),
+    (os.path.realpath(candidate).encode(), os.path.realpath(published).encode()),
+]
+for raw in sys.argv[3:]:
+    path = Path(raw)
+    content = path.read_bytes()
+    updated = content
+    for needle, replacement in replacements:
+        updated = updated.replace(needle, replacement)
+    if updated != content:
+        temporary = path.with_name(f".{path.name}.canonical.{os.getpid()}")
+        temporary.write_bytes(updated)
+        os.replace(temporary, path)
+PY
+  rm -f "$SURFACE_STAMP"
+  python3 "$SURFACE_RESOLVER" write-stamp \
+    --stamp "$SURFACE_STAMP" \
+    --fingerprint-json "$SURFACE_FINGERPRINT_JSON" \
+    --codex-home "$CODEX_HOME"
+
+  touch "$CODEX_PREPARE_STAGE/.candidate-ready"
+  if [[ "${HARNESS_TEST_CODEX_PREPARE_FAIL_AFTER_CANDIDATE:-0}" == "1" ]]; then
+    echo "ERROR: injected failure after complete Codex candidate" >&2
+    exit 86
+  fi
+  if [[ "${HARNESS_TEST_CODEX_PREPARE_PAUSE_AFTER_CANDIDATE:-0}" == "1" ]]; then
+    while :; do sleep 1; done
+  fi
+
+  # The global marketplace cache is launcher-owned but not part of a harness
+  # CODEX_HOME. Its helper already publishes transactionally; run it only after
+  # the harness candidate has fully validated.
+  if [[ -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
+    with_global_codex_lock sync_bundled_marketplace_from_app_bundle
+  fi
+
+  old_managed="$(python3 "$SURFACE_RESOLVER" managed-output-paths --codex-home "$FINAL_CODEX_HOME")"
+  new_managed="$(python3 "$SURFACE_RESOLVER" managed-output-paths --codex-home "$CODEX_HOME")"
+  python3 - "$CODEX_HOME" "$FINAL_CODEX_HOME" "$old_managed" "$new_managed" \
+    "${HARNESS_TEST_CODEX_PREPARE_FAIL_DURING_PUBLISH:-0}" <<'PY'
+import ctypes
+import errno
+import json
+import os
+import signal
+import sys
+from pathlib import Path
+
+candidate = Path(sys.argv[1])
+published = Path(sys.argv[2])
+old_paths = set(json.loads(sys.argv[3]))
+new_paths = set(json.loads(sys.argv[4]))
+inject_failure = sys.argv[5] == "1"
+paths = sorted(old_paths | new_paths, key=lambda value: (value == ".surface-success.json", value))
+rollback = candidate / ".publish-rollback"
+rollback.mkdir()
+if candidate.stat().st_dev != published.stat().st_dev:
+    raise SystemExit("candidate and published Codex homes are on different filesystems")
+
+class PublishSignal(Exception):
+    pass
+
+def interrupted(signum, _frame):
+    raise PublishSignal(f"publication interrupted by signal {signum}")
+
+for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(signum, interrupted)
+
+libc = ctypes.CDLL(None, use_errno=True)
+
+def exchange(left: Path, right: Path) -> None:
+    left_raw = os.fsencode(left)
+    right_raw = os.fsencode(right)
+    if sys.platform == "darwin" and hasattr(libc, "renameatx_np"):
+        result = libc.renameatx_np(-2, left_raw, -2, right_raw, 0x00000002)
+    elif hasattr(libc, "renameat2"):
+        result = libc.renameat2(-100, left_raw, -100, right_raw, 0x00000002)
+    else:
+        raise OSError(errno.ENOSYS, "atomic rename exchange is unavailable")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), f"{left} <-> {right}")
+
+actions = []
+try:
+    for index, relative in enumerate(paths):
+        source = candidate / relative
+        destination = published / relative
+        saved = rollback / relative
+        source_exists = source.exists() or source.is_symlink()
+        destination_exists = destination.exists() or destination.is_symlink()
+        if source_exists:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination_exists:
+                exchange(source, destination)
+                actions.append(("exchange", source, destination, saved))
+            else:
+                os.rename(source, destination)
+                actions.append(("create", source, destination, saved))
+        elif destination_exists:
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(destination, saved)
+            actions.append(("delete", source, destination, saved))
+        if inject_failure and index == 4:
+            raise OSError(errno.EIO, "injected managed-output publish failure")
+except BaseException:
+    rollback_error = None
+    for action, source, destination, saved in reversed(actions):
+        try:
+            if action == "exchange":
+                exchange(source, destination)
+            elif action == "create":
+                source.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(destination, source)
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.rename(saved, destination)
+        except BaseException as error:
+            rollback_error = error
+    if rollback_error is not None:
+        raise RuntimeError(f"managed-output rollback failed: {rollback_error}")
+    raise
+PY
 fi

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -611,6 +612,43 @@ out.mkdir(parents=True, exist_ok=True)
             return 0
         return len(self.counter.read_text(encoding="utf-8").splitlines())
 
+    def managed_output_paths(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(RESOLVER),
+                "managed-output-paths",
+                "--codex-home",
+                str(self.codex_home),
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def snapshot_paths(self, relative_paths):
+        snapshot = {}
+
+        def capture(path, relative):
+            if path.is_symlink():
+                snapshot[relative] = ["symlink", os.readlink(path)]
+            elif path.is_file():
+                snapshot[relative] = ["file", hashlib.sha256(path.read_bytes()).hexdigest()]
+            elif path.is_dir():
+                snapshot[relative] = ["directory"]
+                for child in sorted(path.iterdir(), key=lambda item: item.name):
+                    capture(child, f"{relative}/{child.name}")
+            else:
+                snapshot[relative] = ["missing"]
+
+        for relative in relative_paths:
+            capture(self.codex_home / relative, relative)
+        return snapshot
+
+    def staging_artifacts(self):
+        return sorted(self.codex_home.parent.glob(".codex-home-prepare-stage.*"))
+
     def enabled_value(self, server):
         config = (self.codex_home / "config.toml").read_text(encoding="utf-8")
         match = re.search(
@@ -872,7 +910,7 @@ out.mkdir(parents=True, exist_ok=True)
                     capture_output=True,
                 )
                 self.assertNotEqual(result.returncode, 0, result.stderr)
-                self.assertFalse(stamp.exists(), "failed global resolution left a warm stamp")
+                self.assertTrue(stamp.exists(), "failed global resolution removed the prior warm stamp")
 
     def test_fixture_environment_removes_inherited_surface_overrides(self):
         with mock.patch.dict(
@@ -939,23 +977,128 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
         self.assertEqual(self.compiler_calls(), 2)
 
-    def test_failed_rebuild_leaves_no_success_stamp(self):
+    def test_preflight_failure_preserves_every_managed_output(self):
         self.prepare()
-        stamp = self.codex_home / ".surface-success.json"
-        self.assertTrue(stamp.is_file())
-        # A duplicate local MCP source invalidates the fingerprint, then fails
-        # resolution after the old stamp has been removed.
+        managed = self.managed_output_paths()
+        self.assertEqual(
+            managed,
+            [
+                ".surface-fingerprint-cache.json",
+                ".surface-success.json",
+                "AGENTS.md",
+                "agents/.harness-managed",
+                "base.config.toml",
+                "config.toml",
+                "fast.config.toml",
+                "hooks.json",
+                "plan.config.toml",
+                "plugins/cache/openai-bundled/browser",
+                "plugins/cache/openai-bundled/chrome",
+                "plugins/cache/openai-bundled/computer-use",
+                "rich.config.toml",
+                "skill-catalog.json",
+                "skills/.harness-managed",
+                "skills/alpha",
+                "skills/brainstorming",
+                "skills/project-explicit",
+                "sol.config.toml",
+                "surface.config.toml",
+            ],
+        )
+        before = self.snapshot_paths(managed)
         local_mcp = self.repo / ".mcp.local.json"
         local_mcp.write_text(
             json.dumps({"mcpServers": {"context7": {"command": "duplicate"}}}) + "\n",
             encoding="utf-8",
         )
         self.prepare(expect=2)
-        self.assertFalse(stamp.exists(), "failed prepare left a stale success stamp")
-        calls_after_failure = self.compiler_calls()
-        local_mcp.unlink()
+        self.assertEqual(self.snapshot_paths(managed), before)
+        self.assertEqual(self.staging_artifacts(), [])
+
+    def test_candidate_failure_and_signal_preserve_managed_and_runtime_state(self):
         self.prepare()
-        self.assertEqual(self.compiler_calls(), calls_after_failure + 1)
+        managed = self.managed_output_paths()
+        managed_before = self.snapshot_paths(managed)
+        runtime = {
+            "sessions/one.jsonl": "session\n",
+            "history.jsonl": "history\n",
+            "auth.json": "local-auth\n",
+            "plugins/cache/user-runtime/state.json": "runtime-plugin\n",
+            "skills/user-owned/SKILL.md": "---\nname: user-owned\n---\n",
+        }
+        for relative, content in runtime.items():
+            path = self.codex_home / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        runtime_before = self.snapshot_paths(runtime)
+        alpha = self.repo / ".claude" / "skills" / "alpha" / "SKILL.md"
+        alpha.write_text(alpha.read_text(encoding="utf-8") + "candidate rebuild\n", encoding="utf-8")
+
+        self.prepare(expect=23, HARNESS_TEST_COMPILER_FAIL="1")
+        self.assertEqual(self.snapshot_paths(managed), managed_before)
+        self.assertEqual(self.snapshot_paths(runtime), runtime_before)
+        self.assertEqual(self.staging_artifacts(), [])
+
+        self.prepare(expect=86, HARNESS_TEST_CODEX_PREPARE_FAIL_AFTER_CANDIDATE="1")
+        self.assertEqual(self.snapshot_paths(managed), managed_before)
+        self.assertEqual(self.snapshot_paths(runtime), runtime_before)
+        self.assertEqual(self.staging_artifacts(), [])
+
+        process = subprocess.Popen(
+            ["/bin/bash", str(PREPARE), str(self.repo)],
+            env=self.environment(HARNESS_TEST_CODEX_PREPARE_PAUSE_AFTER_CANDIDATE="1"),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for _ in range(500):
+            if any(path.joinpath(".candidate-ready").exists() for path in self.staging_artifacts()):
+                break
+            time.sleep(0.01)
+        else:
+            process.kill()
+            stdout, stderr = process.communicate()
+            self.fail(f"candidate pause was not reached\nstdout={stdout}\nstderr={stderr}")
+        process.terminate()
+        process.communicate(timeout=10)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(self.snapshot_paths(managed), managed_before)
+        self.assertEqual(self.snapshot_paths(runtime), runtime_before)
+        self.assertEqual(self.staging_artifacts(), [])
+
+    def test_success_publishes_managed_outputs_without_touching_runtime_state(self):
+        self.prepare()
+        runtime = {
+            "sessions/one.jsonl": "session\n",
+            "history.jsonl": "history\n",
+            "auth.json": "local-auth\n",
+            "plugins/cache/user-runtime/state.json": "runtime-plugin\n",
+            "skills/user-owned/SKILL.md": "---\nname: user-owned\n---\n",
+        }
+        for relative, content in runtime.items():
+            path = self.codex_home / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        before = self.snapshot_paths(runtime)
+        alpha = self.repo / ".claude" / "skills" / "alpha" / "SKILL.md"
+        alpha.write_text(alpha.read_text(encoding="utf-8") + "successful rebuild\n", encoding="utf-8")
+
+        self.prepare()
+
+        self.assertEqual(self.snapshot_paths(runtime), before)
+        self.assertEqual(self.staging_artifacts(), [])
+
+    def test_publish_failure_rolls_back_every_managed_output(self):
+        self.prepare()
+        managed = self.managed_output_paths()
+        before = self.snapshot_paths(managed)
+        alpha = self.repo / ".claude" / "skills" / "alpha" / "SKILL.md"
+        alpha.write_text(alpha.read_text(encoding="utf-8") + "publish failure\n", encoding="utf-8")
+
+        self.prepare(expect=1, HARNESS_TEST_CODEX_PREPARE_FAIL_DURING_PUBLISH="1")
+
+        self.assertEqual(self.snapshot_paths(managed), before)
+        self.assertEqual(self.staging_artifacts(), [])
 
     def test_hook_commands_shell_quote_special_harness_path(self):
         special = self.tmp / "repo 'quoted' $(not-executed) `still-not-executed`"
@@ -1068,7 +1211,7 @@ out.mkdir(parents=True, exist_ok=True)
             any(item.get("path") == selected["exposed_path"] for item in configured)
         )
 
-    def test_unowned_generated_skill_is_quarantined(self):
+    def test_unowned_generated_skill_is_preserved(self):
         self.prepare()
         rogue = write_skill(
             self.codex_home / "skills",
@@ -1080,11 +1223,11 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
 
         self.assertEqual(self.compiler_calls(), 2)
-        self.assertFalse(rogue.parent.exists())
+        self.assertTrue(rogue.parent.exists())
         quarantined = self.codex_home / ".surface-quarantine" / "skills" / "rogue-copy"
-        self.assertTrue((quarantined / "SKILL.md").is_file())
+        self.assertFalse(quarantined.exists())
 
-    def test_poisoned_managed_marker_cannot_exempt_unowned_skill(self):
+    def test_poisoned_managed_marker_cannot_claim_unowned_skill(self):
         self.prepare()
         rogue = write_skill(
             self.codex_home / "skills",
@@ -1099,17 +1242,17 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
 
         self.assertEqual(self.compiler_calls(), 2)
-        self.assertFalse(rogue.parent.exists())
+        self.assertTrue(rogue.parent.exists())
         quarantined = (
             self.codex_home
             / ".surface-quarantine"
             / "skills"
             / "rogue-marker-bypass"
         )
-        self.assertTrue((quarantined / "SKILL.md").is_file())
+        self.assertFalse(quarantined.exists())
         self.assertNotIn("rogue-marker-bypass", marker.read_text(encoding="utf-8"))
 
-    def test_poisoned_agent_marker_cannot_exempt_unowned_agent(self):
+    def test_poisoned_agent_marker_cannot_claim_unowned_agent(self):
         self.prepare()
         agents = self.codex_home / "agents"
         rogue = agents / "rogue.toml"
@@ -1121,11 +1264,11 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
 
         self.assertEqual(self.compiler_calls(), 2)
-        self.assertFalse(rogue.exists())
+        self.assertTrue(rogue.exists())
         quarantined = (
             self.codex_home / ".surface-quarantine" / "agents" / "rogue.toml"
         )
-        self.assertTrue(quarantined.is_file())
+        self.assertFalse(quarantined.exists())
         self.assertNotIn("rogue.toml", marker.read_text(encoding="utf-8"))
 
     def test_product_plugin_skill_drift_forces_rebuild(self):

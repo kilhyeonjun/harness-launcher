@@ -18,6 +18,7 @@ SURFACE_FIXED_OUTPUTS = (
     "surface.config.toml",
     "fast.config.toml",
     "base.config.toml",
+    "sol.config.toml",
     "plan.config.toml",
     "rich.config.toml",
     os.path.join("skills", ".harness-managed"),
@@ -412,6 +413,7 @@ def main():
         os.path.join("skills", ".harness-managed"),
         "fast.config.toml",
         "base.config.toml",
+        "sol.config.toml",
         "plan.config.toml",
         "rich.config.toml",
     ]
