@@ -1321,6 +1321,135 @@ out.mkdir(parents=True, exist_ok=True)
             list(global_marketplace.parent.glob(".openai-bundled-candidate.*")), []
         )
 
+    def test_failure_after_first_of_two_quarantines_restores_both_conflicts(self):
+        self.prepare()
+        rogue_skill = write_skill(
+            self.codex_home / "skills",
+            "first-rogue",
+            "first-rogue",
+            "first conflict",
+        ).parent
+        rogue_agent = self.codex_home / "agents" / "second-rogue.toml"
+        rogue_agent.write_text('name = "second-rogue"\n', encoding="utf-8")
+        before_skill = self.snapshot_tree(rogue_skill)
+        before_agent = rogue_agent.read_bytes()
+
+        self.prepare(
+            expect=1,
+            HARNESS_TEST_CODEX_QUARANTINE_FAIL_AFTER="1",
+        )
+
+        self.assertEqual(self.snapshot_tree(rogue_skill), before_skill)
+        self.assertEqual(rogue_agent.read_bytes(), before_agent)
+        quarantine = self.codex_home / ".surface-quarantine"
+        self.assertFalse(
+            any(quarantine.rglob("first-rogue")) if quarantine.exists() else False
+        )
+        self.assertFalse(
+            any(quarantine.rglob("second-rogue.toml"))
+            if quarantine.exists()
+            else False
+        )
+        self.assertEqual(self.staging_artifacts(), [])
+
+    def test_outer_terminate_after_first_of_two_quarantines_rolls_back_transaction(self):
+        self.prepare()
+        managed = self.managed_output_paths()
+        managed_before = self.snapshot_paths(managed)
+        global_marketplace = (
+            self.home / ".codex" / ".tmp" / "bundled-marketplaces" / "openai-bundled"
+        )
+        global_before = self.snapshot_tree(global_marketplace)
+        source_skill = (
+            self.no_marketplace
+            / "plugins"
+            / "computer-use"
+            / "skills"
+            / "computer-use"
+            / "SKILL.md"
+        )
+        source_skill.write_text(
+            source_skill.read_text(encoding="utf-8") + "outer signal global update\n",
+            encoding="utf-8",
+        )
+        alpha = self.repo / ".claude" / "skills" / "alpha" / "SKILL.md"
+        alpha.write_text(
+            alpha.read_text(encoding="utf-8") + "outer signal local update\n",
+            encoding="utf-8",
+        )
+        rogue_skill = write_skill(
+            self.codex_home / "skills",
+            "first-rogue",
+            "first-rogue",
+            "first signal conflict",
+        ).parent
+        rogue_agent = self.codex_home / "agents" / "second-rogue.toml"
+        rogue_agent.write_text('name = "second-rogue"\n', encoding="utf-8")
+        rogue_skill_before = self.snapshot_tree(rogue_skill)
+        rogue_agent_before = rogue_agent.read_bytes()
+        ready = self.tmp / "quarantine-ready"
+        release = self.tmp / "quarantine-release"
+        process = self.start_prepare(
+            HARNESS_TEST_CODEX_QUARANTINE_READY=str(ready),
+            HARNESS_TEST_CODEX_QUARANTINE_RELEASE=str(release),
+        )
+        self.wait_for_gate(process, ready)
+
+        process.terminate()
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            release.touch()
+            stdout, stderr = process.communicate(timeout=10)
+            self.fail(
+                "outer prepare did not immediately forward SIGTERM to publisher\n"
+                f"stdout={stdout}\nstderr={stderr}"
+            )
+
+        self.assertNotEqual(process.returncode, 0, f"stdout={stdout}\nstderr={stderr}")
+        self.assertEqual(self.snapshot_paths(managed), managed_before)
+        self.assertEqual(self.snapshot_tree(global_marketplace), global_before)
+        self.assertEqual(self.snapshot_tree(rogue_skill), rogue_skill_before)
+        self.assertEqual(rogue_agent.read_bytes(), rogue_agent_before)
+        self.assertEqual(self.staging_artifacts(), [])
+        self.assertEqual(
+            list(global_marketplace.parent.glob(".openai-bundled-candidate.*")), []
+        )
+        self.assertEqual(
+            list(global_marketplace.parent.glob(".openai-bundled-backup.*")), []
+        )
+
+    def test_quarantine_destination_race_preserves_concurrent_entry(self):
+        self.prepare()
+        rogue = write_skill(
+            self.codex_home / "skills",
+            "racing-rogue",
+            "racing-rogue",
+            "quarantine destination race",
+        ).parent
+        rogue_before = self.snapshot_tree(rogue)
+        ready = self.tmp / "quarantine-destination-ready"
+        release = self.tmp / "quarantine-destination-release"
+        process = self.start_prepare(
+            HARNESS_TEST_CODEX_QUARANTINE_DESTINATION_READY=str(ready),
+            HARNESS_TEST_CODEX_QUARANTINE_DESTINATION_RELEASE=str(release),
+        )
+        self.wait_for_gate(process, ready)
+        competing = (
+            self.codex_home / ".surface-quarantine" / "skills" / "racing-rogue"
+        )
+        competing.mkdir(parents=True)
+        (competing / "owner.txt").write_text("concurrent owner\n", encoding="utf-8")
+        release.touch()
+        stdout, stderr = process.communicate(timeout=10)
+
+        self.assertEqual(process.returncode, 0, f"stdout={stdout}\nstderr={stderr}")
+        self.assertEqual((competing / "owner.txt").read_text(), "concurrent owner\n")
+        self.assertEqual(
+            self.snapshot_tree(competing.with_name("racing-rogue.1")), rogue_before
+        )
+        self.assertFalse(rogue.exists())
+
     def test_hook_commands_shell_quote_special_harness_path(self):
         special = self.tmp / "repo 'quoted' $(not-executed) `still-not-executed`"
         self.repo.rename(special)

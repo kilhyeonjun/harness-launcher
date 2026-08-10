@@ -1909,13 +1909,30 @@ PY
       fi
     fi
 
-    python3 - "$CODEX_HOME" "$FINAL_CODEX_HOME" "$old_managed" "$new_managed" \
+    local publisher_pid=""
+    local publisher_signal=""
+    local publisher_signal_status=0
+    forward_publisher_signal() {
+      publisher_signal="$1"
+      publisher_signal_status="$2"
+      [[ -z "$publisher_pid" ]] || kill -s "$publisher_signal" "$publisher_pid" 2>/dev/null || true
+    }
+    trap 'forward_publisher_signal INT 130' INT
+    trap 'forward_publisher_signal TERM 143' TERM
+    trap 'forward_publisher_signal HUP 129' HUP
+
+    "$HARNESS_PYTHON3_BIN" - "$CODEX_HOME" "$FINAL_CODEX_HOME" "$old_managed" "$new_managed" \
       "${HARNESS_TEST_CODEX_PREPARE_FAIL_DURING_PUBLISH:-0}" \
       "$SURFACE_RESOLVER" "$GLOBAL_MARKETPLACE_STAGE" "$global_marketplace" \
       "${HARNESS_TEST_CODEX_CONFIG_MERGE_READY:-}" \
       "${HARNESS_TEST_CODEX_CONFIG_MERGE_RELEASE:-}" \
       "${HARNESS_TEST_CODEX_GLOBAL_PUBLISH_READY:-}" \
-      "${HARNESS_TEST_CODEX_GLOBAL_PUBLISH_RELEASE:-}" <<'PY'
+      "${HARNESS_TEST_CODEX_GLOBAL_PUBLISH_RELEASE:-}" \
+      "${HARNESS_TEST_CODEX_QUARANTINE_READY:-}" \
+      "${HARNESS_TEST_CODEX_QUARANTINE_RELEASE:-}" \
+      "${HARNESS_TEST_CODEX_QUARANTINE_DESTINATION_READY:-}" \
+      "${HARNESS_TEST_CODEX_QUARANTINE_DESTINATION_RELEASE:-}" \
+      "${HARNESS_TEST_CODEX_QUARANTINE_FAIL_AFTER:-0}" <<'PY' &
 import ctypes
 import errno
 import importlib.util
@@ -1938,6 +1955,11 @@ config_ready = Path(sys.argv[9]) if sys.argv[9] else None
 config_release = Path(sys.argv[10]) if sys.argv[10] else None
 global_ready = Path(sys.argv[11]) if sys.argv[11] else None
 global_release = Path(sys.argv[12]) if sys.argv[12] else None
+quarantine_ready = Path(sys.argv[13]) if sys.argv[13] else None
+quarantine_release = Path(sys.argv[14]) if sys.argv[14] else None
+quarantine_destination_ready = Path(sys.argv[15]) if sys.argv[15] else None
+quarantine_destination_release = Path(sys.argv[16]) if sys.argv[16] else None
+quarantine_fail_after = int(sys.argv[17])
 paths = sorted(old_paths | new_paths, key=lambda value: (value == ".surface-success.json", value))
 rollback = candidate / ".publish-rollback"
 rollback.mkdir()
@@ -1959,6 +1981,7 @@ def interrupted(signum, _frame):
 
 for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
     signal.signal(signum, interrupted)
+publication_signals = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
 
 libc = ctypes.CDLL(None, use_errno=True)
 
@@ -1997,24 +2020,45 @@ def wait_gate(ready: Path | None, release: Path | None) -> None:
     while not release.exists():
         time.sleep(0.01)
 
-def publish_pair(source: Path, destination: Path, saved: Path):
+def journal_mutation(actions, entry, mutation) -> None:
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, publication_signals)
+    try:
+        actions.append(entry)
+        try:
+            mutation()
+        except BaseException:
+            actions.pop()
+            raise
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+def publish_pair(actions, source: Path, destination: Path, saved: Path) -> None:
     source_exists = source.exists() or source.is_symlink()
     destination_exists = destination.exists() or destination.is_symlink()
     if source_exists:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination_exists:
-            exchange(source, destination)
-            return ("exchange", source, destination, saved)
-        rename_exclusive(source, destination)
-        return ("create", source, destination, saved)
+            journal_mutation(
+                actions,
+                ("exchange", source, destination, saved),
+                lambda: exchange(source, destination),
+            )
+            return
+        journal_mutation(
+            actions,
+            ("create", source, destination, saved),
+            lambda: rename_exclusive(source, destination),
+        )
+        return
     if destination_exists:
         saved.parent.mkdir(parents=True, exist_ok=True)
-        os.rename(destination, saved)
-        return ("delete", source, destination, saved)
-    return None
+        journal_mutation(
+            actions,
+            ("delete", source, destination, saved),
+            lambda: os.rename(destination, saved),
+        )
 
-def quarantine_conflicts():
-    moves = []
+def quarantine_conflicts(actions) -> None:
     planned_skills = {
         line.strip()
         for line in (candidate / "skills" / ".harness-managed").read_text(encoding="utf-8").splitlines()
@@ -2038,21 +2082,36 @@ def quarantine_conflicts():
         for entry in sorted(agents_root.glob("*.toml")):
             if entry.name not in planned_agents:
                 conflicts.append((entry, published / ".surface-quarantine" / "agents" / entry.name))
-    for source, base_destination in conflicts:
+    for conflict_index, (source, base_destination) in enumerate(conflicts, start=1):
         destination = base_destination
         suffix = 1
-        while destination.exists() or destination.is_symlink():
-            destination = base_destination.with_name(f"{base_destination.name}.{suffix}")
-            suffix += 1
         destination.parent.mkdir(parents=True, exist_ok=True)
-        os.rename(source, destination)
-        moves.append(("quarantine", source, destination, destination))
-    return moves
+        if conflict_index == 1:
+            wait_gate(quarantine_destination_ready, quarantine_destination_release)
+        while True:
+            try:
+                journal_mutation(
+                    actions,
+                    ("quarantine", source, destination, destination),
+                    lambda: rename_exclusive(source, destination),
+                )
+                break
+            except OSError as error:
+                if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                    raise
+                destination = base_destination.with_name(
+                    f"{base_destination.name}.{suffix}"
+                )
+                suffix += 1
+        if quarantine_fail_after == conflict_index:
+            raise OSError(errno.EIO, "injected quarantine failure")
+        if conflict_index == 1:
+            wait_gate(quarantine_ready, quarantine_release)
 
 generated_config = (candidate / "config.toml").read_text(encoding="utf-8")
 catalog = json.loads((candidate / "skill-catalog.json").read_text(encoding="utf-8"))
 
-def merge_and_publish_config(saved: Path):
+def merge_and_publish_config(actions, saved: Path) -> None:
     destination = published / "config.toml"
     source = candidate / "config.toml"
     for attempt in range(5):
@@ -2066,16 +2125,30 @@ def merge_and_publish_config(saved: Path):
             wait_gate(config_ready, config_release)
         if expected is None:
             try:
-                rename_exclusive(source, destination)
+                journal_mutation(
+                    actions,
+                    ("create", source, destination, saved),
+                    lambda: rename_exclusive(source, destination),
+                )
             except OSError as error:
                 if error.errno in (errno.EEXIST, errno.ENOTEMPTY):
                     continue
                 raise
-            return ("create", source, destination, saved)
-        exchange(source, destination)
-        if identity(source) == expected:
-            return ("exchange", source, destination, saved)
-        exchange(source, destination)
+            return
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, publication_signals)
+        try:
+            actions.append(("exchange", source, destination, saved))
+            try:
+                exchange(source, destination)
+            except BaseException:
+                actions.pop()
+                raise
+            if identity(source) == expected:
+                return
+            exchange(source, destination)
+            actions.pop()
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
     raise RuntimeError("live Codex config changed during five publication retries")
 
 actions = []
@@ -2083,27 +2156,23 @@ try:
     if global_candidate is not None:
         if global_candidate.stat().st_dev != global_published.parent.stat().st_dev:
             raise RuntimeError("global marketplace candidate is on the wrong filesystem")
-        action = publish_pair(
+        publish_pair(
+            actions,
             global_candidate,
             global_published,
             rollback / "global-marketplace",
         )
-        if action is not None:
-            actions.append(action)
         wait_gate(global_ready, global_release)
 
-    actions.extend(quarantine_conflicts())
+    quarantine_conflicts(actions)
     for index, relative in enumerate(paths):
         source = candidate / relative
         destination = published / relative
         saved = rollback / relative
-        action = (
-            merge_and_publish_config(saved)
-            if relative == "config.toml"
-            else publish_pair(source, destination, saved)
-        )
-        if action is not None:
-            actions.append(action)
+        if relative == "config.toml":
+            merge_and_publish_config(actions, saved)
+        else:
+            publish_pair(actions, source, destination, saved)
         if inject_failure and index == 4:
             raise OSError(errno.EIO, "injected managed-output publish failure")
 except BaseException:
@@ -2130,7 +2199,21 @@ except BaseException:
         raise RuntimeError(f"managed-output rollback failed: {rollback_error}")
     raise
 PY
-    publish_status=$?
+    publisher_pid=$!
+    if [[ -n "$publisher_signal" ]]; then
+      kill -s "$publisher_signal" "$publisher_pid" 2>/dev/null || true
+    fi
+    publish_status=0
+    while :; do
+      wait "$publisher_pid" && publish_status=0 || publish_status=$?
+      kill -0 "$publisher_pid" 2>/dev/null || break
+    done
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    if [[ "$publisher_signal_status" -ne 0 ]]; then
+      publish_status="$publisher_signal_status"
+    fi
     rm -rf "$GLOBAL_MARKETPLACE_STAGE"
     GLOBAL_MARKETPLACE_STAGE=""
     return "$publish_status"
