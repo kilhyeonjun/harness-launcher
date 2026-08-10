@@ -87,7 +87,7 @@ PY
 run_hook() {
   local session="$1" owner_pid="$2"
   printf '{"hook_event_name":"SessionStart","session_id":"%s"}\n' "$session" |
-    HARNESS_PREFIX="$PREFIX" \
+    env -u CODEX_CMUX_TITLE_REQUEST_FILE HARNESS_PREFIX="$PREFIX" \
     CODEX_HOME="$FAKE_CODEX_HOME" \
     CMUX_SURFACE_ID="surface:42" \
     CODEX_CMUX_TITLE_CMUX_BIN="$FAKE_CMUX" \
