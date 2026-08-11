@@ -25,13 +25,8 @@ TEST_BIN="$TEST_TEMP/bin"
 TEST_BROKEN_BIN="$TEST_TEMP/broken-bin"
 mkdir -p "$TEST_HARNESS/config/.local" "$TEST_BIN" "$TEST_BROKEN_BIN"
 
-for candidate in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12; do
-  [[ -x "$candidate" ]] || continue
-  "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null || continue
-  TEST_PYTHON_FIXTURE="$candidate"
-  break
-done
-[[ -n "${TEST_PYTHON_FIXTURE:-}" ]] || { echo "FAIL: Python 3.11+ fixture is required"; exit 1; }
+source "$LAUNCHER_DIR/bin/harness-common.sh"
+TEST_PYTHON_FIXTURE="$(harness_python3_resolve)" || exit $?
 ln -s "$TEST_PYTHON_FIXTURE" "$TEST_BIN/harness-python"
 cat > "$TEST_BROKEN_BIN/python3" <<'EOF'
 #!/usr/bin/env bash
