@@ -1533,6 +1533,7 @@ MANAGED_OUTPUT_ROOTS = (
     "rich.config.toml",
     "skill-catalog.json",
     "skills/.harness-managed",
+    "skills/.harness-managed-cmds",
     "sol.config.toml",
     "surface.config.toml",
 )

@@ -1043,6 +1043,7 @@ out.mkdir(parents=True, exist_ok=True)
                 "rich.config.toml",
                 "skill-catalog.json",
                 "skills/.harness-managed",
+                "skills/.harness-managed-cmds",
                 "skills/alpha",
                 "skills/brainstorming",
                 "skills/project-explicit",
