@@ -28,14 +28,14 @@ export PATH="$TMP/bin:$PATH"
 
 reset_env() { unset GH_TOKEN HARNESS_GH_USER; }
 
-# 1. .local config is the primary source (gp/gd layout)
+# 1. .local config is the primary source (team-profile layout)
 reset_env
 printf 'github_user: known-user\n' > "$TMP/harness/config/.local/config.yaml"
 harness_gh_token_load "$TMP/harness"
 [[ "$HARNESS_GH_USER" == known-user ]]
 [[ "$GH_TOKEN" == gho_TESTTOKEN_known ]]
 
-# 2. tracked config is the fallback (kh layout)
+# 2. tracked config is the fallback (personal-profile layout)
 reset_env
 rm -f "$TMP/harness/config/.local/config.yaml"
 printf 'github_user: known-user\n' > "$TMP/harness/config/config.yaml"

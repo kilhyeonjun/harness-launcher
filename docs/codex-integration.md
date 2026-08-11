@@ -248,7 +248,7 @@ and the launched process use the same approved work integrations. The Happy
 wrapper and the work surface are mutually exclusive (the later toggle wins).
 Backing out never silently upgrades the surface.
 
-The global MCP projection is part of the exact-surface warm fingerprint. A changed allowlist or selected `$HOME/.codex/config.toml` definition triggers cold preparation; unrelated global MCPs do not. `CODEX_HOME` remains project-scoped, so one harness cannot publish another harness's generated MCP state (including the `kh` harness).
+The global MCP projection is part of the exact-surface warm fingerprint. A changed allowlist or selected `$HOME/.codex/config.toml` definition triggers cold preparation; unrelated global MCPs do not. `CODEX_HOME` remains project-scoped, so one harness cannot publish another harness's generated MCP state.
 
 ## Verification
 

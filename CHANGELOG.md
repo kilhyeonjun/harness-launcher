@@ -20,7 +20,7 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Each harness now derives its own `GH_TOKEN` on launch. `gh` keeps a single
   global active account, but the harnesses legitimately expect different GitHub
-  users (`kh` → `kilhyeonjun`, `gp`/`gd` → `kil-penguin`), so whichever harness
+  users (personal and team identities), so whichever harness
   switched last decided whether the others' `gh` commands succeeded. On entry
   `harness_gh_token_load` reads `github_user` from the harness' own
   `config/.local/config.yaml` (falling back to `config/config.yaml`) and exports

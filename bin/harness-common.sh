@@ -328,7 +328,7 @@ harness_observability_load() {
 
 # --- per-harness GitHub identity ------------------------------------------------
 # gh keeps ONE global active account, but the harnesses expect different GitHub
-# users (kh kilhyeonjun; gp/gd kil-penguin), so whichever harness switched last
+# users (personal and team profiles), so whichever harness switched last
 # decides whether the others' gh commands succeed. GH_TOKEN takes precedence over
 # gh's stored credentials, so deriving it per harness removes that arbitration.
 # Optional and fail-open: on any doubt export nothing and leave the pre-bash
@@ -337,8 +337,8 @@ harness_observability_load() {
 harness_gh_token_load() {
   local harness_dir="$1" cfg user="" token=""
   HARNESS_GH_USER=""
-  # Same resolution order as the harness gh-auth hook: gp/gd keep github_user in
-  # the gitignored per-machine config, kh in the committed shared config.
+  # Same resolution order as the harness gh-auth hook: team profiles keep
+  # github_user in gitignored per-machine config; personal profiles may commit it.
   for cfg in "$harness_dir/config/.local/config.yaml" "$harness_dir/config/config.yaml"; do
     [ -f "$cfg" ] || continue
     user="$(sed -n 's/^github_user:[[:space:]]*//p' "$cfg" 2>/dev/null | head -1 | tr -d '[:space:]')"
