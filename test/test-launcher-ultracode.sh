@@ -30,7 +30,8 @@ trap cleanup EXIT
 
 TEST_TEMP="$(mktemp -d)"
 STUB_BIN="$TEST_TEMP/bin"
-mkdir -p "$STUB_BIN"
+TEST_ZDOTDIR="$TEST_TEMP/zdotdir"
+mkdir -p "$STUB_BIN" "$TEST_ZDOTDIR"
 
 # Stub claude: capture args to a file.
 cat > "$STUB_BIN/claude" <<'EOF'
@@ -84,6 +85,7 @@ run_prefix() {
   (
     export TEST_STUB_FILE="$stub_file"
     export PATH="$STUB_BIN:$PATH"
+    export ZDOTDIR="$TEST_ZDOTDIR"
     compdef() { :; }                       # neutralize non-interactive compdef
     source "$LAUNCHER_DIR/bin/aliases.zsh"
     harness_register "$dir"
