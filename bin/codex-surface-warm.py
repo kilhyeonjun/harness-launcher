@@ -359,13 +359,22 @@ def output_signatures(codex_home):
 
 
 def main():
-    if len(sys.argv) != 8:
+    if len(sys.argv) != 9:
         print(
-            "usage: codex-surface-warm.py STAMP CACHE CODEX_HOME MANIFEST SKILL_PROFILE MCP_PROFILE EXPECTED_PROFILE",
+            "usage: codex-surface-warm.py STAMP CACHE CODEX_HOME MANIFEST SKILL_PROFILE MCP_PROFILE EXPECTED_PROFILE BUNDLED_MARKETPLACE",
             file=sys.stderr,
         )
         return 2
-    stamp_path, cache_path, codex_home, manifest_path, skill_profile, mcp_profile, expected_profile = sys.argv[1:]
+    (
+        stamp_path,
+        cache_path,
+        codex_home,
+        manifest_path,
+        skill_profile,
+        mcp_profile,
+        expected_profile,
+        bundled_marketplace,
+    ) = sys.argv[1:]
     stamp = load_object(stamp_path)
     cache = load_object(cache_path)
     manifest = load_object(manifest_path)
@@ -382,7 +391,16 @@ def main():
     expected_mcp = mcp_profile or (manifest.get("mcp") or {}).get("default_profile")
     if fingerprint.get("skill_profile") != skill_profile or fingerprint.get("mcp_profile") != expected_mcp:
         cold()
-    for key in ("schema_version", "digest", "skill_profile", "mcp_profile", "global_mcp_digest"):
+    if fingerprint.get("bundled_marketplace_path") != os.path.realpath(bundled_marketplace):
+        cold()
+    for key in (
+        "schema_version",
+        "digest",
+        "skill_profile",
+        "mcp_profile",
+        "global_mcp_digest",
+        "bundled_marketplace_path",
+    ):
         if stamp.get(key) != fingerprint.get(key):
             cold()
     if fingerprint.get("global_mcp_digest") != global_mcp_digest():

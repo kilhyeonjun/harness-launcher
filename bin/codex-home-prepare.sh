@@ -102,7 +102,15 @@ quarantine_project_codex_dir() {
 
 acquire_codex_home_lock
 quarantine_project_codex_dir
-CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE:-/Applications/Codex.app/Contents/Resources/plugins/openai-bundled}"
+if [[ -n "${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE+x}" ]]; then
+  CODEX_BUNDLED_MARKETPLACE_SOURCE="$HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE"
+else
+  CODEX_BUNDLED_MARKETPLACE_SOURCE="${HARNESS_CODEX_APP_BUNDLED_MARKETPLACE_SOURCE:-/Applications/Codex.app/Contents/Resources/plugins/openai-bundled}"
+  cached_bundled_marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
+  if [[ ! -d "$CODEX_BUNDLED_MARKETPLACE_SOURCE" && -d "$cached_bundled_marketplace" ]]; then
+    CODEX_BUNDLED_MARKETPLACE_SOURCE="$cached_bundled_marketplace"
+  fi
+fi
 
 # A portable surface manifest makes runtime membership explicit. Resolve host
 # tokens locally and use a source-content fingerprint to avoid recompiling or
@@ -147,7 +155,8 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
       "$SURFACE_MANIFEST" \
       "$SURFACE_SKILL_PROFILE" \
       "$SURFACE_MCP_PROFILE" \
-      "${HARNESS_OBSERVABILITY_PROFILE:-}" 2>/dev/null)"; then
+      "${HARNESS_OBSERVABILITY_PROFILE:-}" \
+      "$CODEX_BUNDLED_MARKETPLACE_SOURCE" 2>/dev/null)"; then
     existing_observability=0
     [[ -f "$CODEX_HOME/config.toml" ]] && grep -q '^\[otel\]$' "$CODEX_HOME/config.toml" && existing_observability=1
     if [[ "$existing_observability" -eq "$HARNESS_OBSERVABILITY_ACTIVE" ]]; then
@@ -1850,7 +1859,8 @@ if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
     "$SURFACE_MANIFEST" \
     "$SURFACE_SKILL_PROFILE" \
     "$SURFACE_MCP_PROFILE" \
-    "${HARNESS_OBSERVABILITY_PROFILE:-}" >/dev/null
+    "${HARNESS_OBSERVABILITY_PROFILE:-}" \
+    "$CODEX_BUNDLED_MARKETPLACE_SOURCE" >/dev/null
 
   # Candidate-only absolute paths are never published. Re-project the two
   # generated text surfaces to the stable live CODEX_HOME, then regenerate the

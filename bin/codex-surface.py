@@ -1484,6 +1484,11 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
         "skill_profile": skill_profile,
         "mcp_profile": mcp_profile,
         "global_mcp_digest": global_resolution.digest,
+        "bundled_marketplace_path": (
+            os.path.realpath(args.bundled_marketplace)
+            if args.bundled_marketplace
+            else ""
+        ),
     }
     ACTIVE_FINGERPRINT_CACHE.set_fingerprint(payload)
     ACTIVE_FINGERPRINT_CACHE.save()
@@ -1781,7 +1786,14 @@ def surface_output_signatures(codex_home: Path) -> dict[str, str]:
 
 def write_stamp(args: argparse.Namespace) -> None:
     payload = load_inline_json(args.fingerprint_json, "fingerprint")
-    if set(payload) != {"schema_version", "digest", "skill_profile", "mcp_profile", "global_mcp_digest"}:
+    if set(payload) != {
+        "schema_version",
+        "digest",
+        "skill_profile",
+        "mcp_profile",
+        "global_mcp_digest",
+        "bundled_marketplace_path",
+    }:
         fail("fingerprint payload has unexpected fields")
     codex_home = Path(args.codex_home)
     payload["config_projection_sha256"] = managed_config_projection_sha256(codex_home)

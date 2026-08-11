@@ -713,6 +713,105 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertIsNotNone(match, f"missing plugin table for {plugin}")
         return "enabled = true" in match.group(1)
 
+    def test_missing_default_app_marketplace_uses_valid_cached_marketplace(self):
+        cached = (
+            self.home
+            / ".codex"
+            / ".tmp"
+            / "bundled-marketplaces"
+            / "openai-bundled"
+        )
+        cached.parent.mkdir(parents=True)
+        shutil.copytree(self.no_marketplace, cached)
+        env = self.environment(HARNESS_CODEX_MCP_PROFILE="work")
+        env.pop("HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE", None)
+        app_marketplace = self.tmp / "missing-codex-app-marketplace"
+        env["HARNESS_CODEX_APP_BUNDLED_MARKETPLACE_SOURCE"] = str(app_marketplace)
+
+        result = subprocess.run(
+            ["/bin/bash", str(PREPARE), str(self.repo)],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(
+            (
+                self.codex_home
+                / "plugins"
+                / "cache"
+                / "openai-bundled"
+                / "computer-use"
+                / "latest"
+                / ".codex-plugin"
+                / "plugin.json"
+            ).is_file()
+        )
+
+        shutil.copytree(self.no_marketplace, app_marketplace)
+        app_manifest = (
+            app_marketplace
+            / "plugins"
+            / "computer-use"
+            / ".codex-plugin"
+            / "plugin.json"
+        )
+        app_manifest.write_text(
+            json.dumps({"name": "computer-use", "version": "2.0.0"}) + "\n",
+            encoding="utf-8",
+        )
+        second = subprocess.run(
+            ["/bin/bash", str(PREPARE), str(self.repo)],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(
+            os.readlink(
+                self.codex_home
+                / "plugins"
+                / "cache"
+                / "openai-bundled"
+                / "computer-use"
+                / "latest"
+            ),
+            "2.0.0",
+        )
+
+    def test_explicit_marketplace_source_switch_invalidates_warm_home(self):
+        source_a = self.tmp / "marketplace-a"
+        source_b = self.tmp / "marketplace-b"
+        shutil.copytree(self.no_marketplace, source_a)
+        shutil.copytree(self.no_marketplace, source_b)
+        manifest_b = source_b / "plugins/computer-use/.codex-plugin/plugin.json"
+        manifest_b.write_text(
+            json.dumps({"name": "computer-use", "version": "3.0.0"}) + "\n",
+            encoding="utf-8",
+        )
+
+        self.prepare(
+            HARNESS_CODEX_MCP_PROFILE="work",
+            HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE=str(source_a),
+        )
+        self.prepare(
+            HARNESS_CODEX_MCP_PROFILE="work",
+            HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE=str(source_b),
+        )
+
+        self.assertEqual(
+            os.readlink(
+                self.codex_home
+                / "plugins"
+                / "cache"
+                / "openai-bundled"
+                / "computer-use"
+                / "latest"
+            ),
+            "3.0.0",
+        )
+
     def test_profile_flags_and_warm_fingerprint_invalidation(self):
         # Installed plugins carry tests/docs/assets that are not copied into
         # the generated surface. A representative payload must not push the
