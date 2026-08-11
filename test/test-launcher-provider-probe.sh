@@ -93,6 +93,7 @@ chmod +x "$TEST_BIN/node"
 OUTPUT_FILE="$TEST_TEMP/output.txt"
 PATH="$TEST_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
 HARNESS_CODEX_BIN="$TEST_TEMP/no-codex" \
+HARNESS_RUN_DIR= \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
 bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'9\nq\n' > "$OUTPUT_FILE" 2>&1 || true
@@ -153,6 +154,7 @@ rm -f "$TEST_HARNESS/.harness/launcher-last" "$TEST_HARNESS/.harness/launcher-hi
 TEST_STUB_FILE="$NEGATIVE_STUB" \
 PATH="$TEST_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
 HARNESS_CODEX_BIN="$TEST_TEMP/no-codex" \
+HARNESS_RUN_DIR= \
 HARNESS_DIR="$TEST_HARNESS" \
 HARNESS_NAME="test harness" \
 bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'3\n1\n2\n1\n' > "$NEGATIVE_OUTPUT_FILE" 2>&1 || true
