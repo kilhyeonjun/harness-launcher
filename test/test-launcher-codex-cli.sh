@@ -22,7 +22,22 @@ trap cleanup EXIT
 TEST_TEMP="$(mktemp -d)"
 TEST_HARNESS="$TEST_TEMP/fake-harness"
 TEST_BIN="$TEST_TEMP/bin"
-mkdir -p "$TEST_HARNESS/config/.local" "$TEST_BIN"
+TEST_BROKEN_BIN="$TEST_TEMP/broken-bin"
+mkdir -p "$TEST_HARNESS/config/.local" "$TEST_BIN" "$TEST_BROKEN_BIN"
+
+for candidate in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12; do
+  [[ -x "$candidate" ]] || continue
+  "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null || continue
+  TEST_PYTHON_FIXTURE="$candidate"
+  break
+done
+[[ -n "${TEST_PYTHON_FIXTURE:-}" ]] || { echo "FAIL: Python 3.11+ fixture is required"; exit 1; }
+ln -s "$TEST_PYTHON_FIXTURE" "$TEST_BIN/harness-python"
+cat > "$TEST_BROKEN_BIN/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 127
+EOF
+chmod +x "$TEST_BROKEN_BIN/python3"
 
 cat > "$TEST_HARNESS/config/launcher.env" <<'EOF'
 HARNESS_NAME="test harness"
@@ -466,6 +481,55 @@ raw_prepare_values=("${(@f)$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$STUB
   exit 1
 }
 echo "PASS: direct codex --cd wrapper isolates global MCP allowlist across launches"
+
+# The allowlist normalizer must use the shared Python resolver. With python3
+# deliberately broken on PATH, both shortcut and direct wrapper launches still
+# reach prepare through the explicit supported interpreter.
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=" fixture-one,fixture-one "' \
+  > "$TEST_HARNESS/config/launcher.env"
+STUB_PYTHON_FIXTURE="$TEST_TEMP/output-codex-python-fixture.txt"
+: > "$STUB_PYTHON_FIXTURE"
+(
+  export TEST_STUB_FILE="$STUB_PYTHON_FIXTURE"
+  export PATH="$TEST_BROKEN_BIN:$TEST_BIN:/usr/bin:/bin"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  export HARNESS_PYTHON_BIN="$TEST_BIN/harness-python"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  _harness_launcher_run "$TEST_HARNESS" codex base
+  codex --cd "$TEST_HARNESS" --version
+) 2>/dev/null || {
+  echo "FAIL: configured allowlist did not use HARNESS_PYTHON_BIN"
+  cat "$STUB_PYTHON_FIXTURE"
+  exit 1
+}
+fixture_prepare_values=("${(@f)$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$STUB_PYTHON_FIXTURE")}")
+[[ "${fixture_prepare_values[*]}" = "fixture-one fixture-one" ]] || {
+  echo "FAIL: alias/direct prepare did not receive normalized fixture allowlist"
+  cat "$STUB_PYTHON_FIXTURE"
+  exit 1
+}
+
+STUB_PYTHON_INVALID="$TEST_TEMP/output-codex-python-invalid.txt"
+: > "$STUB_PYTHON_INVALID"
+(
+  export TEST_STUB_FILE="$STUB_PYTHON_INVALID"
+  export PATH="$TEST_BROKEN_BIN:$TEST_BIN:/usr/bin:/bin"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  export HARNESS_PYTHON_BIN="$TEST_BIN/not-an-interpreter"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  if _harness_launcher_run "$TEST_HARNESS" codex base; then exit 1; fi
+  if codex --cd "$TEST_HARNESS" --version; then exit 1; fi
+  exit 0
+) 2>/dev/null || { echo "FAIL: invalid HARNESS_PYTHON_BIN reached a native Codex launch"; exit 1; }
+[[ ! -s "$STUB_PYTHON_INVALID" ]] || {
+  echo "FAIL: invalid HARNESS_PYTHON_BIN reached prepare or Codex"
+  cat "$STUB_PYTHON_INVALID"
+  exit 1
+}
+echo "PASS: alias/direct global MCP normalization honors and validates HARNESS_PYTHON_BIN"
 
 (
   export PATH="$TEST_BIN:/usr/bin:/bin"

@@ -22,20 +22,7 @@ _harness_launcher_validate_mcp_local_configs() { harness_validate_mcp_local_conf
 _harness_launcher_prepare_codex_global_mcp_allowlist() {
   local raw="${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-}" normalized
   [[ -n "$raw" ]] || { unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST; return 0; }
-  normalized="$(python3 -c '
-import re
-import sys
-names = []
-for item in sys.argv[1].split(","):
-    name = item.strip()
-    if not name:
-        continue
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-        raise SystemExit(f"invalid global MCP allowlist name: {name!r}")
-    if name not in names:
-        names.append(name)
-print(",".join(names))
-' "$raw")" || return $?
+  normalized="$(harness_codex_global_mcp_allowlist_normalize "$raw")" || return $?
   [[ -n "$normalized" ]] && export HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="$normalized" \
     || unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
 }

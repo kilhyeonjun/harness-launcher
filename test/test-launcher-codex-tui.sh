@@ -22,7 +22,21 @@ TEST_TEMP="$(mktemp -d)"
 TEST_HARNESS="$TEST_TEMP/fake-harness"
 TEST_BIN="$TEST_TEMP/bin"
 TEST_LAUNCHER_BIN="$TEST_TEMP/launcher-bin"
-mkdir -p "$TEST_HARNESS/config" "$TEST_BIN" "$TEST_LAUNCHER_BIN"
+TEST_BROKEN_BIN="$TEST_TEMP/broken-bin"
+mkdir -p "$TEST_HARNESS/config" "$TEST_BIN" "$TEST_LAUNCHER_BIN" "$TEST_BROKEN_BIN"
+for candidate in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12; do
+  [[ -x "$candidate" ]] || continue
+  "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null || continue
+  TEST_PYTHON_FIXTURE="$candidate"
+  break
+done
+[[ -n "${TEST_PYTHON_FIXTURE:-}" ]] || { echo "FAIL: Python 3.11+ fixture is required"; exit 1; }
+ln -s "$TEST_PYTHON_FIXTURE" "$TEST_BIN/harness-python"
+cat > "$TEST_BROKEN_BIN/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 127
+EOF
+chmod +x "$TEST_BROKEN_BIN/python3"
 TEST_WORKTREE="$TEST_HARNESS/.worktrees/sample"
 mkdir -p "$TEST_WORKTREE"
 TEST_WORKTREE_REAL="$(cd -P "$TEST_WORKTREE" && pwd -P)"
@@ -95,6 +109,7 @@ run_tui() {
   rm -f "$TEST_HARNESS/.harness/launcher-last" "$TEST_HARNESS/.harness/launcher-history"
   local path_value="$TEST_BIN:/usr/bin:/bin"
   [[ -n "$extra_path" ]] && path_value="$extra_path:$path_value"
+  [[ -n "${TUI_EXTRA_PATH:-}" ]] && path_value="$TUI_EXTRA_PATH:$path_value"
   TEST_STUB_FILE="$stub_file" \
   PATH="$path_value" \
   HARNESS_CODEX_BIN="$TEST_BIN/codex" \
@@ -102,6 +117,7 @@ run_tui() {
   HARNESS_NAME="test harness" \
   HARNESS_PREFIX="test" \
   HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="${TUI_CALLER_GLOBAL_MCP_ALLOWLIST:-}" \
+  HARNESS_PYTHON_BIN="${TUI_HARNESS_PYTHON_BIN:-}" \
   HARNESS_RUN_DIR="${HARNESS_RUN_DIR_OVERRIDE:-}" \
   bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
 }
@@ -173,6 +189,29 @@ tui_prepare_values=(
   exit 1
 }
 echo "PASS: TUI isolates global MCP allowlist across consecutive launches"
+
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=" tui-fixture,tui-fixture "' \
+  > "$TEST_HARNESS/config/launcher.env"
+TUI_PYTHON_FIXTURE="$TEST_TEMP/out1-python-fixture.txt"
+TUI_EXTRA_PATH="$TEST_BROKEN_BIN" TUI_HARNESS_PYTHON_BIN="$TEST_BIN/harness-python" \
+  run_tui $'2\n1\n2\n1\n1\n' "$TUI_PYTHON_FIXTURE" || {
+  echo "FAIL: TUI configured allowlist did not use HARNESS_PYTHON_BIN"; cat "$TUI_PYTHON_FIXTURE"; exit 1;
+}
+grep -q '^PREPARE_GLOBAL_MCP_ALLOWLIST:tui-fixture$' "$TUI_PYTHON_FIXTURE" || {
+  echo "FAIL: TUI prepare did not receive normalized fixture allowlist"; cat "$TUI_PYTHON_FIXTURE"; exit 1;
+}
+
+TUI_PYTHON_INVALID="$TEST_TEMP/out1-python-invalid.txt"
+TUI_EXTRA_PATH="$TEST_BROKEN_BIN" TUI_HARNESS_PYTHON_BIN="$TEST_BIN/not-an-interpreter" \
+  run_tui $'2\n1\n2\n1\n1\n' "$TUI_PYTHON_INVALID"
+[[ ! -s "$TUI_PYTHON_INVALID" ]] || {
+  echo "FAIL: invalid TUI HARNESS_PYTHON_BIN reached prepare or Codex"; cat "$TUI_PYTHON_INVALID"; exit 1;
+}
+grep -q 'requires Python 3.11 or newer' "$TUI_PYTHON_INVALID.tui.log" || {
+  echo "FAIL: invalid TUI HARNESS_PYTHON_BIN did not report the resolver failure"; cat "$TUI_PYTHON_INVALID.tui.log"; exit 1;
+}
+echo "PASS: TUI global MCP normalization honors and validates HARNESS_PYTHON_BIN"
 
 # Case 1a: an external orchestrator can pin the Codex launch to a profile-local worktree.
 STUB1A="$TEST_TEMP/out1a-codex-worktree.txt"
