@@ -173,6 +173,7 @@ run_mode() {
 run_mode "fast" "haiku" "true" "low"         || exit 1
 run_mode "base" "sonnet[1m]" "true" "high"   || exit 1
 run_mode "plan" "opusplan[1m]" "true" "high" || exit 1
+run_mode "opus" "claude-opus-4-6[1m]" "true" "high" || exit 1
 run_mode "rich" "claude-opus-4-6[1m]" "true" "max" || exit 1
 
 echo "✓ All kiro gateway tests passed"

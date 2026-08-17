@@ -470,7 +470,7 @@ collect_claude() {
       mode)
         BREADCRUMB="$HARNESS_NAME ▸ Claude ▸ $CHOICE_SESSION"
         local mopts=() modes=() m label
-        for m in fast base plan rich ultracode; do
+        for m in fast base plan opus rich ultracode; do
           label=$(harness_mode_label "$m" "$CHOICE_PROVIDER") || continue
           mopts+=("$label"); modes+=("$m")
         done

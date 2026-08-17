@@ -4,6 +4,16 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+### Added
+
+- New Claude Code `opus` preset: the `rich` model at one effort step down
+  (`opus[1m]` at `high` on Anthropic direct, `claude-opus-4-6[1m]` at `high`
+  through a Kiro gateway, `opus` plus the configured context suffix through a
+  Codex gateway). `rich` stays the deepest preset at `xhigh` with forced
+  thinking; `opus` keeps the user's own thinking setting because `high` needs
+  no override. It appears in the TUI mode menu between `plan` and `rich`, and
+  in shell completion.
+
 ### Changed
 
 - Codex subagents mapped from the Claude `opus` tier now default to GPT-5.6 Sol

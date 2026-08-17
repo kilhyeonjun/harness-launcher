@@ -180,6 +180,7 @@ echo "Default suffix (empty) — should produce plain models"
 run_mode "fast" "haiku" "low"     || exit 1
 run_mode "base" "sonnet" "high"   || exit 1
 run_mode "plan" "opusplan" "high"  || exit 1
+run_mode "opus" "opus" "high"      || exit 1
 run_mode "rich" "opus" "high"      || exit 1
 
 echo ""
@@ -188,6 +189,7 @@ write_codex_env "[1m]"
 run_mode "fast" "haiku" "low"           || exit 1
 run_mode "base" "sonnet[1m]" "high"     || exit 1
 run_mode "plan" "opusplan[1m]" "high"   || exit 1
+run_mode "opus" "opus[1m]" "high"       || exit 1
 run_mode "rich" "opus[1m]" "high"       || exit 1
 
 # PCT override for codex+[1m]: only when CODEX_*_MODEL contains "5.5"

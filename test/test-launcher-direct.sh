@@ -1,10 +1,11 @@
 #!/usr/bin/env zsh
 # test-launcher-direct.sh — verify direct Anthropic OAuth mode-mapping (no gateway)
-# Modes: fast, base, plan, rich
+# Modes: fast, base, plan, opus, rich
 # Expected behavior:
 #   fast  → --model haiku --effort low
 #   base  → --model sonnet --effort high
 #   plan  → --model opusplan --effort high
+#   opus  → --model opus[1m] --effort high (rich model, one effort step down)
 #   rich  → --model opus[1m] --effort xhigh + forced thinking via --settings
 # xhigh/max are rejected by the API when thinking is disabled, so the launcher
 # forces alwaysThinkingEnabled for those efforts instead of relying on the
@@ -135,6 +136,7 @@ run_mode() {
 run_mode "fast" "haiku" "low"      false || exit 1
 run_mode "base" "sonnet" "high"    false || exit 1
 run_mode "plan" "opusplan" "high"  false || exit 1
+run_mode "opus" "opus[1m]" "high"  false || exit 1
 run_mode "rich" "opus[1m]" "xhigh" true  || exit 1
 
 # Explicit effort tokens must get the same treatment as mode-derived efforts.

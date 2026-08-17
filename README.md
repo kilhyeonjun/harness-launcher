@@ -24,7 +24,7 @@ AI coding CLIs usually keep sessions, configuration, skills, and MCP servers in 
 <project>/.harness/kiro
 ```
 
-It also provides consistent `fast`, `base`, `plan`, and `rich` presets, optional gateway routing for Claude Code, tab completion, and an interactive TUI.
+It also provides consistent `fast`, `base`, `opus`, `plan`, and `rich` presets, optional gateway routing for Claude Code, tab completion, and an interactive TUI.
 
 ## Requirements
 
@@ -140,7 +140,7 @@ The same command shape works for every registered prefix:
 
 ```text
 <prefix>                         interactive TUI
-<prefix> fast|base|plan|rich     Claude Code preset
+<prefix> fast|base|opus|plan|rich Claude Code preset
 <prefix> ultracode               Claude Code opus[1m] + xhigh (direct only)
 <prefix> continue|resume         Claude Code session shortcut
 <prefix> light                   Claude Code with the light MCP surface (SSH-backed servers excluded)
@@ -183,6 +183,7 @@ combinable with any profile: `default` keeps the minimal project surface, while
 | `base` | Sonnet | GPT-5.6 Terra, medium effort | Everyday work — recommended default |
 | `sol` (Codex only) | — | GPT-5.6 Sol, medium effort | Stronger main model — slower |
 | `plan` | Opus Plan | GPT-5.6 Sol, high effort, read-only | Investigation and planning |
+| `opus` (Claude only) | Opus, high effort | — | Strong main model without `rich`'s xhigh cost |
 | `rich` | Opus | GPT-5.6 Sol, high effort | Deep work — slowest normal preset |
 
 These are task-oriented operational presets, not claims about OpenAI's model defaults. The launcher deliberately lowers `fast` for speed and raises `plan`/`rich` for deeper work; an unscoped model picker may use a different general starting effort. Model names follow the capabilities exposed by the installed runtime. The launcher does not pin Codex context-window or auto-compaction values; Codex model metadata remains the source of truth.

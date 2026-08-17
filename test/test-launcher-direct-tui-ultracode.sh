@@ -31,12 +31,12 @@ chmod +x "$BIN/claude"
 
 STUB="$TT/out.txt"; : > "$STUB"
 # No gateways → single provider (direct), STEP starts at session menu.
-# Flow: session=New(1) → mode=Ultracode(5) → final: Start now(1)
+# Flow: session=New(1) → mode=Ultracode(6) → final: Start now(1)
 TEST_STUB_FILE="$STUB" PATH="$BIN:/usr/bin:/bin" \
   HARNESS_CODEX_BIN="$TT/no-codex" \
   HARNESS_RUN_DIR= \
   HARNESS_DIR="$H" HARNESS_NAME="test harness" \
-  bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'1\n5\n1\n' > "$STUB.log" 2>&1 || true
+  bash "$LAUNCHER_DIR/bin/launcher.sh" <<< $'1\n6\n1\n' > "$STUB.log" 2>&1 || true
 
 PASS=0; FAIL=0
 if grep -qE "^ARGS:.*--model opus\[1m\]" "$STUB"; then PASS=$((PASS+1)); else

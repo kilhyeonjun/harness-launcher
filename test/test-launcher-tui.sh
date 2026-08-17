@@ -177,8 +177,8 @@ echo 'PASS: q backs out without launching'
 
 # --- 10. ultracode hint does not survive back-navigation (B6) ------------------
 OUT="$TEST_TEMP/10.out"; STUB="$TEST_TEMP/10.stub"; reset_plan
-# session New → mode ultracode(5) → final Back(6: Start/Perm/Chrome/MCP/Happy/Back) → mode fast(1) → start
-run_tui $'1\n5\n6\n1\n1\n' "$OUT" "$STUB"
+# session New → mode ultracode(6) → final Back(6: Start/Perm/Chrome/MCP/Happy/Back) → mode fast(1) → start
+run_tui $'1\n6\n6\n1\n1\n' "$OUT" "$STUB"
 grep -q 'EXEC:claude --model haiku' "$STUB" || fail 'fast after back-nav should exec haiku' "$OUT"
 grep -q 'ultracode는 세션 전용' "$OUT" && fail 'ultracode hint must not leak into non-ultracode launch' "$OUT"
 echo 'PASS: no ultracode hint residue after back-navigation'

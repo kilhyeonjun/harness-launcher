@@ -275,7 +275,7 @@ _harness_launcher_run() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      fast|base|plan|rich)
+      fast|base|plan|opus|rich)
         harness_mode_resolve "$1" "${provider_name:-direct}"
         claude_args+=(--model "$HARNESS_MODE_MODEL")
         env_effort="$HARNESS_MODE_EFFORT"
@@ -595,7 +595,7 @@ _harness_launcher_complete() {
   # drift from the launched model/effort. Resolution runs in subshells so the
   # HARNESS_MODE_* globals never touch the interactive shell.
   shortcuts=()
-  for m in fast base plan rich; do
+  for m in fast base plan opus rich; do
     desc="$( harness_mode_resolve "$m" direct; printf '%s · %s' "$HARNESS_MODE_MODEL" "$HARNESS_MODE_EFFORT" )"
     shortcuts+=("$m:$desc")
   done

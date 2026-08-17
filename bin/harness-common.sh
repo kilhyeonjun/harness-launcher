@@ -107,6 +107,15 @@ harness_mode_resolve() {
         *)     HARNESS_MODE_MODEL="opusplan" ;;
       esac
       HARNESS_MODE_EFFORT="high" ;;
+    opus)
+      # rich's model at one effort step down: strong main model without the
+      # xhigh cost (and without the forced-thinking override xhigh/max need).
+      case "$provider" in
+        kiro)  HARNESS_MODE_MODEL="claude-opus-4-6[1m]" ;;
+        codex) HARNESS_MODE_MODEL="opus${CODEX_CONTEXT_SUFFIX:-}" ;;
+        *)     HARNESS_MODE_MODEL="opus[1m]" ;;
+      esac
+      HARNESS_MODE_EFFORT="high" ;;
     rich)
       case "$provider" in
         kiro)  HARNESS_MODE_MODEL="claude-opus-4-6[1m]"; HARNESS_MODE_EFFORT="max" ;;
@@ -130,6 +139,7 @@ harness_mode_label() {
     fast)      icon="⚡ Fast" ;;
     base)      icon="⚖️  Base" ;;
     plan)      icon="🗺️  Plan" ;;
+    opus)      icon="🎼 Opus" ;;
     rich)      icon="🧠 Rich" ;;
     ultracode) icon="🌀 Ultracode" ;;
   esac
