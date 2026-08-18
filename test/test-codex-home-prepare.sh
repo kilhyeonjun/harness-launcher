@@ -92,14 +92,18 @@ echo "PASS: AGENTS.md materialized with Codex response language supplement"
 config="$CODEX_HOME/config.toml"
 [[ -f "$config" ]] || { echo "FAIL: config.toml missing"; exit 1; }
 grep -q '^model = "gpt-5.6-terra"' "$config" || { echo "FAIL: top-level model should use Terra"; exit 1; }
-# Context window must NOT be pinned — Codex resolves the real backend limit
-# (372K for GPT-5.6 as of 2026-07) from model metadata; pinned values broke auto-compact.
-if grep -q '^model_context_window' "$config"; then
-  echo "FAIL: model_context_window pinned (must come from Codex model metadata)"; exit 1;
-fi
-if grep -q '^model_auto_compact_token_limit' "$config"; then
-  echo "FAIL: model_auto_compact_token_limit pinned (must come from Codex model metadata)"; exit 1;
-fi
+# Long context opted in: Codex clamps the window request to the model's own
+# max_context_window (872000 for GPT-5.6, effective 828400 at 95%), and the
+# auto-compact line is half that effective window — Claude-side parity.
+# A limit ABOVE the effective window is the 2026-06 regression: auto-compact
+# would never fire and the session would die at the backend ceiling instead.
+grep -q '^model_context_window = 1000000$' "$config" || {
+  echo "FAIL: model_context_window not requested (Codex clamps it to the real max)"; exit 1;
+}
+grep -q '^model_auto_compact_token_limit = 414000$' "$config" || {
+  echo "FAIL: auto-compact limit must be 414000 (828400 effective window x 0.5)"; exit 1;
+}
+echo "PASS: long-context window requested with a 50%-of-effective auto-compact line"
 # Codex 0.134.0+ rejects `--profile` when config.toml still contains inline
 # [profiles.*] tables. Profiles must live in separate <name>.config.toml files.
 if grep -q '^\[profiles\.' "$config"; then
@@ -913,10 +917,13 @@ echo "PASS: [features].hooks, goals, and multi_agent enabled in config.toml"
 grep -q '^apps = false' "$config3" || { echo "FAIL: [features].apps = false missing"; exit 1; }
 echo "PASS: [features].apps disabled in config.toml"
 
-if grep -q '^model_context_window\|^model_auto_compact_token_limit' "$config3"; then
-  echo "FAIL: context window/auto-compact pinned (must come from Codex model metadata)"; exit 1;
-fi
-echo "PASS: no pinned context-window overrides (Codex metadata is source of truth)"
+grep -q '^model_context_window = 1000000$' "$config3" || {
+  echo "FAIL: model_context_window missing from regenerated config"; exit 1;
+}
+grep -q '^model_auto_compact_token_limit = 414000$' "$config3" || {
+  echo "FAIL: auto-compact limit missing from regenerated config"; exit 1;
+}
+echo "PASS: context-window/auto-compact keys survive regeneration"
 
 grep -q '^\[marketplaces.openai-bundled\]' "$config3" || {
   echo "FAIL: openai-bundled marketplace missing"; exit 1;

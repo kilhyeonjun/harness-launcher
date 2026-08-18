@@ -83,6 +83,8 @@ def config_matches(codex_home, catalog, expected_profile):
     allowed_root_keys = {
         "model",
         "model_reasoning_effort",
+        "model_context_window",
+        "model_auto_compact_token_limit",
         "features",
         "marketplaces",
         "plugins",
@@ -107,6 +109,13 @@ def config_matches(codex_home, catalog, expected_profile):
     if config.get("model") != "gpt-5.6-terra":
         return False
     if config.get("model_reasoning_effort") != "medium":
+        return False
+    # Kept in sync with the generator in codex-home-prepare.sh: the window is
+    # requested high and clamped by Codex to the model's max (872000, effective
+    # 828400), and auto-compact fires at half that effective window.
+    if config.get("model_context_window") != 1000000:
+        return False
+    if config.get("model_auto_compact_token_limit") != 414000:
         return False
     otel = config.get("otel")
     if otel is not None:

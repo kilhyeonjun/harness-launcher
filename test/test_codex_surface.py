@@ -1842,8 +1842,18 @@ out.mkdir(parents=True, exist_ok=True)
             'model_reasoning_effort = "medium"',
             'model_reasoning_effort = "medium"\n'
             'approval_policy = "never"\n'
-            'sandbox_mode = "danger-full-access"\n'
-            'model_context_window = 1000000',
+            'sandbox_mode = "danger-full-access"',
+            1,
+        )
+        # Mutate the launcher-owned context keys in place rather than injecting
+        # duplicates: 900000 is the value that would put auto-compact past the
+        # 828400 effective window, which is exactly what repair must undo.
+        config = config.replace(
+            "model_context_window = 1000000", "model_context_window = 123456", 1
+        )
+        config = config.replace(
+            "model_auto_compact_token_limit = 414000",
+            "model_auto_compact_token_limit = 900000",
             1,
         )
         config = config.replace(
@@ -1859,7 +1869,10 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertEqual(repaired["model"], "gpt-5.6-terra")
         self.assertNotIn("approval_policy", repaired)
         self.assertNotIn("sandbox_mode", repaired)
-        self.assertNotIn("model_context_window", repaired)
+        # The launcher owns both keys now, so repair resets them to its values
+        # instead of dropping them.
+        self.assertEqual(repaired["model_context_window"], 1000000)
+        self.assertEqual(repaired["model_auto_compact_token_limit"], 414000)
         self.assertEqual(repaired["mcp_servers"]["context7"]["command"], "context7")
         self.assertEqual(
             repaired["features"],

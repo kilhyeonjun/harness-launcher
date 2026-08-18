@@ -799,9 +799,29 @@ cat > "$tmp_config" <<TOML
 
 model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
-# Context window/auto-compact intentionally unpinned: Codex resolves them from
-# model metadata (372K for GPT-5.6 in Codex CLI as of 2026-07). Pinning
-# 1M-style values here made auto-compact fire past the real backend limit.
+# Long context, opted in. Codex clamps model_context_window to the model's own
+# max_context_window, so 1000000 resolves to the real ceiling rather than the
+# fake window that broke auto-compact before: GPT-5.6 luna/terra/sol all report
+# max_context_window=872000 with effective_context_window_percent=95, i.e. an
+# effective 828400 (verified 2026-08-18, models_cache.json + a probe session
+# that reported model_context_window=828400 for -c model_context_window=1000000).
+#
+# The auto-compact line is the effective window x 0.5, matching the Claude side
+# (settings.json autoCompactWindow=1000000 x CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
+# = 500000 on a real 1M window). 828400 x 0.5 = 414200, rounded down to 414000.
+# Half the window stays as headroom for the compaction turn itself, per-turn
+# resend cost, and long-context attention dilution; 2607 recorded Codex sessions
+# (2026-06..08) peaked at 329989 tokens, so this line clears every observed
+# session and no profile is compacted earlier than before.
+#
+# A single constant is only safe while every model reachable here shares one
+# max_context_window. All five mode profiles and every subagent-model-map tier
+# use luna/terra/sol (872000). Adding a model with a smaller window (e.g.
+# gpt-5.3-codex-spark at 128000, effective 121600) would put this limit above
+# that model's ceiling and auto-compact would never fire — recompute from that
+# model's effective window before doing so.
+model_context_window = 1000000
+model_auto_compact_token_limit = 414000
 TOML
 
 if [[ "$HARNESS_OBSERVABILITY_ACTIVE" -eq 1 ]]; then

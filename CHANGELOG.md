@@ -16,6 +16,17 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Changed
 
+- Generated Codex homes now opt into long context. `config.toml` requests
+  `model_context_window = 1000000`, which Codex clamps to the model's own
+  `max_context_window` — 872000 for the GPT-5.6 luna/terra/sol models every
+  mode profile and subagent tier uses, an effective 828400 at the reported 95%.
+  Sessions previously resolved the 272000 default, an effective 258400.
+  `model_auto_compact_token_limit = 414000` puts the auto-compact line at half
+  that effective window, matching the Claude side (`autoCompactWindow` 1000000
+  at `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` 50 compacts at 500000 on a real 1M
+  window). The keys were unpinned in 0.8.4 because the values then in use
+  (1050000 / 900000) scheduled compaction past the real backend ceiling, so it
+  never fired; the limit now stays below the effective window by construction.
 - Codex subagents mapped from the Claude `opus` tier now default to GPT-5.6 Sol
   with medium reasoning effort. High effort remains an explicit escalation for
   unusually risky or complex reviews instead of the baseline for every review.
