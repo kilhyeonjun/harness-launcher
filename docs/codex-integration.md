@@ -208,13 +208,14 @@ surfaces:
 ```toml
 [tui]
 terminal_title = ["activity", "thread-title", "project-name"]
-status_line = ["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "five-hour-limit", "weekly-limit"]
+status_line = ["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "task-progress", "five-hour-limit", "weekly-limit"]
 ```
 
 After `/rename <name>`, Codex refreshes the footer and emits the configured
 terminal title through OSC 0. The native non-cmux fallback renders activity,
 then the thread name, then the repository project name. The footer prioritizes
-context remaining ahead of branch changes. Before a rename, `thread-title` can
+context remaining ahead of branch changes, and native `update_plan` progress
+ahead of account-limit meters. Before a rename, `thread-title` can
 fall back to the thread ID. Change these defaults in `codex-home-prepare.sh`,
 not in a generated project `config.toml`.
 

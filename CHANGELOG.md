@@ -16,6 +16,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Changed
 
+- Generated Codex homes include the native `task-progress` status-line item, so
+  `update_plan` progress stays visible without a launcher-owned task store.
 - Generated Codex homes now opt into long context. `config.toml` requests
   `model_context_window = 1000000`, which Codex clamps to the model's own
   `max_context_window` — 872000 for the GPT-5.6 luna/terra/sol models every

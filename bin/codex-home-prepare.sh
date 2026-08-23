@@ -858,7 +858,7 @@ enabled = $CHROME_PLUGIN_ENABLED
 
 [tui]
 terminal_title = ["activity", "thread-title", "project-name"]
-status_line = ["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "five-hour-limit", "weekly-limit"]
+status_line = ["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "task-progress", "five-hour-limit", "weekly-limit"]
 
 TOML
 

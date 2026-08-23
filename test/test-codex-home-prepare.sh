@@ -954,7 +954,7 @@ grep -q '^terminal_title = \["activity", "thread-title", "project-name"\]' "$con
 }
 echo "PASS: [tui].terminal_title configured in config.toml"
 
-grep -q '^status_line = \["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "five-hour-limit", "weekly-limit"\]' "$config3" || {
+grep -q '^status_line = \["thread-title", "model-with-reasoning", "git-branch", "context-remaining", "branch-changes", "run-state", "task-progress", "five-hour-limit", "weekly-limit"\]' "$config3" || {
   echo "FAIL: [tui].status_line missing expected harness defaults"; exit 1;
 }
 echo "PASS: [tui].status_line configured in config.toml"

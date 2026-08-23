@@ -185,6 +185,7 @@ def config_matches(codex_home, catalog, expected_profile):
             "context-remaining",
             "branch-changes",
             "run-state",
+            "task-progress",
             "five-hour-limit",
             "weekly-limit",
         ]
