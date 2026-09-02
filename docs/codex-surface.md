@@ -83,7 +83,7 @@ HARNESS_CODEX_MCP_PROFILE=work wh codex base
 HARNESS_CODEX_SKILL_PROFILE=design wh codex rich
 ```
 
-An unknown profile, a missing profile-only skill, a missing non-product MCP definition, or a profile that omits `required_in_all_profiles` fails before Codex starts. Every MCP definition is rendered with an explicit `enabled = true` or `false`; `computer-use` is the currently recognized product-managed MCP name. When enabled, its bundled plugin skill is reconciled into `skill-catalog.json` after plugin materialization so work-profile prompt audits remain exact.
+An unknown profile, a missing profile-only skill, a missing non-product MCP definition, or a profile that omits `required_in_all_profiles` fails before Codex starts. Every MCP definition is rendered with an explicit `enabled = true` or `false`; profile policies may additionally set tool filters, positive startup/tool timeouts, `required`, default tool approval, and per-tool approval. `computer-use` is the currently recognized product-managed MCP name. When enabled, its bundled plugin skill is reconciled into `skill-catalog.json` after plugin materialization so work-profile prompt audits remain exact.
 
 Selected global definitions use the same duplicate detection as project, local, and product-managed sources; any repeated server name fails rather than being overridden. Their supported static fields are intentionally narrow: `env` and `http_headers` are rejected. Use `env_vars`, `env_http_headers`, or `bearer_token_env_var` for runtime credentials.
 

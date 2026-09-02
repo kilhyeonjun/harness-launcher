@@ -6,6 +6,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Added
 
+- Exact MCP profile policies can now emit positive startup/tool timeouts,
+  `required`, default tool approval, and per-tool approval in addition to tool
+  allow/deny lists. Validation fails closed on invalid types or approval modes,
+  and the warm-home check includes every emitted policy field.
 - New Claude Code `opus` preset: the `rich` model at one effort step down
   (`opus[1m]` at `high` on Anthropic direct, `claude-opus-4-6[1m]` at `high`
   through a Kiro gateway, `opus` plus the configured context suffix through a

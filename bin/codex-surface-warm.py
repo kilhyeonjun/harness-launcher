@@ -228,7 +228,16 @@ def config_matches(codex_home, catalog, expected_profile):
         expected_profile = {"enabled": name in enabled_servers, **policies.get(name, {})}
         actual_profile = {
             field: server[field]
-            for field in ("enabled", "enabled_tools", "disabled_tools")
+            for field in (
+                "enabled",
+                "enabled_tools",
+                "disabled_tools",
+                "startup_timeout_sec",
+                "tool_timeout_sec",
+                "required",
+                "default_tools_approval_mode",
+                "tools",
+            )
             if field in server
         }
         if actual_profile != expected_profile:

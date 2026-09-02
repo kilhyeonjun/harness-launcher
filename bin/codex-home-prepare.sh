@@ -910,10 +910,18 @@ for name in sorted(servers):
             print(f"args = [{args_repr}]")
     if surface_enabled is not None:
         print(f'enabled = {str(name in surface_enabled).lower()}')
+        policy = surface_policies.get(name, {})
         for field in ("enabled_tools", "disabled_tools"):
-            if field in surface_policies.get(name, {}):
-                values = ", ".join(json.dumps(value) for value in surface_policies[name][field])
+            if field in policy:
+                values = ", ".join(json.dumps(value) for value in policy[field])
                 print(f"{field} = [{values}]")
+        for field in ("startup_timeout_sec", "tool_timeout_sec", "required", "default_tools_approval_mode"):
+            if field in policy:
+                print(f"{field} = {json.dumps(policy[field])}")
+        for tool, tool_policy in sorted((policy.get("tools") or {}).items()):
+            print()
+            print(f'[mcp_servers.{name}.tools.{json.dumps(tool)}]')
+            print(f'approval_mode = {json.dumps(tool_policy["approval_mode"])}')
     print()
     env = dict(spec.get("env") or {})
     if name == "node_repl" and browser_client_sha256s:

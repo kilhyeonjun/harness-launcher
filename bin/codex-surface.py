@@ -13,6 +13,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -469,7 +470,13 @@ def validate_manifest(manifest: dict) -> None:
             if server not in profile["enabled"]:
                 fail(f"mcp profile {name!r}.policies server {server!r} is not enabled")
             if not isinstance(policy, dict) or not policy or set(policy) - {
-                "enabled_tools", "disabled_tools"
+                "enabled_tools",
+                "disabled_tools",
+                "startup_timeout_sec",
+                "tool_timeout_sec",
+                "required",
+                "default_tools_approval_mode",
+                "tools",
             }:
                 fail(f"mcp profile {name!r}.policies[{server!r}] has unsupported fields")
             for field in ("enabled_tools", "disabled_tools"):
@@ -480,6 +487,32 @@ def validate_manifest(manifest: dict) -> None:
                     fail(f"mcp profile {name!r}.policies[{server!r}].{field} must be a duplicate-free array of non-empty strings")
             if set(policy.get("enabled_tools", [])) & set(policy.get("disabled_tools", [])):
                 fail(f"mcp profile {name!r}.policies[{server!r}] tool lists overlap")
+            for field in ("startup_timeout_sec", "tool_timeout_sec"):
+                if field not in policy:
+                    continue
+                value = policy[field]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or value <= 0
+                ):
+                    fail(f"mcp profile {name!r}.policies[{server!r}].{field} must be a positive number")
+            if "required" in policy and not isinstance(policy["required"], bool):
+                fail(f"mcp profile {name!r}.policies[{server!r}].required must be boolean")
+            approval_modes = {"auto", "prompt", "writes", "approve"}
+            if "default_tools_approval_mode" in policy and policy["default_tools_approval_mode"] not in approval_modes:
+                fail(f"mcp profile {name!r}.policies[{server!r}].default_tools_approval_mode is invalid")
+            tools = policy.get("tools", {})
+            if not isinstance(tools, dict):
+                fail(f"mcp profile {name!r}.policies[{server!r}].tools must be an object")
+            if "tools" in policy and not tools:
+                fail(f"mcp profile {name!r}.policies[{server!r}].tools must be a non-empty object")
+            for tool, tool_policy in tools.items():
+                if not isinstance(tool, str) or not tool or not isinstance(tool_policy, dict):
+                    fail(f"mcp profile {name!r}.policies[{server!r}].tools has an invalid entry")
+                if set(tool_policy) != {"approval_mode"} or tool_policy["approval_mode"] not in approval_modes:
+                    fail(f"mcp profile {name!r}.policies[{server!r}].tools[{tool!r}] is invalid")
 
 
 def find_requested(candidates: Iterable[Candidate], requested: str, label: str) -> Candidate:

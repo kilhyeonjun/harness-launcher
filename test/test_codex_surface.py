@@ -468,6 +468,11 @@ class ResolverTests(SurfaceFixture):
             "empty-tool": {"context7": {"disabled_tools": [""]}},
             "overlap": {"context7": {"enabled_tools": ["read"], "disabled_tools": ["read"]}},
             "disabled-member": {"jira": {"enabled_tools": ["read"]}},
+            "null-timeout": {"context7": {"startup_timeout_sec": None}},
+            "nan-timeout": {"context7": {"tool_timeout_sec": float("nan")}},
+            "infinite-timeout": {"context7": {"tool_timeout_sec": float("inf")}},
+            "null-approval": {"context7": {"default_tools_approval_mode": None}},
+            "empty-tools-policy": {"context7": {"tools": {}}},
         }
         for label, policies in cases.items():
             with self.subTest(label=label):
@@ -478,6 +483,26 @@ class ResolverTests(SurfaceFixture):
                 result = self.run_resolver(expect=2)
 
                 self.assertIn("policies", result.stderr)
+
+    def test_mcp_profile_runtime_policy_is_preserved_in_catalog(self):
+        manifest = base_manifest()
+        manifest["mcp"]["profiles"]["default"]["policies"] = {
+            "context7": {
+                "startup_timeout_sec": 10,
+                "tool_timeout_sec": 45,
+                "required": True,
+                "default_tools_approval_mode": "approve",
+                "tools": {
+                    "resolve-library-id": {"approval_mode": "approve"},
+                },
+            }
+        }
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+        self.run_resolver()
+        catalog = self.read_catalog()
+        expected = manifest["mcp"]["profiles"]["default"]["policies"]["context7"]
+        self.assertEqual(catalog["mcp"]["policies"]["context7"], expected)
 
     def test_product_managed_mcp_policy_without_emitted_definition_fails(self):
         # Product/plugin-only computer-use has no generated [mcp_servers] table
@@ -1101,6 +1126,37 @@ out.mkdir(parents=True, exist_ok=True)
             HARNESS_CODEX_MCP_PROFILE="work",
         )
         self.assertEqual(self.compiler_calls(), calls, "matching policy fields did not stay warm")
+
+    def test_local_mcp_runtime_policy_renders_and_stays_warm(self):
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        manifest["mcp"]["profiles"]["default"]["policies"] = {
+            "context7": {
+                "startup_timeout_sec": 10,
+                "tool_timeout_sec": 45,
+                "required": True,
+                "default_tools_approval_mode": "approve",
+                "tools": {
+                    "resolve-library-id": {"approval_mode": "approve"},
+                },
+            }
+        }
+        self.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        self.prepare()
+
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            server_config = tomllib.load(stream)["mcp_servers"]["context7"]
+        self.assertEqual(server_config["startup_timeout_sec"], 10)
+        self.assertEqual(server_config["tool_timeout_sec"], 45)
+        self.assertIs(server_config["required"], True)
+        self.assertEqual(server_config["default_tools_approval_mode"], "approve")
+        self.assertEqual(
+            server_config["tools"]["resolve-library-id"]["approval_mode"],
+            "approve",
+        )
+        calls = self.compiler_calls()
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), calls)
 
     def test_selected_global_definition_edits_invalidate_or_fail_closed(self):
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
