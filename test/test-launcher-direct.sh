@@ -43,6 +43,7 @@ exit 0
 EOF
 chmod +x "$CLAUDE_STUB"
 
+
 # Helper: extract --model value from args line
 extract_model() {
   local args="$1"
@@ -317,19 +318,48 @@ printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
   'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$TEST_HARNESS/config/launcher.env"
 strict_stub="$TEST_TEMP/output-light-strict.txt"
 strict_err="$TEST_TEMP/output-light-strict.err"
-if (
+set +e
+(
   export TEST_STUB_FILE="$strict_stub"
   export PATH="$TEST_TEMP:$PATH"
   source "$LAUNCHER_DIR/bin/aliases.zsh"
   _harness_launcher_run "$TEST_HARNESS" base light
-) 2>"$strict_err"; then
-  echo "FAIL: strict light must fail"; exit 1
-fi
+) 2>"$strict_err"
+strict_rc=$?
+set -e
+[[ "$strict_rc" -ne 0 ]] || { echo "FAIL: strict light must fail"; exit 1; }
+[[ "$strict_rc" -eq 2 ]] || { echo "FAIL: strict light must exit 2, got $strict_rc"; exit 1; }
 grep -Fq 'light MCP surface is retired for this project' "$strict_err" || {
   echo "FAIL: strict light error missing"; exit 1
 }
 [[ ! -s "$strict_stub" ]] || { echo "FAIL: strict light launched Claude"; exit 1; }
 echo "PASS: strict light fails before Claude launches"
+
+# Both opt-in modes retain Kiro gateway's existing Claude light launch. This
+# catches changing the shared light parser without guarding provider_name=kiro.
+for kiro_policy in single-full-compat single-full; do
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    "HARNESS_MCP_SURFACE_POLICY=\"$kiro_policy\"" > "$TEST_HARNESS/config/launcher.env"
+  mkdir -p "$TEST_HARNESS/config/.local"
+  printf '%s\n' 'KIRO_GATEWAY_URL="http://gateway.test"' > "$TEST_HARNESS/config/.local/kiro-gateway.env"
+  kiro_stub_file="$TEST_TEMP/output-kiro-$kiro_policy.txt"
+  kiro_err_file="$TEST_TEMP/output-kiro-$kiro_policy.err"
+  : > "$kiro_stub_file"
+  (
+    export TEST_STUB_FILE="$kiro_stub_file"
+    export PATH="$TEST_TEMP:$PATH"
+    source "$LAUNCHER_DIR/bin/aliases.zsh"
+    _harness_launcher_probe_provider_health() { return 0; }
+    _harness_launcher_run "$TEST_HARNESS" kiro base light
+  ) 2>"$kiro_err_file" || { echo "FAIL: Kiro $kiro_policy light must launch"; exit 1; }
+  grep -q '^ARGS:.*--strict-mcp-config ' "$kiro_stub_file" || {
+    echo "FAIL: Kiro $kiro_policy light lost the strict Claude light launch"; cat "$kiro_stub_file"; exit 1
+  }
+  [[ ! -s "$kiro_err_file" ]] || {
+    echo "FAIL: Kiro $kiro_policy light emitted selector retirement output"; cat "$kiro_err_file"; exit 1
+  }
+done
+echo "PASS: Kiro gateway light remains a strict Claude light launch for compat and strict policies"
 
 # The no-argument launchpad path crosses a second process boundary before
 # native Codex starts. Preserve the short harness prefix for that process too.

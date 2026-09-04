@@ -116,6 +116,28 @@ grep -Fq 'HARNESS_MCP_SURFACE_POLICY' "$TMP/invalid-policy.err" && \
 }
 echo "PASS: harness_register rejects unknown project MCP surface policies"
 
+# Completion behavior catches mutations that expose retired Claude/Codex
+# selectors for opt-in projects or hide Kiro's still-supported optional light.
+completion_capture="$TMP/completion-capture.txt"
+_describe() { print -r -- "${(@P)2}" > "$completion_capture"; }
+_harness_launcher_complete "$TMP/fake-harness"
+grep -Fq 'light:Light MCP surface' "$completion_capture" && \
+  grep -Fq 'work surface' "$completion_capture" || {
+  echo "FAIL: legacy completion lost Claude light or Codex work" >&2; exit 1
+}
+COMPLETION_OPTIN_DIR="$TMP/completion-optin"
+mkdir -p "$COMPLETION_OPTIN_DIR/config"
+printf '%s\n' 'HARNESS_NAME="Completion opt-in"' 'HARNESS_PREFIX="completionoptin"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$COMPLETION_OPTIN_DIR/config/launcher.env"
+_harness_launcher_complete "$COMPLETION_OPTIN_DIR"
+if grep -Fq 'light:Light MCP surface' "$completion_capture" || grep -Fq 'work surface' "$completion_capture"; then
+  echo "FAIL: opt-in completion exposes retired Claude/Codex selectors" >&2; exit 1
+fi
+grep -Fq 'kiro-cli:Kiro CLI native (optional light surface)' "$completion_capture" || {
+  echo "FAIL: opt-in completion lost Kiro optional light discoverability" >&2; exit 1
+}
+echo "PASS: completion scopes Claude/Codex retirement while retaining Kiro light"
+
 NO_EXEC="$TMP/no-exec"
 mkdir -p "$NO_EXEC"
 cp "$LAUNCHER_DIR/bin/aliases.zsh" "$NO_EXEC/aliases.zsh"

@@ -323,9 +323,12 @@ strict_work_out="$TEST_TEMP/output-codex-cli-strict-work.txt"
 printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
   'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$TEST_HARNESS/config/launcher.env"
 : > "$TEST_TEMP/output-codex-cli-failure-stub.txt"
-if run_codex_failure "$strict_work_out" work; then
-  echo "FAIL: strict codex work must fail"; exit 1
-fi
+set +e
+run_codex_failure "$strict_work_out" work
+strict_work_rc=$?
+set -e
+[[ "$strict_work_rc" -ne 0 ]] || { echo "FAIL: strict codex work must fail"; exit 1; }
+[[ "$strict_work_rc" -eq 2 ]] || { echo "FAIL: strict codex work must exit 2, got $strict_work_rc"; exit 1; }
 grep -Fq 'work MCP surface is retired for this project' "$strict_work_out" || {
   echo "FAIL: strict codex work error missing"; cat "$strict_work_out"; exit 1
 }

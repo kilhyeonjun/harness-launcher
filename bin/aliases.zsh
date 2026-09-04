@@ -309,17 +309,21 @@ _harness_launcher_run() {
         fi
         skip_tui=true; shift ;;
       light)
-        case "$mcp_surface_policy" in
-          legacy) mcp_surface="light" ;;
-          single-full-compat)
-            echo "⚠️  light MCP surface is deprecated for this project; using full" >&2
-            mcp_surface="full"
-            ;;
-          single-full)
-            echo "harness-launcher: light MCP surface is retired for this project" >&2
-            return 2
-            ;;
-        esac
+        if [[ "$provider_name" == kiro ]]; then
+          mcp_surface="light"
+        else
+          case "$mcp_surface_policy" in
+            legacy) mcp_surface="light" ;;
+            single-full-compat)
+              echo "⚠️  light MCP surface is deprecated for this project; using full" >&2
+              mcp_surface="full"
+              ;;
+            single-full)
+              echo "harness-launcher: light MCP surface is retired for this project" >&2
+              return 2
+              ;;
+          esac
+        fi
         skip_tui=true; shift ;;
       continue) session_flag="--continue"; skip_tui=true; shift ;;
       resume)   session_flag="--resume"; skip_tui=true; shift ;;
@@ -425,7 +429,7 @@ _harness_launcher_run() {
   fi
 }
 
-# _harness_launcher_run_codex_cli <harness-dir> [args...]
+# _harness_launcher_run_codex_cli <harness-dir> <resolved-policy> [args...]
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
 #   Modes:    fast | base | plan | rich  → -p <profile>
 #   Surface:  work → work MCP surface (combinable with any profile)
