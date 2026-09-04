@@ -235,6 +235,7 @@ mkdir -p "$TEST_TEMP/home"
   export TEST_STUB_FILE="$light_stub_file"
   export PATH="$TEST_TEMP:$PATH"
   export HOME="$TEST_TEMP/home"
+  export HARNESS_MCP_SURFACE_POLICY=single-full
   source "$LAUNCHER_DIR/bin/aliases.zsh"
   _harness_launcher_run "$TEST_HARNESS" base light
 ) 2>/dev/null || true
@@ -285,6 +286,50 @@ if [[ -s "$light_dup_stub" ]]; then
   exit 1
 fi
 echo "PASS: light shortcut fails closed on duplicate server names"
+
+# A project may opt into a single full MCP surface. Compat accepts the retired
+# Claude selector with a warning; strict rejects it before the Claude command.
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full-compat"' > "$TEST_HARNESS/config/launcher.env"
+cat > "$TEST_HARNESS/.mcp.local.json" <<'EOF'
+{ "mcpServers": { "compat_local": { "command": "compat-local" } } }
+EOF
+compat_stub="$TEST_TEMP/output-light-compat.txt"
+compat_err="$TEST_TEMP/output-light-compat.err"
+(
+  export TEST_STUB_FILE="$compat_stub"
+  export PATH="$TEST_TEMP:$PATH"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _harness_launcher_run "$TEST_HARNESS" base light
+) 2>"$compat_err" || exit 1
+compat_args="$(grep '^ARGS:' "$compat_stub" | head -1 | cut -d: -f2-)"
+grep -Fq 'light MCP surface is deprecated for this project; using full' "$compat_err" || {
+  echo "FAIL: compat light did not warn"; exit 1
+}
+case "$compat_args" in
+  *--strict-mcp-config*) echo "FAIL: compat light retained strict MCP config"; exit 1 ;;
+  *"--mcp-config $TEST_HARNESS/.mcp.local.json"*) ;;
+  *) echo "FAIL: compat light did not use the full MCP path: $compat_args"; exit 1 ;;
+esac
+echo "PASS: compat light warns and uses the full Claude MCP path"
+
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$TEST_HARNESS/config/launcher.env"
+strict_stub="$TEST_TEMP/output-light-strict.txt"
+strict_err="$TEST_TEMP/output-light-strict.err"
+if (
+  export TEST_STUB_FILE="$strict_stub"
+  export PATH="$TEST_TEMP:$PATH"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _harness_launcher_run "$TEST_HARNESS" base light
+) 2>"$strict_err"; then
+  echo "FAIL: strict light must fail"; exit 1
+fi
+grep -Fq 'light MCP surface is retired for this project' "$strict_err" || {
+  echo "FAIL: strict light error missing"; exit 1
+}
+[[ ! -s "$strict_stub" ]] || { echo "FAIL: strict light launched Claude"; exit 1; }
+echo "PASS: strict light fails before Claude launches"
 
 # The no-argument launchpad path crosses a second process boundary before
 # native Codex starts. Preserve the short harness prefix for that process too.
