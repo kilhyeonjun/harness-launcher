@@ -80,6 +80,31 @@ HARNESS_PREFIX="wh"
 EOF
 ```
 
+### MCP surface policy
+
+`config/launcher.env` is the only authority that can opt a project into the
+single-full policy. An inherited shell value is ignored. Leave
+`HARNESS_MCP_SURFACE_POLICY` empty or omit it to preserve the legacy behavior:
+Claude and Kiro can select `light`, and native Codex can select the manifest's
+`work` MCP profile.
+
+Projects can choose one of these opt-in values in `config/launcher.env`:
+
+```bash
+# Temporary compatibility phase: accept retired direct selectors with a warning.
+HARNESS_MCP_SURFACE_POLICY="single-full-compat"
+
+# Enforced phase: reject retired Claude/Codex direct selectors.
+HARNESS_MCP_SURFACE_POLICY="single-full"
+```
+
+Both opt-in values use the full user-facing surface for Claude and Codex. In
+the compatibility phase, direct `light` (Claude) and `work` (Codex) selectors
+continue as full with a deprecation warning; the enforced phase rejects those
+selectors. Kiro remains intentionally independent: its native `light` and
+full choices continue to work in every policy. An invalid value fails before
+the project command is registered.
+
 Add the launcher and project registration to `~/.zshrc`. Use the source line that matches how you installed it.
 
 Homebrew:

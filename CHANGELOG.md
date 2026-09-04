@@ -6,6 +6,15 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Added
 
+- Project-owned MCP surface policy values: empty preserves legacy selectors,
+  `single-full-compat` accepts direct Claude `light` and Codex `work` selectors
+  as full with a deprecation warning, and `single-full` rejects those retired
+  selectors. The policy is read only from the trusted project `launcher.env`;
+  Kiro keeps its native light/full selection in every mode.
+- Opt-in launchpad histories migrate to the full surface before display through
+  a validate-then-rewrite transaction. Migration canonicalizes entries, sorts
+  and de-duplicates them, bounds retained history, and atomically replaces the
+  history file only after the replacement is complete.
 - Exact MCP profile policies can now emit positive startup/tool timeouts,
   `required`, default tool approval, and per-tool approval in addition to tool
   allow/deny lists. Validation fails closed on invalid types or approval modes,
