@@ -297,6 +297,27 @@ history_migration_fail() {
   return 1
 }
 
+# Migration runs before provider collection loads gateway settings. Resolve a
+# Codex-provider summary in a subshell so only its rendered label crosses back;
+# secrets, unrelated variables, and any output from the env file stay isolated.
+history_claude_summary() {
+  if [ "$CHOICE_PROVIDER" != "codex" ]; then
+    claude_summary
+    return 0
+  fi
+
+  local summary
+  summary="$(
+    unset CODEX_CONTEXT_SUFFIX
+    if [ -f "$HARNESS_DIR/config/.local/codex-gateway.env" ]; then
+      . "$HARNESS_DIR/config/.local/codex-gateway.env" >/dev/null 2>&1 || exit $?
+    fi
+    claude_summary
+    printf '%s\n' "$PLAN_SUMMARY"
+  )" || return $?
+  PLAN_SUMMARY="$summary"
+}
+
 history_migrate_single_full() {
   harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY" || return 0
   [ -f "$HISTORY_FILE" ] || return 0
@@ -334,7 +355,10 @@ history_migrate_single_full() {
     case "$runtime" in
       claude)
         CHOICE_MCP_SURFACE="full"; CHOICE_CODEX_SURFACE="full"
-        claude_summary ;;
+        if ! history_claude_summary; then
+          history_migration_fail "summary generation failed" "$raw" "$sorted" "$tmp"
+          return 1
+        fi ;;
       codex)
         CHOICE_MCP_SURFACE="full"; CHOICE_CODEX_SURFACE="full"
         codex_summary ;;

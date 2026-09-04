@@ -38,6 +38,7 @@ write_stub() {
   echo "AUTH_TOKEN:\${ANTHROPIC_AUTH_TOKEN:-}"
   echo "OPUS_MODEL:\${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
   echo "PCT:\${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}"
+  echo "HISTORY_SUMMARY_LEAK:\${HISTORY_SUMMARY_LEAK:-<UNSET>}"
 } >> "\$TEST_STUB_FILE"
 exit 0
 EOF
@@ -494,6 +495,40 @@ SECOND_HISTORY_SHA="$(shasum -a 256 "$HISTORY" | awk '{print $1}')"
   || fail 'second migration must be byte-identical' "$HISTORY"
 assert_no_migration_temps
 echo 'PASS: mixed history canonicalizes, dedupes newest-first, caps at 8, and is idempotent'
+
+# --- 23bb. Codex-gateway migration uses configured suffix without env leaks --
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$TEST_HARNESS/config/launcher.env"
+mkdir -p "$TEST_HARNESS/config/.local" "$TEST_HARNESS/.harness"
+cat > "$TEST_HARNESS/config/.local/codex-gateway.env" <<'EOF'
+CODEX_GATEWAY_URL="https://codex.test"
+export CODEX_GATEWAY_API_KEY="HISTORY_SECRET_DO_NOT_PRINT"
+CODEX_CONTEXT_SUFFIX="[history-2m]"
+export HISTORY_SUMMARY_LEAK="gateway-summary-state"
+[ "${CHOICE_PROVIDER:-}" = "codex" ] && printf 'GATEWAY_ENV_OUTPUT:%s\n' "$CODEX_GATEWAY_API_KEY"
+EOF
+printf 'TS=910\tSUMMARY=stale gateway summary\tRUNTIME=claude\tPROVIDER=codex\tSESSION=new\tMODE=base\tMCP_SURFACE=light\n' > "$HISTORY"
+OUT="$TEST_TEMP/23bb.out"; STUB="$TEST_TEMP/23bb.stub"
+# New Claude → direct provider → new session → base → start. This consumes the
+# migrated launchpad label, then proves migration state did not reach a direct child.
+run_tui $'1\n1\n1\n2\n1\n' "$OUT" "$STUB"
+grep -Fq 'SUMMARY=Claude · codex · new · sonnet[history-2m] · high' "$HISTORY" \
+  || fail 'Codex gateway migration must persist the configured context suffix' "$HISTORY"
+grep -Fq '↩ Claude · codex · new · sonnet[history-2m] · high ·' "$OUT" \
+  || fail 'launchpad must display the persisted suffixed Codex gateway model' "$OUT"
+grep -Fq 'SUMMARY=Claude · direct · new · sonnet · high' "$HISTORY" \
+  || fail 'gateway migration must not change a new direct-provider summary' "$HISTORY"
+grep -Fqx 'HISTORY_SUMMARY_LEAK:<UNSET>' "$STUB" \
+  || fail 'gateway summary loading leaked an unrelated exported variable into direct launch state' "$STUB"
+if grep -Fq 'HISTORY_SECRET_DO_NOT_PRINT' "$OUT" "$HISTORY" "$STUB"; then
+  fail 'gateway summary loading exposed a configured secret' "$OUT"
+fi
+if grep -Fq 'gateway-summary-state' "$OUT" "$HISTORY"; then
+  fail 'gateway summary loading printed unrelated gateway state' "$OUT"
+fi
+assert_no_migration_temps
+rm -rf "$TEST_HARNESS/config/.local"
+echo 'PASS: Codex gateway history uses configured suffix without secret output or state leaks'
 
 # --- 23c. malformed history fails closed before any menu ----------------------
 for malformed_case in bad-ts bad-runtime bad-tsv; do

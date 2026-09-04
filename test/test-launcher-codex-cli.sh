@@ -552,6 +552,50 @@ raw_prepare_values=("${(@f)$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$STUB
 }
 echo "PASS: direct codex --cd wrapper isolates global MCP allowlist across launches"
 
+# An opt-in raw launch may hide the inherited work surface from prepare/Codex,
+# but it must not unset the caller's exported parameter. Keep both launches in
+# one real Zsh process: the following legacy launch must still inherit `work`.
+STUB_RAW_PROFILE_SCOPE="$TEST_TEMP/output-raw-codex-wrapper-profile-scope.txt"
+: > "$STUB_RAW_PROFILE_SCOPE"
+(
+  export TEST_STUB_FILE="$STUB_RAW_PROFILE_SCOPE"
+  export PATH="$TEST_BIN:/usr/bin:/bin"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  export HARNESS_CODEX_MCP_PROFILE=work
+  compdef() { :; }
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_MCP_SURFACE_POLICY="single-full"' \
+    > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+  print -r -- "PARENT_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE-<UNSET>}" >> "$STUB_RAW_PROFILE_SCOPE"
+  print -r -- "PARENT_MCP_PROFILE_TYPE:${(t)HARNESS_CODEX_MCP_PROFILE}" >> "$STUB_RAW_PROFILE_SCOPE"
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+) 2>/dev/null || exit 1
+raw_profile_prepare_values=("${(@f)$(sed -n 's/^PREPARE_MCP_PROFILE://p' "$STUB_RAW_PROFILE_SCOPE")}")
+raw_profile_codex_values=("${(@f)$(sed -n 's/^MCP_PROFILE://p' "$STUB_RAW_PROFILE_SCOPE")}")
+[[ "${raw_profile_prepare_values[*]}" = "<UNSET> work" && "${raw_profile_codex_values[*]}" = "<UNSET> work" ]] || {
+  echo "FAIL: opt-in raw codex did not isolate the child profile before a legacy invocation"
+  cat "$STUB_RAW_PROFILE_SCOPE"
+  exit 1
+}
+grep -Fqx 'PARENT_MCP_PROFILE:work' "$STUB_RAW_PROFILE_SCOPE" || {
+  echo "FAIL: opt-in raw codex changed the parent profile value"
+  cat "$STUB_RAW_PROFILE_SCOPE"
+  exit 1
+}
+grep -Fqx 'PARENT_MCP_PROFILE_TYPE:scalar-export' "$STUB_RAW_PROFILE_SCOPE" || {
+  echo "FAIL: opt-in raw codex changed the parent profile export state"
+  cat "$STUB_RAW_PROFILE_SCOPE"
+  exit 1
+}
+echo "PASS: opt-in raw codex isolates child profile and preserves parent value/export for legacy reuse"
+
 # The allowlist normalizer must use the shared Python resolver. With python3
 # deliberately broken on PATH, both shortcut and direct wrapper launches still
 # reach prepare through the explicit supported interpreter.

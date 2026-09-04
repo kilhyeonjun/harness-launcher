@@ -129,6 +129,10 @@ codex() {
   local codex_bin harness_dir broker_started=false
   local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE HARNESS_OTLP_HTTP_ENDPOINT
   local OTEL_RESOURCE_ATTRIBUTES obs_rc
+  local inherited_codex_mcp_profile="${HARNESS_CODEX_MCP_PROFILE-}"
+  local inherited_codex_mcp_profile_type="${(t)HARNESS_CODEX_MCP_PROFILE}"
+  local HARNESS_CODEX_MCP_PROFILE="$inherited_codex_mcp_profile"
+  [[ "$inherited_codex_mcp_profile_type" == *-export* ]] && export HARNESS_CODEX_MCP_PROFILE
   codex_bin="$(_harness_launcher_codex_bin)" || {
     echo "❌ codex not found in PATH" >&2
     return 1
