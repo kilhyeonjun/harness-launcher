@@ -321,3 +321,28 @@ test/test-launcher-codex-gateway.sh
 test/test-codex-hook-adapter.sh
 test/test-codex-global-mcp-drift.sh
 ```
+
+## Inspect generated profile settings
+
+Use the installed resolver to inspect a prepared home without running Codex,
+refreshing credentials, changing hook approval, or regenerating files:
+
+```bash
+python3 "$(brew --prefix harness-launcher)/share/harness-launcher/codex-surface.py" \
+  inspect --codex-home /path/to/project/.harness/codex --profile astra
+```
+
+The JSON reports allowlisted model, effort, context, sandbox, and approval values
+with their base or profile file provenance. Provider URLs, credentials, MCP
+arguments, and hook commands are omitted. A missing profile fails instead of
+silently displaying the base model.
+
+`output_consistency` compares generated outputs with their last preparation
+stamp. It does not validate current source inputs, CLI/environment overrides,
+account availability, or the model loaded in a running session. Unknown values
+remain unknown; configured context is not a verified native model limit.
+
+Homebrew preparation through its compatibility `share` link uses the equivalent
+`opt` package path when both resolve to the same directory. This keeps generated
+hook command spelling stable. It does not approve hooks or redirect a source
+checkout to a different installed package.
