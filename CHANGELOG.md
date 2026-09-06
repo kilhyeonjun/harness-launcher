@@ -16,6 +16,11 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+### Added
+
+- Generated profile inspection separates managed settings, project trust, and
+  model-picker UI metadata while retaining full output drift detection.
+
 ## [0.23.0] — 2026-09-06
 
 ### Added

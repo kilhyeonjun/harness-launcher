@@ -2391,6 +2391,63 @@ class SurfaceInspectionTests(unittest.TestCase):
             (home / "rich.config.toml").unlink()
             self.assertEqual(inspect(), "changed")
 
+    def test_inspection_distinguishes_metadata_trust_and_managed_settings(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            for name in ("AGENTS.md", "hooks.json", "skill-catalog.json", "surface.config.toml",
+                         "fast.config.toml", "base.config.toml", "sol.config.toml", "astra.config.toml",
+                         "plan.config.toml", "rich.config.toml", "skills/.harness-managed"):
+                path = home / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("")
+            (home / "config.toml").write_text('model = "gpt-5.6-terra"\n')
+            profile = home / "astra.config.toml"
+            baseline = 'model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\n'
+            profile.write_text(baseline)
+            fingerprint = {"schema_version": 1, "digest": "fixture", "skill_profile": "default",
+                           "mcp_profile": "full", "global_mcp_digest": "fixture", "bundled_marketplace_path": "fixture"}
+            subprocess.run([sys.executable, str(RESOLVER), "write-stamp", "--codex-home", td,
+                            "--stamp", str(home / ".surface-success.json"), "--fingerprint-json", json.dumps(fingerprint)],
+                           check=True, capture_output=True)
+
+            def inspect():
+                before = {str(p.relative_to(home)): p.read_bytes() for p in home.rglob("*") if p.is_file()}
+                result = subprocess.run([sys.executable, str(RESOLVER), "inspect", "--codex-home", td,
+                                         "--profile", "astra"], check=True, capture_output=True, text=True)
+                self.assertEqual(before, {str(p.relative_to(home)): p.read_bytes() for p in home.rglob("*") if p.is_file()})
+                self.assertNotIn("PRIVATE_PROJECT", result.stdout)
+                return json.loads(result.stdout)["preparation"]
+
+            initial = inspect()
+            self.assertEqual(initial.get("managed_settings_consistency"), "matching")
+            self.assertEqual(initial["trust_settings_consistency"], "matching")
+            self.assertFalse(initial["runtime_metadata_changed"])
+            profile.write_text(baseline + '\n[tui.model_availability_nux]\ngpt-6-astra = 1\n')
+            metadata = inspect()
+            self.assertEqual(metadata["output_consistency"], "changed")
+            self.assertEqual(metadata["managed_settings_consistency"], "matching")
+            self.assertEqual(metadata["trust_settings_consistency"], "matching")
+            self.assertTrue(metadata["runtime_metadata_changed"])
+            profile.write_text(baseline + '\n[projects."PRIVATE_PROJECT"]\ntrust_level = "trusted"\n')
+            trust = inspect()
+            self.assertEqual(trust["output_consistency"], "changed")
+            self.assertEqual(trust["managed_settings_consistency"], "matching")
+            self.assertEqual(trust["trust_settings_consistency"], "changed")
+            self.assertFalse(trust["runtime_metadata_changed"])
+            profile.write_text(baseline.replace('"medium"', '"high"'))
+            self.assertEqual(inspect()["managed_settings_consistency"], "changed")
+            profile.write_text(baseline + 'approval_policy = "never"\n')
+            self.assertEqual(inspect()["managed_settings_consistency"], "changed")
+            profile.write_text(baseline + '\n[tui]\nunknown_future_setting = true\n')
+            self.assertEqual(inspect()["managed_settings_consistency"], "changed")
+            stamp = json.loads((home / ".surface-success.json").read_text())
+            stamp.pop("inspection_config_signatures", None)
+            (home / ".surface-success.json").write_text(json.dumps(stamp))
+            legacy = inspect()
+            self.assertEqual(legacy["managed_settings_consistency"], "unknown")
+            self.assertEqual(legacy["trust_settings_consistency"], "unknown")
+            self.assertIsNone(legacy["runtime_metadata_changed"])
+
     def test_missing_profile_never_falls_back_and_malformed_config_is_redacted(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
