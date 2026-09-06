@@ -38,6 +38,14 @@ TEST_TEMP="$(mktemp -d)"
 TEST_HARNESS="$TEST_TEMP/fake-harness"
 mkdir -p "$TEST_HARNESS"
 
+CODEX_BIN_STUB="$TEST_TEMP/codex"
+cat > "$CODEX_BIN_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "codex-cli 0.153.2"
+EOF
+chmod +x "$CODEX_BIN_STUB"
+export HARNESS_CODEX_BIN="$CODEX_BIN_STUB"
+
 cat > "$TEST_HARNESS/CLAUDE.md" <<'EOF'
 # Fake harness rules
 
@@ -916,6 +924,50 @@ echo "PASS: [features].hooks, goals, and multi_agent enabled in config.toml"
 # don't need them and the user opts deny-by-default globally.
 grep -q '^apps = false' "$config3" || { echo "FAIL: [features].apps = false missing"; exit 1; }
 echo "PASS: [features].apps disabled in config.toml"
+
+python3.13 - "$config3" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    config = tomllib.load(stream)
+
+assert config["features"]["context_management"] == {"experimental_mode": True}
+PY
+echo "PASS: [features.context_management].experimental_mode enabled in config.toml"
+
+cat > "$CODEX_BIN_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "codex-cli 0.152.1"
+EOF
+chmod +x "$CODEX_BIN_STUB"
+"$PREPARE" "$TEST_HARNESS3"
+python3.13 - "$config3" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    config = tomllib.load(stream)
+
+assert "context_management" not in config["features"]
+PY
+
+cat > "$CODEX_BIN_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "codex-cli 0.153.0"
+EOF
+chmod +x "$CODEX_BIN_STUB"
+"$PREPARE" "$TEST_HARNESS3"
+python3.13 - "$config3" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    config = tomllib.load(stream)
+
+assert config["features"]["context_management"] == {"experimental_mode": True}
+PY
+echo "PASS: context management follows the resolved Codex CLI 0.153.0 capability floor"
 
 grep -q '^model_context_window = 1000000$' "$config3" || {
   echo "FAIL: model_context_window missing from regenerated config"; exit 1;

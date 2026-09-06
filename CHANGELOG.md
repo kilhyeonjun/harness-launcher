@@ -6,6 +6,12 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Added
 
+- Generated Codex homes now enable experimental context management when the
+  resolved Codex CLI is 0.153.0 or newer. Eligible ChatGPT sessions can retain
+  long-thread details through notes and searchable history instead of relying
+  only on a repeatedly compressed summary. Older clients omit the nested table
+  because Codex 0.152.1 rejects that shape during bootstrap; API-key and custom
+  provider eligibility remains controlled upstream.
 - Exact MCP profile policies can now emit positive startup/tool timeouts,
   `required`, default tool approval, and per-tool approval in addition to tool
   allow/deny lists. Validation fails closed on invalid types or approval modes,
@@ -20,6 +26,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Changed
 
+- Context management leaves the existing long-context request and auto-compact
+  guard unchanged at `model_context_window = 1000000` and
+  `model_auto_compact_token_limit = 414000`.
 - Generated Codex homes include the native `task-progress` status-line item, so
   `update_plan` progress stays visible without a launcher-owned task store.
 - Generated Codex homes now opt into long context. `config.toml` requests

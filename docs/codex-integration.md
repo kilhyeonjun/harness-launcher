@@ -87,7 +87,19 @@ These profiles are task-oriented operational presets, not OpenAI default-effort 
 
 The main profile does not downgrade reviewers: reviewer subagents route independently to Sol/medium by default and may explicitly escalate effort for unusually risky work.
 
-Context-window and auto-compaction values are not pinned. Codex model metadata controls them.
+Generated homes request `model_context_window = 1000000`; Codex clamps that
+request to the selected model's actual maximum. The launcher pins
+`model_auto_compact_token_limit = 414000`, half of the effective 828400-token
+window currently reported by the GPT-5.6 Luna/Terra/Sol models, to leave
+headroom for the compaction turn and per-turn resend cost.
+
+With Codex CLI 0.153.0 or newer, generated homes also enable
+`features.context_management.experimental_mode`. Eligible ChatGPT Plus, Pro,
+or Pro Lite sessions on the Codex backend use notes and searchable history to
+preserve details within a long-running thread. This is separate from
+cross-session `memories`. The launcher omits the nested setting for older
+clients because Codex 0.152.1 rejects it during bootstrap; API-key sessions,
+custom providers, and temporary structured threads remain excluded upstream.
 
 ## MCP translation
 

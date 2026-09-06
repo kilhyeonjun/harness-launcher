@@ -57,6 +57,28 @@ CODEX_HOME="$FINAL_CODEX_HOME"
 PROJECT_CODEX_DIR="$HARNESS_DIR/.codex"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/harness-common.sh"
+
+codex_context_management_supported() {
+  local codex_bin version major minor patch
+  codex_bin="$(harness_codex_bin_resolve)" || return 1
+  version="$("$codex_bin" --version 2>/dev/null)" || return 1
+  if [[ "$version" =~ ^codex-cli[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    patch="${BASH_REMATCH[3]}"
+  else
+    return 1
+  fi
+  [[ -n "$patch" ]] || return 1
+  (( major > 0 || minor >= 153 ))
+}
+
+HARNESS_CODEX_CONTEXT_MANAGEMENT_SUPPORTED=false
+if codex_context_management_supported; then
+  HARNESS_CODEX_CONTEXT_MANAGEMENT_SUPPORTED=true
+fi
+export HARNESS_CODEX_CONTEXT_MANAGEMENT_SUPPORTED
+
 HARNESS_OBSERVABILITY_ACTIVE=0
 if harness_observability_load "$HARNESS_DIR"; then
   HARNESS_OBSERVABILITY_ACTIVE=1
@@ -845,7 +867,18 @@ apps = false
 goals = true
 hooks = true
 multi_agent = true
+TOML
 
+if [[ "$HARNESS_CODEX_CONTEXT_MANAGEMENT_SUPPORTED" == "true" ]]; then
+  cat >> "$tmp_config" <<TOML
+[features.context_management]
+# Experimental Codex long-session context preservation. Eligible ChatGPT
+# sessions keep notes and searchable history instead of relying on one summary.
+experimental_mode = true
+TOML
+fi
+
+cat >> "$tmp_config" <<TOML
 [marketplaces.openai-bundled]
 source_type = "local"
 source = "$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
