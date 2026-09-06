@@ -38,6 +38,7 @@ write_stub() {
   echo "AUTH_TOKEN:\${ANTHROPIC_AUTH_TOKEN:-}"
   echo "OPUS_MODEL:\${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
   echo "PCT:\${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}"
+  echo "HISTORY_SUMMARY_LEAK:\${HISTORY_SUMMARY_LEAK:-<UNSET>}"
 } >> "\$TEST_STUB_FILE"
 exit 0
 EOF
@@ -65,7 +66,8 @@ run_tui() {
   # HOME is isolated so the real ~/.claude.json cannot bleed user-scope MCP
   # servers into light-surface assertions.
   local input="$1" out_file="$2" stub_file="$3"; shift 3
-  env "$@" \
+  env -u HARNESS_DIR -u HARNESS_RUN_DIR -u HARNESS_PREFIX \
+    -u HARNESS_CODEX_MCP_PROFILE -u HARNESS_MCP_SURFACE_POLICY "$@" \
     TEST_STUB_FILE="$stub_file" \
     PATH="$TEST_BASE_PATH" \
     HOME="$TEST_HOME" \
@@ -75,10 +77,32 @@ run_tui() {
     bash "$LAUNCHER_DIR/bin/launcher.sh" <<< "$input" > "$out_file" 2>&1 || true
 }
 
+run_seeded_tui_status() {
+  # Preserve the seeded history and expose the launcher status.
+  local input="$1" out_file="$2" stub_file="$3"; shift 3
+  set +e
+  env -u HARNESS_DIR -u HARNESS_RUN_DIR -u HARNESS_PREFIX \
+    -u HARNESS_CODEX_MCP_PROFILE -u HARNESS_MCP_SURFACE_POLICY "$@" \
+    TEST_STUB_FILE="$stub_file" \
+    PATH="$TEST_BASE_PATH" \
+    HOME="$TEST_HOME" \
+    HARNESS_CODEX_BIN="${HARNESS_CODEX_BIN_OVERRIDE:-$TEST_TEMP/missing-codex}" \
+    HARNESS_DIR="$TEST_HARNESS" \
+    HARNESS_NAME="test harness" \
+    bash "$LAUNCHER_DIR/bin/launcher.sh" <<< "$input" > "$out_file" 2>&1
+  RUN_TUI_RC=$?
+  set -e
+}
+
 fail() { echo "FAIL: $1"; [ -n "${2:-}" ] && { echo "--- output:"; cat "$2"; }; exit 1; }
 
 reset_plan() { rm -f "$TEST_HARNESS/.harness/launcher-last" "$TEST_HARNESS/.harness/launcher-history"; }
 HISTORY="$TEST_HARNESS/.harness/launcher-history"
+
+assert_no_migration_temps() {
+  local leftovers=("$HISTORY".migrate*)
+  [[ ! -e "${leftovers[0]}" ]] || fail 'history migration must clean every scratch path' "${leftovers[0]}"
+}
 
 write_stub claude
 write_node_stub
@@ -283,7 +307,8 @@ cat > "$TEST_HARNESS/.mcp.json" <<'EOF'
   "normal_http": {"type": "http", "url": "https://x.test/mcp"}
 }}
 EOF
-run_tui $'1\n2\n4\n1\n' "$OUT" "$STUB"
+# An inherited opt-in must not change a harness whose launcher.env does not opt in.
+run_tui $'1\n2\n4\n1\n' "$OUT" "$STUB" HARNESS_MCP_SURFACE_POLICY=single-full
 LIGHT_FILE="$TEST_HARNESS/.harness/claude/mcp-light.json"
 grep -q -- "--strict-mcp-config --mcp-config $LIGHT_FILE" "$STUB" \
   || fail 'light surface should pass --strict-mcp-config + generated file' "$OUT"
@@ -295,6 +320,24 @@ grep -q 'normal_http' "$LIGHT_FILE" || fail 'light surface must keep remote http
 head -1 "$HISTORY" | grep -q 'MCP_SURFACE=light' \
   || fail 'history entry should record MCP_SURFACE=light'
 echo 'PASS: claude light MCP surface filters SSH servers'
+
+# --- 17b. opt-in Claude has one full surface and no retired toggle ------------
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full-compat"' > "$TEST_HARNESS/config/launcher.env"
+OUT="$TEST_TEMP/17b.out"; STUB="$TEST_TEMP/17b.stub"; reset_plan
+rm -f "$TEST_HARNESS/.harness/claude/mcp-light.json"
+# final menu is Start / Permission / Chrome / Back under single-full.
+run_tui $'1\n2\n1\n' "$OUT" "$STUB"
+grep -q 'EXEC:claude --model sonnet --effort high' "$STUB" \
+  || fail 'opt-in Claude should launch the full surface' "$OUT"
+grep -q 'MCP surface:' "$OUT" && fail 'opt-in Claude final menu must not expose a surface row' "$OUT"
+head -1 "$HISTORY" | grep -q 'MCP_SURFACE=full' \
+  || fail 'opt-in Claude history should record canonical full surface' "$HISTORY"
+grep -q 'mcp-light' "$HISTORY" && fail 'opt-in Claude history must drop the legacy suffix' "$HISTORY"
+[[ ! -e "$TEST_HARNESS/.harness/claude/mcp-light.json" ]] \
+  || fail 'opt-in Claude should not generate a light MCP config' "$OUT"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' > "$TEST_HARNESS/config/launcher.env"
+echo 'PASS: opt-in Claude final menu and new history use one full surface'
 
 # --- 18. MCP surface light toggle (kiro) -----------------------------------------
 # kiro-only runtime → session 1 → mode base(2) → final: 1 Start / 2 Trust / 3 MCP / 4 Back
@@ -400,6 +443,161 @@ grep -q 'SUMMARY=cfg7' "$HISTORY" || fail 'entry 7 must survive trimming'
 grep -q 'SUMMARY=cfg8\|SUMMARY=cfg9' "$HISTORY" && fail 'oldest entries must be trimmed away'
 reset_plan
 echo 'PASS: history trimmed to HISTORY_MAX'
+
+# --- 23b. opt-in mixed history migrates canonically and idempotently ----------
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$TEST_HARNESS/config/launcher.env"
+OUT="$TEST_TEMP/23b.out"; STUB="$TEST_TEMP/23b.stub"; reset_plan
+mkdir -p "$TEST_HARNESS/.harness"
+cat > "$HISTORY" <<'EOF'
+TS=100	SUMMARY=Claude old light	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=base	MCP_SURFACE=light
+TS=700	SUMMARY=Codex old garbage	RUNTIME=codex	SESSION=resume	CODEX_PROFILE=rich	CODEX_SURFACE=garbage	CODEX_SAFETY=never
+TS=300	SUMMARY=trim me	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=plan	MCP_SURFACE=full
+TS=900	SUMMARY=Claude canonical duplicate	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=base	MCP_SURFACE=full
+TS=400	SUMMARY=Kiro old garbage	RUNTIME=kiro	SESSION=new	MODE=fast	MCP_SURFACE=garbage	KIRO_TRUST=0
+TS=200	SUMMARY=Codex old default	RUNTIME=codex	SESSION=new	CODEX_PROFILE=base	CODEX_SURFACE=default	CODEX_SAFETY=default
+TS=850	SUMMARY=Claude old garbage	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=fast	PERM=acceptEdits	MCP_SURFACE=garbage	CHROME=1	HAPPY=1
+TS=500	SUMMARY=KIRO_LIGHT_SENTINEL	RUNTIME=kiro	SESSION=resume	MODE=base	MCP_SURFACE=light	KIRO_TRUST=1
+TS=600	SUMMARY=Codex missing surface	RUNTIME=codex	SESSION=fork	CODEX_PROFILE=fast	CODEX_SAFETY=full-auto
+TS=750	SUMMARY=Claude missing surface	RUNTIME=claude	PROVIDER=direct	SESSION=continue	MODE=rich	PERM=bypassPermissions
+TS=800	SUMMARY=Codex newer work duplicate	RUNTIME=codex	SESSION=new	CODEX_PROFILE=base	CODEX_SURFACE=work	CODEX_SAFETY=default
+EOF
+EXPECTED_HISTORY="$TEST_TEMP/23b.expected"
+cat > "$EXPECTED_HISTORY" <<'EOF'
+TS=900	SUMMARY=Claude · direct · new · sonnet · high	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=base	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	KIRO_TRUST=0
+TS=850	SUMMARY=Claude · direct · new · haiku · low · acceptEdits · chrome · happy	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=fast	C_MODEL=	C_EFFORT=	PERM=acceptEdits	MCP_SURFACE=full	CHROME=1	HAPPY=1	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	KIRO_TRUST=0
+TS=800	SUMMARY=Codex · new · base	RUNTIME=codex	PROVIDER=direct	SESSION=new	MODE=	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	KIRO_TRUST=0
+TS=750	SUMMARY=Claude · direct · continue · opus[1m] · xhigh · bypassPermissions	RUNTIME=claude	PROVIDER=direct	SESSION=continue	MODE=rich	C_MODEL=	C_EFFORT=	PERM=bypassPermissions	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	KIRO_TRUST=0
+TS=700	SUMMARY=Codex · resume · rich · never	RUNTIME=codex	PROVIDER=direct	SESSION=resume	MODE=	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=rich	CODEX_SURFACE=full	CODEX_SAFETY=never	KIRO_TRUST=0
+TS=600	SUMMARY=Codex · fork · fast · full-auto	RUNTIME=codex	PROVIDER=direct	SESSION=fork	MODE=	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=fast	CODEX_SURFACE=full	CODEX_SAFETY=full-auto	KIRO_TRUST=0
+TS=500	SUMMARY=KIRO_LIGHT_SENTINEL	RUNTIME=kiro	PROVIDER=direct	SESSION=resume	MODE=base	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=light	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	KIRO_TRUST=1
+TS=400	SUMMARY=Kiro · new · claude-haiku-4.5 · low	RUNTIME=kiro	PROVIDER=direct	SESSION=new	MODE=fast	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	KIRO_TRUST=0
+EOF
+run_seeded_tui_status $'q\n' "$OUT" "$STUB" HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro"
+[[ "$RUN_TUI_RC" -eq 0 ]] || fail "mixed history migration should reach the launchpad (rc=$RUN_TUI_RC)" "$OUT"
+cmp -s "$EXPECTED_HISTORY" "$HISTORY" || {
+  diff -u "$EXPECTED_HISTORY" "$HISTORY"
+  fail 'mixed history did not migrate to the exact canonical rows'
+}
+[[ "$(wc -l < "$HISTORY" | tr -d ' ')" -eq 8 ]] || fail 'migrated history must be capped at 8 rows' "$HISTORY"
+awk -F'\t' '$3 == "RUNTIME=claude" || $3 == "RUNTIME=codex"' "$HISTORY" | \
+  grep -Eq 'mcp-light|work-MCP|old |missing surface|duplicate' && \
+  fail 'Claude/Codex history summaries must be recomputed without legacy suffixes' "$HISTORY"
+grep -Eq 'mcp-light|work-MCP|old light|old garbage|missing surface|duplicate' "$OUT" && \
+  fail 'launchpad labels must use recomputed canonical summaries' "$OUT"
+grep -Fq '↩ KIRO_LIGHT_SENTINEL ·' "$OUT" \
+  || fail 'Kiro light launchpad label must preserve its existing summary' "$OUT"
+FIRST_HISTORY_SHA="$(shasum -a 256 "$HISTORY" | awk '{print $1}')"
+run_seeded_tui_status $'q\n' "$TEST_TEMP/23b-second.out" "$TEST_TEMP/23b-second.stub" \
+  HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro"
+SECOND_HISTORY_SHA="$(shasum -a 256 "$HISTORY" | awk '{print $1}')"
+[[ "$RUN_TUI_RC" -eq 0 && "$FIRST_HISTORY_SHA" = "$SECOND_HISTORY_SHA" ]] \
+  || fail 'second migration must be byte-identical' "$HISTORY"
+assert_no_migration_temps
+echo 'PASS: mixed history canonicalizes, dedupes newest-first, caps at 8, and is idempotent'
+
+# --- 23bb. Codex-gateway migration uses configured suffix without env leaks --
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$TEST_HARNESS/config/launcher.env"
+mkdir -p "$TEST_HARNESS/config/.local" "$TEST_HARNESS/.harness"
+cat > "$TEST_HARNESS/config/.local/codex-gateway.env" <<'EOF'
+CODEX_GATEWAY_URL="https://codex.test"
+export CODEX_GATEWAY_API_KEY="HISTORY_SECRET_DO_NOT_PRINT"
+CODEX_CONTEXT_SUFFIX="[history-2m]"
+export HISTORY_SUMMARY_LEAK="gateway-summary-state"
+[ "${CHOICE_PROVIDER:-}" = "codex" ] && printf 'GATEWAY_ENV_OUTPUT:%s\n' "$CODEX_GATEWAY_API_KEY"
+EOF
+printf 'TS=910\tSUMMARY=stale gateway summary\tRUNTIME=claude\tPROVIDER=codex\tSESSION=new\tMODE=base\tMCP_SURFACE=light\n' > "$HISTORY"
+OUT="$TEST_TEMP/23bb.out"; STUB="$TEST_TEMP/23bb.stub"
+# New Claude → direct provider → new session → base → start. This consumes the
+# migrated launchpad label, then proves migration state did not reach a direct child.
+run_tui $'1\n1\n1\n2\n1\n' "$OUT" "$STUB"
+grep -Fq 'SUMMARY=Claude · codex · new · sonnet[history-2m] · high' "$HISTORY" \
+  || fail 'Codex gateway migration must persist the configured context suffix' "$HISTORY"
+grep -Fq '↩ Claude · codex · new · sonnet[history-2m] · high ·' "$OUT" \
+  || fail 'launchpad must display the persisted suffixed Codex gateway model' "$OUT"
+grep -Fq 'SUMMARY=Claude · direct · new · sonnet · high' "$HISTORY" \
+  || fail 'gateway migration must not change a new direct-provider summary' "$HISTORY"
+grep -Fqx 'HISTORY_SUMMARY_LEAK:<UNSET>' "$STUB" \
+  || fail 'gateway summary loading leaked an unrelated exported variable into direct launch state' "$STUB"
+if grep -Fq 'HISTORY_SECRET_DO_NOT_PRINT' "$OUT" "$HISTORY" "$STUB"; then
+  fail 'gateway summary loading exposed a configured secret' "$OUT"
+fi
+if grep -Fq 'gateway-summary-state' "$OUT" "$HISTORY"; then
+  fail 'gateway summary loading printed unrelated gateway state' "$OUT"
+fi
+assert_no_migration_temps
+rm -rf "$TEST_HARNESS/config/.local"
+echo 'PASS: Codex gateway history uses configured suffix without secret output or state leaks'
+
+# --- 23c. malformed history fails closed before any menu ----------------------
+for malformed_case in bad-ts bad-runtime bad-tsv; do
+  case "$malformed_case" in
+    bad-ts)
+      printf 'TS=nope\tSUMMARY=bad\tRUNTIME=claude\tMODE=base\n' > "$HISTORY"
+      error_fragment='invalid TS' ;;
+    bad-runtime)
+      printf 'TS=1\tSUMMARY=bad\tRUNTIME=unknown\tMODE=base\n' > "$HISTORY"
+      error_fragment='invalid runtime' ;;
+    bad-tsv)
+      printf 'TS=1\tSUMMARY=bad\tRUNTIME=claude\tBROKEN_FIELD\n' > "$HISTORY"
+      error_fragment='malformed TSV field' ;;
+  esac
+  BEFORE_SHA="$(shasum -a 256 "$HISTORY" | awk '{print $1}')"
+  run_seeded_tui_status $'q\n' "$TEST_TEMP/23c-$malformed_case.out" "$TEST_TEMP/23c-$malformed_case.stub"
+  AFTER_SHA="$(shasum -a 256 "$HISTORY" | awk '{print $1}')"
+  [[ "$RUN_TUI_RC" -ne 0 ]] || fail "$malformed_case history must return nonzero" "$TEST_TEMP/23c-$malformed_case.out"
+  [[ "$BEFORE_SHA" = "$AFTER_SHA" ]] || fail "$malformed_case history must preserve original bytes" "$HISTORY"
+  grep -q 'New — Claude Code 구성' "$TEST_TEMP/23c-$malformed_case.out" && \
+    fail "$malformed_case history must fail before the launchpad menu" "$TEST_TEMP/23c-$malformed_case.out"
+  grep -Fq "history migration failed: $error_fragment" "$TEST_TEMP/23c-$malformed_case.out" \
+    || fail "$malformed_case history must report a clear cause" "$TEST_TEMP/23c-$malformed_case.out"
+  assert_no_migration_temps
+done
+echo 'PASS: malformed timestamp, runtime, and TSV fail closed without changing history'
+
+# --- 23d. atomic replace failure preserves history and stops before menu ------
+FAIL_MV_BIN="$TEST_TEMP/fail-mv-bin"
+mkdir -p "$FAIL_MV_BIN"
+cat > "$FAIL_MV_BIN/mv" <<'EOF'
+#!/usr/bin/env bash
+printf 'MV:%s\t%s\n' "$1" "$2" >> "$TEST_MV_LOG"
+exit 73
+EOF
+chmod +x "$FAIL_MV_BIN/mv"
+printf 'TS=1\tSUMMARY=Claude old light\tRUNTIME=claude\tPROVIDER=direct\tSESSION=new\tMODE=base\tMCP_SURFACE=light\n' > "$HISTORY"
+BEFORE_SHA="$(shasum -a 256 "$HISTORY" | awk '{print $1}')"
+MV_LOG="$TEST_TEMP/23d.mv.log"
+TEST_BASE_PATH="$FAIL_MV_BIN:$TEST_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  run_seeded_tui_status $'q\n' "$TEST_TEMP/23d.out" "$TEST_TEMP/23d.stub" TEST_MV_LOG="$MV_LOG"
+AFTER_SHA="$(shasum -a 256 "$HISTORY" | awk '{print $1}')"
+[[ "$RUN_TUI_RC" -ne 0 ]] || fail 'atomic history replace failure must return nonzero' "$TEST_TEMP/23d.out"
+[[ "$BEFORE_SHA" = "$AFTER_SHA" ]] || fail 'atomic history replace failure must preserve original bytes' "$HISTORY"
+[[ -s "$MV_LOG" ]] || fail 'migration must attempt an atomic mv' "$TEST_TEMP/23d.out"
+MV_SOURCE="$(sed -n 's/^MV:\([^[:space:]]*\).*/\1/p' "$MV_LOG")"
+MV_TARGET="$(sed -n 's/^MV:[^[:space:]]*[[:space:]]*//p' "$MV_LOG")"
+[[ "$(dirname "$MV_SOURCE")" = "$(dirname "$MV_TARGET")" ]] \
+  || fail 'atomic history temp must be created in the history directory' "$MV_LOG"
+[[ ! -e "$MV_SOURCE" ]] || fail 'failed migration must remove only its temp file' "$MV_LOG"
+grep -Fq 'history migration failed: atomic replace failed' "$TEST_TEMP/23d.out" \
+  || fail 'atomic replace failure must report a clear cause' "$TEST_TEMP/23d.out"
+assert_no_migration_temps
+grep -q 'New — Claude Code 구성' "$TEST_TEMP/23d.out" && \
+  fail 'atomic replace failure must stop before the launchpad menu' "$TEST_TEMP/23d.out"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' > "$TEST_HARNESS/config/launcher.env"
+reset_plan
+echo 'PASS: atomic replace failure preserves original history and removes same-directory temp'
+
+# --- 23e. invalid configured policy is rejected by the common helper ----------
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="invalid-policy"' > "$TEST_HARNESS/config/launcher.env"
+run_seeded_tui_status $'q\n' "$TEST_TEMP/23e.out" "$TEST_TEMP/23e.stub" HARNESS_MCP_SURFACE_POLICY=single-full
+[[ "$RUN_TUI_RC" -eq 2 ]] || fail "invalid configured policy must exit 2 (got $RUN_TUI_RC)" "$TEST_TEMP/23e.out"
+grep -q "invalid HARNESS_MCP_SURFACE_POLICY 'invalid-policy'" "$TEST_TEMP/23e.out" \
+  || fail 'invalid configured policy should report the common-helper error' "$TEST_TEMP/23e.out"
+grep -q 'New — Claude Code 구성' "$TEST_TEMP/23e.out" && fail 'invalid policy must fail before menu' "$TEST_TEMP/23e.out"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' > "$TEST_HARNESS/config/launcher.env"
+echo 'PASS: launcher clears ambient policy and validates configured policy'
 
 # --- 24. legacy plan is deleted, not merged, when history already exists ---------
 OUT="$TEST_TEMP/24.out"; STUB="$TEST_TEMP/24.stub"; reset_plan

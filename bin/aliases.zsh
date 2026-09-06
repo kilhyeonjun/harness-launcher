@@ -129,6 +129,10 @@ codex() {
   local codex_bin harness_dir broker_started=false
   local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE HARNESS_OTLP_HTTP_ENDPOINT
   local OTEL_RESOURCE_ATTRIBUTES obs_rc
+  local inherited_codex_mcp_profile="${HARNESS_CODEX_MCP_PROFILE-}"
+  local inherited_codex_mcp_profile_type="${(t)HARNESS_CODEX_MCP_PROFILE}"
+  local HARNESS_CODEX_MCP_PROFILE="$inherited_codex_mcp_profile"
+  [[ "$inherited_codex_mcp_profile_type" == *-export* ]] && export HARNESS_CODEX_MCP_PROFILE
   codex_bin="$(_harness_launcher_codex_bin)" || {
     echo "❌ codex not found in PATH" >&2
     return 1
@@ -136,9 +140,10 @@ codex() {
 
   if [[ "${HARNESS_LAUNCHER_DISABLE_CODEX_WRAPPER:-}" != "1" ]]; then
     if harness_dir="$(_harness_launcher_codex_harness_for_args "$@")"; then
-      local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+      local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
       unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
       source "$harness_dir/config/launcher.env"
+      mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
       export HARNESS_PREFIX
       # Per-harness GitHub identity: fail-open, never overrides with an empty token.
       local GH_TOKEN HARNESS_GH_USER
@@ -150,6 +155,7 @@ codex() {
         obs_rc=$?
         [[ "$obs_rc" -eq 1 ]] || return "$obs_rc"
       fi
+      harness_mcp_surface_policy_is_single_full "$mcp_surface_policy" && unset HARNESS_CODEX_MCP_PROFILE
       _harness_launcher_export_codex_runtime_env "$harness_dir" || return $?
       harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
       broker_started=true
@@ -172,8 +178,9 @@ harness_register() {
   local env_file="$dir/config/launcher.env"
   [[ ! -f "$env_file" ]] && { echo "harness_register: missing $env_file" >&2; return 1; }
 
-  local HARNESS_NAME HARNESS_PREFIX
+  local HARNESS_NAME HARNESS_PREFIX HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   source "$env_file"
+  mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
   [[ -z "$HARNESS_PREFIX" ]] && { echo "harness_register: HARNESS_PREFIX required in $env_file" >&2; return 1; }
   [[ "$HARNESS_PREFIX" =~ '^[A-Za-z_][A-Za-z0-9_-]*$' ]] || {
     echo "harness_register: invalid HARNESS_PREFIX in $env_file: $HARNESS_PREFIX" >&2
@@ -212,9 +219,10 @@ harness_register() {
 #   Shared implementation for every registered profile function.
 _harness_launcher_run() {
   local HARNESS_DIR="$1"; shift
-  local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+  local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
   source "$HARNESS_DIR/config/launcher.env"
+  mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
 
   local HARNESS_RUN_DIR=""
   case "${1:-}" in
@@ -245,7 +253,7 @@ _harness_launcher_run() {
       skip_tui=true; shift ;;
     codex)
       shift
-      _harness_launcher_run_codex_cli "$HARNESS_DIR" "$@"
+      _harness_launcher_run_codex_cli "$HARNESS_DIR" "$mcp_surface_policy" "$@"
       return $?
       ;;
     codex-smoke)
@@ -304,7 +312,23 @@ _harness_launcher_run() {
           esac
         fi
         skip_tui=true; shift ;;
-      light)    mcp_surface="light"; skip_tui=true; shift ;;
+      light)
+        if [[ "$provider_name" == kiro ]]; then
+          mcp_surface="light"
+        else
+          case "$mcp_surface_policy" in
+            legacy) mcp_surface="light" ;;
+            single-full-compat)
+              echo "⚠️  light MCP surface is deprecated for this project; using full" >&2
+              mcp_surface="full"
+              ;;
+            single-full)
+              echo "harness-launcher: light MCP surface is retired for this project" >&2
+              return 2
+              ;;
+          esac
+        fi
+        skip_tui=true; shift ;;
       continue) session_flag="--continue"; skip_tui=true; shift ;;
       resume)   session_flag="--resume"; skip_tui=true; shift ;;
       bypass)       claude_args+=(--permission-mode bypassPermissions); skip_tui=true; shift ;;
@@ -409,7 +433,7 @@ _harness_launcher_run() {
   fi
 }
 
-# _harness_launcher_run_codex_cli <harness-dir> [args...]
+# _harness_launcher_run_codex_cli <harness-dir> <resolved-policy> [args...]
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
 #   Modes:    fast | base | plan | rich  → -p <profile>
 #   Surface:  work → work MCP surface (combinable with any profile)
@@ -417,7 +441,7 @@ _harness_launcher_run() {
 #   Sessions: resume → `codex resume`,  continue → `codex resume --last`,
 #             fork   → `codex fork`
 _harness_launcher_run_codex_cli() {
-  local HARNESS_DIR="$1"; shift
+  local HARNESS_DIR="$1" mcp_surface_policy="$2"; shift 2
   local run_dir="${HARNESS_RUN_DIR:-$HARNESS_DIR}"
   export HARNESS_PREFIX
   local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE HARNESS_OTLP_HTTP_ENDPOINT
@@ -452,7 +476,17 @@ _harness_launcher_run_codex_cli() {
         if $freeform; then
           codex_args+=("$1"); shift
         else
-          mcp_profile="work"; shift
+          case "$mcp_surface_policy" in
+            legacy) mcp_profile="work" ;;
+            single-full-compat)
+              echo "⚠️  work MCP surface is deprecated for this project; using full" >&2
+              ;;
+            single-full)
+              echo "harness-launcher: work MCP surface is retired for this project" >&2
+              return 2
+              ;;
+          esac
+          shift
         fi
         ;;
       resume)              subcmd="resume"; shift ;;
@@ -495,6 +529,7 @@ _harness_launcher_run_codex_cli() {
     }
   fi
 
+  harness_mcp_surface_policy_is_single_full "$mcp_surface_policy" && unset HARNESS_CODEX_MCP_PROFILE
   if [[ -n "$mcp_profile" ]]; then
     local HARNESS_CODEX_MCP_PROFILE="$mcp_profile"
     export HARNESS_CODEX_MCP_PROFILE
@@ -590,7 +625,13 @@ _harness_launcher_run_kiro_cli() {
 _harness_launcher_complete() {
   local dir="$1"
   local -a shortcuts
-  local m desc
+  local m desc codex_surface_desc="" kiro_surface_desc=""
+  local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+  local HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
+  if [[ -f "$dir/config/launcher.env" ]]; then
+    source "$dir/config/launcher.env"
+  fi
+  mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
   # Mode descriptions come from the shared table so completion text cannot
   # drift from the launched model/effort. Resolution runs in subshells so the
   # HARNESS_MODE_* globals never touch the interactive shell.
@@ -600,9 +641,14 @@ _harness_launcher_complete() {
     shortcuts+=("$m:$desc")
   done
   desc="$( harness_mode_resolve ultracode direct; printf '%s · %s' "$HARNESS_MODE_MODEL" "$HARNESS_MODE_EFFORT" )"
+  if ! harness_mcp_surface_policy_is_single_full "$mcp_surface_policy"; then
+    shortcuts+=('light:Light MCP surface — SSH-backed servers excluded (claude/kiro-cli)')
+    codex_surface_desc=' · work surface'
+  else
+    kiro_surface_desc=' (optional light surface)'
+  fi
   shortcuts+=(
     "ultracode:$desc now · /effort→ultracode for workflows (direct only)"
-    'light:Light MCP surface — SSH-backed servers excluded (claude/kiro-cli)'
     'continue:Continue last session'
     'resume:Resume from list'
     'bypass:Skip all permission prompts'
@@ -610,9 +656,9 @@ _harness_launcher_complete() {
     'dontAsk:Auto-approve most actions'
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
-    'codex:Codex CLI native (fast/base/sol/plan/rich · work surface · fork · full-auto/never/bypass)'
+    "codex:Codex CLI native (fast/base/sol/plan/rich${codex_surface_desc} · fork · full-auto/never/bypass)"
     'codex-smoke:Send one bounded metadata-only Codex verification event'
-    'kiro-cli:Kiro CLI native'
+    "kiro-cli:Kiro CLI native${kiro_surface_desc}"
     'happy:Use Happy mobile wrapper for Codex CLI'
   )
   # Gateway env files are sourced in subshells so API keys never leak into

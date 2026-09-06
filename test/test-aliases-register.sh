@@ -78,6 +78,66 @@ grep -Fq 'invalid HARNESS_PREFIX' "$TMP/invalid.err" || {
 
 echo "PASS: harness_register rejects unsafe function prefixes"
 
+# Project launcher.env is the sole opt-in authority: empty/compat/strict are
+# accepted, an ambient policy cannot opt a project in, and invalid project
+# policy fails before function/completion registration.
+for policy_case in empty single-full-compat single-full; do
+  policy_dir="$TMP/policy-$policy_case"
+  mkdir -p "$policy_dir/config"
+  if [[ "$policy_case" == "empty" ]]; then
+    printf '%s\n' 'HARNESS_NAME="Policy harness"' 'HARNESS_PREFIX="policyempty"' > "$policy_dir/config/launcher.env"
+  else
+    printf '%s\n' 'HARNESS_NAME="Policy harness"' "HARNESS_PREFIX=\"policy${policy_case//-/_}\"" "HARNESS_MCP_SURFACE_POLICY=\"$policy_case\"" > "$policy_dir/config/launcher.env"
+  fi
+  HARNESS_MCP_SURFACE_POLICY=single-full harness_register "$policy_dir" || {
+    echo "FAIL: harness_register rejected supported policy '$policy_case'" >&2
+    exit 1
+  }
+done
+echo "PASS: harness_register accepts empty/compat/strict project policies"
+
+INVALID_POLICY_DIR="$TMP/invalid-policy"
+mkdir -p "$INVALID_POLICY_DIR/config"
+printf '%s\n' 'HARNESS_NAME="Invalid policy"' 'HARNESS_PREFIX="invalidpolicy"' \
+  'HARNESS_MCP_SURFACE_POLICY="unsupported"' > "$INVALID_POLICY_DIR/config/launcher.env"
+if harness_register "$INVALID_POLICY_DIR" >"$TMP/invalid-policy.out" 2>"$TMP/invalid-policy.err"; then
+  echo "FAIL: harness_register accepted an invalid MCP surface policy" >&2
+  exit 1
+fi
+grep -Fq 'HARNESS_MCP_SURFACE_POLICY' "$TMP/invalid-policy.err" && \
+  grep -Fq 'empty, single-full-compat, single-full' "$TMP/invalid-policy.err" || {
+  echo "FAIL: invalid policy error did not name the variable and supported values" >&2
+  cat "$TMP/invalid-policy.err"
+  exit 1
+}
+(( ! $+functions[invalidpolicy] )) || {
+  echo "FAIL: invalid policy registered a launcher function" >&2
+  exit 1
+}
+echo "PASS: harness_register rejects unknown project MCP surface policies"
+
+# Completion behavior catches mutations that expose retired Claude/Codex
+# selectors for opt-in projects or hide Kiro's still-supported optional light.
+completion_capture="$TMP/completion-capture.txt"
+_describe() { print -r -- "${(@P)2}" > "$completion_capture"; }
+_harness_launcher_complete "$TMP/fake-harness"
+grep -Fq 'light:Light MCP surface' "$completion_capture" && \
+  grep -Fq 'work surface' "$completion_capture" || {
+  echo "FAIL: legacy completion lost Claude light or Codex work" >&2; exit 1
+}
+COMPLETION_OPTIN_DIR="$TMP/completion-optin"
+mkdir -p "$COMPLETION_OPTIN_DIR/config"
+printf '%s\n' 'HARNESS_NAME="Completion opt-in"' 'HARNESS_PREFIX="completionoptin"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$COMPLETION_OPTIN_DIR/config/launcher.env"
+_harness_launcher_complete "$COMPLETION_OPTIN_DIR"
+if grep -Fq 'light:Light MCP surface' "$completion_capture" || grep -Fq 'work surface' "$completion_capture"; then
+  echo "FAIL: opt-in completion exposes retired Claude/Codex selectors" >&2; exit 1
+fi
+grep -Fq 'kiro-cli:Kiro CLI native (optional light surface)' "$completion_capture" || {
+  echo "FAIL: opt-in completion lost Kiro optional light discoverability" >&2; exit 1
+}
+echo "PASS: completion scopes Claude/Codex retirement while retaining Kiro light"
+
 NO_EXEC="$TMP/no-exec"
 mkdir -p "$NO_EXEC"
 cp "$LAUNCHER_DIR/bin/aliases.zsh" "$NO_EXEC/aliases.zsh"

@@ -85,6 +85,22 @@ HARNESS_CODEX_SKILL_PROFILE=design wh codex rich
 
 An unknown profile, a missing profile-only skill, a missing non-product MCP definition, or a profile that omits `required_in_all_profiles` fails before Codex starts. Every MCP definition is rendered with an explicit `enabled = true` or `false`; profile policies may additionally set tool filters, positive startup/tool timeouts, `required`, default tool approval, and per-tool approval. `computer-use` is the currently recognized product-managed MCP name. When enabled, its bundled plugin skill is reconciled into `skill-catalog.json` after plugin materialization so work-profile prompt audits remain exact.
 
+### Launcher compatibility policy
+
+The manifest remains a generic multi-profile resolver. A project may instead
+opt into a launcher-level single-full transition by setting
+`HARNESS_MCP_SURFACE_POLICY` in its own `config/launcher.env`; no inherited
+environment value can enable it. Empty or omitted preserves the legacy
+multi-profile launch behavior.
+
+With `single-full-compat`, a direct Codex `work` selector is accepted with a
+warning and resolves to the full user-facing surface. With `single-full`, the
+same retired selector is rejected. In both opt-in modes, the launcher clears
+`HARNESS_CODEX_MCP_PROFILE`, so `mcp.default_profile` selects the manifest MCP
+set. This unifies the surface choice users see for Codex and Claude, without
+merging their definition-source systems. Kiro remains outside this retirement:
+its native `light` and full selections are still available.
+
 Selected global definitions use the same duplicate detection as project, local, and product-managed sources; any repeated server name fails rather than being overridden. Their supported static fields are intentionally narrow: `env` and `http_headers` are rejected. Use `env_vars`, `env_http_headers`, or `bearer_token_env_var` for runtime credentials.
 
 ## Generated state and warm launches

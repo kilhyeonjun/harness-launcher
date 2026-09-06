@@ -107,16 +107,18 @@ run_tui() {
   local path_value="$TEST_BIN:/usr/bin:/bin"
   [[ -n "$extra_path" ]] && path_value="$extra_path:$path_value"
   [[ -n "${TUI_EXTRA_PATH:-}" ]] && path_value="$TUI_EXTRA_PATH:$path_value"
-  TEST_STUB_FILE="$stub_file" \
-  PATH="$path_value" \
-  HARNESS_CODEX_BIN="$TEST_BIN/codex" \
-  HARNESS_DIR="$TEST_HARNESS" \
-  HARNESS_NAME="test harness" \
-  HARNESS_PREFIX="test" \
-  HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="${TUI_CALLER_GLOBAL_MCP_ALLOWLIST:-}" \
-  HARNESS_PYTHON_BIN="${TUI_HARNESS_PYTHON_BIN:-}" \
-  HARNESS_RUN_DIR="${HARNESS_RUN_DIR_OVERRIDE:-}" \
-  bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
+  env -u HARNESS_DIR -u HARNESS_RUN_DIR -u HARNESS_PREFIX \
+    -u HARNESS_CODEX_MCP_PROFILE -u HARNESS_MCP_SURFACE_POLICY \
+    TEST_STUB_FILE="$stub_file" \
+    PATH="$path_value" \
+    HARNESS_CODEX_BIN="$TEST_BIN/codex" \
+    HARNESS_DIR="$TEST_HARNESS" \
+    HARNESS_NAME="test harness" \
+    HARNESS_PREFIX="test" \
+    HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="${TUI_CALLER_GLOBAL_MCP_ALLOWLIST:-}" \
+    HARNESS_PYTHON_BIN="${TUI_HARNESS_PYTHON_BIN:-}" \
+    HARNESS_RUN_DIR="${HARNESS_RUN_DIR_OVERRIDE:-}" \
+    bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
 }
 
 # Case 1: runtime=Codex, session=New, mode=Base, safety=Default
@@ -421,5 +423,49 @@ grep -qE "^ARGS:.*-p base" "$STUB7" || {
 }
 rm -f "$TEST_HARNESS/.harness/launcher-history"
 echo "PASS: case7 — 0.12-era CODEX_SURFACE=work history row replays correctly"
+
+# Case 8: opt-in Codex has one full surface. The retired toggle must be absent,
+# prepare/exec must not receive a profile, and new history must be canonical.
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$TEST_HARNESS/config/launcher.env"
+STUB8="$TEST_TEMP/out8-codex-single-full.txt"
+: > "$STUB8"
+run_tui $'2\n1\n2\n1\n1\n' "$STUB8"
+grep -q '^EXEC:codex' "$STUB8" || {
+  echo "FAIL: case8 — expected opt-in Codex exec"; cat "$STUB8"; cat "$STUB8.tui.log"; exit 1;
+}
+grep -q '^PREPARE_MCP_PROFILE:<UNSET>$' "$STUB8" || {
+  echo "FAIL: case8 — opt-in Codex preparation must use the full surface"; cat "$STUB8"; exit 1;
+}
+grep -q '^MCP_PROFILE:<UNSET>$' "$STUB8" || {
+  echo "FAIL: case8 — opt-in Codex execution must use the full surface"; cat "$STUB8"; exit 1;
+}
+grep -q 'MCP surface:' "$STUB8.tui.log" && {
+  echo "FAIL: case8 — opt-in Codex final menu must not expose a surface row"; cat "$STUB8.tui.log"; exit 1;
+}
+head -1 "$TEST_HARNESS/.harness/launcher-history" | grep -q 'CODEX_SURFACE=full' || {
+  echo "FAIL: case8 — opt-in Codex history must record CODEX_SURFACE=full";
+  cat "$TEST_HARNESS/.harness/launcher-history"; exit 1;
+}
+grep -q 'work-MCP' "$TEST_HARNESS/.harness/launcher-history" && {
+  echo "FAIL: case8 — opt-in Codex history must drop the legacy suffix";
+  cat "$TEST_HARNESS/.harness/launcher-history"; exit 1;
+}
+echo "PASS: case8 — opt-in Codex final menu and new history use one full surface"
+
+# Case 8b: full is the opt-in Happy-compatible default. With the retired
+# surface row gone, the final menu is Start / Happy / Back.
+STUB8B="$TEST_TEMP/out8b-codex-single-full-happy.txt"
+: > "$STUB8B"
+run_tui $'2\n1\n2\n1\n2\n1\n' "$STUB8B" "$HAPPY_BIN"
+grep -q '^EXEC:happy$' "$STUB8B" || {
+  echo "FAIL: case8b — opt-in full surface must remain Happy-compatible";
+  cat "$STUB8B"; cat "$STUB8B.tui.log"; exit 1;
+}
+head -1 "$TEST_HARNESS/.harness/launcher-history" | grep -q 'CODEX_SURFACE=full' || {
+  echo "FAIL: case8b — opt-in Happy history must remain canonical full";
+  cat "$TEST_HARNESS/.harness/launcher-history"; exit 1;
+}
+echo "PASS: case8b — opt-in Codex Happy accepts the canonical full surface"
 
 echo "✓ All codex TUI tests passed"
