@@ -4,6 +4,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.22.3] — 2026-09-06
+
 ### Added
 
 - Project-owned MCP surface policy values: empty preserves legacy selectors,
@@ -433,7 +435,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.22.3...HEAD
+[0.22.3]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.22.2...v0.22.3
 [0.16.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.0...v0.15.1
