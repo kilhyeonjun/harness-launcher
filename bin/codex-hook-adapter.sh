@@ -22,7 +22,7 @@ if [[ -z "$SCRIPT" || ! -f "$SCRIPT" ]]; then
   exit 0
 fi
 
-OUTPUT="$(printf '%s' "$PAYLOAD" | bash "$SCRIPT" 2>/dev/null || true)"
+OUTPUT="$(printf '%s' "$PAYLOAD" | HARNESS_HOOK_RUNTIME=codex bash "$SCRIPT" 2>/dev/null || true)"
 
 # Whitespace-only output is treated as empty.
 if [[ -z "${OUTPUT//[[:space:]]/}" ]]; then

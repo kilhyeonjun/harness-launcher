@@ -100,6 +100,14 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# Runtime identity comes from this Codex adapter, not an inherited caller value.
+script="$TMPDIR/runtime.sh"
+cat > "$script" <<'EOF'
+printf '{"additionalContext":"%s"}\n' "${HARNESS_HOOK_RUNTIME:-missing}"
+EOF
+out="$(printf '{}' | HARNESS_HOOK_RUNTIME=claude "$ADAPTER" SessionStart "$script" | jq -r '.hookSpecificOutput.additionalContext')"
+assert_eq "adapter binds Codex runtime for wrapped hook" "$out" 'codex'
+
 echo "---"
 echo "passed: $PASS, failed: $FAIL"
 [[ $FAIL -eq 0 ]] || exit 1

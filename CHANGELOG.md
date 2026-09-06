@@ -2,6 +2,18 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.25.0 — 2026-09-06
+
+### Added
+
+- Generated profile inspection separates managed settings, project trust, and
+  model-picker UI metadata while retaining full output drift detection.
+
+### Fixed
+
+- Codex hook adaptation supplies explicit runtime identity to canonical hooks
+  instead of relying only on the inherited Codex home.
+
 ## 0.24.0 — 2026-09-06
 
 ### Added
@@ -15,11 +27,6 @@ Notable changes are recorded here. This project follows semantic versioning for 
   so hook command hashes remain stable when callers use either path.
 
 ## [Unreleased]
-
-### Added
-
-- Generated profile inspection separates managed settings, project trust, and
-  model-picker UI metadata while retaining full output drift detection.
 
 ## [0.23.0] — 2026-09-06
 
