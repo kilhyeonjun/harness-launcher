@@ -546,6 +546,12 @@ class PrepareIntegrationTests(unittest.TestCase):
         self.repo.mkdir()
         self.counter = self.tmp / "compiler-calls"
         self.no_marketplace = self.tmp / "no-marketplace"
+        self.codex_bin = self.tmp / "codex"
+        self.codex_bin.write_text(
+            '#!/usr/bin/env bash\necho "codex-cli 0.153.2"\n',
+            encoding="utf-8",
+        )
+        self.codex_bin.chmod(0o755)
 
         computer_plugin = self.no_marketplace / "plugins" / "computer-use"
         (computer_plugin / ".codex-plugin").mkdir(parents=True)
@@ -660,6 +666,7 @@ out.mkdir(parents=True, exist_ok=True)
         env.update(
             {
                 "HOME": str(self.home),
+                "HARNESS_CODEX_BIN": str(self.codex_bin),
                 "HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE": str(self.no_marketplace),
                 "HARNESS_TEST_COMPILER_COUNTER": str(self.counter),
             }
@@ -1975,6 +1982,7 @@ out.mkdir(parents=True, exist_ok=True)
         config = config.replace('model = "gpt-5.6-terra"', 'model = "rogue-model"', 1)
         config = config.replace("apps = false", "apps = true", 1)
         config = config.replace("hooks = true", "hooks = false", 1)
+        config = config.replace("experimental_mode = true", "experimental_mode = false", 1)
         config = config.replace(
             'model_reasoning_effort = "medium"',
             'model_reasoning_effort = "medium"\n'
@@ -2013,8 +2021,58 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertEqual(repaired["mcp_servers"]["context7"]["command"], "context7")
         self.assertEqual(
             repaired["features"],
-            {"apps": False, "goals": True, "hooks": True, "multi_agent": True},
+            {
+                "apps": False,
+                "goals": True,
+                "hooks": True,
+                "multi_agent": True,
+                "context_management": {"experimental_mode": True},
+            },
         )
+
+        self.prepare()
+        self.assertEqual(
+            self.compiler_calls(),
+            2,
+            "repaired context-management config forced perpetual cold rebuilds",
+        )
+
+    def test_context_management_capability_change_rebuilds_once_then_stays_warm(self):
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            supported = tomllib.load(stream)
+        self.assertEqual(
+            supported["features"]["context_management"],
+            {"experimental_mode": True},
+        )
+
+        self.codex_bin.write_text(
+            '#!/usr/bin/env bash\necho "codex-cli 0.152.1"\n',
+            encoding="utf-8",
+        )
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2)
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            unsupported = tomllib.load(stream)
+        self.assertNotIn("context_management", unsupported["features"])
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2)
+
+        self.codex_bin.write_text(
+            '#!/usr/bin/env bash\necho "codex-cli 0.153.0"\n',
+            encoding="utf-8",
+        )
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3)
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            restored = tomllib.load(stream)
+        self.assertEqual(
+            restored["features"]["context_management"],
+            {"experimental_mode": True},
+        )
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3)
 
     def test_warm_path_rebuilds_missing_explicit_policy(self):
         self.prepare()

@@ -151,12 +151,15 @@ def config_matches(codex_home, catalog, expected_profile):
             },
         }:
             return False
-    if config.get("features") != {
+    expected_features = {
         "apps": False,
         "goals": True,
         "hooks": True,
         "multi_agent": True,
-    }:
+    }
+    if os.environ.get("HARNESS_CODEX_CONTEXT_MANAGEMENT_SUPPORTED") == "true":
+        expected_features["context_management"] = {"experimental_mode": True}
+    if config.get("features") != expected_features:
         return False
     marketplaces = config.get("marketplaces") or {}
     if not isinstance(marketplaces, dict):

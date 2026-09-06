@@ -4,6 +4,23 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.22.4] — 2026-09-06
+
+### Added
+
+- Generated Codex homes now enable experimental context management when the
+  resolved Codex CLI is 0.153.0 or newer. Eligible ChatGPT sessions can retain
+  long-thread details through notes and searchable history instead of relying
+  only on a repeatedly compressed summary. Older clients omit the nested table
+  because Codex 0.152.1 rejects that shape during bootstrap; API-key and custom
+  provider eligibility remains controlled upstream.
+
+### Changed
+
+- Context management leaves the existing long-context request and auto-compact
+  guard unchanged at `model_context_window = 1000000` and
+  `model_auto_compact_token_limit = 414000`.
+
 ## [0.22.3] — 2026-09-06
 
 ### Added
