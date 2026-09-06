@@ -1819,6 +1819,33 @@ def surface_output_signatures(codex_home: Path) -> dict[str, str]:
     return dict(sorted(signatures.items()))
 
 
+def inspection_config_signatures(codex_home: Path) -> dict[str, str]:
+    """Separate diagnostic settings, trust and known UI state; never weaken repair hashes."""
+    projections: dict[str, dict] = {"managed": {}, "trust": {}, "metadata": {}}
+    names = ["config.toml", *(name for name in SURFACE_FIXED_OUTPUTS if name.endswith(".config.toml"))]
+    for name in names:
+        # Inspection never serializes these values to stdout or reads credentials.
+        value = parse_toml_file(codex_home / name, "inspection config")
+        value = dict(value)
+        projections["trust"][name] = value.pop("projects", {})
+        tui = value.get("tui")
+        if isinstance(tui, dict):
+            tui = dict(tui)
+            projections["metadata"][name] = tui.pop("model_availability_nux", {})
+            if tui:
+                value["tui"] = tui
+            else:
+                value.pop("tui")
+        else:
+            projections["metadata"][name] = {}
+        projections["managed"][name] = value
+    return {
+        key: hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                       separators=(",", ":")).encode()).hexdigest()
+        for key, value in projections.items()
+    }
+
+
 def write_stamp(args: argparse.Namespace) -> None:
     payload = load_inline_json(args.fingerprint_json, "fingerprint")
     if set(payload) != {
@@ -1833,6 +1860,7 @@ def write_stamp(args: argparse.Namespace) -> None:
     codex_home = Path(args.codex_home)
     payload["config_projection_sha256"] = managed_config_projection_sha256(codex_home)
     payload["output_signatures"] = surface_output_signatures(codex_home)
+    payload["inspection_config_signatures"] = inspection_config_signatures(codex_home)
     payload["completed_unix"] = int(time.time())
     atomic_write(Path(args.stamp), json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
@@ -1944,7 +1972,10 @@ def inspect_surface(args: argparse.Namespace) -> None:
             value = value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", value) else None
         fields[key] = {"value": value, "source": source if value is not None else None}
 
-    preparation = {"output_consistency": "unknown", "source_inputs_checked": False}
+    preparation = {"output_consistency": "unknown", "source_inputs_checked": False,
+                   "managed_settings_consistency": "unknown",
+                   "trust_settings_consistency": "unknown",
+                   "runtime_metadata_changed": None}
     try:
         stamp = json.loads((home / ".surface-success.json").read_text(encoding="utf-8"))
         if isinstance(stamp, dict) and isinstance(stamp.get("output_signatures"), dict) and isinstance(stamp.get("config_projection_sha256"), str):
@@ -1954,6 +1985,22 @@ def inspect_surface(args: argparse.Namespace) -> None:
             except (OSError, ValueError, SurfaceError):
                 consistent = False
             preparation["output_consistency"] = "matching" if consistent else "changed"
+            old_projection = stamp.get("inspection_config_signatures")
+            if (isinstance(old_projection, dict)
+                    and set(old_projection) == {"managed", "trust", "metadata"}
+                    and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                            for value in old_projection.values())):
+                try:
+                    current_projection = inspection_config_signatures(home)
+                except (OSError, ValueError, TypeError, SurfaceError):
+                    # Unreadable diagnostics must not report unchanged settings.
+                    preparation["managed_settings_consistency"] = "changed"
+                else:
+                    for source, field in (("managed", "managed_settings_consistency"),
+                                          ("trust", "trust_settings_consistency")):
+                        preparation[field] = ("matching" if old_projection[source] == current_projection[source]
+                                              else "changed")
+                    preparation["runtime_metadata_changed"] = old_projection["metadata"] != current_projection["metadata"]
     except (OSError, ValueError, SurfaceError):
         pass
     counts = None

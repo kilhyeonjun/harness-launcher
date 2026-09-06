@@ -342,6 +342,17 @@ stamp. It does not validate current source inputs, CLI/environment overrides,
 account availability, or the model loaded in a running session. Unknown values
 remain unknown; configured context is not a verified native model limit.
 
+New preparation stamps also separate TOML diagnostics:
+
+- `managed_settings_consistency` covers model, effort, policy, and other settings.
+- `trust_settings_consistency` tracks project trust separately; a change is never
+  treated as harmless UI state or automatically approved.
+- `runtime_metadata_changed` tracks only `tui.model_availability_nux`. Unknown
+  settings remain part of the managed comparison.
+
+These fields do not replace full output hashes or alter warm-cache repair. A
+legacy stamp reports unknown diagnostics until normal preparation writes them.
+
 Homebrew preparation through its compatibility `share` link uses the equivalent
 `opt` package path when both resolve to the same directory. This keeps generated
 hook command spelling stable. It does not approve hooks or redirect a source
