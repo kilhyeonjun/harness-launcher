@@ -10,7 +10,9 @@ import tempfile
 import threading
 import time
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from socketserver import TCPServer
+# These loopback fixtures need HTTP handling, not HTTPServer reverse DNS lookup.
 
 path = pathlib.Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location("kiro_observer", path)
@@ -82,15 +84,15 @@ class RedirectHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         redirect_hits.append(self.path)
         self.send_response(302)
-        self.send_header("Location", f"http://127.0.0.1:{trap.server_port}/stolen")
+        self.send_header("Location", f"http://127.0.0.1:{trap.server_address[1]}/stolen")
         self.end_headers()
     def log_message(self, *_args): pass
 
-trap = HTTPServer(("127.0.0.1", 0), TrapHandler)
-redirect = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+trap = TCPServer(("127.0.0.1", 0), TrapHandler)
+redirect = TCPServer(("127.0.0.1", 0), RedirectHandler)
 for server in (trap, redirect):
     threading.Thread(target=server.serve_forever, daemon=True).start()
-module.OTLP_PORT = redirect.server_port
+module.OTLP_PORT = redirect.server_address[1]
 assert module._post_json(module._payload("kiro.session.start", "alpha")) is False
 for server in (redirect, trap): server.shutdown(); server.server_close()
 assert redirect_hits == ["/v1/logs"]

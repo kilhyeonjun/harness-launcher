@@ -4,6 +4,20 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-09-06
+
+### Added
+
+- Explicit native Codex `astra` profile selects GPT-6 Astra with medium reasoning
+  from shell shortcuts and the launcher menu. Existing profiles and defaults
+  retain their models. Generated profiles participate in warm-cache validation
+  and repair.
+
+### Fixed
+
+- Local HTTP test fixtures no longer depend on reverse DNS before signaling
+  readiness; their HTTP and redirect assertions are unchanged.
+
 ## [0.22.4] — 2026-09-06
 
 ### Added

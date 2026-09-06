@@ -435,7 +435,7 @@ _harness_launcher_run() {
 
 # _harness_launcher_run_codex_cli <harness-dir> <resolved-policy> [args...]
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
-#   Modes:    fast | base | plan | rich  → -p <profile>
+#   Modes:    fast | base | sol | plan | rich | astra → -p <profile>
 #   Surface:  work → work MCP surface (combinable with any profile)
 #   Wrapper:  happy → `happy codex ...`
 #   Sessions: resume → `codex resume`,  continue → `codex resume --last`,
@@ -468,6 +468,13 @@ _harness_launcher_run_codex_cli() {
     case "$1" in
       fast|base|sol|plan|rich)
         profile="$1"; profile_explicit=true; shift ;;
+      astra)
+        if $freeform; then
+          codex_args+=("$1")
+        else
+          profile="$1"; profile_explicit=true
+        fi
+        shift ;;
       work)
         # Surface keyword, combinable with any model profile and any launcher
         # keyword in any order (same UX as the claude `light` keyword). Only a
@@ -656,7 +663,7 @@ _harness_launcher_complete() {
     'dontAsk:Auto-approve most actions'
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
-    "codex:Codex CLI native (fast/base/sol/plan/rich${codex_surface_desc} · fork · full-auto/never/bypass)"
+    "codex:Codex CLI native (fast/base/sol/plan/rich/astra${codex_surface_desc} · fork · full-auto/never/bypass)"
     'codex-smoke:Send one bounded metadata-only Codex verification event'
     "kiro-cli:Kiro CLI native${kiro_surface_desc}"
     'happy:Use Happy mobile wrapper for Codex CLI'

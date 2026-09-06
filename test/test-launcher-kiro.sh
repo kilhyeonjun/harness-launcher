@@ -34,14 +34,16 @@ EOF
 HTTP_PORT_FILE="$TEST_TEMP/http.port"
 PORT_FILE="$HTTP_PORT_FILE" python3 -c '
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler
+from socketserver import TCPServer
+# These loopback fixtures need HTTP handling, not HTTPServer reverse DNS lookup.
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers()
     def log_message(self, *a): pass
-s = HTTPServer(("127.0.0.1", 0), H)
+s = TCPServer(("127.0.0.1", 0), H)
 with open(os.environ["PORT_FILE"], "w") as f:
-    f.write(str(s.server_port))
+    f.write(str(s.server_address[1]))
 s.serve_forever()
 ' >/dev/null 2>&1 &
 HTTP_PID=$!

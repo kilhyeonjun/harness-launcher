@@ -1265,6 +1265,28 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
         self.assertEqual(self.compiler_calls(), 2)
 
+    def test_astra_profile_survives_warm_prepare_and_repairs_drift(self):
+        self.prepare()
+        profile = self.codex_home / "astra.config.toml"
+        expected = {"model": "gpt-6-astra", "model_reasoning_effort": "medium"}
+        self.assertEqual(tomllib.loads(profile.read_text()), expected)
+        sol = self.codex_home / "sol.config.toml"
+        self.assertEqual(tomllib.loads(sol.read_text())["model"], "gpt-5.6-sol")
+        before = profile.stat().st_mtime_ns
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        self.assertEqual(profile.stat().st_mtime_ns, before)
+        profile.write_text('model = "wrong-model"\n')
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2)
+        self.assertEqual(tomllib.loads(profile.read_text()), expected)
+        profile.unlink()
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3)
+        self.assertEqual(tomllib.loads(profile.read_text()), expected)
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3)
+
     def test_preflight_failure_preserves_every_managed_output(self):
         self.prepare()
         managed = self.managed_output_paths()
@@ -1275,6 +1297,7 @@ out.mkdir(parents=True, exist_ok=True)
                 ".surface-success.json",
                 "AGENTS.md",
                 "agents/.harness-managed",
+                "astra.config.toml",
                 "base.config.toml",
                 "config.toml",
                 "fast.config.toml",

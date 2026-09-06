@@ -231,8 +231,24 @@ run_session() {
 run_mode "fast" "fast" || exit 1
 run_mode "base" "base" || exit 1
 run_mode "sol" "sol" || exit 1
+run_mode "astra" "astra" || exit 1
 run_mode "plan" "plan" || exit 1
 run_mode "rich" "rich" || exit 1
+
+# The new selector must not consume a prompt or an option value.
+ASTRA_ARGS_STUB="$TEST_TEMP/astra-arguments.txt"
+run_codex "$ASTRA_ARGS_STUB" exec astra
+case "$(get_field ARGV "$ASTRA_ARGS_STUB")" in
+  *'-p base exec astra'*) ;;
+  *) echo 'FAIL: exec astra must preserve prompt text'; exit 1 ;;
+esac
+: > "$ASTRA_ARGS_STUB"
+run_codex "$ASTRA_ARGS_STUB" astra --model gpt-5.6-sol -c 'model_reasoning_effort="high"'
+case "$(get_field ARGV "$ASTRA_ARGS_STUB")" in
+  *'-p astra --model gpt-5.6-sol -c model_reasoning_effort="high"'*) ;;
+  *) echo 'FAIL: Astra must preserve native model and effort overrides'; exit 1 ;;
+esac
+echo 'PASS: Astra prompt and native override arguments'
 
 # The dynamically scoped prefix is exported only for the native launch. It
 # must not create a global parameter after the launcher function returns.

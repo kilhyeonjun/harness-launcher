@@ -457,6 +457,7 @@ codex_profile_intent() {
   case "$1" in
     base) printf '%s\n' 'Everyday · Recommended' ;;
     sol)  printf '%s\n' 'Stronger · slower' ;;
+    astra) printf '%s\n' 'Frontier · opt-in' ;;
     rich) printf '%s\n' 'Deep · slowest' ;;
     fast) printf '%s\n' 'Quick · shallow' ;;
     plan) printf '%s\n' 'Planning · deep' ;;
@@ -755,10 +756,12 @@ collect_codex() {
           "⚖️  $(codex_profile_label base)" \
           "🌞 $(codex_profile_label sol)" \
           "🗺️  $(codex_profile_label plan)" \
-          "🧠 $(codex_profile_label rich)" || { step=session; continue; }
+          "🧠 $(codex_profile_label rich)" \
+          "✨ $(codex_profile_label astra)" || { step=session; continue; }
         case "$MENU_RESULT" in
           "⚡"*) CHOICE_CODEX_PROFILE="fast" ;;
           "🌞"*) CHOICE_CODEX_PROFILE="sol" ;;
+          "✨"*) CHOICE_CODEX_PROFILE="astra" ;;
           "🗺"*) CHOICE_CODEX_PROFILE="plan" ;;
           "🧠"*) CHOICE_CODEX_PROFILE="rich" ;;
           *)     CHOICE_CODEX_PROFILE="base" ;;
