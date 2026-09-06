@@ -2,6 +2,18 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.24.0 — 2026-09-06
+
+### Added
+
+- Read-only generated Codex profile inspection with setting provenance, output
+  stamp consistency, and explicit limits on runtime and provider verification.
+
+### Fixed
+
+- Canonicalize equivalent Homebrew compatibility and opt preparation entrypoints
+  so hook command hashes remain stable when callers use either path.
+
 ## [Unreleased]
 
 ## [0.23.0] — 2026-09-06

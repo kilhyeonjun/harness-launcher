@@ -684,6 +684,39 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertEqual(result.returncode, expect, result.stderr)
         return result
 
+    def test_homebrew_compat_and_opt_entrypoints_generate_identical_hook_paths(self):
+        prefix = self.tmp / "brew"
+        keg = prefix / "Cellar" / "harness-launcher" / "0.24.0"
+        package = keg / "share" / "harness-launcher"
+        shutil.copytree(ROOT / "bin", package)
+        (prefix / "opt").mkdir(parents=True)
+        (prefix / "opt" / "harness-launcher").symlink_to(keg, target_is_directory=True)
+        (prefix / "share").mkdir()
+        compat = prefix / "share" / "harness-launcher"
+        compat.symlink_to(package, target_is_directory=True)
+        stable = prefix / "opt" / "harness-launcher" / "share" / "harness-launcher"
+        settings = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "bash " + str(self.repo / "core/hooks/session-start.sh")}]}]}}
+        (self.repo / ".claude/settings.json").write_text(json.dumps(settings))
+        rendered = []
+        for entry in (compat, stable, compat):
+            (self.codex_home / ".surface-success.json").unlink(missing_ok=True)
+            result = subprocess.run(["/bin/bash", str(entry / "codex-home-prepare.sh"), str(self.repo)], env=self.environment(), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rendered.append((self.codex_home / "hooks.json").read_bytes())
+        self.assertEqual(rendered[0], rendered[1])
+        self.assertEqual(rendered[1], rendered[2])
+        self.assertIn(str(stable).encode(), rendered[0])
+        # A different active keg is not an equivalent alias and must not win.
+        other_keg = prefix / "Cellar" / "harness-launcher" / "other"
+        shutil.copytree(package, other_keg / "share/harness-launcher")
+        (prefix / "opt/harness-launcher").unlink()
+        (prefix / "opt/harness-launcher").symlink_to(other_keg, target_is_directory=True)
+        (self.codex_home / ".surface-success.json").unlink(missing_ok=True)
+        result = subprocess.run(["/bin/bash", str(compat / "codex-home-prepare.sh"), str(self.repo)], env=self.environment(), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(compat).encode(), (self.codex_home / "hooks.json").read_bytes())
+        self.assertNotIn(str(stable).encode(), (self.codex_home / "hooks.json").read_bytes())
+
     def compiler_calls(self):
         if not self.counter.exists():
             return 0
@@ -2314,6 +2347,62 @@ out.mkdir(parents=True, exist_ok=True)
 
         self.assertTrue(outside.is_dir())
         self.assertTrue((outside / "SKILL.md").is_file())
+
+
+class SurfaceInspectionTests(unittest.TestCase):
+    def test_profile_overlay_is_read_only_and_omits_secrets(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / "config.toml").write_text('model = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\nmodel_context_window = 1000000\n[model_providers.private]\nbase_url = "https://SECRET_ENDPOINT"\nenv_key = "SECRET_KEY"\n')
+            (home / "astra.config.toml").write_text('model = "gpt-6-astra"\nmodel_reasoning_effort = "high"\n')
+            before = {p.name: p.read_bytes() for p in home.iterdir()}
+            result = subprocess.run([sys.executable, str(RESOLVER), "inspect", "--codex-home", td, "--profile", "astra"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["configured"]["model"], {"value": "gpt-6-astra", "source": "astra.config.toml"})
+            self.assertEqual(data["configured"]["model_context_window"], {"value": 1000000, "source": "config.toml"})
+            self.assertEqual(data["observation"], "generated_config_only")
+            self.assertIsNone(data["runtime_loaded_model"])
+            self.assertEqual(data["preparation"]["output_consistency"], "unknown")
+            self.assertNotIn("SECRET", result.stdout)
+            self.assertEqual(before, {p.name: p.read_bytes() for p in home.iterdir()})
+
+    def test_stamp_consistency_detects_changed_and_deleted_outputs(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            for name in ("AGENTS.md", "hooks.json", "skill-catalog.json", "surface.config.toml",
+                         "fast.config.toml", "base.config.toml", "sol.config.toml", "astra.config.toml",
+                         "plan.config.toml", "rich.config.toml", "skills/.harness-managed"):
+                path = home / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("")
+            (home / "config.toml").write_text('model = "gpt-5.6-terra"\n')
+            fingerprint = {"schema_version": 1, "digest": "fixture", "skill_profile": "default",
+                           "mcp_profile": "default", "global_mcp_digest": "fixture", "bundled_marketplace_path": "fixture"}
+            subprocess.run([sys.executable, str(RESOLVER), "write-stamp", "--codex-home", td,
+                            "--stamp", str(home / ".surface-success.json"), "--fingerprint-json", json.dumps(fingerprint)], check=True, capture_output=True)
+            def inspect():
+                result = subprocess.run([sys.executable, str(RESOLVER), "inspect", "--codex-home", td], check=True, capture_output=True, text=True)
+                return json.loads(result.stdout)["preparation"]["output_consistency"]
+            self.assertEqual(inspect(), "matching")
+            (home / "AGENTS.md").write_text("drift")
+            self.assertEqual(inspect(), "changed")
+            (home / "AGENTS.md").write_text("")
+            (home / "rich.config.toml").unlink()
+            self.assertEqual(inspect(), "changed")
+
+    def test_missing_profile_never_falls_back_and_malformed_config_is_redacted(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / "config.toml").write_text('model = "gpt-5.6-terra"\n')
+            for profile in ["astra", "../outside"]:
+                result = subprocess.run([sys.executable, str(RESOLVER), "inspect", "--codex-home", td, "--profile", profile], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+            (home / "config.toml").write_text('SECRET_INVALID_CONTENT')
+            result = subprocess.run([sys.executable, str(RESOLVER), "inspect", "--codex-home", td], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("SECRET", result.stderr)
 
 
 if __name__ == "__main__":

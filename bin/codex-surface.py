@@ -1916,6 +1916,63 @@ def preflight(args: argparse.Namespace) -> None:
     )
 
 
+def inspect_surface(args: argparse.Namespace) -> None:
+    """Report a generated snapshot; never load credentials, execute or prepare."""
+    home = Path(args.codex_home)
+    profile = args.profile
+    if profile is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", profile):
+        fail("invalid profile name")
+
+    def read_config(name: str) -> dict:
+        try:
+            value = tomllib.loads((home / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            fail(f"missing or invalid generated config: {name}")
+        return value
+
+    base = read_config("config.toml")
+    overlay = read_config(f"{profile}.config.toml") if profile else {}
+    fields = {}
+    for key in ("model", "model_reasoning_effort", "model_context_window",
+                "model_auto_compact_token_limit", "sandbox_mode", "approval_policy"):
+        source = f"{profile}.config.toml" if key in overlay else "config.toml"
+        value = overlay.get(key) if key in overlay else base.get(key)
+        # Emit only known scalar settings, never entire provider/auth/MCP tables.
+        if key in ("model_context_window", "model_auto_compact_token_limit"):
+            value = value if type(value) is int and value > 0 else None
+        else:
+            value = value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", value) else None
+        fields[key] = {"value": value, "source": source if value is not None else None}
+
+    preparation = {"output_consistency": "unknown", "source_inputs_checked": False}
+    try:
+        stamp = json.loads((home / ".surface-success.json").read_text(encoding="utf-8"))
+        if isinstance(stamp, dict) and isinstance(stamp.get("output_signatures"), dict) and isinstance(stamp.get("config_projection_sha256"), str):
+            try:
+                consistent = (stamp["output_signatures"] == surface_output_signatures(home)
+                              and stamp["config_projection_sha256"] == managed_config_projection_sha256(home))
+            except (OSError, ValueError, SurfaceError):
+                consistent = False
+            preparation["output_consistency"] = "matching" if consistent else "changed"
+    except (OSError, ValueError, SurfaceError):
+        pass
+    counts = None
+    try:
+        catalog = json.loads((home / "skill-catalog.json").read_text(encoding="utf-8"))
+        skills = catalog.get("skills") if isinstance(catalog, dict) else None
+        if isinstance(skills, list) and all(isinstance(item, dict) for item in skills):
+            counts = {"total": len(skills),
+                      "explicit_only": sum(item.get("invocation") == "explicit_only" for item in skills)}
+    except (OSError, ValueError):
+        pass
+    print(json.dumps({"schema_version": 1, "observation": "generated_config_only",
+                      "runtime": "codex", "selected_profile": profile,
+                      "configured": fields, "preparation": preparation,
+                      "skill_counts": counts, "runtime_loaded_model": None,
+                      "provider_readiness": "not_probed", "actual_cost_usd": None,
+                      "cli_and_environment_overrides_checked": False}, indent=2, sort_keys=True))
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     subcommands = result.add_subparsers(dest="command", required=True)
@@ -1957,6 +2014,13 @@ def parser() -> argparse.ArgumentParser:
     stamp_parser.add_argument("--fingerprint-json", required=True)
     stamp_parser.add_argument("--codex-home", required=True)
     stamp_parser.set_defaults(function=write_stamp)
+
+    inspect_parser = subcommands.add_parser(
+        "inspect", help="inspect generated profile settings without preparing or invoking Codex"
+    )
+    inspect_parser.add_argument("--codex-home", required=True)
+    inspect_parser.add_argument("--profile")
+    inspect_parser.set_defaults(function=inspect_surface)
 
     managed_parser = subcommands.add_parser(
         "managed-output-paths", help="print launcher-owned publication roots"
