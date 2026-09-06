@@ -28,7 +28,9 @@ EOF
 PORT_FILE="$TEST_TEMP/http-port"
 PORT_FILE="$PORT_FILE" python3 - <<'PY' > /dev/null 2>&1 &
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from socketserver import TCPServer
+# These loopback fixtures need HTTP handling, not HTTPServer reverse DNS lookup.
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -44,9 +46,9 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-server = HTTPServer(('127.0.0.1', 0), Handler)
+server = TCPServer(('127.0.0.1', 0), Handler)
 with open(os.environ['PORT_FILE'], 'w', encoding='utf-8') as f:
-    f.write(str(server.server_port))
+    f.write(str(server.server_address[1]))
 server.serve_forever()
 PY
 HTTP_PID=$!

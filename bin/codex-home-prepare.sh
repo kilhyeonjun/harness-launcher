@@ -837,8 +837,10 @@ model_reasoning_effort = "medium"
 # session and no profile is compacted earlier than before.
 #
 # A single constant is only safe while every model reachable here shares one
-# max_context_window. All five mode profiles and every subagent-model-map tier
-# use luna/terra/sol (872000). Adding a model with a smaller window (e.g.
+# max_context_window. The original five profiles and all subagent tiers use
+# luna/terra/sol (872000). The opt-in Astra profile inherits this existing policy;
+# its native effective context must be checked with the selected CLI/account,
+# rather than inferred from the public API window. A smaller-window model (e.g.
 # gpt-5.3-codex-spark at 128000, effective 121600) would put this limit above
 # that model's ceiling and auto-compact would never fire — recompute from that
 # model's effective window before doing so.
@@ -1203,6 +1205,9 @@ write_profile base \
   'model_reasoning_effort = "medium"'
 write_profile sol \
   'model = "gpt-5.6-sol"' \
+  'model_reasoning_effort = "medium"'
+write_profile astra \
+  'model = "gpt-6-astra"' \
   'model_reasoning_effort = "medium"'
 write_profile plan \
   'model = "gpt-5.6-sol"' \

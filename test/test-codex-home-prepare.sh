@@ -120,13 +120,15 @@ fi
 echo "PASS: config.toml has no legacy [profiles.*] tables"
 
 # Per-profile overlay files: top-level keys (NOT nested under [profiles.<name>])
-for p in fast base plan rich; do
+for p in fast base sol plan rich astra; do
   pf="$CODEX_HOME/$p.config.toml"
   [[ -f "$pf" ]] || { echo "FAIL: $p.config.toml missing"; exit 1; }
   if grep -q '^\[profiles' "$pf"; then
     echo "FAIL: $p.config.toml must use top-level keys, not a [profiles.$p] table"; exit 1;
   fi
 done
+grep -q '^model = "gpt-6-astra"' "$CODEX_HOME/astra.config.toml" || { echo "FAIL: astra model"; exit 1; }
+grep -q '^model_reasoning_effort = "medium"' "$CODEX_HOME/astra.config.toml" || { echo "FAIL: astra effort"; exit 1; }
 grep -q '^model = "gpt-5.6-luna"' "$CODEX_HOME/fast.config.toml" || { echo "FAIL: fast model should use Luna"; exit 1; }
 grep -q '^model = "gpt-5.6-terra"' "$CODEX_HOME/base.config.toml" || { echo "FAIL: base model should use Terra"; exit 1; }
 grep -q '^model = "gpt-5.6-sol"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan model should use Sol"; exit 1; }

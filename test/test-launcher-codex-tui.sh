@@ -121,6 +121,19 @@ run_tui() {
     bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
 }
 
+# Astra is appended so existing numeric profile choices stay stable.
+printf 'model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/astra.config.toml"
+STUB_ASTRA="$TEST_TEMP/out-astra.txt"
+: > "$STUB_ASTRA"
+run_tui $'2\n1\n6\n1\n1\n' "$STUB_ASTRA"
+grep -qE '^ARGS:.*-p astra' "$STUB_ASTRA" || {
+  echo 'FAIL: Astra TUI selection must launch native -p astra'; exit 1;
+}
+grep -q 'astra.*gpt-6-astra.*medium' "$STUB_ASTRA.tui.log" || {
+  echo 'FAIL: Astra TUI label must show the generated model and effort'; exit 1;
+}
+echo 'PASS: Astra TUI selection and generated label'
+
 # Case 1: runtime=Codex, session=New, mode=Base, safety=Default
 STUB1="$TEST_TEMP/out1-codex-base.txt"
 : > "$STUB1"
