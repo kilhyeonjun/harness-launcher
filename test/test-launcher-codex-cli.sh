@@ -292,6 +292,81 @@ if [[ "$(get_field MCP_PROFILE "$STUB_EXEC_WORK")" != "<UNSET>" ]]; then
 fi
 echo "PASS: codex exec work → prompt preserved without work MCP surface"
 
+# Single-full projects retire the selector only in selector position. Compat
+# removes it before prepare/exec; strict rejects before prepare; prompt text is
+# preserved after a free-form token and inherited profile state never survives.
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full-compat"' > "$TEST_HARNESS/config/launcher.env"
+compat_work_stub="$TEST_TEMP/output-codex-cli-compat-work.txt"
+: > "$compat_work_stub"
+compat_work_err="$TEST_TEMP/output-codex-cli-compat-work.err"
+(
+  export TEST_STUB_FILE="$compat_work_stub"
+  export PATH="$TEST_BIN:$PATH"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  unset HARNESS_CODEX_MCP_PROFILE
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  _harness_launcher_run "$TEST_HARNESS" codex work
+) 2>"$compat_work_err" || exit 1
+grep -Fq 'work MCP surface is deprecated for this project; using full' "$compat_work_err" || {
+  echo "FAIL: compat codex work did not warn"; cat "$compat_work_err"; exit 1
+}
+if [[ "$(get_field PREPARE_MCP_PROFILE "$compat_work_stub")" != "<UNSET>" || "$(get_field MCP_PROFILE "$compat_work_stub")" != "<UNSET>" ]]; then
+  echo "FAIL: compat codex work retained MCP profile"; cat "$compat_work_stub"; exit 1
+fi
+compat_work_argv="$(get_field ARGV "$compat_work_stub")"
+case "$compat_work_argv" in *' work'*) echo "FAIL: compat codex selector leaked into argv"; exit 1;; esac
+echo "PASS: compat codex work drops selector and MCP profile"
+
+strict_work_out="$TEST_TEMP/output-codex-cli-strict-work.txt"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full"' > "$TEST_HARNESS/config/launcher.env"
+: > "$TEST_TEMP/output-codex-cli-failure-stub.txt"
+set +e
+run_codex_failure "$strict_work_out" work
+strict_work_rc=$?
+set -e
+[[ "$strict_work_rc" -ne 0 ]] || { echo "FAIL: strict codex work must fail"; exit 1; }
+[[ "$strict_work_rc" -eq 2 ]] || { echo "FAIL: strict codex work must exit 2, got $strict_work_rc"; exit 1; }
+grep -Fq 'work MCP surface is retired for this project' "$strict_work_out" || {
+  echo "FAIL: strict codex work error missing"; cat "$strict_work_out"; exit 1
+}
+[[ ! -s "$TEST_TEMP/output-codex-cli-failure-stub.txt" ]] || {
+  echo "FAIL: strict codex work prepared or launched"; exit 1
+}
+echo "PASS: strict codex work fails before prepare"
+
+optin_inherited_stub="$TEST_TEMP/output-codex-cli-optin-inherited.txt"
+(
+  export TEST_STUB_FILE="$optin_inherited_stub"
+  export PATH="$TEST_BIN:$PATH"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  export HARNESS_CODEX_MCP_PROFILE=work
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  _harness_launcher_run "$TEST_HARNESS" codex base
+) 2>/dev/null || exit 1
+[[ "$(get_field PREPARE_MCP_PROFILE "$optin_inherited_stub")" == "<UNSET>" && "$(get_field MCP_PROFILE "$optin_inherited_stub")" == "<UNSET>" ]] || {
+  echo "FAIL: opt-in codex inherited MCP profile was not cleared"; cat "$optin_inherited_stub"; exit 1
+}
+echo "PASS: opt-in codex clears inherited MCP profile"
+
+optin_exec_stub="$TEST_TEMP/output-codex-cli-optin-exec-work.txt"
+: > "$optin_exec_stub"
+run_codex "$optin_exec_stub" exec work
+case "$(get_field ARGV "$optin_exec_stub")" in *'exec work'*) ;; *) echo "FAIL: opt-in codex exec lost prompt work"; exit 1;; esac
+[[ "$(get_field MCP_PROFILE "$optin_exec_stub")" == "<UNSET>" ]] || { echo "FAIL: opt-in codex exec set MCP profile"; exit 1; }
+echo "PASS: opt-in codex exec preserves prompt work"
+
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_MCP_SURFACE_POLICY="single-full-compat"' > "$TEST_HARNESS/config/launcher.env"
+compat_happy_stub="$TEST_TEMP/output-codex-cli-compat-happy-work.txt"
+: > "$compat_happy_stub"
+run_codex "$compat_happy_stub" happy work
+grep -q '^HAPPY_ARGV:codex' "$compat_happy_stub" || { echo "FAIL: compat happy work was rejected"; cat "$compat_happy_stub"; exit 1; }
+echo "PASS: compat happy work is not rejected by surface policy"
+
 # Global MCP allowlist comes only from the trusted launcher config, is
 # normalized before preparation, and cannot leak between consecutive native
 # default/work/raw-exec launches in the same shell.
@@ -476,6 +551,50 @@ raw_prepare_values=("${(@f)$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$STUB
   exit 1
 }
 echo "PASS: direct codex --cd wrapper isolates global MCP allowlist across launches"
+
+# An opt-in raw launch may hide the inherited work surface from prepare/Codex,
+# but it must not unset the caller's exported parameter. Keep both launches in
+# one real Zsh process: the following legacy launch must still inherit `work`.
+STUB_RAW_PROFILE_SCOPE="$TEST_TEMP/output-raw-codex-wrapper-profile-scope.txt"
+: > "$STUB_RAW_PROFILE_SCOPE"
+(
+  export TEST_STUB_FILE="$STUB_RAW_PROFILE_SCOPE"
+  export PATH="$TEST_BIN:/usr/bin:/bin"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  export HARNESS_CODEX_MCP_PROFILE=work
+  compdef() { :; }
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_MCP_SURFACE_POLICY="single-full"' \
+    > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+  print -r -- "PARENT_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE-<UNSET>}" >> "$STUB_RAW_PROFILE_SCOPE"
+  print -r -- "PARENT_MCP_PROFILE_TYPE:${(t)HARNESS_CODEX_MCP_PROFILE}" >> "$STUB_RAW_PROFILE_SCOPE"
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+) 2>/dev/null || exit 1
+raw_profile_prepare_values=("${(@f)$(sed -n 's/^PREPARE_MCP_PROFILE://p' "$STUB_RAW_PROFILE_SCOPE")}")
+raw_profile_codex_values=("${(@f)$(sed -n 's/^MCP_PROFILE://p' "$STUB_RAW_PROFILE_SCOPE")}")
+[[ "${raw_profile_prepare_values[*]}" = "<UNSET> work" && "${raw_profile_codex_values[*]}" = "<UNSET> work" ]] || {
+  echo "FAIL: opt-in raw codex did not isolate the child profile before a legacy invocation"
+  cat "$STUB_RAW_PROFILE_SCOPE"
+  exit 1
+}
+grep -Fqx 'PARENT_MCP_PROFILE:work' "$STUB_RAW_PROFILE_SCOPE" || {
+  echo "FAIL: opt-in raw codex changed the parent profile value"
+  cat "$STUB_RAW_PROFILE_SCOPE"
+  exit 1
+}
+grep -Fqx 'PARENT_MCP_PROFILE_TYPE:scalar-export' "$STUB_RAW_PROFILE_SCOPE" || {
+  echo "FAIL: opt-in raw codex changed the parent profile export state"
+  cat "$STUB_RAW_PROFILE_SCOPE"
+  exit 1
+}
+echo "PASS: opt-in raw codex isolates child profile and preserves parent value/export for legacy reuse"
 
 # The allowlist normalizer must use the shared Python resolver. With python3
 # deliberately broken on PATH, both shortcut and direct wrapper launches still

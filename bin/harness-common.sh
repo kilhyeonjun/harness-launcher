@@ -16,6 +16,21 @@
 
 HARNESS_CODEX_APP_BIN_DEFAULT="/Applications/Codex.app/Contents/Resources/codex"
 
+harness_mcp_surface_policy_resolve() {
+  case "${1:-}" in
+    "") printf '%s\n' legacy ;;
+    single-full-compat|single-full) printf '%s\n' "$1" ;;
+    *)
+      echo "harness-launcher: invalid HARNESS_MCP_SURFACE_POLICY '$1'; supported: empty, single-full-compat, single-full" >&2
+      return 2
+      ;;
+  esac
+}
+
+harness_mcp_surface_policy_is_single_full() {
+  [ "$1" = single-full-compat ] || [ "$1" = single-full ]
+}
+
 harness_resolve_run_dir() {
   local harness_dir="$1" requested="$2" harness_abs requested_abs
   [ -d "$requested" ] || {

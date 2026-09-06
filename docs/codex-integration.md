@@ -101,6 +101,28 @@ cross-session `memories`. The launcher omits the nested setting for older
 clients because Codex 0.152.1 rejects it during bootstrap; API-key sessions,
 custom providers, and temporary structured threads remain excluded upstream.
 
+## Launcher MCP surface policy
+
+The project-owned `config/launcher.env` is the sole opt-in authority for
+`HARNESS_MCP_SURFACE_POLICY`; a caller's inherited value cannot opt a project
+in. Empty or omitted resolves to legacy behavior, preserving the native Codex
+`work` selector and its manifest MCP profile.
+
+`single-full-compat` is the transition setting. A direct `work` selector is
+accepted with a deprecation warning and launches the full user-facing surface.
+`single-full` is the enforced setting: that retired direct selector is rejected.
+For either opt-in setting, the launcher clears an inherited
+`HARNESS_CODEX_MCP_PROFILE` before preparing Codex. The manifest's
+`mcp.default_profile` then selects the enabled Codex MCP set; this does not
+replace the generic multi-profile manifest resolver for projects that keep the
+legacy policy.
+
+The user-facing surface choice is aligned between Claude and Codex under this
+policy. Their definition-source systems are still separate: Claude keeps its
+own configuration path, while Codex resolves the manifest and its selected MCP
+definition sources. Kiro's native light/full choice is unchanged, including
+for opt-in projects.
+
 ## MCP translation
 
 Preparation reads, in order:

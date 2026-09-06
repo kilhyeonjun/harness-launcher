@@ -4,6 +4,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+## [0.22.4] — 2026-09-06
+
 ### Added
 
 - Generated Codex homes now enable experimental context management when the
@@ -12,6 +14,26 @@ Notable changes are recorded here. This project follows semantic versioning for 
   only on a repeatedly compressed summary. Older clients omit the nested table
   because Codex 0.152.1 rejects that shape during bootstrap; API-key and custom
   provider eligibility remains controlled upstream.
+
+### Changed
+
+- Context management leaves the existing long-context request and auto-compact
+  guard unchanged at `model_context_window = 1000000` and
+  `model_auto_compact_token_limit = 414000`.
+
+## [0.22.3] — 2026-09-06
+
+### Added
+
+- Project-owned MCP surface policy values: empty preserves legacy selectors,
+  `single-full-compat` accepts direct Claude `light` and Codex `work` selectors
+  as full with a deprecation warning, and `single-full` rejects those retired
+  selectors. The policy is read only from the trusted project `launcher.env`;
+  Kiro keeps its native light/full selection in every mode.
+- Opt-in launchpad histories migrate to the full surface before display through
+  a validate-then-rewrite transaction. Migration canonicalizes entries, sorts
+  and de-duplicates them, bounds retained history, and atomically replaces the
+  history file only after the replacement is complete.
 - Exact MCP profile policies can now emit positive startup/tool timeouts,
   `required`, default tool approval, and per-tool approval in addition to tool
   allow/deny lists. Validation fails closed on invalid types or approval modes,
@@ -26,9 +48,6 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Changed
 
-- Context management leaves the existing long-context request and auto-compact
-  guard unchanged at `model_context_window = 1000000` and
-  `model_auto_compact_token_limit = 414000`.
 - Generated Codex homes include the native `task-progress` status-line item, so
   `update_plan` progress stays visible without a launcher-owned task store.
 - Generated Codex homes now opt into long context. `config.toml` requests
@@ -433,7 +452,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 - Made Codex CLI resolution deterministic across direct and interactive launcher paths.
 
-[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.22.3...HEAD
+[0.22.3]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.22.2...v0.22.3
 [0.16.0]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/kilhyeonjun/harness-launcher/compare/v0.15.0...v0.15.1

@@ -22,13 +22,15 @@ HARNESS_NAME="${HARNESS_NAME:?HARNESS_NAME required}"
 # The launcher is a native Codex entrypoint as well as a TUI. Load only its
 # trusted harness configuration so global MCP selection cannot inherit from the
 # caller when the config omits it.
-unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_MCP_SURFACE_POLICY
 # shellcheck source=/dev/null
 . "$HARNESS_DIR/config/launcher.env"
 
 LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=harness-common.sh
 . "$LAUNCHER_BIN_DIR/harness-common.sh"
+
+MCP_SURFACE_POLICY="$(harness_mcp_surface_policy_resolve "${HARNESS_MCP_SURFACE_POLICY:-}")" || exit $?
 
 prepare_codex_global_mcp_allowlist() {
   local raw="${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-}" normalized
@@ -195,11 +197,9 @@ history_ident() {
     '{out=""; for (i=1; i<=NF; i++) if ($i !~ /^TS=/ && $i !~ /^SUMMARY=/) out = out $i "\t"; print out}'
 }
 
-# history_save [ts] — prepend the current CHOICE_* config; an existing entry
-# with the same identity moves to the top instead of duplicating.
-history_save() {
-  mkdir -p "$HARNESS_DIR/.harness"
-  local ts="${1:-$(date +%s)}" line ident old tmp
+# history_current_line <ts> — canonical serializer for current CHOICE_* state.
+history_current_line() {
+  local ts="$1" line
   local fields=(
     "TS=$ts" "SUMMARY=$PLAN_SUMMARY" "RUNTIME=$CHOICE_RUNTIME"
     "PROVIDER=$CHOICE_PROVIDER" "SESSION=$CHOICE_SESSION" "MODE=$CHOICE_MODE"
@@ -209,6 +209,15 @@ history_save() {
     "CODEX_SAFETY=$CHOICE_CODEX_SAFETY" "KIRO_TRUST=$CHOICE_KIRO_TRUST"
   )
   line=$(printf '%s\t' "${fields[@]}"); line="${line%$'\t'}"
+  printf '%s\n' "$line"
+}
+
+# history_save [ts] — prepend the current CHOICE_* config; an existing entry
+# with the same identity moves to the top instead of duplicating.
+history_save() {
+  mkdir -p "$HARNESS_DIR/.harness"
+  local ts="${1:-$(date +%s)}" line ident old tmp
+  line="$(history_current_line "$ts")" || return $?
   ident=$(history_ident "$line")
   tmp="$HISTORY_FILE.tmp.$$"
   {
@@ -248,7 +257,13 @@ plan_reset() {
   CHOICE_RUNTIME=""; CHOICE_PROVIDER="direct"; CHOICE_SESSION="new"
   CHOICE_MODE=""; CHOICE_C_MODEL=""; CHOICE_C_EFFORT=""
   CHOICE_PERM="default"; CHOICE_CHROME=0; CHOICE_HAPPY=0; CHOICE_MCP_SURFACE="full"
-  CHOICE_CODEX_PROFILE="base"; CHOICE_CODEX_SURFACE="default"; CHOICE_CODEX_SAFETY="default"
+  CHOICE_CODEX_PROFILE="base"
+  if harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY"; then
+    CHOICE_CODEX_SURFACE="full"
+  else
+    CHOICE_CODEX_SURFACE="default"
+  fi
+  CHOICE_CODEX_SAFETY="default"
   CHOICE_KIRO_TRUST=0
   PLAN_SUMMARY=""
 }
@@ -270,6 +285,148 @@ migrate_legacy_plan() {
     plan_reset
   fi
   rm -f "$LEGACY_PLAN_FILE"
+}
+
+# Canonicalize opt-in history before any launchpad labels are built. Validation
+# and serialization finish in same-directory scratch files before atomic mv, so
+# malformed input or replacement failure cannot alter the original bytes.
+history_migration_fail() {
+  local cause="$1" raw="$2" sorted="$3" tmp="$4"
+  rm -f -- "$raw" "$sorted" "$tmp"
+  echo "harness-launcher: history migration failed: $cause" >&2
+  return 1
+}
+
+# Migration runs before provider collection loads gateway settings. Resolve a
+# Codex-provider summary in a subshell so only its rendered label crosses back;
+# secrets, unrelated variables, and any output from the env file stay isolated.
+history_claude_summary() {
+  if [ "$CHOICE_PROVIDER" != "codex" ]; then
+    claude_summary
+    return 0
+  fi
+
+  local summary
+  summary="$(
+    unset CODEX_CONTEXT_SUFFIX
+    if [ -f "$HARNESS_DIR/config/.local/codex-gateway.env" ]; then
+      . "$HARNESS_DIR/config/.local/codex-gateway.env" >/dev/null 2>&1 || exit $?
+    fi
+    claude_summary
+    printf '%s\n' "$PLAN_SUMMARY"
+  )" || return $?
+  PLAN_SUMMARY="$summary"
+}
+
+history_migrate_single_full() {
+  harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY" || return 0
+  [ -f "$HISTORY_FILE" ] || return 0
+
+  local raw="$HISTORY_FILE.migrate.raw.$$"
+  local sorted="$HISTORY_FILE.migrate.sorted.$$"
+  local tmp="$HISTORY_FILE.migrate.$$"
+  local line field key ts runtime canonical ident prior count=0 duplicate
+  local read_rc
+  local fields=() idents=()
+
+  if ! : > "$raw"; then
+    history_migration_fail "scratch setup failed" "$raw" "$sorted" "$tmp"
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    plan_reset
+    fields=()
+    IFS=$'\t' read -ra fields <<< "$line"
+    for field in "${fields[@]}"; do
+      case "$field" in
+        ?*=*) key="${field%%=*}"; plan_apply_field "$key" "${field#*=}" ;;
+        *)
+          history_migration_fail "malformed TSV field" "$raw" "$sorted" "$tmp"
+          return 1 ;;
+      esac
+    done
+    ts="$(history_field "$line" TS)"
+    if ! [[ "$ts" =~ ^[0-9]+$ ]]; then
+      history_migration_fail "invalid TS" "$raw" "$sorted" "$tmp"
+      return 1
+    fi
+    runtime="$CHOICE_RUNTIME"
+    case "$runtime" in
+      claude)
+        CHOICE_MCP_SURFACE="full"; CHOICE_CODEX_SURFACE="full"
+        if ! history_claude_summary; then
+          history_migration_fail "summary generation failed" "$raw" "$sorted" "$tmp"
+          return 1
+        fi ;;
+      codex)
+        CHOICE_MCP_SURFACE="full"; CHOICE_CODEX_SURFACE="full"
+        codex_summary ;;
+      kiro)
+        CHOICE_CODEX_SURFACE="full"
+        if [ "$CHOICE_MCP_SURFACE" != "light" ]; then
+          CHOICE_MCP_SURFACE="full"
+          kiro_summary
+        fi ;;
+      *)
+        history_migration_fail "invalid runtime" "$raw" "$sorted" "$tmp"
+        return 1 ;;
+    esac
+    if ! canonical="$(history_current_line "$ts")"; then
+      history_migration_fail "row serialization failed" "$raw" "$sorted" "$tmp"
+      return 1
+    fi
+    if ! printf '%s\n' "$canonical" >> "$raw"; then
+      history_migration_fail "scratch write failed" "$raw" "$sorted" "$tmp"
+      return 1
+    fi
+  done < "$HISTORY_FILE"
+  read_rc=$?
+  if [ "$read_rc" -ne 0 ]; then
+    history_migration_fail "history read failed" "$raw" "$sorted" "$tmp"
+    return 1
+  fi
+
+  if ! LC_ALL=C sort -t $'\t' -k1.4,1nr "$raw" > "$sorted"; then
+    history_migration_fail "history sort failed" "$raw" "$sorted" "$tmp"
+    return 1
+  fi
+  if ! : > "$tmp"; then
+    history_migration_fail "target setup failed" "$raw" "$sorted" "$tmp"
+    return 1
+  fi
+  while IFS= read -r line; do
+    if ! ident="$(history_ident "$line")"; then
+      history_migration_fail "identity generation failed" "$raw" "$sorted" "$tmp"
+      return 1
+    fi
+    duplicate=false
+    for prior in "${idents[@]}"; do
+      [ "$prior" = "$ident" ] && { duplicate=true; break; }
+    done
+    $duplicate && continue
+    if ! printf '%s\n' "$line" >> "$tmp"; then
+      history_migration_fail "target write failed" "$raw" "$sorted" "$tmp"
+      return 1
+    fi
+    idents+=("$ident")
+    count=$((count + 1))
+    if [ "$count" -ge "$HISTORY_MAX" ]; then
+      break
+    fi
+  done < "$sorted"
+  read_rc=$?
+  if [ "$read_rc" -ne 0 ]; then
+    history_migration_fail "sorted history read failed" "$raw" "$sorted" "$tmp"
+    return 1
+  fi
+
+  if ! mv "$tmp" "$HISTORY_FILE"; then
+    history_migration_fail "atomic replace failed" "$raw" "$sorted" "$tmp"
+    return 1
+  fi
+  rm -f "$raw" "$sorted"
+  plan_reset
 }
 
 # rel_time <epoch> — compact relative age for launchpad rows.
@@ -351,6 +508,7 @@ ORIG_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY-__HARNESS_UNSET__}"
 AUTO_RUNTIME=false
 collect_launchpad() {
   local opts=() labels=() hist_lines=() i line ts summary runtime
+  history_migrate_single_full || return 2
   AUTO_RUNTIME=false
   if ! $HAS_CLAUDE && ! $HAS_CODEX && ! $HAS_KIRO; then
     echo "Error: no runtime found (claude / codex / kiro-cli not in PATH)" >&2
@@ -509,7 +667,9 @@ collect_claude() {
         BREADCRUMB=""
         local fopts=("🚀 Start now" "🔐 Permission: $CHOICE_PERM")
         fopts+=("🌐 Chrome: $( [ "$CHOICE_CHROME" = 1 ] && echo on || echo off )")
-        fopts+=("🔌 MCP surface: $CHOICE_MCP_SURFACE")
+        if ! harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY"; then
+          fopts+=("🔌 MCP surface: $CHOICE_MCP_SURFACE")
+        fi
         $HAS_HAPPY && fopts+=("📱 Happy wrapper: $( [ "$CHOICE_HAPPY" = 1 ] && echo on || echo off )")
         fopts+=("↩ Back")
         menu "$PLAN_SUMMARY" "${fopts[@]}" || {
@@ -554,9 +714,11 @@ collect_claude() {
 codex_happy_compatible() {
   # Same constraint as the shortcut path: Happy cannot map subcommands,
   # explicit profiles, work surface, or safety overrides.
+  local expected_surface="default"
+  harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY" && expected_surface="full"
   [ "$CHOICE_SESSION" = "new" ] && \
   [ "$CHOICE_CODEX_PROFILE" = "base" ] && \
-  [ "$CHOICE_CODEX_SURFACE" = "default" ] && \
+  [ "$CHOICE_CODEX_SURFACE" = "$expected_surface" ] && \
   [ "$CHOICE_CODEX_SAFETY" = "default" ]
 }
 
@@ -627,7 +789,9 @@ collect_codex() {
         codex_summary
         BREADCRUMB=""
         local fopts=("🚀 Start now")
-        fopts+=("🔌 MCP surface: $CHOICE_CODEX_SURFACE")
+        if ! harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY"; then
+          fopts+=("🔌 MCP surface: $CHOICE_CODEX_SURFACE")
+        fi
         if $HAS_HAPPY && codex_happy_compatible; then
           fopts+=("📱 Happy wrapper: $( [ "$CHOICE_HAPPY" = 1 ] && echo on || echo off )")
         fi
@@ -844,7 +1008,9 @@ launch_claude() {
 }
 
 launch_codex() {
-  if [ "$CHOICE_CODEX_SURFACE" = "work" ]; then
+  if harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY"; then
+    unset HARNESS_CODEX_MCP_PROFILE
+  elif [ "$CHOICE_CODEX_SURFACE" = "work" ]; then
     export HARNESS_CODEX_MCP_PROFILE="work"
   else
     unset HARNESS_CODEX_MCP_PROFILE
@@ -934,7 +1100,12 @@ while true; do
   else
     export ANTHROPIC_API_KEY="$ORIG_ANTHROPIC_API_KEY"
   fi
-  collect_launchpad || exit 0
+  collect_launchpad
+  collect_rc=$?
+  if [ "$collect_rc" -ne 0 ]; then
+    [ "$collect_rc" -eq 1 ] && exit 0
+    exit "$collect_rc"
+  fi
 
   if ! $REPLAY; then
     case "$CHOICE_RUNTIME" in

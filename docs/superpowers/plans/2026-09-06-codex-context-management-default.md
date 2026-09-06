@@ -15,7 +15,7 @@
 - Emit `[features.context_management]` with `experimental_mode = true` on Codex 0.153.0+.
 - Omit the table on older/unavailable clients; 0.152.1 rejects the nested map.
 - Preserve `model_context_window = 1000000`, `model_auto_compact_token_limit = 414000`, and all other feature values.
-- Release/install `v0.22.3`; regenerate and read back all three target homes.
+- Release/install `v0.22.4`; regenerate and read back all three target homes.
 - Preserve unrelated dirty files and stage only task-owned paths.
 
 ---
@@ -60,7 +60,7 @@ git diff --check
 
 - [x] Independent review: implementation approved; add surfaced capability-transition evidence and keep this plan under 80 lines.
 - [x] Re-review the bounded fixes once.
-- [ ] Commit/push launcher, tag `v0.22.3`, and verify fetched local/remote SHA equality.
+- [ ] Commit/push launcher, tag `v0.22.4`, and verify fetched local/remote SHA equality.
 - [ ] Set formula tag/revision, audit/test, commit/push, and verify remote delivery.
 - [ ] Reinstall launcher; require installed generator SHA to match the released source.
 - [ ] Regenerate all target homes and require `CODEX_HOME=<home> codex features list` to report `context_management ... true`.
