@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+### Added
+
+- `HARNESS_CODEX_APPS_ALLOWLIST` opts a project into named ChatGPT Apps. The
+  feature flag stays off without it, and `[apps._default]` keeps unnamed apps
+  disabled when it is set.
+
 ## 0.25.0 — 2026-09-06
 
 ### Added

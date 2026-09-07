@@ -77,20 +77,21 @@ harness_python3_resolve() {
 # The caller owns export/unset so each native entrypoint can keep its dynamic
 # launcher.env scope isolated before it starts codex-home-prepare.sh.
 harness_codex_global_mcp_allowlist_normalize() {
-  local raw="${1:-}" harness_python
+  local raw="${1:-}" label="${2:-global MCP}" harness_python
   [ -n "$raw" ] || return 0
   harness_python="$(harness_python3_resolve)" || return 1
-  "$harness_python" - "$raw" <<'PY'
+  "$harness_python" - "$raw" "$label" <<'PY'
 import re
 import sys
 
+label = sys.argv[2]
 names = []
 for item in sys.argv[1].split(","):
     name = item.strip()
     if not name:
         continue
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-        raise SystemExit(f"invalid global MCP allowlist name: {name!r}")
+        raise SystemExit(f"invalid {label} allowlist name: {name!r}")
     if name not in names:
         names.append(name)
 print(",".join(names))

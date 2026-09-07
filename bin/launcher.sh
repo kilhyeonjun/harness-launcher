@@ -22,7 +22,7 @@ HARNESS_NAME="${HARNESS_NAME:?HARNESS_NAME required}"
 # The launcher is a native Codex entrypoint as well as a TUI. Load only its
 # trusted harness configuration so global MCP selection cannot inherit from the
 # caller when the config omits it.
-unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_MCP_SURFACE_POLICY
+unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY
 # shellcheck source=/dev/null
 . "$HARNESS_DIR/config/launcher.env"
 
@@ -38,6 +38,14 @@ prepare_codex_global_mcp_allowlist() {
   normalized="$(harness_codex_global_mcp_allowlist_normalize "$raw")" || return $?
   [ -n "$normalized" ] && export HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="$normalized" \
     || unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+}
+
+prepare_codex_apps_allowlist() {
+  local raw="${HARNESS_CODEX_APPS_ALLOWLIST:-}" normalized
+  [ -n "$raw" ] || { unset HARNESS_CODEX_APPS_ALLOWLIST; return 0; }
+  normalized="$(harness_codex_global_mcp_allowlist_normalize "$raw" "Codex apps")" || return $?
+  [ -n "$normalized" ] && export HARNESS_CODEX_APPS_ALLOWLIST="$normalized" \
+    || unset HARNESS_CODEX_APPS_ALLOWLIST
 }
 
 if [ -n "${HARNESS_RUN_DIR:-}" ]; then
@@ -1019,6 +1027,7 @@ launch_codex() {
     unset HARNESS_CODEX_MCP_PROFILE
   fi
   prepare_codex_global_mcp_allowlist || return $?
+  prepare_codex_apps_allowlist || return $?
   if [ -x "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" ]; then
     echo "⏳ Codex 홈 준비 중…" >&2
     "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" "$HARNESS_DIR" || return $?

@@ -872,15 +872,33 @@ metrics_exporter = { otlp-http = { endpoint = "$HARNESS_OTLP_HTTP_ENDPOINT/v1/me
 TOML
 fi
 
+codex_apps_allowlist="${HARNESS_CODEX_APPS_ALLOWLIST:-}"
+if [[ -n "$codex_apps_allowlist" ]]; then
+  codex_apps_feature=true
+else
+  codex_apps_feature=false
+fi
+
 cat >> "$tmp_config" <<TOML
 [features]
-# ChatGPT Apps/connectors disabled — harness sessions don't use them and user
-# opts deny-by-default globally. Most-comprehensive disable: feature-flag level.
-apps = false
+# ChatGPT Apps/connectors stay deny-by-default. The feature flag is off unless
+# HARNESS_CODEX_APPS_ALLOWLIST names the app ids this harness opts into, and even
+# then [apps._default] keeps every app that is not named disabled.
+apps = $codex_apps_feature
 goals = true
 hooks = true
 multi_agent = true
 TOML
+
+if [[ -n "$codex_apps_allowlist" ]]; then
+  {
+    printf '\n[apps._default]\nenabled = false\n'
+    printf '%s\n' "$codex_apps_allowlist" | tr ',' '\n' | while IFS= read -r codex_app_id; do
+      [[ -n "$codex_app_id" ]] || continue
+      printf '\n[apps.%s]\nenabled = true\n' "$codex_app_id"
+    done
+  } >> "$tmp_config"
+fi
 
 if [[ "$HARNESS_CODEX_CONTEXT_MANAGEMENT_SUPPORTED" == "true" ]]; then
   cat >> "$tmp_config" <<TOML

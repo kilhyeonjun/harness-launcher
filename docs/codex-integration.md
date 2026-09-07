@@ -243,6 +243,44 @@ Plugin synchronization rules:
 - trust only exact browser-client SHA-256 values for `node_repl`;
 - do not trust the project-writable `CODEX_HOME` or all of `~/.codex` as code paths.
 
+## ChatGPT Apps
+
+ChatGPT Apps and connectors are deny-by-default. Generated project homes set
+`[features].apps = false`, so the subsystem does not load and no connector tool
+reaches a session.
+
+A project opts in by naming the app ids it needs in its trusted
+`config/launcher.env`:
+
+```sh
+HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_<id>,asdk_app_<other-id>"
+```
+
+The launcher trims and deduplicates the list before every native Codex
+preparation, exactly as it does for `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST`. An
+empty or omitted value is explicitly unset, so a prior launch or an ambient
+caller environment cannot enable an app.
+
+When the list is nonempty the generated `config.toml` turns the feature flag on
+and still denies everything that is not named:
+
+```toml
+[features]
+apps = true
+
+[apps._default]
+enabled = false
+
+[apps.asdk_app_<id>]
+enabled = true
+```
+
+Both layers matter. `[features].apps` decides whether the subsystem loads at
+all; `[apps._default]` keeps an app the project never named disabled even while
+the subsystem is running. Because `$CODEX_HOME` points at the project home, a
+deny-by-default setting in the user's global `~/.codex/config.toml` is not read
+and has to be re-asserted here.
+
 ## Auth behavior
 
 `CODEX_HOME/auth.json` links to the active native Codex auth file. This keeps login selection global while sessions, MCP config, rules, skills, and history remain project-scoped.
