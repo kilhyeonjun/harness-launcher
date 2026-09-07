@@ -27,6 +27,14 @@ _harness_launcher_prepare_codex_global_mcp_allowlist() {
     || unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
 }
 
+_harness_launcher_prepare_codex_apps_allowlist() {
+  local raw="${HARNESS_CODEX_APPS_ALLOWLIST:-}" normalized
+  [[ -n "$raw" ]] || { unset HARNESS_CODEX_APPS_ALLOWLIST; return 0; }
+  normalized="$(harness_codex_global_mcp_allowlist_normalize "$raw" "Codex apps")" || return $?
+  [[ -n "$normalized" ]] && export HARNESS_CODEX_APPS_ALLOWLIST="$normalized" \
+    || unset HARNESS_CODEX_APPS_ALLOWLIST
+}
+
 _harness_launcher_add_claude_mcp_local_args() {
   local HARNESS_DIR="$1"; shift
   local -a local_files=()
@@ -48,6 +56,7 @@ _harness_launcher_export_codex_runtime_env() {
   local HARNESS_DIR="$1"
   local prepare="$_HARNESS_LAUNCHER_BIN/codex-home-prepare.sh"
   _harness_launcher_prepare_codex_global_mcp_allowlist || return $?
+  _harness_launcher_prepare_codex_apps_allowlist || return $?
   if [[ -x "$prepare" ]]; then
     "$prepare" "$HARNESS_DIR" || return $?
   fi
@@ -140,8 +149,8 @@ codex() {
 
   if [[ "${HARNESS_LAUNCHER_DISABLE_CODEX_WRAPPER:-}" != "1" ]]; then
     if harness_dir="$(_harness_launcher_codex_harness_for_args "$@")"; then
-      local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
-      unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+      local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
+      unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST
       source "$harness_dir/config/launcher.env"
       mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
       export HARNESS_PREFIX
@@ -219,8 +228,8 @@ harness_register() {
 #   Shared implementation for every registered profile function.
 _harness_launcher_run() {
   local HARNESS_DIR="$1"; shift
-  local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
-  unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+  local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
+  unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST
   source "$HARNESS_DIR/config/launcher.env"
   mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
 

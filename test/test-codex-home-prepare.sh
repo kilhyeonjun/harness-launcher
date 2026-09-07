@@ -927,6 +927,38 @@ echo "PASS: [features].hooks, goals, and multi_agent enabled in config.toml"
 grep -q '^apps = false' "$config3" || { echo "FAIL: [features].apps = false missing"; exit 1; }
 echo "PASS: [features].apps disabled in config.toml"
 
+# Opt-in path: HARNESS_CODEX_APPS_ALLOWLIST names the app ids a harness may use.
+# The feature flag turns on, but [apps._default] keeps every unnamed app off.
+HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_testone,asdk_app_testtwo" "$PREPARE" "$TEST_HARNESS3"
+grep -q '^apps = true' "$config3" || {
+  echo "FAIL: [features].apps should be true when HARNESS_CODEX_APPS_ALLOWLIST is set"; exit 1;
+}
+grep -q '^\[apps\._default\]' "$config3" || { echo "FAIL: [apps._default] section missing"; exit 1; }
+python3.13 - "$config3" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    config = tomllib.load(stream)
+
+apps = config["apps"]
+assert apps["_default"] == {"enabled": False}, apps["_default"]
+assert apps["asdk_app_testone"] == {"enabled": True}, apps
+assert apps["asdk_app_testtwo"] == {"enabled": True}, apps
+assert config["features"]["apps"] is True
+PY
+echo "PASS: [features].apps opt-in with per-app allowlist and deny-by-default"
+
+# Without the allowlist the harness returns to the deny-by-default shape.
+"$PREPARE" "$TEST_HARNESS3"
+grep -q '^apps = false' "$config3" || {
+  echo "FAIL: [features].apps should return to false without an allowlist"; exit 1;
+}
+if grep -q '^\[apps\.' "$config3"; then
+  echo "FAIL: no [apps.*] table should be emitted without an allowlist"; exit 1;
+fi
+echo "PASS: apps deny-by-default restored when allowlist is unset"
+
 python3.13 - "$config3" <<'PY'
 import sys
 import tomllib
