@@ -48,6 +48,10 @@ def global_mcp_digest():
         cold()
 
 
+def apps_allowlist():
+    return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
+
+
 def load_object(path):
     try:
         with open(path, encoding="utf-8") as stream:
@@ -422,11 +426,14 @@ def main():
         "skill_profile",
         "mcp_profile",
         "global_mcp_digest",
+        "apps_allowlist",
         "bundled_marketplace_path",
     ):
         if stamp.get(key) != fingerprint.get(key):
             cold()
     if fingerprint.get("global_mcp_digest") != global_mcp_digest():
+        cold()
+    if fingerprint.get("apps_allowlist") != apps_allowlist():
         cold()
     for path, expected in watch.items():
         if identity(path) != expected:

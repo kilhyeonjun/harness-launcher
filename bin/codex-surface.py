@@ -35,6 +35,16 @@ class SurfaceError(RuntimeError):
     pass
 
 
+def apps_allowlist() -> str:
+    """The ChatGPT Apps a harness opted into, as the launcher normalized them.
+
+    Generated config depends on this value, so it belongs in the fingerprint:
+    without it a warm home keeps a stale [apps.*] shape after the variable
+    changes.
+    """
+    return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
+
+
 def global_mcp_resolution(home: Path):
     """Resolve the opt-in global source without importing arbitrary config."""
     raw = os.environ.get("HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST", "")
@@ -1517,6 +1527,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
         "skill_profile": skill_profile,
         "mcp_profile": mcp_profile,
         "global_mcp_digest": global_resolution.digest,
+        "apps_allowlist": apps_allowlist(),
         "bundled_marketplace_path": (
             os.path.realpath(args.bundled_marketplace)
             if args.bundled_marketplace
@@ -1854,6 +1865,7 @@ def write_stamp(args: argparse.Namespace) -> None:
         "skill_profile",
         "mcp_profile",
         "global_mcp_digest",
+        "apps_allowlist",
         "bundled_marketplace_path",
     }:
         fail("fingerprint payload has unexpected fields")
