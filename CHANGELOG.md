@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+### Fixed
+
+- Document that `HARNESS_CODEX_APPS_ALLOWLIST` only takes effect on a cold
+  preparation. The warm fingerprint does not cover it, so setting it on an
+  already-converged home silently does nothing.
+
 ## 0.26.0 — 2026-09-07
 
 ### Added

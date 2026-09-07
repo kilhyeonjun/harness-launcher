@@ -281,6 +281,30 @@ the subsystem is running. Because `$CODEX_HOME` points at the project home, a
 deny-by-default setting in the user's global `~/.codex/config.toml` is not read
 and has to be re-asserted here.
 
+Both layers matter. `[features].apps` decides whether the subsystem loads at
+all; `[apps._default]` keeps an app the project never named disabled even while
+the subsystem is running. Because `$CODEX_HOME` points at the project home, a
+deny-by-default setting in the user's global `~/.codex/config.toml` is not read
+and has to be re-asserted here.
+
+### Known limitation
+
+**The variable is only picked up on a cold preparation.** Setting or changing it
+on a harness whose generated home is already converged has no effect: the warm
+probe exits before the config is regenerated, and its fingerprint covers the
+surface manifest and the global MCP allowlist but not this one.
+
+There is no supported way to force the rebuild — deleting the success stamp
+makes preparation take the cold path, but that path then fails with an
+`[apps.*]` block present. Until this is fixed, reach a ChatGPT App by passing
+the app id to Codex directly instead:
+
+```sh
+codex -c 'apps.<id>.enabled=true'
+```
+
+Work in progress lives on `wip/codex-apps-warm-fingerprint`.
+
 ## Auth behavior
 
 `CODEX_HOME/auth.json` links to the active native Codex auth file. This keeps login selection global while sessions, MCP config, rules, skills, and history remain project-scoped.
