@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.26.2 — 2026-09-08
+
+### Fixed
+
+- Codex tab-title synchronization retries transient cmux errors with bounded
+  backoff and stops retrying when its owning process exits. Local diagnostics
+  distinguish recovery from exhausted retries without storing title contents.
+
 ## 0.26.1 — 2026-09-08
 
 ### Fixed
