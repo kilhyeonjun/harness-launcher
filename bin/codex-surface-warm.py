@@ -331,7 +331,7 @@ def sha256_signature(path):
         cold()
 
 
-def output_signatures(codex_home):
+def output_signatures(codex_home, external_prefixes=()):
     signatures = {}
 
     def add(relative, required=True):
@@ -388,13 +388,20 @@ def output_signatures(codex_home):
             name
             for name in os.listdir(agents_root)
             if name.endswith(".toml")
-            and os.path.isfile(os.path.join(agents_root, name))
         }
     except FileNotFoundError:
         actual_agents = set()
     except OSError:
         cold()
-    if actual_agents != set(managed_agents):
+    external_agents = {
+        name for name in actual_agents
+        if name.startswith(external_prefixes)
+        and os.path.isfile(os.path.join(agents_root, name))
+        and not os.path.islink(os.path.join(agents_root, name))
+    }
+    if set(managed_agents) & external_agents:
+        cold()
+    if actual_agents != set(managed_agents) | external_agents:
         cold()
     return dict(sorted(signatures.items()))
 
@@ -419,6 +426,15 @@ def main():
     stamp = load_object(stamp_path)
     cache = load_object(cache_path)
     manifest = load_object(manifest_path)
+    agents = manifest.get("agents", {})
+    if not isinstance(agents, dict):
+        cold()
+    external_prefixes = agents.get("external_filename_prefixes", [])
+    if not isinstance(external_prefixes, list) or any(
+        not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*-", prefix)
+        for prefix in external_prefixes
+    ):
+        cold()
     fingerprint = cache.get("fingerprint")
     watch = cache.get("watch")
     directory_entries = cache.get("directory_entries")
@@ -485,7 +501,7 @@ def main():
     expected_outputs = stamp.get("output_signatures")
     if not isinstance(expected_outputs, dict):
         cold()
-    if output_signatures(codex_home) != expected_outputs:
+    if output_signatures(codex_home, tuple(external_prefixes)) != expected_outputs:
         cold()
     if managed_config_projection_sha256(codex_home) != stamp.get(
         "config_projection_sha256"

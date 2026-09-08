@@ -2017,6 +2017,91 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
         self.assertEqual(self.compiler_calls(), 2, "quarantined agent forced perpetual cold rebuilds")
 
+    def allow_external_agents(self):
+        manifest = json.loads(self.manifest_path.read_text())
+        manifest["agents"] = {"external_filename_prefixes": ["glider-"]}
+        self.manifest_path.write_text(json.dumps(manifest))
+
+    def test_external_agents_survive_warm_and_cold_prepare_without_becoming_managed(self):
+        self.allow_external_agents()
+        self.prepare()
+        agent = self.codex_home / "agents" / "glider-example.toml"
+        agent.write_text('name = "glider-example"\ndeveloper_instructions = "plugin owned"\n')
+        before = agent.read_bytes()
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1, "external sync must not force a rebuild")
+        self.assertEqual(agent.read_bytes(), before)
+        (self.repo / ".claude/skills/alpha/SKILL.md").write_text(
+            "---\nname: alpha\ndescription: changed\n---\nchanged\n"
+        )
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2)
+        self.assertEqual(agent.read_bytes(), before)
+        self.assertNotIn(agent.name, (self.codex_home / "agents/.harness-managed").read_text())
+        stamp = json.loads((self.codex_home / ".surface-success.json").read_text())
+        self.assertNotIn("agents/" + agent.name, stamp["output_signatures"])
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2)
+
+    def test_external_agent_allowlist_does_not_preserve_other_files_or_symlinks(self):
+        self.allow_external_agents()
+        self.prepare()
+        agents = self.codex_home / "agents"
+        (agents / "unknown.toml").write_text('name = "unknown"\n')
+        target = self.tmp / "target.toml"
+        target.write_text('name = "external-target"\n')
+        (agents / "glider-link.toml").symlink_to(target)
+        self.prepare()
+        self.assertFalse((agents / "unknown.toml").exists())
+        self.assertFalse((agents / "glider-link.toml").is_symlink())
+        self.assertEqual(target.read_text(), 'name = "external-target"\n')
+        quarantine = self.codex_home / ".surface-quarantine/agents"
+        self.assertTrue((quarantine / "unknown.toml").is_file())
+        self.assertTrue((quarantine / "glider-link.toml").is_symlink())
+
+    def test_external_agent_broken_and_directory_symlinks_force_quarantine(self):
+        self.allow_external_agents()
+        self.prepare()
+        agents = self.codex_home / "agents"
+        broken = agents / "glider-broken.toml"
+        directory_link = agents / "glider-directory.toml"
+        broken.symlink_to(self.tmp / "missing-agent")
+        directory_link.symlink_to(self.home, target_is_directory=True)
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2)
+        self.assertFalse(broken.is_symlink())
+        self.assertFalse(directory_link.is_symlink())
+        quarantine = self.codex_home / ".surface-quarantine/agents"
+        self.assertTrue((quarantine / broken.name).is_symlink())
+        self.assertTrue((quarantine / directory_link.name).is_symlink())
+
+    def test_external_claude_agents_are_not_converted_over_native_definitions(self):
+        self.allow_external_agents()
+        self.prepare()
+        agent = self.codex_home / "agents/glider-example.toml"
+        agent.write_text('name = "glider-example"\n')
+        before = agent.read_bytes()
+        source = self.repo / ".claude/agents/glider-example.md"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text('---\nname: glider-example\ndescription: external Claude agent\n---\nprovider body\n')
+        self.prepare()
+        self.assertEqual(agent.read_bytes(), before)
+        self.assertNotIn(agent.name, (self.codex_home / "agents/.harness-managed").read_text())
+        agent.unlink()
+        source.write_text(source.read_text() + "new provider revision\n")
+        self.prepare()
+        self.assertFalse(agent.exists(), "Claude provider file must not become a lossy native agent")
+
+    def test_external_agent_prefixes_reject_empty_or_path_patterns(self):
+        for prefix in ("", "../", "*", "glider/"):
+            with self.subTest(prefix=prefix):
+                manifest = json.loads(self.manifest_path.read_text())
+                manifest["agents"] = {"external_filename_prefixes": [prefix]}
+                self.manifest_path.write_text(json.dumps(manifest))
+                result = self.prepare(expect=2)
+                self.assertIn("external_filename_prefixes", result.stderr)
+                self.assertFalse(self.counter.exists())
+
     def test_product_plugin_skill_drift_forces_rebuild(self):
         self.prepare(HARNESS_CODEX_MCP_PROFILE="work")
         catalog = json.loads(

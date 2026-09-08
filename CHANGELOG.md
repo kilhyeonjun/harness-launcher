@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.28.0 — 2026-09-08
+
+### Added
+
+- Opt-in external agent filename namespaces in Codex surface manifests.
+  Provider-owned native agent files survive warm and cold preparation, and
+  corresponding Claude definitions are not converted over their native peers.
+  Unlisted files and symlinks retain the existing quarantine behavior.
+
 ## 0.27.0 — 2026-09-08
 
 ### Added
