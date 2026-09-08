@@ -50,6 +50,7 @@ The prefix function and executable profile both delegate through `harness-exec` 
 ```text
 ex                         interactive TUI
 ex <mode>                  direct Claude Code
+ex fable                   direct Claude Code, fable alias + high effort
 ex codex <profile>         native Codex CLI
 ex kiro-cli <mode>         native Kiro CLI
 ex kiro <mode>             Claude Code through a Kiro gateway

@@ -157,6 +157,33 @@ grep -q '1) ☁️  New — Claude Code 구성' "$OUT" || fail 'New composer ent
 grep -q '2) ↩ Claude' "$OUT" || fail 'history rows must follow the composer entries' "$OUT"
 echo 'PASS: launchpad history row replays the previous launch'
 
+# Fable is appended after Custom, preserving existing numbered menu choices.
+OUT="$TEST_TEMP/fable.out"; STUB="$TEST_TEMP/fable.stub"; reset_plan
+run_tui $'1\n8\n1\n' "$OUT" "$STUB"
+grep -q 'EXEC:claude --model fable --effort high' "$STUB" || fail 'Fable preset must launch fable/high' "$OUT"
+grep -q 'Fable.*fable.*high' "$OUT" || fail 'Fable label must match launch' "$OUT"
+OUT="$TEST_TEMP/fable-custom.out"; STUB="$TEST_TEMP/fable-custom.stub"; reset_plan
+run_tui $'1\n7\n6\n2\n1\n' "$OUT" "$STUB"
+grep -q 'EXEC:claude --model fable --effort high' "$STUB" || fail 'Custom Fable high must launch fable/high' "$OUT"
+echo 'PASS: Fable preset and Custom selection'
+
+# Replaying custom Fable must retain the same provider boundary as the picker.
+OUT="$TEST_TEMP/fable-replay.out"; STUB="$TEST_TEMP/fable-replay.stub"
+run_tui $'2\n' "$OUT" "$STUB"
+grep -q 'EXEC:claude --model fable --effort high' "$STUB" || fail 'direct Custom Fable history must replay' "$OUT"
+mkdir -p "$TEST_HARNESS/config/.local"
+printf 'KIRO_GATEWAY_URL="https://kiro.test"\n' > "$TEST_HARNESS/config/.local/kiro-gateway.env"
+printf 'CODEX_GATEWAY_URL="https://codex.test"\n' > "$TEST_HARNESS/config/.local/codex-gateway.env"
+for provider in kiro codex; do
+  printf 'TS=1\tSUMMARY=Custom Fable\tRUNTIME=claude\tPROVIDER=%s\tSESSION=new\tMODE=custom\tC_MODEL=fable\tC_EFFORT=high\tMCP_SURFACE=full\n' "$provider" > "$HISTORY"
+  OUT="$TEST_TEMP/fable-$provider.out"; STUB="$TEST_TEMP/fable-$provider.stub"
+  run_seeded_tui_status $'2\n' "$OUT" "$STUB" TEST_KIRO_HEALTH=1 TEST_CODEX_HEALTH=1
+  [[ ! -s "$STUB" ]] || fail 'Custom Fable gateway replay must reject without launching' "$OUT"
+  grep -q 'fable는 Anthropic direct 전용' "$OUT" || fail 'Custom Fable gateway replay must explain rejection' "$OUT"
+done
+rm -rf "$TEST_HARNESS/config/.local"
+echo 'PASS: Custom Fable history respects the direct provider boundary'
+
 # --- 4. continue session flag ------------------------------------------------
 OUT="$TEST_TEMP/4.out"; STUB="$TEST_TEMP/4.stub"; reset_plan
 run_tui $'2\n2\n1\n' "$OUT" "$STUB"

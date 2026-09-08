@@ -141,5 +141,14 @@ run_prefix "$TEST_TEMP/thg" "thg" codex-gateway ultracode
 [[ "$RUN_LAUNCHED" == false ]] || { echo "FAIL: codex-gateway ultracode must not launch claude ($RUN_ARGS)"; exit 1; }
 echo "PASS: codex-gateway ultracode → rejected (no claude launch, non-zero exit)"
 
+# The Fable preset also must not silently launch through an unrelated gateway.
+for provider in kiro codex-gateway; do
+  run_prefix "$TEST_TEMP/thg" "thg" "$provider" fable
+  [[ "$RUN_RC" -ne 0 && "$RUN_LAUNCHED" == false ]] || {
+    echo "FAIL: $provider fable must reject without launching Claude"; exit 1;
+  }
+done
+echo "PASS: Fable gateway rejection"
+
 echo "✓ All ultracode shortcut tests passed"
 exit 0
