@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.27.0 — 2026-09-08
+
+### Added
+
+- Opt-in Claude direct `fable` preset with high effort, plus a Fable entry in
+  the preset and Custom model menus and shell completion. Existing numbered
+  menu choices remain stable; Kiro and Codex gateways reject the preset.
+
 ## 0.26.2 — 2026-09-08
 
 ### Fixed

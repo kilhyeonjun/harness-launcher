@@ -134,6 +134,7 @@ run_mode() {
 
 # Run mode tests. rich uses xhigh, which the API rejects when thinking is
 # disabled, so only rich must carry the forced-thinking --settings override.
+run_mode "fable" "fable" "high" false || exit 1
 run_mode "fast" "haiku" "low"      false || exit 1
 run_mode "base" "sonnet" "high"    false || exit 1
 run_mode "plan" "opusplan" "high"  false || exit 1

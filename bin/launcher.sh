@@ -642,6 +642,10 @@ collect_claude() {
           mopts+=("$label"); modes+=("$m")
         done
         mopts+=("🔧 Custom — model/effort 직접 선택"); modes+=("custom")
+        # Append after Custom to keep existing numbered selections stable.
+        if label=$(harness_mode_label fable "$CHOICE_PROVIDER"); then
+          mopts+=("$label"); modes+=("fable")
+        fi
         menu "Mode" "${mopts[@]}" || { step=session; continue; }
         for i in "${!mopts[@]}"; do
           [ "$MENU_RESULT" = "${mopts[$i]}" ] && { CHOICE_MODE="${modes[$i]}"; break; }
@@ -652,6 +656,8 @@ collect_claude() {
         BREADCRUMB="$HARNESS_NAME ▸ Claude ▸ custom"
         if [ "$CHOICE_PROVIDER" = "kiro" ]; then
           menu "Model" "sonnet" "opus" "opusplan" "haiku" || { step=mode; continue; }
+        elif [ "$CHOICE_PROVIDER" = "direct" ]; then
+          menu "Model" "sonnet" "opus" "opus-1m" "opusplan" "haiku" "fable" || { step=mode; continue; }
         else
           menu "Model" "sonnet" "opus" "opus-1m" "opusplan" "haiku" || { step=mode; continue; }
         fi
@@ -665,6 +671,7 @@ collect_claude() {
           sonnet)   menu "Effort" "low" "medium ← Recommended" "high" || { step=custom_model; continue; } ;;
           opus-1m)  menu "Effort" "medium" "high" "max ← Recommended" || { step=custom_model; continue; } ;;
           opus)     menu "Effort" "medium" "high ← Recommended" "max" || { step=custom_model; continue; } ;;
+          fable)    menu "Effort" "medium" "high ← Recommended" "xhigh" "max" || { step=custom_model; continue; } ;;
           opusplan) menu "Effort" "medium" "high ← Recommended" || { step=custom_model; continue; } ;;
           *)        menu "Effort" "low" "medium ← Recommended" "high" || { step=custom_model; continue; } ;;
         esac
@@ -943,6 +950,10 @@ launch_claude() {
   local model effort
   if [ "$CHOICE_MODE" = "custom" ]; then
     model="$CHOICE_C_MODEL"; effort="$CHOICE_C_EFFORT"
+    if [ "$model" = "fable" ] && [ "$CHOICE_PROVIDER" != "direct" ]; then
+      echo "❌ fable는 Anthropic direct 전용입니다 (codex/kiro 미지원)" >&2
+      return 1
+    fi
     if [ "$model" = "opus-1m" ]; then
       case "$CHOICE_PROVIDER" in
         codex) model="opus${CODEX_CONTEXT_SUFFIX:-[1m]}" ;;

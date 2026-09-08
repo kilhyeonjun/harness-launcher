@@ -24,7 +24,7 @@ AI coding CLIs usually keep sessions, configuration, skills, and MCP servers in 
 <project>/.harness/kiro
 ```
 
-It also provides consistent `fast`, `base`, `opus`, `plan`, and `rich` presets, optional gateway routing for Claude Code, tab completion, and an interactive TUI.
+It also provides consistent `fast`, `base`, `opus`, `plan`, `rich`, and `fable` presets, optional gateway routing for Claude Code, tab completion, and an interactive TUI.
 
 ## Requirements
 
@@ -166,6 +166,7 @@ The same command shape works for every registered prefix:
 ```text
 <prefix>                         interactive TUI
 <prefix> fast|base|opus|plan|rich Claude Code preset
+<prefix> fable                   Claude Code fable + high (direct only)
 <prefix> ultracode               Claude Code opus[1m] + xhigh (direct only)
 <prefix> continue|resume         Claude Code session shortcut
 <prefix> light                   Claude Code with the light MCP surface (SSH-backed servers excluded)
@@ -207,12 +208,15 @@ combinable with any profile: `default` keeps the minimal project surface, while
 | `fast` | Haiku, low effort | GPT-5.6 Luna, low effort | Small edits and quick checks |
 | `base` | Sonnet | GPT-5.6 Terra, medium effort | Everyday work — recommended default |
 | `sol` (Codex only) | — | GPT-5.6 Sol, medium effort | Stronger main model — slower |
+| `fable` (Claude direct only) | Fable, high effort | — | Explicit frontier-model selection |
 | `astra` (Codex only) | — | GPT-6 Astra, medium effort | Explicit frontier-model selection |
 | `plan` | Opus Plan | GPT-5.6 Sol, high effort, read-only | Investigation and planning |
 | `opus` (Claude only) | Opus, high effort | — | Strong main model without `rich`'s xhigh cost |
 | `rich` | Opus | GPT-5.6 Sol, high effort | Deep work — slowest normal preset |
 
 These are task-oriented operational presets, not claims about OpenAI's model defaults. The launcher deliberately lowers `fast` for speed and raises `plan`/`rich` for deeper work; an unscoped model picker may use a different general starting effort. Model names follow the capabilities exposed by the installed runtime. Generated homes request a 1,000,000-token context window and a 414,000-token auto-compaction threshold; Codex model metadata determines the effective window. These existing settings are not an Astra-specific tuning result.
+
+Use `<prefix> fable` for Claude Code's opt-in `fable` alias with `high` effort, or select Fable in the direct TUI preset or Custom model menus. Existing numbered choices stay stable; the Fable preset is appended after Custom. Effort tokens still override the preset, for example `<prefix> fable xhigh`. The launcher rejects this preset on Kiro and Codex gateways. The alias follows the installed Claude Code runtime and any `ANTHROPIC_DEFAULT_FABLE_MODEL` override; availability remains account-dependent. As of September 8, 2026, Claude Code v2.1.255+ resolves it to Fable 5.1 by default ([official model configuration](https://code.claude.com/docs/en/model-config)).
 
 Use `<prefix> codex astra` for the opt-in native profile. The default remains Terra and `sol` remains Sol; do not rename the model inside a generated `sol.config.toml`, because preparation restores launcher-owned profiles. Astra availability and the loaded model/effort must be verified in the selected Codex account. No API probe or silent model fallback is added.
 

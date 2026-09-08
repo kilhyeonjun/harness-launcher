@@ -163,6 +163,9 @@ harness_mode_resolve() {
         codex) HARNESS_MODE_MODEL="opus${CODEX_CONTEXT_SUFFIX:-}"; HARNESS_MODE_EFFORT="high" ;;
         *)     HARNESS_MODE_MODEL="opus[1m]"; HARNESS_MODE_EFFORT="xhigh" ;;
       esac ;;
+    fable)
+      [ "$provider" = "direct" ] || return 1
+      HARNESS_MODE_MODEL="fable"; HARNESS_MODE_EFFORT="high" ;;
     ultracode)
       # Anthropic direct only; orchestration half is session-only (/effort).
       [ "$provider" = "direct" ] || return 1
@@ -182,6 +185,7 @@ harness_mode_label() {
     plan)      icon="🗺️  Plan" ;;
     opus)      icon="🎼 Opus" ;;
     rich)      icon="🧠 Rich" ;;
+    fable)     icon="📖 Fable" ;;
     ultracode) icon="🌀 Ultracode" ;;
   esac
   printf '%s — %s · %s\n' "$icon" "$HARNESS_MODE_MODEL" "$HARNESS_MODE_EFFORT"
