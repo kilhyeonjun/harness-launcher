@@ -2468,7 +2468,7 @@ class SurfaceInspectionTests(unittest.TestCase):
                 path.write_text("")
             (home / "config.toml").write_text('model = "gpt-5.6-terra"\n')
             fingerprint = {"schema_version": 1, "digest": "fixture", "skill_profile": "default",
-                           "mcp_profile": "default", "global_mcp_digest": "fixture", "bundled_marketplace_path": "fixture"}
+                           "mcp_profile": "default", "global_mcp_digest": "fixture", "apps_allowlist": "", "bundled_marketplace_path": "fixture"}
             subprocess.run([sys.executable, str(RESOLVER), "write-stamp", "--codex-home", td,
                             "--stamp", str(home / ".surface-success.json"), "--fingerprint-json", json.dumps(fingerprint)], check=True, capture_output=True)
             def inspect():
@@ -2495,7 +2495,7 @@ class SurfaceInspectionTests(unittest.TestCase):
             baseline = 'model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\n'
             profile.write_text(baseline)
             fingerprint = {"schema_version": 1, "digest": "fixture", "skill_profile": "default",
-                           "mcp_profile": "full", "global_mcp_digest": "fixture", "bundled_marketplace_path": "fixture"}
+                           "mcp_profile": "full", "global_mcp_digest": "fixture", "apps_allowlist": "", "bundled_marketplace_path": "fixture"}
             subprocess.run([sys.executable, str(RESOLVER), "write-stamp", "--codex-home", td,
                             "--stamp", str(home / ".surface-success.json"), "--fingerprint-json", json.dumps(fingerprint)],
                            check=True, capture_output=True)
