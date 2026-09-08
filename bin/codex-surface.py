@@ -367,11 +367,32 @@ def scan_plugin_root(root: Path, package_id: str) -> list[Candidate]:
     return candidates
 
 
+def external_agent_prefixes(manifest: dict) -> tuple[str, ...]:
+    agents = manifest.get("agents", {})
+    if not isinstance(agents, dict) or set(agents) - {"external_filename_prefixes"}:
+        fail("agents must contain only external_filename_prefixes")
+    prefixes = agents.get("external_filename_prefixes", [])
+    if not isinstance(prefixes, list) or any(
+        not isinstance(prefix, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*-", prefix)
+        for prefix in prefixes
+    ) or len(set(prefixes)) != len(prefixes):
+        fail("agents.external_filename_prefixes must be unique filename prefixes ending in '-' (no paths or globs)")
+    return tuple(prefixes)
+
+
+def is_external_agent(path: Path, prefixes: tuple[str, ...]) -> bool:
+    return (
+        path.name.endswith(".toml") and path.name.startswith(prefixes)
+        and path.is_file() and not path.is_symlink()
+    )
+
+
 def validate_manifest(manifest: dict) -> None:
     if manifest.get("schema_version") != SCHEMA_VERSION:
         fail(f"unsupported schema_version {manifest.get('schema_version')!r}; expected {SCHEMA_VERSION}")
     if not isinstance(manifest.get("repo"), str) or not manifest["repo"]:
         fail("manifest repo must be a non-empty string")
+    external_agent_prefixes(manifest)
     skills = manifest.get("skills")
     if not isinstance(skills, dict):
         fail("manifest skills must be an object")
@@ -1910,6 +1931,7 @@ def resolve(args: argparse.Namespace) -> None:
         "skills": catalog_entries,
         "disabled_skill_paths": [str(path) for path in disabled_paths],
         "mcp": mcp,
+        "agents": {"external_filename_prefixes": list(external_agent_prefixes(manifest))},
     }
     atomic_write(
         codex_home / "skill-catalog.json",

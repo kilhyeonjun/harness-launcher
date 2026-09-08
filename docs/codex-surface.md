@@ -8,6 +8,22 @@ Projects with many skills or MCP servers can opt into an exact runtime surface b
 
 Every membership list is an allowlist and every `unlisted` policy must be `"disabled"`. Portable paths may use `${HOME}`, `${REPO_ROOT}`, and `${CODEX_HOME}`; committed absolute home paths are unnecessary.
 
+The optional top-level `agents.external_filename_prefixes` list reserves
+provider-owned filename namespaces, for example `{"agents":{"external_filename_prefixes":["glider-"]}}`.
+The default is empty. Prefixes must be unique portable names ending in `-`, with
+no paths or glob syntax. Matching Claude `.md` files are excluded from conversion
+because providers may carry client-specific MCP bindings. Matching regular,
+non-symlink native `.toml` files remain externally owned: they are never signed,
+published, or listed in `.harness-managed`. Other files retain quarantine policy.
+An attempted publication collision fails before any live file is moved. Changes
+to project Claude agent files still invalidate the cold fingerprint once; stable
+provider sync and native agent updates do not force recurring rebuilds.
+
+Install native Codex plugins through the native CLI in the target `CODEX_HOME`.
+Their config and cache remain runtime-owned; do not also select their Claude
+plugin skills into the generated home. The exact launcher skill catalog covers
+launcher-selected routes; native plugin inventory is verified separately.
+
 ```json
 {
   "schema_version": 1,
