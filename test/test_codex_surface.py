@@ -259,6 +259,7 @@ class SurfaceFixture(unittest.TestCase):
             "HARNESS_CODEX_MCP_PROFILE",
             "HARNESS_CODEX_SKILL_PROFILE",
             "HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST",
+            "HARNESS_CODEX_APPS_ALLOWLIST",
         ):
             env.pop(inherited, None)
         env.update(updates)
@@ -661,6 +662,7 @@ out.mkdir(parents=True, exist_ok=True)
             "HARNESS_CODEX_MCP_PROFILE",
             "HARNESS_CODEX_SKILL_PROFILE",
             "HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST",
+            "HARNESS_CODEX_APPS_ALLOWLIST",
         ):
             env.pop(inherited, None)
         env.update(
@@ -1102,6 +1104,94 @@ out.mkdir(parents=True, exist_ok=True)
         )
         self.assertEqual(self.compiler_calls(), 4)
         self.assertTrue(self.enabled_value("global-tool"))
+
+    def test_apps_allowlist_changes_rebuild_once_and_revoke_permissions(self):
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            disabled = tomllib.load(stream)
+        self.assertFalse(disabled["features"]["apps"])
+        self.assertNotIn("apps", disabled)
+
+        runtime = {
+            "auth.json": "local-auth\n",
+            "plugins/cache/user-runtime/state.json": "runtime-plugin\n",
+        }
+        for relative, content in runtime.items():
+            path = self.codex_home / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        runtime_before = self.snapshot_paths(runtime)
+        with (self.codex_home / "config.toml").open("a", encoding="utf-8") as stream:
+            stream.write(
+                '\n[hooks.state."app-trust"]\ntrusted_hash = "preserved"\n'
+                '\n[[skills.config]]\npath = "/tmp/external-skill"\nenabled = false\n'
+                '\n[marketplaces.external]\nsource_type = "local"\nsource = "/tmp/external"\n'
+                '\n[plugins."external@marketplace"]\nenabled = true\n'
+            )
+
+        def assert_runtime_preserved():
+            self.assertEqual(self.snapshot_paths(runtime), runtime_before)
+            with (self.codex_home / "config.toml").open("rb") as stream:
+                config = tomllib.load(stream)
+            self.assertEqual(config["hooks"]["state"]["app-trust"], {"trusted_hash": "preserved"})
+            self.assertIn({"path": "/tmp/external-skill", "enabled": False}, config["skills"]["config"])
+            self.assertEqual(config["marketplaces"]["external"]["source"], "/tmp/external")
+            self.assertTrue(config["plugins"]["external@marketplace"]["enabled"])
+
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_alpha")
+        self.assertEqual(self.compiler_calls(), 2)
+        assert_runtime_preserved()
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            enabled = tomllib.load(stream)
+        self.assertTrue(enabled["features"]["apps"])
+        self.assertEqual(
+            enabled["apps"],
+            {
+                "_default": {"enabled": False},
+                "asdk_app_alpha": {"enabled": True},
+            },
+        )
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_alpha")
+        self.assertEqual(self.compiler_calls(), 2, "unchanged app allowlist was not warm")
+
+        with (self.codex_home / "config.toml").open("a", encoding="utf-8") as stream:
+            stream.write('\n[apps.asdk_app_rogue]\nenabled = true\n')
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_alpha")
+        self.assertEqual(self.compiler_calls(), 3, "unlisted app bypass stayed warm")
+        assert_runtime_preserved()
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            repaired = tomllib.load(stream)
+        self.assertEqual(
+            repaired["apps"],
+            {
+                "_default": {"enabled": False},
+                "asdk_app_alpha": {"enabled": True},
+            },
+        )
+
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_beta")
+        self.assertEqual(self.compiler_calls(), 4)
+        assert_runtime_preserved()
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            changed = tomllib.load(stream)
+        self.assertEqual(
+            changed["apps"],
+            {
+                "_default": {"enabled": False},
+                "asdk_app_beta": {"enabled": True},
+            },
+        )
+
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 5)
+        assert_runtime_preserved()
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            revoked = tomllib.load(stream)
+        self.assertFalse(revoked["features"]["apps"])
+        self.assertNotIn("apps", revoked)
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 5, "revoked app allowlist was not warm")
 
     def test_global_allowlist_emits_exact_profile_policies_without_source_drift(self):
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))

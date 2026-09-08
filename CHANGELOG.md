@@ -2,13 +2,13 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## 0.26.1 — 2026-09-08
 
 ### Fixed
 
-- Document that `HARNESS_CODEX_APPS_ALLOWLIST` only takes effect on a cold
-  preparation. The warm fingerprint does not cover it, so setting it on an
-  already-converged home silently does nothing.
+- `HARNESS_CODEX_APPS_ALLOWLIST` now invalidates a converged Codex home when
+  ids are added, replaced, or removed. The regenerated policy keeps only the
+  configured apps and returns to the warm path afterward.
 
 ## 0.26.0 — 2026-09-07
 

@@ -98,6 +98,31 @@ print(",".join(names))
 PY
 }
 
+# harness_codex_apps_allowlist_normalize <raw> → normalized CSV.
+# App ids become TOML table keys, so only Codex's app-id namespace is accepted.
+# This keeps reserved names and punctuation from producing malformed or
+# duplicate [apps.*] sections in the generated home.
+harness_codex_apps_allowlist_normalize() {
+  local raw="${1:-}" harness_python
+  [ -n "$raw" ] || return 0
+  harness_python="$(harness_python3_resolve)" || return 1
+  "$harness_python" - "$raw" <<'PY'
+import re
+import sys
+
+apps = []
+for item in sys.argv[1].split(","):
+    app_id = item.strip()
+    if not app_id:
+        continue
+    if not re.fullmatch(r"asdk_app_[A-Za-z0-9_-]+", app_id):
+        raise SystemExit(f"invalid Codex app allowlist id: {app_id!r}")
+    if app_id not in apps:
+        apps.append(app_id)
+print(",".join(apps))
+PY
+}
+
 # --- mode → model/effort table -------------------------------------------------
 # The ONLY place mode/provider → model/effort lives. Labels are derived from
 # this resolution so a label can never disagree with the launched model again.

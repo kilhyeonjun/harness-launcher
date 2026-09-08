@@ -30,7 +30,7 @@ _harness_launcher_prepare_codex_global_mcp_allowlist() {
 _harness_launcher_prepare_codex_apps_allowlist() {
   local raw="${HARNESS_CODEX_APPS_ALLOWLIST:-}" normalized
   [[ -n "$raw" ]] || { unset HARNESS_CODEX_APPS_ALLOWLIST; return 0; }
-  normalized="$(harness_codex_global_mcp_allowlist_normalize "$raw" "Codex apps")" || return $?
+  normalized="$(harness_codex_apps_allowlist_normalize "$raw")" || return $?
   [[ -n "$normalized" ]] && export HARNESS_CODEX_APPS_ALLOWLIST="$normalized" \
     || unset HARNESS_CODEX_APPS_ALLOWLIST
 }
