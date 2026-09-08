@@ -46,6 +46,7 @@ mkdir -p "$1/.harness/codex"
 printf '# prepared by test stub\n' > "$1/.harness/codex/AGENTS.md"
 echo "PREPARE_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}" >> "$TEST_STUB_FILE"
 echo "PREPARE_GLOBAL_MCP_ALLOWLIST:${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
+echo "PREPARE_APPS_ALLOWLIST:${HARNESS_CODEX_APPS_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
 EOF
 chmod +x "$TEST_LAUNCHER_BIN/launcher.sh" "$TEST_LAUNCHER_BIN/codex-home-prepare.sh"
 
@@ -116,6 +117,7 @@ run_tui() {
     HARNESS_NAME="test harness" \
     HARNESS_PREFIX="test" \
     HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="${TUI_CALLER_GLOBAL_MCP_ALLOWLIST:-}" \
+    HARNESS_CODEX_APPS_ALLOWLIST="${TUI_CALLER_APPS_ALLOWLIST:-}" \
     HARNESS_PYTHON_BIN="${TUI_HARNESS_PYTHON_BIN:-}" \
     HARNESS_RUN_DIR="${HARNESS_RUN_DIR_OVERRIDE:-}" \
     bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< "$input" > "$stub_file.tui.log" 2>&1
@@ -201,6 +203,30 @@ tui_prepare_values=(
   exit 1
 }
 echo "PASS: TUI isolates global MCP allowlist across consecutive launches"
+
+TUI_APPS_CONFIGURED="$TEST_TEMP/out1-apps-configured.txt"
+TUI_APPS_ABSENT="$TEST_TEMP/out1-apps-absent.txt"
+TUI_APPS_EMPTY="$TEST_TEMP/out1-apps-empty.txt"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_CODEX_APPS_ALLOWLIST=" tui_app_one, tui_app_two,tui_app_one "' \
+  | sed 's/tui_app_/asdk_app_tui_/g' > "$TEST_HARNESS/config/launcher.env"
+TUI_CALLER_APPS_ALLOWLIST="asdk_app_inherited" run_tui $'2\n1\n2\n1\n1\n' "$TUI_APPS_CONFIGURED"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' > "$TEST_HARNESS/config/launcher.env"
+TUI_CALLER_APPS_ALLOWLIST="asdk_app_inherited" run_tui $'2\n1\n2\n1\n1\n' "$TUI_APPS_ABSENT"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+  'HARNESS_CODEX_APPS_ALLOWLIST=""' > "$TEST_HARNESS/config/launcher.env"
+TUI_CALLER_APPS_ALLOWLIST="asdk_app_inherited" run_tui $'2\n1\n2\n1\n1\n' "$TUI_APPS_EMPTY"
+tui_apps_prepare_values=(
+  "$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$TUI_APPS_CONFIGURED")"
+  "$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$TUI_APPS_ABSENT")"
+  "$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$TUI_APPS_EMPTY")"
+)
+[[ "${tui_apps_prepare_values[*]}" = "asdk_app_tui_one,asdk_app_tui_two <UNSET> <UNSET>" ]] || {
+  echo "FAIL: TUI app allowlist leaked across launches"
+  cat "$TUI_APPS_CONFIGURED" "$TUI_APPS_ABSENT" "$TUI_APPS_EMPTY"
+  exit 1
+}
+echo "PASS: TUI isolates and normalizes app allowlist across launches"
 
 printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
   'HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST=" tui-fixture,tui-fixture "' \

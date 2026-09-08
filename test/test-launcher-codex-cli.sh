@@ -83,6 +83,7 @@ cat > "$PREPARE_STUB" <<'EOF'
 echo "PREPARE_ARGV:$*" >> "$TEST_STUB_FILE"
 echo "PREPARE_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}" >> "$TEST_STUB_FILE"
 echo "PREPARE_GLOBAL_MCP_ALLOWLIST:${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
+echo "PREPARE_APPS_ALLOWLIST:${HARNESS_CODEX_APPS_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
 mkdir -p "$1/.harness/codex"
 exit 0
 EOF
@@ -418,6 +419,36 @@ global_prepare_values=("${(@f)$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$S
 }
 echo "PASS: native Codex shortcut default/work/raw exec isolate global MCP allowlist"
 
+# Apps share the native-entrypoint isolation rule but use their own strict id
+# validator: only launcher.env may opt in, duplicates preserve first order.
+STUB_APPS_SEQUENCE="$TEST_TEMP/output-codex-cli-apps-sequence.txt"
+: > "$STUB_APPS_SEQUENCE"
+(
+  export TEST_STUB_FILE="$STUB_APPS_SEQUENCE"
+  export PATH="$TEST_BIN:$PATH"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  export HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_inherited"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_CODEX_APPS_ALLOWLIST=" asdk_app_one, asdk_app_two,asdk_app_one "' \
+    > "$TEST_HARNESS/config/launcher.env"
+  _harness_launcher_run "$TEST_HARNESS" codex base
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' > "$TEST_HARNESS/config/launcher.env"
+  _harness_launcher_run "$TEST_HARNESS" codex work
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_CODEX_APPS_ALLOWLIST=""' > "$TEST_HARNESS/config/launcher.env"
+  _harness_launcher_run "$TEST_HARNESS" codex exec prompt
+) 2>/dev/null || exit 1
+apps_prepare_values=("${(@f)$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$STUB_APPS_SEQUENCE")}")
+[[ "${apps_prepare_values[*]}" = "asdk_app_one,asdk_app_two <UNSET> <UNSET>" ]] || {
+  echo "FAIL: native Codex app allowlist leaked or was not normalized across consecutive launches"
+  cat "$STUB_APPS_SEQUENCE"
+  exit 1
+}
+echo "PASS: native Codex shortcut isolates and normalizes app allowlist"
+
 # work is a surface keyword combinable with any model profile (same UX as the
 # claude `light` keyword) — both orders must select the profile AND the surface.
 for combo_args in "work rich" "rich work" "work sol" "sol work"; do
@@ -567,6 +598,51 @@ raw_prepare_values=("${(@f)$(sed -n 's/^PREPARE_GLOBAL_MCP_ALLOWLIST://p' "$STUB
   exit 1
 }
 echo "PASS: direct codex --cd wrapper isolates global MCP allowlist across launches"
+
+STUB_RAW_APPS_SEQUENCE="$TEST_TEMP/output-raw-codex-wrapper-apps-sequence.txt"
+: > "$STUB_RAW_APPS_SEQUENCE"
+(
+  export TEST_STUB_FILE="$STUB_RAW_APPS_SEQUENCE"
+  export PATH="$TEST_BIN:/usr/bin:/bin"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  export HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_inherited"
+  compdef() { :; }
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_CODEX_APPS_ALLOWLIST=" asdk_app_direct,asdk_app_direct "' \
+    > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_CODEX_APPS_ALLOWLIST=""' > "$TEST_HARNESS/config/launcher.env"
+  codex --cd "$TEST_HARNESS" --version
+) 2>/dev/null || exit 1
+raw_apps_prepare_values=("${(@f)$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$STUB_RAW_APPS_SEQUENCE")}")
+[[ "${raw_apps_prepare_values[*]}" = "asdk_app_direct <UNSET> <UNSET>" ]] || {
+  echo "FAIL: direct codex wrapper app allowlist leaked across launches"
+  cat "$STUB_RAW_APPS_SEQUENCE"
+  exit 1
+}
+echo "PASS: direct codex wrapper isolates app allowlist across launches"
+
+for invalid_app in 'not-an-app' '_default' 'asdk_app_bad.dot'; do
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    "HARNESS_CODEX_APPS_ALLOWLIST=\"$invalid_app\"" > "$TEST_HARNESS/config/launcher.env"
+  invalid_apps_stub="$TEST_TEMP/output-invalid-app-${invalid_app//[^A-Za-z0-9]/_}.txt"
+  : > "$invalid_apps_stub"
+  (
+    export TEST_STUB_FILE="$invalid_apps_stub"
+    export PATH="$TEST_BIN:$PATH"
+    export HARNESS_CODEX_BIN="$CODEX_STUB"
+    source "$LAUNCHER_DIR/bin/aliases.zsh"
+    _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+    ! _harness_launcher_run "$TEST_HARNESS" codex base
+  ) >/dev/null 2>&1 || { echo "FAIL: invalid app id $invalid_app did not fail closed"; exit 1; }
+  [[ ! -s "$invalid_apps_stub" ]] || { echo "FAIL: invalid app id $invalid_app reached prepare or Codex"; cat "$invalid_apps_stub"; exit 1; }
+done
+echo "PASS: invalid and reserved app ids fail before native preparation"
 
 # An opt-in raw launch may hide the inherited work surface from prepare/Codex,
 # but it must not unset the caller's exported parameter. Keep both launches in

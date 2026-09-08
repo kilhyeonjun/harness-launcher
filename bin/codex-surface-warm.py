@@ -48,6 +48,20 @@ def global_mcp_digest():
         cold()
 
 
+def apps_allowlist():
+    return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
+
+
+def expected_apps():
+    app_ids = [app_id for app_id in apps_allowlist().split(",") if app_id]
+    if not app_ids:
+        return None
+    return {
+        "_default": {"enabled": False},
+        **{app_id: {"enabled": True} for app_id in app_ids},
+    }
+
+
 def load_object(path):
     try:
         with open(path, encoding="utf-8") as stream:
@@ -94,6 +108,7 @@ def config_matches(codex_home, catalog, expected_profile):
         "skills",
         "hooks",
         "otel",
+        "apps",
     }
     if set(config) - allowed_root_keys:
         return False
@@ -152,8 +167,9 @@ def config_matches(codex_home, catalog, expected_profile):
             },
         }:
             return False
+    allowed_apps = expected_apps()
     expected_features = {
-        "apps": False,
+        "apps": allowed_apps is not None,
         "goals": True,
         "hooks": True,
         "multi_agent": True,
@@ -161,6 +177,8 @@ def config_matches(codex_home, catalog, expected_profile):
     if os.environ.get("HARNESS_CODEX_CONTEXT_MANAGEMENT_SUPPORTED") == "true":
         expected_features["context_management"] = {"experimental_mode": True}
     if config.get("features") != expected_features:
+        return False
+    if config.get("apps") != allowed_apps:
         return False
     marketplaces = config.get("marketplaces") or {}
     if not isinstance(marketplaces, dict):
@@ -422,11 +440,14 @@ def main():
         "skill_profile",
         "mcp_profile",
         "global_mcp_digest",
+        "apps_allowlist",
         "bundled_marketplace_path",
     ):
         if stamp.get(key) != fingerprint.get(key):
             cold()
     if fingerprint.get("global_mcp_digest") != global_mcp_digest():
+        cold()
+    if fingerprint.get("apps_allowlist") != apps_allowlist():
         cold()
     for path, expected in watch.items():
         if identity(path) != expected:

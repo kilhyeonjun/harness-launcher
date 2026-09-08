@@ -256,10 +256,10 @@ A project opts in by naming the app ids it needs in its trusted
 HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_<id>,asdk_app_<other-id>"
 ```
 
-The launcher trims and deduplicates the list before every native Codex
-preparation, exactly as it does for `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST`. An
-empty or omitted value is explicitly unset, so a prior launch or an ambient
-caller environment cannot enable an app.
+The launcher trims and deduplicates supported `asdk_app_...` ids before every
+native Codex preparation. Invalid ids fail before preparation; an empty or
+omitted value is explicitly unset, so a prior launch or an ambient caller
+environment cannot enable an app.
 
 When the list is nonempty the generated `config.toml` turns the feature flag on
 and still denies everything that is not named:
@@ -281,29 +281,11 @@ the subsystem is running. Because `$CODEX_HOME` points at the project home, a
 deny-by-default setting in the user's global `~/.codex/config.toml` is not read
 and has to be re-asserted here.
 
-Both layers matter. `[features].apps` decides whether the subsystem loads at
-all; `[apps._default]` keeps an app the project never named disabled even while
-the subsystem is running. Because `$CODEX_HOME` points at the project home, a
-deny-by-default setting in the user's global `~/.codex/config.toml` is not read
-and has to be re-asserted here.
-
-### Known limitation
-
-**The variable is only picked up on a cold preparation.** Setting or changing it
-on a harness whose generated home is already converged has no effect: the warm
-probe exits before the config is regenerated, and its fingerprint covers the
-surface manifest and the global MCP allowlist but not this one.
-
-There is no supported way to force the rebuild — deleting the success stamp
-makes preparation take the cold path, but that path then fails with an
-`[apps.*]` block present. Until this is fixed, reach a ChatGPT App by passing
-the app id to Codex directly instead:
-
-```sh
-codex -c 'apps.<id>.enabled=true'
-```
-
-Work in progress lives on `wip/codex-apps-warm-fingerprint`.
+The normalized allowlist is part of the managed-home fingerprint. Adding,
+replacing, or removing an id regenerates the home once, preserves runtime-owned
+auth, hook trust, skill choices, and external plugin state, then returns to the
+warm path. The warm validator also rejects an unexpected `[apps.*]` table and
+repairs it from the configured allowlist.
 
 ## Auth behavior
 
