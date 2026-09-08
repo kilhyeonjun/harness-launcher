@@ -19,6 +19,8 @@ from pathlib import Path
 VALID_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 CMUX_COMMAND_TIMEOUT_SECONDS = 8
 BROKER_REQUEST_TIMEOUT_SECONDS = 120
+RENAME_ATTEMPTS = 3
+RETRY_DELAYS_SECONDS = (1, 2)
 
 
 def sanitize_title(value: str) -> str:
@@ -60,7 +62,7 @@ def process_is_alive(pid: int) -> bool:
     return True
 
 
-def rename_tab(cmux: str, surface: str, title: str) -> bool:
+def rename_tab(cmux: str, surface: str, title: str) -> str:
     try:
         result = subprocess.run(
             [cmux, "rename-tab", "--surface", surface, title],
@@ -70,9 +72,69 @@ def rename_tab(cmux: str, surface: str, title: str) -> bool:
             timeout=CMUX_COMMAND_TIMEOUT_SECONDS,
             check=False,
         )
+    except subprocess.TimeoutExpired:
+        return "rename_timeout"
     except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+        return "rename_failed"
+    return "ok" if result.returncode == 0 else "rename_failed"
+
+
+def wait_for_retry(owner_pid: int, delay_seconds: int) -> bool:
+    deadline = time.monotonic() + delay_seconds
+    while time.monotonic() < deadline:
+        if not process_is_alive(owner_pid):
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
+    return process_is_alive(owner_pid)
+
+
+def remove_status(status_path: Path) -> None:
+    try:
+        metadata = status_path.lstat()
+        if stat.S_ISREG(metadata.st_mode) and metadata.st_uid == os.getuid() and metadata.st_nlink == 1:
+            status_path.unlink()
+    except OSError:
+        pass
+
+
+def write_status(status_path: Path, owner_pid: int, attempt: int, state: str, error: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(status_path, flags, 0o600)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+            os.close(descriptor)
+            return
+        os.ftruncate(descriptor, 0)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump({"owner_pid": owner_pid, "attempt": attempt, "state": state, "error_category": error}, stream)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError:
+        pass
+
+
+def rename_with_retry(cmux: str, surface: str, title: str, owner_pid: int, status_path: Path) -> bool:
+    last_error = "rename_failed"
+    for attempt in range(1, RENAME_ATTEMPTS + 1):
+        error = rename_tab(cmux, surface, title)
+        if error == "ok":
+            if attempt == 1:
+                remove_status(status_path)
+            else:
+                write_status(status_path, owner_pid, attempt, "recovered", last_error)
+            return True
+        last_error = error
+        if attempt < RENAME_ATTEMPTS and not wait_for_retry(owner_pid, RETRY_DELAYS_SECONDS[attempt - 1]):
+            return False
+    write_status(status_path, owner_pid, RENAME_ATTEMPTS, "exhausted", last_error)
+    return False
 
 
 def discover_codex_owner_pid() -> int | None:
@@ -242,6 +304,7 @@ def broker(
             cmux,
             state_dir,
             str(poll_seconds),
+            f"{request_path}.status.json",
         )
     )
 
@@ -255,6 +318,7 @@ def watch(
     cmux: str,
     state_dir_raw: str,
     poll_seconds_raw: str,
+    status_path_raw: str = "",
 ) -> int:
     if not valid_prefix(prefix) or not owner_pid_raw.isdecimal():
         return 0
@@ -269,6 +333,7 @@ def watch(
         state_dir.mkdir(parents=True, exist_ok=True)
         lock_key = hashlib.sha256(f"{session_id}\0{surface}".encode()).hexdigest()
         lock_path = state_dir / f"{lock_key}.lock"
+        status_path = Path(status_path_raw) if status_path_raw else state_dir / f"{lock_key}.status.json"
         lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         lock_stream = os.fdopen(lock_fd, "a+")
         try:
@@ -287,7 +352,7 @@ def watch(
             if name:
                 title = f"{name} | {prefix}"
                 if title != last_title:
-                    if not rename_tab(cmux, surface, title):
+                    if not rename_with_retry(cmux, surface, title, owner_pid, status_path):
                         break
                     last_title = title
             time.sleep(poll_seconds)
@@ -338,6 +403,7 @@ def session_start() -> int:
         cmux,
         state_dir,
         poll_seconds,
+        "",
     ]
     try:
         subprocess.Popen(
@@ -354,7 +420,7 @@ def session_start() -> int:
 
 
 def main() -> int:
-    if len(sys.argv) == 10 and sys.argv[1] == "--watch":
+    if len(sys.argv) in (10, 11) and sys.argv[1] == "--watch":
         return watch(*sys.argv[2:])
     if len(sys.argv) == 7 and sys.argv[1] == "--broker":
         return broker(*sys.argv[2:])
