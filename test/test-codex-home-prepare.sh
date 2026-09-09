@@ -112,6 +112,10 @@ grep -q '^model_auto_compact_token_limit = 414000$' "$config" || {
   echo "FAIL: auto-compact limit must be 414000 (828400 effective window x 0.5)"; exit 1;
 }
 echo "PASS: long-context window requested with a 50%-of-effective auto-compact line"
+grep -A1 '^\[tools.update_plan\]$' "$config" | grep -qx 'enabled = true' || {
+  echo "FAIL: native task tracker must enable tools.update_plan"; exit 1;
+}
+echo "PASS: native task tracker explicitly enabled"
 # Codex 0.134.0+ rejects `--profile` when config.toml still contains inline
 # [profiles.*] tables. Profiles must live in separate <name>.config.toml files.
 if grep -q '^\[profiles\.' "$config"; then

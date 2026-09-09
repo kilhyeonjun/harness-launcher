@@ -888,6 +888,9 @@ apps = $codex_apps_feature
 goals = true
 hooks = true
 multi_agent = true
+
+[tools.update_plan]
+enabled = true
 TOML
 
 if [[ -n "$codex_apps_allowlist" ]]; then

@@ -201,6 +201,9 @@ Claude/Kiro expose `light` — a `🔌 MCP surface` toggle on the summary screen
 combinable with any profile: `default` keeps the minimal project surface, while
 `work` uses only the approved work MCPs declared by `config/codex-surface.json`.
 
+Native Codex homes explicitly enable the `update_plan` task tracker, including
+on Codex 0.152.0+ where it defaults to disabled. See [native task progress](docs/codex-integration.md#native-task-progress).
+
 ### Presets
 
 | Preset | Claude Code | Codex CLI | Intended use |
