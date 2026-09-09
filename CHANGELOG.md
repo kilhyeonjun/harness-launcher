@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.29.1 — 2026-09-09
+
+### Changed
+
+- Prefer the compiler's project-aware Codex AGENTS route, which avoids a second
+  runtime-contract copy. Older harness compilers fall back to the unchanged
+  legacy route and retain the complete contract.
+
 ## 0.29.0 — 2026-09-09
 
 ### Added
