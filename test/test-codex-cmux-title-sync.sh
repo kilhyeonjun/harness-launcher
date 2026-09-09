@@ -118,7 +118,7 @@ title_count() {
 import json
 import sys
 
-expected = ["rename-tab", "--surface", "surface:42", sys.argv[2]]
+expected = ["rename-tab", "--surface", "surface:42", "--", sys.argv[2]]
 count = 0
 with open(sys.argv[1], encoding="utf-8") as stream:
     for line in stream:

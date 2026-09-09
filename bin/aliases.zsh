@@ -232,6 +232,7 @@ _harness_launcher_run() {
   unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST
   source "$HARNESS_DIR/config/launcher.env"
   mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
+  export HARNESS_PREFIX
 
   local HARNESS_RUN_DIR=""
   case "${1:-}" in
@@ -425,22 +426,29 @@ _harness_launcher_run() {
     # Plain invocation (not exec) so the user's interactive shell survives
     # the launched process — Ctrl+C returns to the prompt instead of closing
     # the terminal window.
+    local claude_broker_started=false
     if [[ "$mcp_surface" == "light" ]]; then
       local _light_file
       _light_file="$(harness_claude_light_mcp_config "$HARNESS_DIR")" || return $?
+      harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
+      claude_broker_started=true
       if [[ -n "$HARNESS_RUN_DIR" ]]; then
         (cd "$HARNESS_RUN_DIR" && claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}")
       else
         claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}"
       fi
     else
+      harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
+      claude_broker_started=true
       if [[ -n "$HARNESS_RUN_DIR" ]]; then
         (cd "$HARNESS_RUN_DIR" && _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}")
       else
         _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}"
       fi
     fi
-    return $?
+    local rc=$?
+    $claude_broker_started && harness_claude_cmux_broker_stop
+    return $rc
   else
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
       HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \

@@ -2,6 +2,20 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.29.0 — 2026-09-09
+
+### Added
+
+- Launcher-owned Claude cmux title synchronization. Exact SessionStart handoffs
+  follow native automatic and custom titles, including later manual renames and
+  session switches within the same process.
+
+### Fixed
+
+- Keep title ownership live during slow cmux requests, preserve externally
+  changed tab names, and clean up direct-launch brokers when the runtime exits.
+- Export the selected profile prefix to Claude title hooks.
+
 ## 0.28.2 — 2026-09-09
 
 ### Fixed

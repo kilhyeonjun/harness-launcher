@@ -340,6 +340,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for project scope, test expectations, por
 - [Documentation index](docs/README.md)
 - [Architecture and trust boundaries](docs/architecture.md)
 - [Codex integration](docs/codex-integration.md)
+- [Session titles in cmux](docs/session-titles.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)

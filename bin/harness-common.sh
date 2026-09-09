@@ -296,6 +296,64 @@ harness_codex_cmux_broker_stop() {
   unset CODEX_CMUX_TITLE_REQUEST_FILE
 }
 
+# Claude writes its title events to its transcript.  A launcher-owned broker
+# stays in the cmux-authorized ancestry and accepts every later SessionStart
+# handoff (/clear, resume, and fork), rather than one hook owning a tab.
+harness_claude_cmux_broker_start() {
+  local helper="$1" harness_dir="$2" state_root state_dir request_file
+  harness_claude_cmux_broker_stop
+  [ -x "$helper" ] || return 0
+  [ -n "$harness_dir" ] || return 0
+  [ -n "${CMUX_WORKSPACE_ID:-}" ] || return 0
+  [ -n "${CMUX_TAB_ID:-}" ] || return 0
+  [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
+  case "${HARNESS_PREFIX:-}" in
+    ''|[0-9-]*|*[!A-Za-z0-9_-]*) return 0 ;;
+  esac
+  state_root="${CLAUDE_CMUX_TITLE_STATE_ROOT:-$harness_dir/.harness/claude/.cmux-title-sync}"
+  if [ -e "$state_root" ] || [ -L "$state_root" ]; then
+    [ -d "$state_root" ] && [ ! -L "$state_root" ] && [ "$(stat -f '%u' "$state_root" 2>/dev/null)" = "$(id -u)" ] && [ "$(stat -f '%Lp' "$state_root" 2>/dev/null)" = "700" ] || return 0
+  fi
+  mkdir -p "$state_root" 2>/dev/null || return 0
+  chmod 700 "$state_root" 2>/dev/null || return 0
+  state_dir="$(mktemp -d "$state_root/launch.XXXXXX")" || return 0
+  chmod 700 "$state_dir" 2>/dev/null || { rm -rf "$state_dir"; return 0; }
+  request_file="$state_dir/request.json"
+  : > "$request_file" || { rm -rf "$state_dir"; return 0; }
+  chmod 600 "$request_file" 2>/dev/null || { rm -rf "$state_dir"; return 0; }
+  export CLAUDE_CMUX_TITLE_STATE_DIR="$state_dir"
+  export CLAUDE_CMUX_TITLE_REQUEST_FILE="$request_file"
+  export CLAUDE_CMUX_TITLE_HELPER="$helper"
+  HARNESS_CLAUDE_CMUX_BROKER_STATE="$state_dir"
+  HARNESS_CLAUDE_CMUX_BROKER_ROOT="$state_root"
+  "$helper" --claude-broker "$request_file" "$CMUX_SURFACE_ID" "$HARNESS_PREFIX" "$harness_dir/.harness/claude" "$$" </dev/null >/dev/null 2>&1 &
+  HARNESS_CLAUDE_CMUX_BROKER_PID=$!
+  printf '%s\n%s\n' "$$" "$HARNESS_CLAUDE_CMUX_BROKER_PID" > "$state_dir/owner" 2>/dev/null || true
+  chmod 600 "$state_dir/owner" 2>/dev/null || true
+  return 0
+}
+
+harness_claude_cmux_broker_stop() {
+  local state="${HARNESS_CLAUDE_CMUX_BROKER_STATE:-}" root="${HARNESS_CLAUDE_CMUX_BROKER_ROOT:-${CLAUDE_CMUX_TITLE_STATE_ROOT:-}}" owner launcher_pid broker_pid
+  if [ -z "$root" ] && [ -n "${HARNESS_DIR:-}" ]; then root="$HARNESS_DIR/.harness/claude/.cmux-title-sync"; fi
+  case "$state" in "$root"/launch.*) ;; *) state="" ;; esac
+  if [ -n "$state" ] && [ -d "$state" ] && [ ! -L "$state" ] && [ "$(stat -f '%u' "$state" 2>/dev/null)" = "$(id -u)" ] && [ "$(stat -f '%Lp' "$state" 2>/dev/null)" = "700" ] && [ -f "$state/owner" ] && [ ! -L "$state/owner" ] && [ "$(stat -f '%u' "$state/owner" 2>/dev/null)" = "$(id -u)" ]; then
+    IFS= read -r launcher_pid < "$state/owner" || launcher_pid=""
+    IFS= read -r broker_pid < <(sed -n '2p' "$state/owner") || broker_pid=""
+  else
+    state=""
+  fi
+  if [ -n "$state" ] && [ "$launcher_pid" = "$$" ] && [ "$broker_pid" = "${HARNESS_CLAUDE_CMUX_BROKER_PID:-}" ]; then
+    kill "$HARNESS_CLAUDE_CMUX_BROKER_PID" 2>/dev/null || true
+    wait "$HARNESS_CLAUDE_CMUX_BROKER_PID" 2>/dev/null || true
+    rm -f "$state/request.json" "$state/active.json" "$state/owner" "$state/claude.status.json" 2>/dev/null || true
+    rmdir "$state" 2>/dev/null || true
+  fi
+  unset HARNESS_CLAUDE_CMUX_BROKER_PID HARNESS_CLAUDE_CMUX_BROKER_STATE HARNESS_CLAUDE_CMUX_BROKER_ROOT
+  unset CLAUDE_CMUX_TITLE_STATE_DIR CLAUDE_CMUX_TITLE_REQUEST_FILE
+  unset CLAUDE_CMUX_TITLE_HELPER CLAUDE_CMUX_TITLE_OWNER_PID
+}
+
 harness_kiro_bin_resolve() {
   local configured="${HARNESS_KIRO_BIN:-}"
   if [ -n "$configured" ]; then
