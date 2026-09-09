@@ -2,6 +2,13 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.28.1 — 2026-09-09
+
+### Fixed
+
+- Explicitly enable Codex native task progress after the upstream tool became
+  opt-in. Warm preparation repairs missing or disabled tracker configuration.
+
 ## 0.28.0 — 2026-09-08
 
 ### Added

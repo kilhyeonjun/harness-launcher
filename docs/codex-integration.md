@@ -54,6 +54,14 @@ The exact set depends on available source files and installed Codex features. Th
 
 When `config/codex-surface.json` exists, preparation uses its exact skill, Claude-plugin, Codex-only, and MCP allowlists instead of importing every available source. See [Codex surface manifests](codex-surface.md) for schema version `1`, profile selection, and warm-path invalidation.
 
+## Native task progress
+
+Generated homes explicitly set `[tools.update_plan]` with `enabled = true`.
+Codex 0.152.0 made this tool opt-in; the footer's `task-progress` item only
+displays progress and does not enable the tool. Warm preparation repairs
+missing or disabled values. After upgrading, start a fresh session and verify
+a native `update_plan` call; existing sessions may retain their old tool catalog.
+
 ## Profiles
 
 Codex 0.134.0 and newer load named profiles from `<profile>.config.toml` files with top-level keys. The launcher does not generate legacy `[profiles.<name>]` tables.

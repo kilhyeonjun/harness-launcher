@@ -29,6 +29,14 @@ assert GLOBAL_MCP_SPEC and GLOBAL_MCP_SPEC.loader
 GLOBAL_MCP_MODULE = importlib.util.module_from_spec(GLOBAL_MCP_SPEC)
 sys.modules[GLOBAL_MCP_SPEC.name] = GLOBAL_MCP_MODULE
 GLOBAL_MCP_SPEC.loader.exec_module(GLOBAL_MCP_MODULE)
+WARM_PROBE_PATH = ROOT / "bin" / "codex-surface-warm.py"
+WARM_PROBE_SPEC = importlib.util.spec_from_file_location(
+    "codex_surface_warm_test", WARM_PROBE_PATH
+)
+assert WARM_PROBE_SPEC and WARM_PROBE_SPEC.loader
+WARM_PROBE_MODULE = importlib.util.module_from_spec(WARM_PROBE_SPEC)
+sys.modules[WARM_PROBE_SPEC.name] = WARM_PROBE_MODULE
+WARM_PROBE_SPEC.loader.exec_module(WARM_PROBE_MODULE)
 
 COORDINATION_TIMEOUT_ENV = "HARNESS_TEST_COORDINATION_TIMEOUT_SECONDS"
 
@@ -2215,6 +2223,11 @@ out.mkdir(parents=True, exist_ok=True)
         config = config.replace("hooks = true", "hooks = false", 1)
         config = config.replace("experimental_mode = true", "experimental_mode = false", 1)
         config = config.replace(
+            "[tools.update_plan]\nenabled = true",
+            "[tools.update_plan]\nenabled = false",
+            1,
+        )
+        config = config.replace(
             'model_reasoning_effort = "medium"',
             'model_reasoning_effort = "medium"\n'
             'approval_policy = "never"\n'
@@ -2249,6 +2262,7 @@ out.mkdir(parents=True, exist_ok=True)
         # instead of dropping them.
         self.assertEqual(repaired["model_context_window"], 1000000)
         self.assertEqual(repaired["model_auto_compact_token_limit"], 414000)
+        self.assertEqual(repaired["tools"], {"update_plan": {"enabled": True}})
         self.assertEqual(repaired["mcp_servers"]["context7"]["command"], "context7")
         self.assertEqual(
             repaired["features"],
@@ -2267,6 +2281,39 @@ out.mkdir(parents=True, exist_ok=True)
             2,
             "repaired context-management config forced perpetual cold rebuilds",
         )
+
+    def assert_native_task_tracker_repaired(self, replacement: str):
+        self.prepare()
+        config_path = self.codex_home / "config.toml"
+        config = config_path.read_text(encoding="utf-8")
+        original = "[tools.update_plan]\nenabled = true"
+        self.assertIn(original, config)
+        config_path.write_text(config.replace(original, replacement, 1), encoding="utf-8")
+
+        catalog = json.loads((self.codex_home / "skill-catalog.json").read_text())
+        warm_environment = {
+            "HOME": str(self.home),
+            "HARNESS_CODEX_APPS_ALLOWLIST": "",
+            "HARNESS_CODEX_CONTEXT_MANAGEMENT_SUPPORTED": "true",
+        }
+        with mock.patch.dict(os.environ, warm_environment):
+            self.assertFalse(WARM_PROBE_MODULE.config_matches(self.codex_home, catalog, ""))
+
+        self.prepare()
+        with config_path.open("rb") as stream:
+            repaired = tomllib.load(stream)
+        self.assertEqual(repaired["tools"], {"update_plan": {"enabled": True}})
+
+        with mock.patch.dict(os.environ, warm_environment):
+            self.assertTrue(WARM_PROBE_MODULE.config_matches(self.codex_home, catalog, ""))
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2)
+
+    def test_warm_path_repairs_missing_native_task_tracker(self):
+        self.assert_native_task_tracker_repaired("")
+
+    def test_warm_path_repairs_disabled_native_task_tracker(self):
+        self.assert_native_task_tracker_repaired("[tools.update_plan]\nenabled = false")
 
     def test_context_management_capability_change_rebuilds_once_then_stays_warm(self):
         self.prepare()

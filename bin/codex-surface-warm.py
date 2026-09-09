@@ -109,6 +109,7 @@ def config_matches(codex_home, catalog, expected_profile):
         "hooks",
         "otel",
         "apps",
+        "tools",
     }
     if set(config) - allowed_root_keys:
         return False
@@ -179,6 +180,8 @@ def config_matches(codex_home, catalog, expected_profile):
     if config.get("features") != expected_features:
         return False
     if config.get("apps") != allowed_apps:
+        return False
+    if config.get("tools") != {"update_plan": {"enabled": True}}:
         return False
     marketplaces = config.get("marketplaces") or {}
     if not isinstance(marketplaces, dict):
