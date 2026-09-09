@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import stat as stat_module
 import tempfile
 import time
 import tomllib
@@ -161,14 +162,21 @@ class FingerprintHashCache:
     @staticmethod
     def identity(path: Path) -> list:
         stat = path.stat()
-        return [
-            stat.st_dev,
-            stat.st_ino,
-            stat.st_size,
-            stat.st_mtime_ns,
-            stat.st_ctime_ns,
-            os.path.realpath(path),
-        ]
+        if path.is_dir():
+            # Runtime `.in_use` markers mutate a parent directory's timestamps
+            # but do not change the generated surface. Enumerate meaningful
+            # immediate topology so real adds/removals still invalidate warm.
+            entries = []
+            for entry in path.iterdir():
+                entry_stat = entry.lstat()
+                # Only the runtime's ordinary marker file is non-semantic.
+                # A directory or symlink named `.in_use` can carry a skill.
+                if entry.name == ".in_use" and stat_module.S_ISREG(entry_stat.st_mode):
+                    continue
+                target = os.readlink(entry) if entry.is_symlink() else ""
+                entries.append([entry.name, stat_module.S_IFMT(entry_stat.st_mode), target])
+            return [stat.st_dev, stat.st_ino, stat.st_mode, sorted(entries), os.path.realpath(path)]
+        return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, os.path.realpath(path)]
 
     def watch(self, path: Path) -> list | None:
         key = os.path.abspath(path)
@@ -176,6 +184,8 @@ class FingerprintHashCache:
             identity = self.identity(path)
         except FileNotFoundError:
             identity = None
+        except OSError as error:
+            raise SurfaceError(f"cannot inspect fingerprint input {path}: {error}") from error
         real_key = os.path.realpath(path)
         self.watched[real_key] = identity
         # Watching the root symlink itself catches retargeting. Descendants
@@ -201,7 +211,10 @@ class FingerprintHashCache:
     def watch_directory_entries(self, path: Path) -> list[str] | None:
         key = os.path.realpath(path)
         try:
-            entries = sorted(entry.name for entry in path.iterdir() if entry.is_dir())
+            entries = sorted(
+                entry.name for entry in path.iterdir()
+                if entry.is_dir() and not (entry.name == ".in_use" and entry.is_file() and not entry.is_symlink())
+            )
         except FileNotFoundError:
             entries = None
         self.directory_entries[key] = entries

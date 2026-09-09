@@ -56,6 +56,19 @@ def parse_coordination_timeout(env: Mapping[str, str]) -> int:
 COORDINATION_TIMEOUT_SECONDS = parse_coordination_timeout(os.environ)
 
 
+class WarmIdentityTests(unittest.TestCase):
+    def test_directory_enumeration_failure_requests_cold_rebuild(self):
+        spec = importlib.util.spec_from_file_location('warm_identity_test', ROOT / 'bin/codex-surface-warm.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as directory:
+            for error in (PermissionError('denied'), FileNotFoundError('raced removal')):
+                with self.subTest(error=type(error).__name__), mock.patch.object(module.os, 'listdir', side_effect=error):
+                    with self.assertRaises(SystemExit) as raised:
+                        module.identity(directory)
+                    self.assertEqual(raised.exception.code, 3)
+
+
 def write_skill(root: Path, directory: str, name: str, body: str, *, implicit=True) -> Path:
     skill_dir = root / directory
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -973,6 +986,49 @@ out.mkdir(parents=True, exist_ok=True)
             1,
             "external computer-use opt-in did not stay warm",
         )
+
+    def test_runtime_in_use_marker_changes_stay_warm(self):
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        marker = self.plugin_skill.parents[2] / ".in_use"
+        marker.write_text("first\n", encoding="utf-8")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1, "creating .in_use regenerated the surface")
+        marker.write_text("second\n", encoding="utf-8")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1, "changing .in_use regenerated the surface")
+        marker.unlink()
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1, "removing .in_use regenerated the surface")
+
+    def test_in_use_nonregular_and_entry_type_transitions_invalidate(self):
+        self.prepare()
+        root = self.plugin_skill.parents[2]
+        marker = root / ".in_use"
+        marker.mkdir()
+        (marker / "SKILL.md").write_text("---\nname: marker\n---\n", encoding="utf-8")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2, "directory .in_use stayed warm")
+        shutil.rmtree(marker)
+        marker.symlink_to(root / "missing-target")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3, "symlink .in_use stayed warm")
+        marker.unlink()
+        same = root / "type-transition"
+        same.write_text("plain\n", encoding="utf-8")
+        self.prepare()
+        calls = self.compiler_calls()
+        same.unlink(); same.mkdir(); (same / "SKILL.md").write_text("---\nname: type\n---\n", encoding="utf-8")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), calls + 1, "file-to-skilldir stayed warm")
+        shutil.rmtree(same); same.symlink_to(root / "missing")
+        self.prepare(); calls = self.compiler_calls()
+        same.unlink(); same.mkdir(); (same / "SKILL.md").write_text("---\nname: repaired\n---\n", encoding="utf-8")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), calls + 1, "brokenlink-to-skilldir stayed warm")
+        shutil.rmtree(same); same.write_text("plain again\n", encoding="utf-8")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), calls + 2, "skilldir-to-file stayed warm")
 
     def test_profile_flags_and_warm_fingerprint_invalidation(self):
         # Installed plugins carry tests/docs/assets that are not copied into
