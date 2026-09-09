@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import stat as stat_module
 import tomllib
 import importlib.util
 
@@ -78,14 +79,20 @@ def identity(path):
         stat = os.stat(path)
     except OSError:
         return None
-    return [
-        stat.st_dev,
-        stat.st_ino,
-        stat.st_size,
-        stat.st_mtime_ns,
-        stat.st_ctime_ns,
-        os.path.realpath(path),
-    ]
+    try:
+        if os.path.isdir(path):
+            entries = []
+            for name in os.listdir(path):
+                entry = os.path.join(path, name)
+                entry_stat = os.lstat(entry)
+                if name == ".in_use" and stat_module.S_ISREG(entry_stat.st_mode):
+                    continue
+                target = os.readlink(entry) if stat_module.S_ISLNK(entry_stat.st_mode) else ""
+                entries.append([name, stat_module.S_IFMT(entry_stat.st_mode), target])
+            return [stat.st_dev, stat.st_ino, stat.st_mode, sorted(entries), os.path.realpath(path)]
+        return [stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, os.path.realpath(path)]
+    except OSError:
+        cold()
 
 
 def config_matches(codex_home, catalog, expected_profile):

@@ -2,6 +2,19 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.28.2 — 2026-09-09
+
+### Fixed
+
+- Keep Codex preparation warm when a regular `.in_use` runtime marker changes.
+  Directory, symlink, and entry-type changes still invalidate the fingerprint.
+
+### Changed
+
+- Run reviewed integration tests with isolated fixtures in at most two shards.
+  Security and new tests remain serial; `HARNESS_SURFACE_TEST_JOBS=1` retains
+  the original complete serial test command.
+
 ## 0.28.1 — 2026-09-09
 
 ### Fixed

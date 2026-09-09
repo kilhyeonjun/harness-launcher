@@ -310,7 +310,22 @@ cd harness-launcher
 ./test/run-all.sh
 ```
 
-The suite dispatches each test through its declared Bash or Zsh interpreter. Run syntax checks as well:
+The suite dispatches each test through its declared Bash or Zsh interpreter.
+Codex surface tests run unlisted and safety-sensitive cases serially, then run
+14 reviewed private-HOME metadata/configuration tests in at most two subprocess
+shards. Every test keeps its own repo, generated home, lock and compiler counter;
+the actual prepare and publication assertions are unchanged. New tests stay
+serial until reviewed in `test/surface_test_runner.py`.
+
+Use `HARNESS_SURFACE_TEST_JOBS=1 ./test/test-codex-surface.sh` for the original
+serial unittest command. The default is 2; larger values are rejected. The
+runner reports group and total wall time and preserves each group's failure
+output. `--report PATH` writes machine-readable timings when invoking the Python
+runner directly. In two same-host 14-test comparisons, serial runs took
+64.6–95.3 seconds and two shards took 28.8–31.1 seconds; host load varies, so
+these are observations for that subset, not a full-suite speed guarantee.
+
+Run syntax checks as well:
 
 ```bash
 bash -n bin/*.sh test/*.sh
