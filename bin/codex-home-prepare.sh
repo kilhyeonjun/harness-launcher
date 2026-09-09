@@ -329,7 +329,9 @@ for entry in source.iterdir():
 (facade / ".harness" / "codex").symlink_to(output, target_is_directory=True)
 PY
   fi
-  if python3 "$compiler" --write-codex "$compiler_root" >/dev/null; then
+  if python3 "$compiler" --write-codex-project "$compiler_root" >/dev/null 2>&1; then
+    compiled_agents=1
+  elif python3 "$compiler" --write-codex "$compiler_root" >/dev/null; then
     compiled_agents=1
   else
     if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
