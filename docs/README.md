@@ -6,6 +6,7 @@ The README covers installation and the first registered project. These documents
 
 - [Architecture and trust boundaries](architecture.md) — registration, command routing, generated runtime homes, and security boundaries.
 - [Codex integration](codex-integration.md) — profile overlays, MCP translation, skills, plugins, hooks, and compatibility behavior.
+- [Session titles in cmux](session-titles.md) — exact-session Claude/Codex title transport, native rename priority, and legacy hook coordination.
 - [Codex surface manifests](codex-surface.md) — exact skill/plugin/MCP membership, host-token resolution, and warm launches.
 - [Orca ADE integration](orca-integration.md) — executable entrypoint, profile-local worktrees, ownership boundaries, and safety gates.
 - [Troubleshooting](troubleshooting.md) — shell resolution, stale runtime binaries, generated state, MCP conflicts, and browser-host issues.

@@ -12,6 +12,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import math
+import threading
 import time
 from pathlib import Path
 
@@ -65,7 +67,7 @@ def process_is_alive(pid: int) -> bool:
 def rename_tab(cmux: str, surface: str, title: str) -> str:
     try:
         result = subprocess.run(
-            [cmux, "rename-tab", "--surface", surface, title],
+            [cmux, "rename-tab", "--surface", surface, "--", title],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -77,6 +79,30 @@ def rename_tab(cmux: str, surface: str, title: str) -> str:
     except (OSError, subprocess.SubprocessError):
         return "rename_failed"
     return "ok" if result.returncode == 0 else "rename_failed"
+
+
+def current_tab_title(cmux: str, surface: str, workspace: str) -> str | None:
+    command = [cmux, "--id-format", "both", "--json", "tree"]
+    command.extend(["--workspace", workspace] if workspace else ["--all"])
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=1.5, check=False)
+        tree = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    def surfaces(node):
+        if isinstance(node, dict):
+            if node.get("ref") == surface or node.get("surface_ref") == surface or node.get("id") == surface:
+                yield node
+            for value in node.values():
+                yield from surfaces(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from surfaces(value)
+    for current in surfaces(tree):
+        value = current.get("title") if isinstance(current, dict) else None
+        if isinstance(value, str):
+            return sanitize_title(value)
+    return None
 
 
 def wait_for_retry(owner_pid: int, delay_seconds: int) -> bool:
@@ -173,8 +199,35 @@ def discover_codex_owner_pid() -> int | None:
     return None
 
 
+def discover_claude_owner_pid() -> int | None:
+    override = os.environ.get("CLAUDE_CMUX_TITLE_OWNER_PID", "")
+    if override:
+        return int(override) if override.isdecimal() and process_is_alive(int(override)) else None
+    pid = os.getppid()
+    for _ in range(24):
+        if pid <= 1:
+            return None
+        try:
+            command = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "comm="], capture_output=True,
+                text=True, timeout=1, check=False,
+            ).stdout.strip()
+            parent = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "ppid="], capture_output=True,
+                text=True, timeout=1, check=False,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if Path(command).name.startswith("claude"):
+            return pid
+        if not parent.isdecimal():
+            return None
+        pid = int(parent)
+    return None
+
+
 def resolve_cmux() -> str | None:
-    override = os.environ.get("CODEX_CMUX_TITLE_CMUX_BIN", "")
+    override = os.environ.get("CLAUDE_CMUX_TITLE_CMUX_BIN", "") or os.environ.get("CODEX_CMUX_TITLE_CMUX_BIN", "")
     if override:
         return override if os.path.isfile(override) and os.access(override, os.X_OK) else None
     located = shutil.which("cmux")
@@ -234,6 +287,345 @@ def read_broker_request(request_path: Path) -> tuple[str, int] | None:
     ):
         return None
     return session_id, owner_pid
+
+
+def safe_regular_file(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid == os.getuid()
+        and metadata.st_nlink == 1
+    )
+
+
+def open_private_read(path: Path):
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+        metadata = os.fstat(descriptor)
+    except OSError:
+        return None
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+        os.close(descriptor)
+        return None
+    return os.fdopen(descriptor, "r", encoding="utf-8", errors="replace")
+
+
+def safe_state_dir(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(metadata.st_mode)
+        and metadata.st_uid == os.getuid()
+        and not (stat.S_IMODE(metadata.st_mode) & 0o077)
+        and path.name.startswith("launch.")
+    )
+
+
+def atomic_json(path: Path, payload: dict[str, object]) -> bool:
+    """Write private launcher state without ever exposing a partial record."""
+    if not safe_state_dir(path.parent):
+        return False
+    try:
+        temporary = path.parent / f".{path.name}.{os.getpid()}.{time.time_ns()}"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, separators=(",", ":"))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        return True
+    except OSError:
+        try:
+            temporary.unlink()
+        except (OSError, UnboundLocalError):
+            pass
+        return False
+
+
+def read_claude_request(request_path: Path, state_dir: Path) -> tuple[str, str, int] | None:
+    if request_path.parent != state_dir:
+        return None
+    try:
+        stream = open_private_read(request_path)
+        if stream is None:
+            return None
+        with stream:
+            payload = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    session_id = payload.get("session_id")
+    transcript_path = payload.get("transcript_path")
+    owner_pid = payload.get("owner_pid")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    if not isinstance(transcript_path, str) or not transcript_path:
+        return None
+    if not isinstance(owner_pid, int) or owner_pid <= 1:
+        return None
+    return session_id, transcript_path, owner_pid
+
+
+def claude_title(transcript_path: Path, session_id: str) -> str | None:
+    """Return the manual title when present; late automatic titles cannot replace it."""
+    ai_title = None
+    custom_title = None
+    try:
+        stream = open_private_read(transcript_path)
+        if stream is None:
+            return None
+        with stream:
+            for raw in stream:
+                try:
+                    record = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict) or record.get("sessionId") != session_id:
+                    continue
+                if record.get("type") == "custom-title":
+                    value = record.get("customTitle")
+                    if isinstance(value, str) and (cleaned := sanitize_title(value)):
+                        custom_title = cleaned
+                elif record.get("type") == "ai-title":
+                    value = record.get("aiTitle")
+                    if isinstance(value, str) and (cleaned := sanitize_title(value)):
+                        ai_title = cleaned
+    except OSError:
+        return None
+    return custom_title or ai_title
+
+
+def transcript_signature(path: Path) -> tuple[int, int] | None:
+    stream = open_private_read(path)
+    if stream is None:
+        return None
+    try:
+        metadata = os.fstat(stream.fileno())
+        return metadata.st_size, metadata.st_mtime_ns
+    finally:
+        stream.close()
+
+
+def write_claude_request(request_path: Path, state_dir: Path, session_id: str, transcript_path: str, owner_pid: int) -> bool:
+    if request_path.parent != state_dir or not safe_state_dir(state_dir):
+        return False
+    return atomic_json(request_path, {
+        "session_id": session_id,
+        "transcript_path": transcript_path,
+        "owner_pid": owner_pid,
+    })
+
+
+def remove_claude_ack(status_path: Path) -> None:
+    try:
+        stream = open_private_read(status_path)
+        if stream is None:
+            return
+        with stream:
+            payload = json.load(stream)
+        if isinstance(payload, dict) and payload.get("broker_pid") == os.getpid():
+            status_path.unlink()
+    except (OSError, ValueError):
+        pass
+
+
+def cleanup_claude_launch_state(state_dir: Path, launcher_pid: int) -> None:
+    """TUI exec has no shell finally; remove only this broker's seeded child."""
+    owner = state_dir / "owner"
+    try:
+        if not safe_state_dir(state_dir) or not safe_regular_file(owner):
+            return
+        with open_private_read(owner) as stream:
+            lines = stream.read().splitlines()
+        if len(lines) != 2 or lines[0] != str(launcher_pid) or lines[1] != str(os.getpid()):
+            return
+        for name in ("request.json", "active.json", "owner", "claude.status.json"):
+            candidate = state_dir / name
+            if candidate.exists() and safe_regular_file(candidate):
+                candidate.unlink()
+        state_dir.rmdir()
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def rename_with_claude_heartbeat(
+    cmux: str, surface: str, title: str, owner_pid: int, status_path: Path, ack_path: Path,
+    ack_payload: dict[str, object], poll_seconds: float,
+) -> bool:
+    """Keep the exact-session lease fresh while cmux is allowed its bounded wait."""
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop.wait(min(poll_seconds, 0.5)):
+            atomic_json(ack_path, {**ack_payload, "heartbeat_unix": int(time.time())})
+
+    worker = threading.Thread(target=heartbeat, daemon=True)
+    worker.start()
+    try:
+        return rename_with_retry(cmux, surface, title, owner_pid, status_path)
+    finally:
+        stop.set()
+        worker.join(timeout=1)
+
+
+def write_legacy_owner(workspace: str, surface: str, title: str) -> None:
+    """Reuse the Claude fallback's owner registry across a fresh launcher."""
+    root = Path(os.environ.get("CMUX_TITLE_STATE_DIR", str(Path(os.environ.get("TMPDIR", "/tmp")) / "cmux-title-persist")))
+    owners = root / "owners"
+    try:
+        if root.exists() or root.is_symlink():
+            if not safe_state_dir_legacy(root):
+                return
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not safe_state_dir_legacy(root):
+            return
+        if owners.exists() or owners.is_symlink():
+            if not safe_state_dir_legacy(owners):
+                return
+        owners.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(root, 0o700)
+        os.chmod(owners, 0o700)
+        if not safe_state_dir_legacy(root) or not safe_state_dir_legacy(owners):
+            return
+        key = hashlib.sha256(f"{workspace}\0{surface}".encode()).hexdigest()
+        target = owners / key
+        temporary = owners / f".{key}.{os.getpid()}.{time.time_ns()}"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(f"{workspace}\n{surface}\n{title}\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    except OSError:
+        pass
+
+
+def safe_state_dir_legacy(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == os.getuid() and not (stat.S_IMODE(metadata.st_mode) & 0o077)
+
+
+def claude_session_start() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
+        return 0
+    session_id = payload.get("session_id")
+    transcript_path = payload.get("transcript_path")
+    request_raw = os.environ.get("CLAUDE_CMUX_TITLE_REQUEST_FILE", "")
+    state_raw = os.environ.get("CLAUDE_CMUX_TITLE_STATE_DIR", "")
+    if not isinstance(session_id, str) or not session_id or not isinstance(transcript_path, str) or not transcript_path:
+        return 0
+    if not request_raw or not state_raw:
+        return 0
+    owner_pid = discover_claude_owner_pid()
+    if owner_pid is None or not process_is_alive(owner_pid):
+        return 0
+    write_claude_request(Path(request_raw), Path(state_raw), session_id, transcript_path, owner_pid)
+    return 0
+
+
+def claude_broker(request_raw: str, surface: str, prefix: str, runtime_home: str, launcher_pid_raw: str) -> int:
+    if not valid_prefix(prefix) or not launcher_pid_raw.isdecimal():
+        return 0
+    request_path = Path(request_raw)
+    state_dir = Path(os.environ.get("CLAUDE_CMUX_TITLE_STATE_DIR", str(Path(runtime_home) / ".cmux-title-sync")))
+    if request_path.parent != state_dir or not safe_state_dir(state_dir):
+        return 0
+    cmux = resolve_cmux()
+    if not cmux:
+        return 0
+    try:
+        poll_seconds = float(os.environ.get("CLAUDE_CMUX_TITLE_POLL_SECONDS", "0.5"))
+    except ValueError:
+        return 0
+    if not math.isfinite(poll_seconds):
+        return 0
+    poll_seconds = max(poll_seconds, 0.02)
+    launcher_pid = int(launcher_pid_raw)
+    status_path = state_dir / "active.json"
+    last_request = None
+    last_title = None
+    prior_owned_title = None
+    title_frozen = False
+    last_transcript_signature = None
+    observed_title = None
+    try:
+        while process_is_alive(launcher_pid):
+            request = read_claude_request(request_path, state_dir)
+            if request:
+                session_id, transcript_raw, owner_pid = request
+                assignment = (session_id, transcript_raw, owner_pid)
+                if assignment != last_request:
+                    prior_owned_title = last_title
+                    last_request, last_title = assignment, None
+                    last_transcript_signature, observed_title = None, None
+                    title_frozen = False
+                if process_is_alive(owner_pid):
+                    transcript = Path(transcript_raw)
+                    signature = transcript_signature(transcript)
+                    if signature is not None and signature != last_transcript_signature:
+                        observed_title = claude_title(transcript, session_id)
+                        last_transcript_signature = signature
+                    if signature is None:
+                        time.sleep(poll_seconds)
+                        continue
+                    ack_payload: dict[str, object] = {
+                        "uid": os.getuid(), "broker_pid": os.getpid(), "launcher_pid": launcher_pid,
+                        "owner_pid": owner_pid, "session_id": session_id, "surface": surface,
+                        "workspace": os.environ.get("CMUX_WORKSPACE_ID", ""),
+                    }
+                    atomic_json(status_path, {**ack_payload, "heartbeat_unix": int(time.time())})
+                    if observed_title:
+                        rendered = f"{observed_title} | {prefix}"
+                        if rendered != last_title and not title_frozen:
+                            current = current_tab_title(cmux, surface, str(ack_payload["workspace"]))
+                            native = observed_title
+                            spinner_native = native.lstrip("✳✻✽✶✢· ")
+                            allowed = {"", "Claude Code", rendered, native, spinner_native}
+                            allowed.update(f"{mark} {native}" for mark in "✳✻✽✶✢·")
+                            if last_title is not None:
+                                allowed.add(last_title)
+                            if prior_owned_title is not None:
+                                allowed.add(prior_owned_title)
+                            # A cleared tab briefly exposes the shell title; wait for Claude's OSC.
+                            if current is None or (current and (current.startswith(("~/", "/")) or "@" in current and ":" in current)):
+                                time.sleep(poll_seconds)
+                                continue
+                            if current not in allowed:
+                                title_frozen = True
+                                time.sleep(poll_seconds)
+                                continue
+                            if not rename_with_claude_heartbeat(
+                                cmux, surface, rendered, owner_pid, state_dir / "claude.status.json",
+                                status_path, ack_payload, poll_seconds,
+                            ):
+                                break
+                            last_title = rendered
+                            write_legacy_owner(str(ack_payload["workspace"]), surface, rendered)
+            time.sleep(poll_seconds)
+    finally:
+        remove_claude_ack(status_path)
+        cleanup_claude_launch_state(state_dir, launcher_pid)
+    return 0
 
 
 def broker(
@@ -420,6 +812,10 @@ def session_start() -> int:
 
 
 def main() -> int:
+    if len(sys.argv) == 2 and sys.argv[1] == "--claude-session-start":
+        return claude_session_start()
+    if len(sys.argv) == 7 and sys.argv[1] == "--claude-broker":
+        return claude_broker(*sys.argv[2:])
     if len(sys.argv) in (10, 11) and sys.argv[1] == "--watch":
         return watch(*sys.argv[2:])
     if len(sys.argv) == 7 and sys.argv[1] == "--broker":

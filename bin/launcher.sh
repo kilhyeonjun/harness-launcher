@@ -1026,6 +1026,7 @@ launch_claude() {
 
   history_save
   launch_banner "$PLAN_SUMMARY" "$exe" "${args[@]}"
+  harness_claude_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py" "$HARNESS_DIR"
   exec "$exe" "${args[@]}"
 }
 
