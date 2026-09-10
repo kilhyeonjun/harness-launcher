@@ -22,7 +22,10 @@ if [[ -z "$SCRIPT" || ! -f "$SCRIPT" ]]; then
   exit 0
 fi
 
-OUTPUT="$(printf '%s' "$PAYLOAD" | HARNESS_HOOK_RUNTIME=codex bash "$SCRIPT" 2>/dev/null || true)"
+# Expose the Codex parent PID only to the canonical hook child. A subsequent
+# direct Stop hook can use it to recognize this adapter invocation without
+# leaking implementation state into the Codex process itself.
+OUTPUT="$(printf '%s' "$PAYLOAD" | HARNESS_HOOK_RUNTIME=codex HARNESS_HOOK_OWNER_PID="$PPID" bash "$SCRIPT" 2>/dev/null || true)"
 
 # Whitespace-only output is treated as empty.
 if [[ -z "${OUTPUT//[[:space:]]/}" ]]; then
