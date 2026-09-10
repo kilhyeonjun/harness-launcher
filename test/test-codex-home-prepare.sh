@@ -9,25 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PREPARE="$LAUNCHER_DIR/bin/codex-home-prepare.sh"
 
-find_harness_repo_root() {
-  local candidate
-  for candidate in \
-    "${HARNESS_TEST_REPO_ROOT:-}" \
-    "$LAUNCHER_DIR/../.." \
-    "$HOME/kilhyeonjun-harness" \
-    "$HOME/gameduo-personal-harness" \
-    "$HOME/gameduo-platform-harness"
-  do
-    [[ -n "$candidate" ]] || continue
-    if [[ -f "$candidate/core/scripts/harness_compile.py" ]]; then
-      (cd "$candidate" && pwd)
-      return 0
-    fi
-  done
-  return 1
-}
-
-REPO_ROOT="$(find_harness_repo_root || true)"
+LEGACY_COMPILER_FIXTURE="$LAUNCHER_DIR/test/fixtures/legacy-harness-compiler.py"
 
 cleanup() {
   [[ -n "${TEST_TEMP:-}" && -d "$TEST_TEMP" ]] && rm -rf "$TEST_TEMP"
@@ -35,6 +17,7 @@ cleanup() {
 trap cleanup EXIT
 
 [[ -x "$PREPARE" ]] || { echo "FAIL: $PREPARE missing or not executable"; exit 1; }
+[[ -f "$LEGACY_COMPILER_FIXTURE" ]] || { echo "FAIL: $LEGACY_COMPILER_FIXTURE missing"; exit 1; }
 
 TEST_TEMP="$(mktemp -d)"
 TEST_HARNESS="$TEST_TEMP/fake-harness"
@@ -1513,8 +1496,7 @@ mkdir -p "$TEST_HARNESS_COMP/.claude/source" \
          "$TEST_HARNESS_COMP/.claude/rules" \
          "$TEST_HARNESS_COMP/core/scripts"
 echo "# compiler harness" > "$TEST_HARNESS_COMP/CLAUDE.md"
-[[ -n "$REPO_ROOT" ]] || { echo "FAIL: harness repo root with core/scripts/harness_compile.py not found"; exit 1; }
-cp "$REPO_ROOT/core/scripts/harness_compile.py" "$TEST_HARNESS_COMP/core/scripts/harness_compile.py"
+cp "$LEGACY_COMPILER_FIXTURE" "$TEST_HARNESS_COMP/core/scripts/harness_compile.py"
 cat > "$TEST_HARNESS_COMP/.claude/source/runtime-contract.yaml" <<'EOF'
 runtime_contract:
   id: harness-runtime-v1
