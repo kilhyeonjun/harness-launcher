@@ -35,6 +35,27 @@ class PartitionTests(unittest.TestCase):
                                   selected=['T.a', 'T.future'])
         self.assertCountEqual([name for _, group in groups for name in group], ['T.a', 'T.future'])
 
+    def test_reviewed_private_fixture_cases_leave_only_safety_case_serial(self):
+        reviewed = [
+            'PrepareIntegrationTests.test_global_allowlist_definitions_follow_exact_profiles_and_warm_digest',
+            'PrepareIntegrationTests.test_selected_global_definition_edits_invalidate_or_fail_closed',
+            'PrepareIntegrationTests.test_external_agents_survive_warm_and_cold_prepare_without_becoming_managed',
+            'PrepareIntegrationTests.test_warm_path_repairs_launcher_owned_config_semantics',
+            'PrepareIntegrationTests.test_manifest_skill_wins_command_collision_without_source_write',
+        ]
+        safety_case = 'PrepareIntegrationTests.test_candidate_failure_and_signal_preserve_managed_and_runtime_state'
+        groups = RUNNER.partition(
+            RUNNER.discover(),
+            RUNNER.ALLOWLIST,
+            2,
+            selected=reviewed + [safety_case],
+        )
+        self.assertEqual(groups[0], ('serial', [safety_case]))
+        self.assertCountEqual(
+            [name for _, group in groups[1:] for name in group],
+            reviewed,
+        )
+
     def test_all_serial_completes_before_parallel_children_start_and_failures_propagate(self):
         finished_serial = False
         calls = []

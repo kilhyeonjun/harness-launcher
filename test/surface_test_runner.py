@@ -20,6 +20,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST = [
+    ('PrepareIntegrationTests.test_homebrew_compat_and_opt_entrypoints_generate_identical_hook_paths', 4),
     ('PrepareIntegrationTests.test_missing_default_app_marketplace_uses_valid_cached_marketplace', 2),
     ('PrepareIntegrationTests.test_explicit_marketplace_source_switch_invalidates_warm_home', 3),
     ('PrepareIntegrationTests.test_external_manifest_can_opt_in_computer_use_and_stay_warm', 2),
@@ -34,6 +35,27 @@ ALLOWLIST = [
     ('PrepareIntegrationTests.test_invalid_live_config_fails_preflight_before_staging', 1),
     ('PrepareIntegrationTests.test_hook_commands_shell_quote_special_harness_path', 1),
     ('PrepareIntegrationTests.test_context_management_capability_change_rebuilds_once_then_stays_warm', 3),
+    ('PrepareIntegrationTests.test_global_allowlist_definitions_follow_exact_profiles_and_warm_digest', 6),
+    ('PrepareIntegrationTests.test_global_allowlist_emits_exact_profile_policies_without_source_drift', 3),
+    ('PrepareIntegrationTests.test_selected_global_definition_edits_invalidate_or_fail_closed', 4),
+    ('PrepareIntegrationTests.test_warm_path_rejects_conflicting_managed_skill_override', 2),
+    ('PrepareIntegrationTests.test_selected_skill_override_is_removed', 2),
+    ('PrepareIntegrationTests.test_single_quoted_commented_selected_override_is_removed', 2),
+    ('PrepareIntegrationTests.test_external_agents_survive_warm_and_cold_prepare_without_becoming_managed', 4),
+    ('PrepareIntegrationTests.test_external_claude_agents_are_not_converted_over_native_definitions', 3),
+    ('PrepareIntegrationTests.test_external_agent_prefixes_reject_empty_or_path_patterns', 1),
+    ('PrepareIntegrationTests.test_product_plugin_skill_drift_forces_rebuild', 2),
+    ('PrepareIntegrationTests.test_warm_path_rejects_rogue_mcp_table', 2),
+    ('PrepareIntegrationTests.test_warm_path_rejects_semantic_mcp_table_bypasses', 2),
+    ('PrepareIntegrationTests.test_warm_path_repairs_launcher_owned_output_drift', 2),
+    ('PrepareIntegrationTests.test_hook_entrypoint_removal_invalidates_warm_surface', 2),
+    ('PrepareIntegrationTests.test_warm_path_repairs_launcher_owned_config_semantics', 3),
+    ('PrepareIntegrationTests.test_warm_path_repairs_missing_native_task_tracker', 2),
+    ('PrepareIntegrationTests.test_warm_path_repairs_disabled_native_task_tracker', 2),
+    ('PrepareIntegrationTests.test_warm_path_rebuilds_missing_explicit_policy', 2),
+    ('PrepareIntegrationTests.test_symlinked_skill_store_retarget_invalidates', 2),
+    ('PrepareIntegrationTests.test_manifest_skill_wins_command_collision_without_source_write', 1),
+    ('PrepareIntegrationTests.test_manifest_explicit_command_remains_callable_without_prompt_exposure', 1),
 ]
 
 

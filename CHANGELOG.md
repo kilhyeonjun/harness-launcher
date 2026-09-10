@@ -117,7 +117,16 @@ Notable changes are recorded here. This project follows semantic versioning for 
   policy for `Stop` instead of applying a launcher-side exclusion. This allows
   a harness to register its direct `session-end.sh` delivery gate deliberately.
 
+### Fixed
+
+- Keep the Codex home integration suite independent of neighboring harness
+  repositories by using a launcher-owned legacy compiler fixture.
+
 ### Changed
+
+- Run 36 reviewed private-fixture Codex surface tests in two balanced shards
+  while keeping signal, publication, auth, revocation, quarantine, and new tests
+  serial.
 
 - The Codex hook adapter now passes its parent PID to the wrapped canonical
   hook as `HARNESS_HOOK_OWNER_PID`, enabling a paired direct Stop hook to
