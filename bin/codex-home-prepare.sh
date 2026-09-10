@@ -260,6 +260,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --launcher-file "$0"
     --launcher-file "$SCRIPT_DIR/harness-common.sh"
     --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
+    --launcher-file "$SCRIPT_DIR/codex-pretool-adapter.py"
     --launcher-file "$TITLE_SYNC_PATH"
     --bundled-marketplace "$CODEX_BUNDLED_MARKETPLACE_SOURCE"
     --fingerprint-cache "$CODEX_PREPARE_STAGE/.surface-fingerprint-cache.json"
@@ -1598,25 +1599,36 @@ fi
 hooks_file="$CODEX_HOME/hooks.json"
 tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
 ADAPTER_PATH="$SCRIPT_DIR/codex-hook-adapter.sh"
-python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" > "$tmp_hooks" <<'PY'
+PRETOOL_ADAPTER_PATH="$SCRIPT_DIR/codex-pretool-adapter.py"
+python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$PRETOOL_ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" > "$tmp_hooks" <<'PY'
 import json, os, re, shlex, sys
 harness = sys.argv[1]
 adapter = sys.argv[2]
-title_sync = sys.argv[3]
-python_bin = sys.argv[4]
+pretool_adapter = sys.argv[3]
+title_sync = sys.argv[4]
+python_bin = sys.argv[5]
 hooks_dir = os.path.join(harness, "core", "hooks")
 settings_path = os.path.join(harness, ".claude", "settings.json")
 hooks_policy_path = os.path.join(harness, ".claude", "source", "hooks.yaml")
 
 # Events whose Claude output schema needs translation before Codex sees it.
 ADAPTED_EVENTS = {"SessionStart", "UserPromptSubmit", "PostToolUse"}
+STRICT_PRETOOL_SCRIPTS = {
+    "pre-bash-harness-main-only-guard.sh",
+    "pre-bash-pr-gate.sh",
+}
 adapter_available = os.path.isfile(adapter)
+pretool_adapter_available = os.path.isfile(pretool_adapter)
 
 def cmd(script, event=None, timeout=None):
     path = os.path.join(hooks_dir, script)
     if event and event in ADAPTED_EVENTS and adapter_available:
         command = " ".join(
             ("bash", shlex.quote(adapter), shlex.quote(event), shlex.quote(path))
+        )
+    elif event == "PreToolUse" and script in STRICT_PRETOOL_SCRIPTS and pretool_adapter_available:
+        command = " ".join(
+            (shlex.quote(python_bin), shlex.quote(pretool_adapter), shlex.quote(path))
         )
     else:
         command = f"bash {shlex.quote(path)}"

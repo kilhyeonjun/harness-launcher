@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.29.4 — 2026-09-11
+
+### Fixed
+
+- Run the PR and harness-main-only Codex guards against each statically
+  declared composite exec command and its real workdir. Dynamic arguments fail
+  closed with an inline-literal retry instead of bypassing command policy;
+  ambiguous JavaScript and malformed canonical-hook output also fail closed.
+
 ## 0.29.1 — 2026-09-09
 
 ### Changed

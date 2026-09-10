@@ -1056,6 +1056,12 @@ out.mkdir(parents=True, exist_ok=True)
             fingerprint_cache.get("files", {}),
             "cmux title helper is missing from the launcher-owned fingerprint",
         )
+        pretool_adapter = os.path.realpath(ROOT / "bin" / "codex-pretool-adapter.py")
+        self.assertIn(
+            pretool_adapter,
+            fingerprint_cache.get("files", {}),
+            "strict PreToolUse adapter is missing from the launcher-owned fingerprint",
+        )
 
         warm_samples = []
         for _ in range(5):
