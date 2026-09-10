@@ -107,14 +107,11 @@ The new profile participates in atomic publication and warm-cache drift repair.
 
 The main profile does not downgrade reviewers: reviewer subagents route independently to Sol/medium by default and may explicitly escalate effort for unusually risky work.
 
-Generated homes request `model_context_window = 1000000`; Codex clamps that
-request to the selected model's actual maximum. The launcher pins
-`model_auto_compact_token_limit = 414000`, half of the effective 828400-token
-window currently reported by the GPT-5.6 Luna/Terra/Sol models, to leave
-headroom for the compaction turn and per-turn resend cost. The opt-in Astra
-profile inherits this existing policy. Verify its effective context in a native
-session before changing the threshold; the public API context window and API
-pricing thresholds do not establish native account context or subscription cost.
+Generated homes default to `model_context_window = 272000` and
+`model_auto_compact_token_limit = 217600`, compacting at 80% before the GPT-5.6
+API's documented 272K long-context pricing boundary. The TUI context toggle or `codex ... 1m` emits
+`1000000` with the existing 414000 compact line. Codex clamps either request to
+the selected model/account maximum; verify effective context in a native session.
 
 With Codex CLI 0.153.0 or newer, generated homes also enable
 `features.context_management.experimental_mode`. Eligible ChatGPT Plus, Pro,
@@ -334,6 +331,7 @@ command through `/hooks` when Codex requests it.
 <prefix> codex                 new session with base profile
 <prefix> codex fast            new session with fast profile
 <prefix> codex astra           new session with Astra at medium effort
+<prefix> codex base 1m         explicit long-context session
 <prefix> codex [profile] work   new session with the work MCP surface (any profile)
 <prefix> codex continue        resume --last
 <prefix> codex resume          resume picker
@@ -344,7 +342,18 @@ The interactive launcher also supports forking the last Codex session. Extra run
 When native Codex is selected interactively, the Profile menu offers the model
 profiles only; the work surface is a `🔌 MCP surface` toggle on the summary
 screen (the same UX as the Claude/Kiro `light` toggle) and combines with any
-profile. `default` leaves `HARNESS_CODEX_MCP_PROFILE` unset and uses the
+profile. The adjacent `🧠 Context` toggle defaults to `272K (Recommended)` and
+can opt into `1M`; shortcuts accept the same `272k`/`1m` keywords before any
+free-form Codex arguments. The selection is stored in launch history and passed
+to preparation as `HARNESS_CODEX_CONTEXT`.
+
+The 272K mode emits `model_context_window = 272000` and
+`model_auto_compact_token_limit = 217600`, so compaction starts at 80% of the
+nominal window and remains below the 258400 effective ceiling reported by the
+current 95% model metadata. The 1M mode emits `1000000` and `414000`; Codex may
+clamp the requested window to the active account/model ceiling. Switching modes
+invalidates the exact-surface warm check and regenerates `config.toml` before
+launch. `default` leaves `HARNESS_CODEX_MCP_PROFILE` unset and uses the
 manifest's minimal default surface; `work` exports
 `HARNESS_CODEX_MCP_PROFILE=work` before preparing `CODEX_HOME`, so preparation
 and the launched process use the same approved work integrations. The Happy

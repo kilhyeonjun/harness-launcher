@@ -122,6 +122,14 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - The Codex hook adapter now passes its parent PID to the wrapped canonical
   hook as `HARNESS_HOOK_OWNER_PID`, enabling a paired direct Stop hook to
   recognize the same Codex hook parent without changing advisory hook behavior.
+- Native Codex context is selectable instead of always long. TUI and shortcut
+  launches default to `272k`, emitting `model_context_window = 272000` with
+  auto-compaction at 217600 (80%); the `🧠 Context` toggle or `codex ... 1m`
+  keyword opts into `1000000` with the existing 414000 compact line. History
+  replay and warm validation preserve the selected mode. This avoids the
+  documented GPT-5.6 API long-context multiplier for routine API-key requests
+  and reduces retained context for ChatGPT-plan sessions, whose exact quota
+  multiplier is not published.
 
 ## [0.23.0] — 2026-09-06
 

@@ -11,6 +11,22 @@ set -euo pipefail
 HARNESS_DIR="${1:?HARNESS_DIR required (positional arg 1)}"
 [[ -d "$HARNESS_DIR" ]] || { echo "harness dir not found: $HARNESS_DIR" >&2; exit 1; }
 
+CODEX_CONTEXT_MODE="${HARNESS_CODEX_CONTEXT:-272k}"
+case "$CODEX_CONTEXT_MODE" in
+  272k)
+    CODEX_CONTEXT_WINDOW=272000
+    CODEX_AUTO_COMPACT_TOKEN_LIMIT=217600
+    ;;
+  1m)
+    CODEX_CONTEXT_WINDOW=1000000
+    CODEX_AUTO_COMPACT_TOKEN_LIMIT=414000
+    ;;
+  *)
+    echo "ERROR: HARNESS_CODEX_CONTEXT must be '272k' or '1m' (got '$CODEX_CONTEXT_MODE')" >&2
+    exit 2
+    ;;
+esac
+
 select_harness_python3() {
   local candidate
   if [[ -n "${HARNESS_PYTHON_BIN:-}" ]]; then
@@ -189,7 +205,9 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
       "$SURFACE_SKILL_PROFILE" \
       "$SURFACE_MCP_PROFILE" \
       "${HARNESS_OBSERVABILITY_PROFILE:-}" \
-      "$CODEX_BUNDLED_MARKETPLACE_SOURCE" 2>/dev/null)"; then
+      "$CODEX_BUNDLED_MARKETPLACE_SOURCE" \
+      "$CODEX_CONTEXT_WINDOW" \
+      "$CODEX_AUTO_COMPACT_TOKEN_LIMIT" 2>/dev/null)"; then
     existing_observability=0
     [[ -f "$CODEX_HOME/config.toml" ]] && grep -q '^\[otel\]$' "$CODEX_HOME/config.toml" && existing_observability=1
     if [[ "$existing_observability" -eq "$HARNESS_OBSERVABILITY_ACTIVE" ]]; then
@@ -834,31 +852,14 @@ cat > "$tmp_config" <<TOML
 
 model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
-# Long context, opted in. Codex clamps model_context_window to the model's own
-# max_context_window, so 1000000 resolves to the real ceiling rather than the
-# fake window that broke auto-compact before: GPT-5.6 luna/terra/sol all report
-# max_context_window=872000 with effective_context_window_percent=95, i.e. an
-# effective 828400 (verified 2026-08-18, models_cache.json + a probe session
-# that reported model_context_window=828400 for -c model_context_window=1000000).
-#
-# The auto-compact line is the effective window x 0.5, matching the Claude side
-# (settings.json autoCompactWindow=1000000 x CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
-# = 500000 on a real 1M window). 828400 x 0.5 = 414200, rounded down to 414000.
-# Half the window stays as headroom for the compaction turn itself, per-turn
-# resend cost, and long-context attention dilution; 2607 recorded Codex sessions
-# (2026-06..08) peaked at 329989 tokens, so this line clears every observed
-# session and no profile is compacted earlier than before.
-#
-# A single constant is only safe while every model reachable here shares one
-# max_context_window. The original five profiles and all subagent tiers use
-# luna/terra/sol (872000). The opt-in Astra profile inherits this existing policy;
-# its native effective context must be checked with the selected CLI/account,
-# rather than inferred from the public API window. A smaller-window model (e.g.
-# gpt-5.3-codex-spark at 128000, effective 121600) would put this limit above
-# that model's ceiling and auto-compact would never fire — recompute from that
-# model's effective window before doing so.
-model_context_window = 1000000
-model_auto_compact_token_limit = 414000
+# Context is selected by the launcher. The 272K default compacts at 80% of the
+# nominal window (217600), below Codex's 95% effective ceiling (258400) with
+# room for the compaction turn. The explicit 1M option is clamped by Codex to
+# the active model/account ceiling and keeps the validated 414000 compact line.
+# Every newly reachable model must keep the selected compact limit below its
+# effective context ceiling.
+model_context_window = $CODEX_CONTEXT_WINDOW
+model_auto_compact_token_limit = $CODEX_AUTO_COMPACT_TOKEN_LIMIT
 TOML
 
 if [[ "$HARNESS_OBSERVABILITY_ACTIVE" -eq 1 ]]; then
@@ -1964,7 +1965,9 @@ if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
     "$SURFACE_SKILL_PROFILE" \
     "$SURFACE_MCP_PROFILE" \
     "${HARNESS_OBSERVABILITY_PROFILE:-}" \
-    "$CODEX_BUNDLED_MARKETPLACE_SOURCE" >/dev/null
+    "$CODEX_BUNDLED_MARKETPLACE_SOURCE" \
+    "$CODEX_CONTEXT_WINDOW" \
+    "$CODEX_AUTO_COMPACT_TOKEN_LIMIT" >/dev/null
 
   # Candidate-only absolute paths are never published. Re-project the two
   # generated text surfaces to the stable live CODEX_HOME, then regenerate the

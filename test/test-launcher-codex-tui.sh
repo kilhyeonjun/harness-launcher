@@ -47,6 +47,11 @@ printf '# prepared by test stub\n' > "$1/.harness/codex/AGENTS.md"
 echo "PREPARE_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}" >> "$TEST_STUB_FILE"
 echo "PREPARE_GLOBAL_MCP_ALLOWLIST:${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
 echo "PREPARE_APPS_ALLOWLIST:${HARNESS_CODEX_APPS_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
+echo "PREPARE_CONTEXT:${HARNESS_CODEX_CONTEXT:-<UNSET>}" >> "$TEST_STUB_FILE"
+if [[ -f "$TEST_STUB_FILE.fail-prepare-once" ]]; then
+  rm "$TEST_STUB_FILE.fail-prepare-once"
+  exit 1
+fi
 EOF
 chmod +x "$TEST_LAUNCHER_BIN/launcher.sh" "$TEST_LAUNCHER_BIN/codex-home-prepare.sh"
 
@@ -62,6 +67,7 @@ cat > "$TEST_BIN/claude" <<'EOF'
 {
   echo "EXEC:claude"
   echo "ARGS:$*"
+  echo "CODEX_CONTEXT:${HARNESS_CODEX_CONTEXT:-<UNSET>}"
 } >> "$TEST_STUB_FILE"
 exit 0
 EOF
@@ -109,7 +115,7 @@ run_tui() {
   [[ -n "$extra_path" ]] && path_value="$extra_path:$path_value"
   [[ -n "${TUI_EXTRA_PATH:-}" ]] && path_value="$TUI_EXTRA_PATH:$path_value"
   env -u HARNESS_DIR -u HARNESS_RUN_DIR -u HARNESS_PREFIX \
-    -u HARNESS_CODEX_MCP_PROFILE -u HARNESS_MCP_SURFACE_POLICY \
+    -u HARNESS_CODEX_MCP_PROFILE -u HARNESS_CODEX_CONTEXT -u HARNESS_MCP_SURFACE_POLICY \
     TEST_STUB_FILE="$stub_file" \
     PATH="$path_value" \
     HARNESS_CODEX_BIN="$TEST_BIN/codex" \
@@ -160,6 +166,9 @@ grep -q '^PREPARE_MCP_PROFILE:<UNSET>$' "$STUB1" || {
 }
 grep -q '^PREPARE_GLOBAL_MCP_ALLOWLIST:tui-one,tui-two$' "$STUB1" || {
   echo "FAIL: case1 — TUI did not normalize the launcher global MCP allowlist before prepare"; cat "$STUB1"; exit 1;
+}
+grep -q '^PREPARE_CONTEXT:272k$' "$STUB1" || {
+  echo "FAIL: case1 — default Codex context must be 272k"; cat "$STUB1"; exit 1;
 }
 grep -q '^MCP_PROFILE:<UNSET>$' "$STUB1" || {
   echo "FAIL: case1 — default MCP surface leaked into Codex execution"; cat "$STUB1"; exit 1;
@@ -309,6 +318,33 @@ grep -q '^MCP_PROFILE:work$' "$STUB1C" || {
 }
 echo "PASS: case1c — work MCP surface combines with any profile"
 
+# Case 1d: 1M is an explicit final-menu choice and reaches preparation.
+# With no Happy binary: Start(1), MCP(2), Context(3), Back(4).
+STUB1D="$TEST_TEMP/out1d-codex-1m.txt"
+: > "$STUB1D"
+run_tui $'2\n1\n2\n1\n3\n1\n' "$STUB1D"
+grep -q '^PREPARE_CONTEXT:1m$' "$STUB1D" || {
+  echo "FAIL: case1d — 1M context selection did not reach preparation"; cat "$STUB1D"; cat "$STUB1D.tui.log"; exit 1;
+}
+grep -q 'Context: 1M' "$STUB1D.tui.log" || {
+  echo "FAIL: case1d — final menu did not show selected 1M context"; cat "$STUB1D.tui.log"; exit 1;
+}
+echo "PASS: case1d — TUI exposes and exports the explicit 1M context choice"
+
+# Case 1e: a failed 1M Codex preparation must not leak the context selector
+# into a subsequent Claude launch from the retry loop.
+STUB1E="$TEST_TEMP/out1e-context-retry-isolation.txt"
+: > "$STUB1E"
+: > "$STUB1E.fail-prepare-once"
+run_tui $'2\n1\n2\n1\n3\n1\n1\n1\n2\n1\n' "$STUB1E"
+grep -q '^EXEC:claude$' "$STUB1E" || {
+  echo "FAIL: case1e — retry did not reach Claude"; cat "$STUB1E"; cat "$STUB1E.tui.log"; exit 1;
+}
+grep -q '^CODEX_CONTEXT:<UNSET>$' "$STUB1E" || {
+  echo "FAIL: case1e — failed Codex launch leaked HARNESS_CODEX_CONTEXT"; cat "$STUB1E"; exit 1;
+}
+echo "PASS: case1e — retry loop clears the Codex context selector"
+
 # Case 2: runtime=Codex, session=Continue last, mode=Plan, safety=Default
 STUB2="$TEST_TEMP/out2-codex-continue.txt"
 : > "$STUB2"
@@ -334,7 +370,7 @@ grep -qE "^ARGS:.*--full-auto" "$STUB3" || {
 echo "PASS: case3 — Safety=Full auto → --full-auto flag"
 
 # Case 3b: runtime=Codex, Happy=yes → exec happy codex with same Codex args
-# final menu with happy visible: 1 Start / 2 MCP surface / 3 Happy / 4 Back
+# final menu with happy visible: 1 Start / 2 MCP surface / 3 Happy / 4 Context / 5 Back
 STUB3B="$TEST_TEMP/out3b-codex-happy.txt"
 : > "$STUB3B"
 run_tui $'2\n1\n2\n1\n3\n1\n' "$STUB3B" "$HAPPY_BIN"
@@ -404,8 +440,8 @@ echo "PASS: case5 — runtime=Claude routes to Claude exec"
 # must launch native codex with --full-auto (not fail into plan_reset).
 STUB6="$TEST_TEMP/out6-happy-residue.txt"
 : > "$STUB6"
-# final(compatible): Happy=3, Back=4 → safety full-auto=2 → final(incompatible): Start=1
-run_tui $'2\n1\n2\n1\n3\n4\n2\n1\n' "$STUB6" "$HAPPY_BIN"
+# final(compatible): Happy=3, Back=5 → safety full-auto=2 → final(incompatible): Start=1
+run_tui $'2\n1\n2\n1\n3\n5\n2\n1\n' "$STUB6" "$HAPPY_BIN"
 grep -q "^EXEC:codex" "$STUB6" || {
   echo "FAIL: case6 — expected native codex exec after happy auto-clear"; cat "$STUB6"; cat "$STUB6.tui.log"; exit 1;
 }
@@ -462,6 +498,23 @@ grep -qE "^ARGS:.*-p base" "$STUB7" || {
 }
 rm -f "$TEST_HARNESS/.harness/launcher-history"
 echo "PASS: case7 — 0.12-era CODEX_SURFACE=work history row replays correctly"
+
+# Case 7b: context is part of exact launch history and survives replay.
+STUB7B="$TEST_TEMP/out7b-context-history.txt"
+: > "$STUB7B"
+printf 'TS=2\tSUMMARY=Codex · new · base · 1M\tRUNTIME=codex\tSESSION=new\tCODEX_PROFILE=base\tCODEX_SURFACE=default\tCODEX_SAFETY=default\tCODEX_CONTEXT=1m\n' \
+  > "$TEST_HARNESS/.harness/launcher-history"
+TEST_STUB_FILE="$STUB7B" \
+PATH="$TEST_BIN:/usr/bin:/bin" \
+HARNESS_CODEX_BIN="$TEST_BIN/codex" \
+HARNESS_DIR="$TEST_HARNESS" \
+HARNESS_NAME="test harness" \
+bash "$TEST_LAUNCHER_BIN/launcher.sh" <<< $'3\n' > "$STUB7B.tui.log" 2>&1 || true
+grep -q '^PREPARE_CONTEXT:1m$' "$STUB7B" || {
+  echo "FAIL: case7b — replayed history did not preserve 1M context"; cat "$STUB7B"; cat "$STUB7B.tui.log"; exit 1;
+}
+rm -f "$TEST_HARNESS/.harness/launcher-history"
+echo "PASS: case7b — launch history preserves the selected context"
 
 # Case 8: opt-in Codex has one full surface. The retired toggle must be absent,
 # prepare/exec must not receive a profile, and new history must be canonical.

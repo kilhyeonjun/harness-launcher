@@ -3,6 +3,8 @@
 
 set -e
 
+unset HARNESS_CODEX_CONTEXT HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PREPARE="$LAUNCHER_DIR/bin/codex-home-prepare.sh"
@@ -100,18 +102,28 @@ echo "PASS: AGENTS.md materialized with Codex response language supplement"
 config="$CODEX_HOME/config.toml"
 [[ -f "$config" ]] || { echo "FAIL: config.toml missing"; exit 1; }
 grep -q '^model = "gpt-5.6-terra"' "$config" || { echo "FAIL: top-level model should use Terra"; exit 1; }
-# Long context opted in: Codex clamps the window request to the model's own
-# max_context_window (872000 for GPT-5.6, effective 828400 at 95%), and the
-# auto-compact line is half that effective window — Claude-side parity.
-# A limit ABOVE the effective window is the 2026-06 regression: auto-compact
-# would never fire and the session would die at the backend ceiling instead.
-grep -q '^model_context_window = 1000000$' "$config" || {
-  echo "FAIL: model_context_window not requested (Codex clamps it to the real max)"; exit 1;
+# Cost-conscious default: compact at 80% of the 272K nominal window, below the
+# 258.4K effective ceiling and the provider's >272K premium-price boundary.
+grep -q '^model_context_window = 272000$' "$config" || {
+  echo "FAIL: default model_context_window must be 272000"; exit 1;
 }
-grep -q '^model_auto_compact_token_limit = 414000$' "$config" || {
-  echo "FAIL: auto-compact limit must be 414000 (828400 effective window x 0.5)"; exit 1;
+grep -q '^model_auto_compact_token_limit = 217600$' "$config" || {
+  echo "FAIL: 272K auto-compact limit must be 217600 (80% of nominal)"; exit 1;
 }
-echo "PASS: long-context window requested with a 50%-of-effective auto-compact line"
+echo "PASS: default context uses 272K with an 80% auto-compact line"
+
+TEST_HARNESS_1M="$TEST_TEMP/fake-harness-1m"
+mkdir -p "$TEST_HARNESS_1M"
+echo "# rules" > "$TEST_HARNESS_1M/CLAUDE.md"
+HARNESS_CODEX_CONTEXT=1m "$PREPARE" "$TEST_HARNESS_1M"
+config_1m="$TEST_HARNESS_1M/.harness/codex/config.toml"
+grep -q '^model_context_window = 1000000$' "$config_1m" || {
+  echo "FAIL: 1M selection must request model_context_window 1000000"; exit 1;
+}
+grep -q '^model_auto_compact_token_limit = 414000$' "$config_1m" || {
+  echo "FAIL: 1M auto-compact limit must remain 414000"; exit 1;
+}
+echo "PASS: explicit 1M context keeps the validated 414K auto-compact line"
 grep -A1 '^\[tools.update_plan\]$' "$config" | grep -qx 'enabled = true' || {
   echo "FAIL: native task tracker must enable tools.update_plan"; exit 1;
 }
@@ -1013,13 +1025,29 @@ assert config["features"]["context_management"] == {"experimental_mode": True}
 PY
 echo "PASS: context management follows the resolved Codex CLI 0.153.0 capability floor"
 
-grep -q '^model_context_window = 1000000$' "$config3" || {
+grep -q '^model_context_window = 272000$' "$config3" || {
   echo "FAIL: model_context_window missing from regenerated config"; exit 1;
 }
-grep -q '^model_auto_compact_token_limit = 414000$' "$config3" || {
+grep -q '^model_auto_compact_token_limit = 217600$' "$config3" || {
   echo "FAIL: auto-compact limit missing from regenerated config"; exit 1;
 }
 echo "PASS: context-window/auto-compact keys survive regeneration"
+
+HARNESS_CODEX_CONTEXT=1m "$PREPARE" "$TEST_HARNESS3"
+grep -q '^model_context_window = 1000000$' "$config3" || {
+  echo "FAIL: warm path reused 272K config after selecting 1M"; exit 1;
+}
+grep -q '^model_auto_compact_token_limit = 414000$' "$config3" || {
+  echo "FAIL: warm path did not apply the 1M auto-compact limit"; exit 1;
+}
+"$PREPARE" "$TEST_HARNESS3"
+grep -q '^model_context_window = 272000$' "$config3" || {
+  echo "FAIL: warm path reused 1M config after returning to 272K"; exit 1;
+}
+grep -q '^model_auto_compact_token_limit = 217600$' "$config3" || {
+  echo "FAIL: warm path did not restore the 272K auto-compact limit"; exit 1;
+}
+echo "PASS: context selection invalidates and regenerates the warm Codex home"
 
 grep -q '^\[marketplaces.openai-bundled\]' "$config3" || {
   echo "FAIL: openai-bundled marketplace missing"; exit 1;

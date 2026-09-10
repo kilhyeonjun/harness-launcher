@@ -84,6 +84,7 @@ echo "PREPARE_ARGV:$*" >> "$TEST_STUB_FILE"
 echo "PREPARE_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}" >> "$TEST_STUB_FILE"
 echo "PREPARE_GLOBAL_MCP_ALLOWLIST:${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
 echo "PREPARE_APPS_ALLOWLIST:${HARNESS_CODEX_APPS_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
+echo "PREPARE_CONTEXT:${HARNESS_CODEX_CONTEXT:-<UNSET>}" >> "$TEST_STUB_FILE"
 mkdir -p "$1/.harness/codex"
 exit 0
 EOF
@@ -182,6 +183,11 @@ run_mode() {
 
   if [[ "$prepare_mcp_profile" != "<UNSET>" || "$codex_mcp_profile" != "<UNSET>" ]]; then
     echo "FAIL: codex CLI $mode — must preserve the default MCP surface, got prepare='$prepare_mcp_profile' codex='$codex_mcp_profile'"
+    return 1
+  fi
+
+  if [[ "$(get_field PREPARE_CONTEXT "$stub_file")" != "272k" ]]; then
+    echo "FAIL: codex CLI $mode — default context must be 272k"
     return 1
   fi
 
@@ -448,6 +454,17 @@ apps_prepare_values=("${(@f)$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$STUB_APPS
   exit 1
 }
 echo "PASS: native Codex shortcut isolates and normalizes app allowlist"
+
+STUB_CONTEXT_1M="$TEST_TEMP/output-codex-cli-context-1m.txt"
+: > "$STUB_CONTEXT_1M"
+run_codex "$STUB_CONTEXT_1M" base 1m
+[[ "$(get_field PREPARE_CONTEXT "$STUB_CONTEXT_1M")" = "1m" ]] || {
+  echo "FAIL: codex CLI 1m — selection did not reach preparation"; cat "$STUB_CONTEXT_1M"; exit 1;
+}
+case "$(get_field ARGV "$STUB_CONTEXT_1M")" in
+  *" 1m"*|*"1m "*) echo "FAIL: codex CLI 1m — launcher keyword leaked into Codex argv"; exit 1 ;;
+esac
+echo "PASS: codex CLI 1m opts into long context before preparation"
 
 # work is a surface keyword combinable with any model profile (same UX as the
 # claude `light` keyword) — both orders must select the profile AND the surface.

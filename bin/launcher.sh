@@ -195,6 +195,7 @@ plan_apply_field() {
     CODEX_PROFILE) CHOICE_CODEX_PROFILE="$2" ;;
     CODEX_SURFACE) CHOICE_CODEX_SURFACE="$2" ;;
     CODEX_SAFETY)  CHOICE_CODEX_SAFETY="$2" ;;
+    CODEX_CONTEXT) CHOICE_CODEX_CONTEXT="$2" ;;
     KIRO_TRUST)    CHOICE_KIRO_TRUST="$2" ;;
   esac
 }
@@ -214,7 +215,8 @@ history_current_line() {
     "C_MODEL=$CHOICE_C_MODEL" "C_EFFORT=$CHOICE_C_EFFORT" "PERM=$CHOICE_PERM"
     "MCP_SURFACE=$CHOICE_MCP_SURFACE" "CHROME=$CHOICE_CHROME" "HAPPY=$CHOICE_HAPPY"
     "CODEX_PROFILE=$CHOICE_CODEX_PROFILE" "CODEX_SURFACE=$CHOICE_CODEX_SURFACE"
-    "CODEX_SAFETY=$CHOICE_CODEX_SAFETY" "KIRO_TRUST=$CHOICE_KIRO_TRUST"
+    "CODEX_SAFETY=$CHOICE_CODEX_SAFETY" "CODEX_CONTEXT=$CHOICE_CODEX_CONTEXT"
+    "KIRO_TRUST=$CHOICE_KIRO_TRUST"
   )
   line=$(printf '%s\t' "${fields[@]}"); line="${line%$'\t'}"
   printf '%s\n' "$line"
@@ -272,6 +274,7 @@ plan_reset() {
     CHOICE_CODEX_SURFACE="default"
   fi
   CHOICE_CODEX_SAFETY="default"
+  CHOICE_CODEX_CONTEXT="272k"
   CHOICE_KIRO_TRUST=0
   PLAN_SUMMARY=""
 }
@@ -739,7 +742,9 @@ codex_happy_compatible() {
 }
 
 codex_summary() {
-  PLAN_SUMMARY="Codex · $CHOICE_SESSION · $CHOICE_CODEX_PROFILE"
+  local context_label="272K"
+  [ "$CHOICE_CODEX_CONTEXT" = "1m" ] && context_label="1M"
+  PLAN_SUMMARY="Codex · $CHOICE_SESSION · $CHOICE_CODEX_PROFILE · $context_label"
   [ "$CHOICE_CODEX_SURFACE" = "work" ] && PLAN_SUMMARY="$PLAN_SUMMARY · work-MCP"
   [ "$CHOICE_CODEX_SAFETY" != "default" ] && PLAN_SUMMARY="$PLAN_SUMMARY · $CHOICE_CODEX_SAFETY"
   [ "$CHOICE_HAPPY" = 1 ] && PLAN_SUMMARY="$PLAN_SUMMARY · happy"
@@ -813,6 +818,7 @@ collect_codex() {
         if $HAS_HAPPY && codex_happy_compatible; then
           fopts+=("📱 Happy wrapper: $( [ "$CHOICE_HAPPY" = 1 ] && echo on || echo off )")
         fi
+        fopts+=("🧠 Context: $( [ "$CHOICE_CODEX_CONTEXT" = "1m" ] && echo "1M" || echo "272K (Recommended)" )")
         fopts+=("↩ Back")
         menu "$PLAN_SUMMARY" "${fopts[@]}" || { step=safety; continue; }
         case "$MENU_RESULT" in
@@ -828,6 +834,8 @@ collect_codex() {
             fi ;;
           *Happy*)
             if [ "$CHOICE_HAPPY" = 1 ]; then CHOICE_HAPPY=0; else CHOICE_HAPPY=1; fi ;;
+          *Context*)
+            if [ "$CHOICE_CODEX_CONTEXT" = "1m" ]; then CHOICE_CODEX_CONTEXT="272k"; else CHOICE_CODEX_CONTEXT="1m"; fi ;;
           *Back*) step=safety ;;
         esac ;;
     esac
@@ -1031,6 +1039,7 @@ launch_claude() {
 }
 
 launch_codex() {
+  export HARNESS_CODEX_CONTEXT="$CHOICE_CODEX_CONTEXT"
   if harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY"; then
     unset HARNESS_CODEX_MCP_PROFILE
   elif [ "$CHOICE_CODEX_SURFACE" = "work" ]; then
@@ -1117,7 +1126,7 @@ while true; do
   REPLAY=false
   plan_reset
   # A failed previous attempt must not leak provider env into the next one.
-  unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_AUTOCOMPACT_PCT_OVERRIDE HARNESS_CODEX_MCP_PROFILE HARNESS_KIRO_MCP_PROFILE
+  unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_AUTOCOMPACT_PCT_OVERRIDE HARNESS_CODEX_CONTEXT HARNESS_CODEX_MCP_PROFILE HARNESS_KIRO_MCP_PROFILE
   unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
   if [ "$ORIG_ANTHROPIC_API_KEY" = "__HARNESS_UNSET__" ]; then
     unset ANTHROPIC_API_KEY

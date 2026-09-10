@@ -170,7 +170,7 @@ The same command shape works for every registered prefix:
 <prefix> ultracode               Claude Code opus[1m] + xhigh (direct only)
 <prefix> continue|resume         Claude Code session shortcut
 <prefix> light                   Claude Code with the light MCP surface (SSH-backed servers excluded)
-<prefix> codex [profile]         native Codex CLI (fast|base|sol|plan|rich|astra)
+<prefix> codex [profile] [272k|1m] native Codex CLI; 272K default, 1M opt-in
 <prefix> codex [profile] work    native Codex CLI with the work MCP surface (any profile)
 <prefix> codex continue          Codex `resume --last`
 <prefix> codex resume            Codex resume picker
@@ -200,6 +200,8 @@ says is what launches. Native Codex exposes its `work` MCP surface the same way
 Claude/Kiro expose `light` — a `🔌 MCP surface` toggle on the summary screen,
 combinable with any profile: `default` keeps the minimal project surface, while
 `work` uses only the approved work MCPs declared by `config/codex-surface.json`.
+The same screen exposes `🧠 Context`: cost-conscious `272K` is the recommended
+default, while `1M` is an explicit opt-in preserved in launch history.
 
 Native Codex homes explicitly enable the `update_plan` task tracker, including
 on Codex 0.152.0+ where it defaults to disabled. See [native task progress](docs/codex-integration.md#native-task-progress).
@@ -217,7 +219,7 @@ on Codex 0.152.0+ where it defaults to disabled. See [native task progress](docs
 | `opus` (Claude only) | Opus, high effort | — | Strong main model without `rich`'s xhigh cost |
 | `rich` | Opus | GPT-5.6 Sol, high effort | Deep work — slowest normal preset |
 
-These are task-oriented operational presets, not claims about OpenAI's model defaults. The launcher deliberately lowers `fast` for speed and raises `plan`/`rich` for deeper work; an unscoped model picker may use a different general starting effort. Model names follow the capabilities exposed by the installed runtime. Generated homes request a 1,000,000-token context window and a 414,000-token auto-compaction threshold; Codex model metadata determines the effective window. These existing settings are not an Astra-specific tuning result.
+These are task-oriented operational presets, not claims about OpenAI's model defaults. The launcher deliberately lowers `fast` for speed and raises `plan`/`rich` for deeper work; an unscoped model picker may use a different general starting effort. Model names follow the capabilities exposed by the installed runtime. Generated homes default to a 272,000-token window with a 217,600-token compact threshold; explicit 1M mode requests 1,000,000 with a 414,000 threshold. Codex model metadata determines the effective window, and neither setting is Astra-specific tuning.
 
 Use `<prefix> fable` for Claude Code's opt-in `fable` alias with `high` effort, or select Fable in the direct TUI preset or Custom model menus. Existing numbered choices stay stable; the Fable preset is appended after Custom. Effort tokens still override the preset, for example `<prefix> fable xhigh`. The launcher rejects this preset on Kiro and Codex gateways. The alias follows the installed Claude Code runtime and any `ANTHROPIC_DEFAULT_FABLE_MODEL` override; availability remains account-dependent. As of September 8, 2026, Claude Code v2.1.255+ resolves it to Fable 5.1 by default ([official model configuration](https://code.claude.com/docs/en/model-config)).
 
