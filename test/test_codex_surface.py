@@ -281,6 +281,7 @@ class SurfaceFixture(unittest.TestCase):
             "HARNESS_CODEX_SKILL_PROFILE",
             "HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST",
             "HARNESS_CODEX_APPS_ALLOWLIST",
+            "HARNESS_CODEX_CONTEXT",
         ):
             env.pop(inherited, None)
         env.update(updates)
@@ -2291,13 +2292,12 @@ out.mkdir(parents=True, exist_ok=True)
             1,
         )
         # Mutate the launcher-owned context keys in place rather than injecting
-        # duplicates: 900000 is the value that would put auto-compact past the
-        # 828400 effective window, which is exactly what repair must undo.
+        # duplicates; repair must restore the cost-conscious default.
         config = config.replace(
-            "model_context_window = 1000000", "model_context_window = 123456", 1
+            "model_context_window = 272000", "model_context_window = 123456", 1
         )
         config = config.replace(
-            "model_auto_compact_token_limit = 414000",
+            "model_auto_compact_token_limit = 217600",
             "model_auto_compact_token_limit = 900000",
             1,
         )
@@ -2316,8 +2316,8 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertNotIn("sandbox_mode", repaired)
         # The launcher owns both keys now, so repair resets them to its values
         # instead of dropping them.
-        self.assertEqual(repaired["model_context_window"], 1000000)
-        self.assertEqual(repaired["model_auto_compact_token_limit"], 414000)
+        self.assertEqual(repaired["model_context_window"], 272000)
+        self.assertEqual(repaired["model_auto_compact_token_limit"], 217600)
         self.assertEqual(repaired["tools"], {"update_plan": {"enabled": True}})
         self.assertEqual(repaired["mcp_servers"]["context7"]["command"], "context7")
         self.assertEqual(
@@ -2353,7 +2353,11 @@ out.mkdir(parents=True, exist_ok=True)
             "HARNESS_CODEX_CONTEXT_MANAGEMENT_SUPPORTED": "true",
         }
         with mock.patch.dict(os.environ, warm_environment):
-            self.assertFalse(WARM_PROBE_MODULE.config_matches(self.codex_home, catalog, ""))
+            self.assertFalse(
+                WARM_PROBE_MODULE.config_matches(
+                    self.codex_home, catalog, "", 272000, 217600
+                )
+            )
 
         self.prepare()
         with config_path.open("rb") as stream:
@@ -2361,7 +2365,11 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertEqual(repaired["tools"], {"update_plan": {"enabled": True}})
 
         with mock.patch.dict(os.environ, warm_environment):
-            self.assertTrue(WARM_PROBE_MODULE.config_matches(self.codex_home, catalog, ""))
+            self.assertTrue(
+                WARM_PROBE_MODULE.config_matches(
+                    self.codex_home, catalog, "", 272000, 217600
+                )
+            )
         self.prepare()
         self.assertEqual(self.compiler_calls(), 2)
 

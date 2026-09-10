@@ -95,7 +95,13 @@ def identity(path):
         cold()
 
 
-def config_matches(codex_home, catalog, expected_profile):
+def config_matches(
+    codex_home,
+    catalog,
+    expected_profile,
+    expected_context_window,
+    expected_auto_compact_limit,
+):
     try:
         with open(os.path.join(codex_home, "config.toml"), "rb") as stream:
             config = tomllib.load(stream)
@@ -134,12 +140,9 @@ def config_matches(codex_home, catalog, expected_profile):
         return False
     if config.get("model_reasoning_effort") != "medium":
         return False
-    # Kept in sync with the generator in codex-home-prepare.sh: the window is
-    # requested high and clamped by Codex to the model's max (872000, effective
-    # 828400), and auto-compact fires at half that effective window.
-    if config.get("model_context_window") != 1000000:
+    if config.get("model_context_window") != expected_context_window:
         return False
-    if config.get("model_auto_compact_token_limit") != 414000:
+    if config.get("model_auto_compact_token_limit") != expected_auto_compact_limit:
         return False
     otel = config.get("otel")
     if otel is not None:
@@ -417,9 +420,9 @@ def output_signatures(codex_home, external_prefixes=()):
 
 
 def main():
-    if len(sys.argv) != 9:
+    if len(sys.argv) != 11:
         print(
-            "usage: codex-surface-warm.py STAMP CACHE CODEX_HOME MANIFEST SKILL_PROFILE MCP_PROFILE EXPECTED_PROFILE BUNDLED_MARKETPLACE",
+            "usage: codex-surface-warm.py STAMP CACHE CODEX_HOME MANIFEST SKILL_PROFILE MCP_PROFILE EXPECTED_PROFILE BUNDLED_MARKETPLACE CONTEXT_WINDOW AUTO_COMPACT_LIMIT",
             file=sys.stderr,
         )
         return 2
@@ -432,7 +435,14 @@ def main():
         mcp_profile,
         expected_profile,
         bundled_marketplace,
+        context_window_raw,
+        auto_compact_limit_raw,
     ) = sys.argv[1:]
+    try:
+        expected_context_window = int(context_window_raw)
+        expected_auto_compact_limit = int(auto_compact_limit_raw)
+    except ValueError:
+        cold()
     stamp = load_object(stamp_path)
     cache = load_object(cache_path)
     manifest = load_object(manifest_path)
@@ -522,7 +532,13 @@ def main():
         cold()
     if (catalog.get("mcp") or {}).get("profile") != fingerprint.get("mcp_profile"):
         cold()
-    if not config_matches(codex_home, catalog, expected_profile):
+    if not config_matches(
+        codex_home,
+        catalog,
+        expected_profile,
+        expected_context_window,
+        expected_auto_compact_limit,
+    ):
         cold()
     skills_root = os.path.abspath(os.path.join(codex_home, "skills"))
     expected_managed = []

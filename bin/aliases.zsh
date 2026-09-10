@@ -483,6 +483,7 @@ _harness_launcher_run_codex_cli() {
   local profile=""
   local profile_explicit=false
   local mcp_profile=""
+  local HARNESS_CODEX_CONTEXT="272k"
   local subcmd=""
   local use_happy=false
   local freeform=false
@@ -520,6 +521,13 @@ _harness_launcher_run_codex_cli() {
           shift
         fi
         ;;
+      272k|1m)
+        if $freeform; then
+          codex_args+=("$1")
+        else
+          HARNESS_CODEX_CONTEXT="$1"
+        fi
+        shift ;;
       resume)              subcmd="resume"; shift ;;
       continue)            subcmd="resume"; codex_args+=(--last); shift ;;
       fork)                subcmd="fork"; codex_args+=(--last); shift ;;
@@ -532,6 +540,7 @@ _harness_launcher_run_codex_cli() {
   done
 
   [[ -z "$profile" ]] && profile="base"
+  export HARNESS_CODEX_CONTEXT
 
   # Validate incompatible combinations BEFORE preparing the runtime home, so a
   # rejected launch leaves no work-surface residue in the generated config.
@@ -687,7 +696,7 @@ _harness_launcher_complete() {
     'dontAsk:Auto-approve most actions'
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
-    "codex:Codex CLI native (fast/base/sol/plan/rich/astra${codex_surface_desc} · fork · full-auto/never/bypass)"
+    "codex:Codex CLI native (272K default · 1m opt-in · profiles${codex_surface_desc}/fork/safety)"
     'codex-smoke:Send one bounded metadata-only Codex verification event'
     "kiro-cli:Kiro CLI native${kiro_surface_desc}"
     'happy:Use Happy mobile wrapper for Codex CLI'
