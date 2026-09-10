@@ -111,6 +111,18 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## [Unreleased]
 
+### Added
+
+- Generated Codex hook homes now honor the harness-owned `codex_exclusions`
+  policy for `Stop` instead of applying a launcher-side exclusion. This allows
+  a harness to register its direct `session-end.sh` delivery gate deliberately.
+
+### Changed
+
+- The Codex hook adapter now passes its parent PID to the wrapped canonical
+  hook as `HARNESS_HOOK_OWNER_PID`, enabling a paired direct Stop hook to
+  recognize the same Codex hook parent without changing advisory hook behavior.
+
 ## [0.23.0] — 2026-09-06
 
 ### Added

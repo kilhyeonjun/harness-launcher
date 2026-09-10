@@ -747,7 +747,7 @@ for h in session-start user-prompt-session-end-detect prompt-keyword-routing \
          pre-tool-budget-guard pre-tool-opus-guard pre-edit-config-protection \
          pre-edit-codex-output-guard pre-write-memory-block pre-tool-scoped-context \
          post-edit-codex-resync suggest-compact post-bash-audit post-bash-commit-detect \
-         post-tool-auto-pilot-reinject session-end codex-subagent-status; do
+         post-tool-auto-pilot-reinject session-end cmux-title-persist codex-subagent-status; do
   : > "$TEST_HARNESS3/core/hooks/$h.sh"
 done
 cat > "$TEST_HARNESS3/.claude/source/hooks.yaml" <<'EOF'
@@ -755,8 +755,9 @@ hooks:
   source: .claude/settings.json
   mode: settings-driven
   codex_exclusions:
-    - Stop
+    - SessionEnd
     - post-edit-codex-resync.sh
+    - cmux-title-persist.sh
 EOF
 cat > "$TEST_HARNESS3/.claude/settings.json" <<'EOF'
 {
@@ -900,6 +901,11 @@ cat > "$TEST_HARNESS3/.claude/settings.json" <<'EOF'
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/session-end.sh\"",
             "timeout": 20000
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/cmux-title-persist.sh\"",
+            "timeout": 3000
           }
         ]
       }
@@ -1127,13 +1133,8 @@ expected = {
                    "pre-tool-scoped-context.sh"],
     "PostToolUse": ["suggest-compact.sh", "post-bash-audit.sh",
                     "post-bash-commit-detect.sh", "post-tool-auto-pilot-reinject.sh"],
+    "Stop": ["session-end.sh"],
 }
-# Stop is intentionally NOT wired: Codex fires Stop after every turn while
-# session-end.sh emits a session-termination checklist. Wiring it would
-# trigger session-end procedures on every routine prompt.
-if "Stop" in hooks:
-    print(f"FAIL: Stop event must not be wired (Codex fires per-turn): {hooks['Stop']}")
-    sys.exit(1)
 for event, scripts in expected.items():
     found = []
     for entry in hooks.get(event, []):
@@ -1150,6 +1151,16 @@ for event, scripts in expected.items():
     if missing:
         print(f"FAIL: {event} missing hooks: {missing}")
         sys.exit(1)
+stop_scripts = {
+    os.path.basename(match.group(1))
+    for entry in hooks.get("Stop", [])
+    for hook in entry.get("hooks", [])
+    for match in [__import__("re").search(r"core/hooks/([^\"'\s]+?\.sh)", hook.get("command", ""))]
+    if match
+}
+if stop_scripts != {"session-end.sh"}:
+    print(f"FAIL: Stop scripts must be exactly session-end.sh, got {sorted(stop_scripts)}")
+    sys.exit(1)
 print("OK")
 PY
 echo "PASS: hooks.json wires all expected hooks via absolute paths to core/hooks/"
@@ -1158,13 +1169,41 @@ python3 - "$hooks_json" <<'PY' || exit 1
 import json, sys
 data = json.load(open(sys.argv[1]))
 blob = json.dumps(data)
-for excluded in ("post-edit-codex-resync.sh", "session-end.sh"):
+for excluded in ("post-edit-codex-resync.sh", "cmux-title-persist.sh"):
     if excluded in blob:
         print(f"FAIL: excluded hook should not be wired for Codex: {excluded}")
         sys.exit(1)
 print("OK")
 PY
 echo "PASS: hooks.yaml exclusions respected for Codex hooks"
+
+# A missing source policy keeps the historical safety defaults. Partial or
+# legacy harnesses must not acquire a per-turn Stop hook or post-edit resync.
+TEST_HARNESS_DEFAULTS="$TEST_TEMP/fake-harness-hook-defaults"
+mkdir -p "$TEST_HARNESS_DEFAULTS/core/hooks" "$TEST_HARNESS_DEFAULTS/.claude"
+echo "# rules" > "$TEST_HARNESS_DEFAULTS/CLAUDE.md"
+for h in session-end post-edit-codex-resync; do
+  : > "$TEST_HARNESS_DEFAULTS/core/hooks/$h.sh"
+done
+cat > "$TEST_HARNESS_DEFAULTS/.claude/settings.json" <<'EOF'
+{
+  "hooks": {
+    "Stop": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/session-end.sh\""}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/core/hooks/post-edit-codex-resync.sh\""}]}]
+  }
+}
+EOF
+"$PREPARE" "$TEST_HARNESS_DEFAULTS"
+python3 - "$TEST_HARNESS_DEFAULTS/.harness/codex/hooks.json" <<'PY' || exit 1
+import json, sys
+blob = json.dumps(json.load(open(sys.argv[1])))
+for excluded in ("session-end.sh", "post-edit-codex-resync.sh"):
+    if excluded in blob:
+        print(f"FAIL: missing hooks.yaml must retain default exclusion for {excluded}")
+        sys.exit(1)
+print("OK")
+PY
+echo "PASS: missing hooks.yaml retains legacy Stop and post-edit exclusions"
 
 # Adapter wrapping: SessionStart, UserPromptSubmit, and PostToolUse may emit
 # Claude-format JSON ({"additionalContext": ...}) which Codex rejects. Those
@@ -1174,7 +1213,7 @@ python3 - "$hooks_json" <<'PY' || exit 1
 import json, sys
 data = json.load(open(sys.argv[1]))
 adapted = {"SessionStart", "UserPromptSubmit", "PostToolUse"}
-direct = {"PreToolUse"}
+direct = {"PreToolUse", "Stop"}
 for event in adapted:
     for entry in data["hooks"].get(event, []):
         for h in entry.get("hooks", []):
@@ -1198,7 +1237,60 @@ for event in direct:
                 print(f"FAIL: {event} hook should NOT use adapter (no rewrite needed): {cmd}")
                 sys.exit(1)
 PY
-echo "PASS: SessionStart/UserPromptSubmit/PostToolUse routed through codex-hook-adapter.sh; Stop unwired"
+echo "PASS: SessionStart/UserPromptSubmit/PostToolUse routed through codex-hook-adapter.sh; Stop direct"
+
+# Exercise the generated commands as Codex does: an adapted PostToolUse hook
+# records its adapter parent, then the direct Stop hook from that same parent
+# blocks once and stays silent during stop-hook recursion.
+HOOK_OWNER_STATE="$TEST_TEMP/codex-hook-owner-pid"
+cat > "$TEST_HARNESS3/core/hooks/post-tool-auto-pilot-reinject.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s' "\$HARNESS_HOOK_OWNER_PID" > "$HOOK_OWNER_STATE"
+printf '%s\n' '{"additionalContext":"post complete"}'
+EOF
+cat > "$TEST_HARNESS3/core/hooks/session-end.sh" <<EOF
+#!/usr/bin/env bash
+payload="\$(cat)"
+if [[ "\$payload" == *'"stop_hook_active":true'* ]]; then
+  exit 0
+fi
+if [[ "\$(cat "$HOOK_OWNER_STATE" 2>/dev/null)" == "\$PPID" ]]; then
+  printf '%s\n' '{"decision":"block","reason":"delivery required"}'
+fi
+EOF
+chmod +x "$TEST_HARNESS3/core/hooks/post-tool-auto-pilot-reinject.sh" \
+  "$TEST_HARNESS3/core/hooks/session-end.sh"
+generated_commands="$(python3 - "$hooks_json" <<'PY'
+import json, sys
+hooks = json.load(open(sys.argv[1]))["hooks"]
+def command(event, script):
+    for entry in hooks[event]:
+        for hook in entry["hooks"]:
+            if script in hook["command"]:
+                return hook["command"]
+    raise SystemExit(f"missing {event} {script}")
+print(json.dumps({
+    "post": command("PostToolUse", "post-tool-auto-pilot-reinject.sh"),
+    "stop": command("Stop", "session-end.sh"),
+}))
+PY
+ )"
+post_command="$(printf '%s' "$generated_commands" | jq -r '.post')"
+stop_command="$(printf '%s' "$generated_commands" | jq -r '.stop')"
+/bin/zsh -c "exec $post_command" <<< '{}' >/dev/null
+stop_output_file="$TEST_TEMP/codex-stop-output.json"
+/bin/zsh -c "exec $stop_command" <<< '{}' > "$stop_output_file"
+stop_output="$(jq -S -c . < "$stop_output_file")"
+[[ "$stop_output" == '{"decision":"block","reason":"delivery required"}' ]] || {
+  echo "FAIL: generated direct Stop must block after adapted PostToolUse: $stop_output"; exit 1;
+}
+stop_recursion_file="$TEST_TEMP/codex-stop-recursion-output.json"
+/bin/zsh -c "exec $stop_command" <<< '{"stop_hook_active":true}' > "$stop_recursion_file"
+stop_recursion_output="$(cat "$stop_recursion_file")"
+[[ -z "$stop_recursion_output" ]] || {
+  echo "FAIL: generated direct Stop must be silent during stop_hook_active recursion: $stop_recursion_output"; exit 1;
+}
+echo "PASS: generated adapted PostToolUse and direct Stop preserve delivery block and recursion silence"
 
 # Bash matcher should be present and gate Bash-only hooks
 python3 - "$hooks_json" <<'PY' || exit 1

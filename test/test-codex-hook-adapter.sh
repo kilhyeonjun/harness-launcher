@@ -108,6 +108,21 @@ EOF
 out="$(printf '{}' | HARNESS_HOOK_RUNTIME=claude "$ADAPTER" SessionStart "$script" | jq -r '.hookSpecificOutput.additionalContext')"
 assert_eq "adapter binds Codex runtime for wrapped hook" "$out" 'codex'
 
+# The wrapped hook receives the adapter's parent PID, not the adapter PID.
+# This lets a direct Stop hook recognize a preceding adapted hook from the same
+# Codex parent process without leaking the value into Codex itself.
+owner_pid_file="$TMPDIR/owner-pid.txt"
+script="$(make_script owner-pid "printf '%s' \"\$HARNESS_HOOK_OWNER_PID\" > '$owner_pid_file'")"
+"$ADAPTER" PostToolUse "$script" </dev/null >/dev/null
+owner_pid="$(cat "$owner_pid_file" 2>/dev/null || true)"
+if [[ "$owner_pid" =~ ^[0-9]+$ && "$owner_pid" == "$$" ]]; then
+  echo "PASS: wrapped hook receives adapter parent PID"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: wrapped hook must receive adapter parent PID (expected $$, got $owner_pid)"
+  FAIL=$((FAIL + 1))
+fi
+
 echo "---"
 echo "passed: $PASS, failed: $FAIL"
 [[ $FAIL -eq 0 ]] || exit 1

@@ -1591,9 +1591,9 @@ fi
 
 # 5. Generate hooks.json — Claude harness owns hook scripts as single source
 # of truth; Codex layer references them via absolute path so we never copy or
-# symlink shell logic across runtime boundaries. SessionStart/UserPromptSubmit/
-# Stop run through codex-hook-adapter.sh because Codex rejects Claude's
-# top-level additionalContext schema for those events.
+# symlink shell logic across runtime boundaries. Some Claude hook events run
+# through codex-hook-adapter.sh because Codex rejects their top-level
+# additionalContext schema.
 hooks_file="$CODEX_HOME/hooks.json"
 tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
 ADAPTER_PATH="$SCRIPT_DIR/codex-hook-adapter.sh"
@@ -1638,9 +1638,9 @@ def has(s):
     return os.path.isfile(os.path.join(hooks_dir, s))
 
 def load_exclusions():
-    exclusions = {"Stop", "post-edit-codex-resync.sh"}
     if not os.path.isfile(hooks_policy_path):
-        return exclusions
+        return {"Stop", "post-edit-codex-resync.sh"}
+    exclusions = set()
     in_list = False
     with open(hooks_policy_path, "r", encoding="utf-8") as f:
         for raw in f:
@@ -1757,12 +1757,6 @@ if os.path.isfile(title_sync):
     config["hooks"].setdefault("SessionStart", []).append(
         {"hooks": [{"type": "command", "command": command, "timeout": 3000}]}
     )
-
-# Stop intentionally NOT wired for Codex. The Claude harness's session-end.sh
-# emits a session-termination checklist (delivery-required, instinct-gap,
-# session-record-missing). Codex fires Stop after every turn — wiring it would
-# surface that checklist on every routine prompt. Session-end intent for Codex
-# is detected via UserPromptSubmit instead.
 
 json.dump(config, sys.stdout, indent=2)
 sys.stdout.write("\n")
