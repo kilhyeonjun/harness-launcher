@@ -1,5 +1,7 @@
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
 import unittest
 from unittest import mock
 
@@ -79,6 +81,22 @@ class PartitionTests(unittest.TestCase):
             report = RUNNER.run_group('serial', ['T.fixture'])
         self.assertNotEqual(report['returncode'], 0)
         self.assertIn('missing interpreter', report['stderr'])
+
+    def test_group_report_includes_each_real_test_wall_time(self):
+        expected = [{"id": "T.fixture", "elapsed_s": 0.125}]
+
+        def completed(command, **kwargs):
+            timing_path = kwargs.get('env', {}).get('HARNESS_UNITTEST_TIMING_REPORT')
+            if timing_path:
+                Path(timing_path).write_text(
+                    json.dumps({"schema_version": 1, "tests": expected}),
+                    encoding='utf-8',
+                )
+            return subprocess.CompletedProcess(command, 0, stdout='ok\n', stderr='')
+
+        with mock.patch.object(RUNNER.subprocess, 'run', side_effect=completed):
+            report = RUNNER.run_group('shard-1', ['T.fixture'])
+        self.assertEqual(report.get('tests'), expected)
 
 
 if __name__ == '__main__':

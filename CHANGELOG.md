@@ -124,6 +124,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Changed
 
+- Split the Codex home integration suite into three isolated fixture groups and
+  run them with bounded concurrency. Optional JSON reports include each group's
+  wall time, and Codex surface reports now include individual-test wall times.
 - Run 36 reviewed private-fixture Codex surface tests in two balanced shards
   while keeping signal, publication, auth, revocation, quarantine, and new tests
   serial.

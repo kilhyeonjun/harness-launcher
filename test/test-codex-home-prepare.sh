@@ -10,6 +10,18 @@ LAUNCHER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PREPARE="$LAUNCHER_DIR/bin/codex-home-prepare.sh"
 
 LEGACY_COMPILER_FIXTURE="$LAUNCHER_DIR/test/fixtures/legacy-harness-compiler.py"
+TEST_GROUP="${HARNESS_HOME_PREPARE_TEST_GROUP:-}"
+
+if [[ -z "$TEST_GROUP" ]]; then
+  PYTHON_BIN="${HARNESS_PYTHON_BIN:-$(command -v python3)}"
+  "$PYTHON_BIN" "$LAUNCHER_DIR/test/test_home_prepare_runner.py" -v
+  exec "$PYTHON_BIN" "$LAUNCHER_DIR/test/home_prepare_test_runner.py" "$@"
+fi
+
+case "$TEST_GROUP" in
+  config-skills|hooks|generated) ;;
+  *) echo "FAIL: unknown home prepare test group: $TEST_GROUP" >&2; exit 2 ;;
+esac
 
 cleanup() {
   [[ -n "${TEST_TEMP:-}" && -d "$TEST_TEMP" ]] && rm -rf "$TEST_TEMP"
@@ -31,6 +43,7 @@ EOF
 chmod +x "$CODEX_BIN_STUB"
 export HARNESS_CODEX_BIN="$CODEX_BIN_STUB"
 
+if [[ "$TEST_GROUP" == "config-skills" ]]; then
 cat > "$TEST_HARNESS/CLAUDE.md" <<'EOF'
 # Fake harness rules
 
@@ -712,7 +725,9 @@ if grep -q '^\[mcp_servers' "$config2"; then
   echo "FAIL: should not have mcp_servers when .mcp.json missing"; exit 1;
 fi
 echo "PASS: works without .mcp.json (no mcp_servers section, per-profile files intact)"
+fi
 
+if [[ "$TEST_GROUP" == "hooks" ]]; then
 # Codex hooks infrastructure: config.toml must enable hooks feature,
 # and hooks.json must reference Claude harness's core/hooks/*.sh by absolute path.
 # Source-of-truth: Claude harness owns hook scripts; Codex layer references them.
@@ -1330,7 +1345,9 @@ mtime_h_after=$(stat -f %m "$hooks_json" 2>/dev/null || stat -c %Y "$hooks_json"
   echo "FAIL: hooks.json mtime changed on no-op re-run"; exit 1;
 }
 echo "PASS: hooks.json idempotent on no-op re-run"
+fi
 
+if [[ "$TEST_GROUP" == "generated" ]]; then
 # Subagents: .claude/agents/*.md should be converted to $CODEX_HOME/agents/*.toml
 # with model mapping (haiku→Luna+low, sonnet→Terra+medium, opus→Sol+medium)
 # and sandbox derived from tools/disallowedTools.
@@ -1716,7 +1733,9 @@ rm "$TEST_HARNESS_C/.claude/commands/daily-pipeline.md"
 "$PREPARE" "$TEST_HARNESS_C"
 [[ ! -d "$skills_out/daily-pipeline" ]] || { echo "FAIL: removed command's skill not cleaned up"; exit 1; }
 echo "PASS: removing source command drops generated skill"
+fi
 
+if [[ "$TEST_GROUP" == "config-skills" ]]; then
 # ---------------------------------------------------------------------------
 # Claude plugin cache merge: ~/.claude/plugins/cache/<mp>/<plugin>/<version>/
 # skills must be linked into $CODEX_HOME/skills, newest version auto-resolved.
@@ -1788,7 +1807,9 @@ echo "PASS: Claude-plugin multi-skill merged"
 # 3. Stale manual pin self-heals: pinned resolves to a real SKILL.md (current version).
 [[ -f "$SKILLS_OUT/pinned/SKILL.md" ]] || { echo "FAIL: stale version pin did not self-heal"; exit 1; }
 echo "PASS: stale Claude-plugin version pin self-healed"
+fi
 
+if [[ "$TEST_GROUP" == "generated" ]]; then
 # ---------------------------------------------------------------------------
 # nounset regression: prep runs under `set -euo pipefail`. On bash 3.2 (macOS
 # system /bin/bash), a bare "${managed_names[@]}" expansion errors with
@@ -1816,4 +1837,6 @@ else
   fi
 fi
 
-echo "✓ All codex-home-prepare tests passed"
+fi
+
+echo "✓ codex-home-prepare $TEST_GROUP group passed"
