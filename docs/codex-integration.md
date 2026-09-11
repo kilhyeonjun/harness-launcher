@@ -195,12 +195,18 @@ Global definitions accept only portable Codex MCP fields. Static `env` and `http
 `CODEX_HOME/AGENTS.md` is a generated file, not a symlink. Preparation uses the project's Codex-native rule compiler when available, then falls back to compatible project rules or `CLAUDE.md`. A Codex response-language supplement is appended without changing the source files.
 
 Supported lifecycle hooks are translated through `codex-hook-adapter.sh`. The
-PR and harness-main-only guards instead use `codex-pretool-adapter.py`, which
-preflights every static `tools.exec_command({ ... })` call against its literal
-`cmd` and absolute `workdir`. Dynamic arguments are rejected with a retry that
-asks the caller to inline those two strings. Ambiguous JavaScript forms such as
-aliased or computed exec access, template interpolation, and dynamic evaluators
-also fail closed; calls that provably contain no `exec_command` remain a no-op.
+PR and harness-main-only guards instead use `codex-pretool-adapter.py`. Native
+`Bash` payloads are forwarded once, unchanged, to the canonical guard. Exact
+`code_mode_exec` and `exec` payloads are treated as composite JavaScript and
+preflight every static `tools.exec_command({ ... })` call against its literal
+`cmd` and absolute `workdir`; their omitted nested `workdir` uses the payload's
+absolute, existing `cwd`. Dynamic arguments, unknown payload identities, and
+invalid payload cwd values fail closed. A composite program without a static
+`tools.exec_command` is a no-op; it is never reinterpreted as raw shell. The two
+guards are generated with matcher
+`^(Bash|code_mode_exec|exec)$`; other Bash hooks remain Bash-only. Ambiguous
+JavaScript forms such as aliased or computed exec access, template interpolation,
+and dynamic evaluators also fail closed.
 Hook parity is intentionally
 partial. A hook that depends on Claude-only payloads or lifecycle semantics
 should remain unwired until it has a Codex-specific test.

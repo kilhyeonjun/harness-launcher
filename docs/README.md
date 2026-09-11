@@ -31,7 +31,7 @@ The README covers installation and the first registered project. These documents
 | `bin/codex-home-prepare.sh` | Generated per-project Codex home |
 | `bin/kiro-home-prepare.sh` | Generated per-project Kiro home |
 | `bin/codex-hook-adapter.sh` | Supported hook translation into harness hooks |
-| `bin/codex-pretool-adapter.py` | Strict composite-exec normalization for command-sensitive Codex guards |
+| `bin/codex-pretool-adapter.py` | Strict raw-Bash/composite-exec normalization for command-sensitive Codex guards |
 | `test/` | Isolated shell regression tests |
 | `templates/project.gitignore` | Copyable generated-state and local-config ignore entries |
 | `install.sh` | Disabled source-install migration stub; use Homebrew |

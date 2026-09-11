@@ -331,20 +331,34 @@ def validated_hook(raw_path: str) -> Path:
     return hook
 
 
-def normalize_calls(payload: dict[str, Any], start_cwd: Path) -> list[tuple[dict[str, Any], Path]]:
+def payload_cwd(payload: dict[str, Any]) -> Path:
+    raw_cwd = payload.get("cwd")
+    if not isinstance(raw_cwd, str):
+        raise InputError("payload.cwd is missing")
+    cwd = Path(raw_cwd)
+    if not cwd.is_absolute():
+        raise InputError(f"payload.cwd must be absolute: {raw_cwd}")
+    if not cwd.is_dir():
+        raise InputError(f"payload.cwd does not exist: {cwd}")
+    return cwd
+
+
+def normalize_calls(payload: dict[str, Any], default_cwd: Path) -> list[tuple[dict[str, Any], Path]]:
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict) or not isinstance(tool_input.get("command"), str):
         raise InputError("tool_input.command is missing")
-    calls = StaticExecParser(tool_input["command"]).parse()
+    parser = StaticExecParser(tool_input["command"])
+    calls = parser.parse()
     normalized: list[tuple[dict[str, Any], Path]] = []
     for call in calls:
         raw_workdir = call.get("workdir")
-        workdir = start_cwd if raw_workdir is None else Path(raw_workdir)
+        workdir = default_cwd if raw_workdir is None else Path(raw_workdir)
         if raw_workdir is not None and not workdir.is_absolute():
             raise InputError(f"workdir must be absolute: {raw_workdir}")
         if not workdir.is_dir():
             raise InputError(f"workdir does not exist: {workdir}")
         child = dict(payload)
+        child["tool_name"] = "Bash"
         child["cwd"] = str(workdir)
         child_input = dict(tool_input)
         child_input["command"] = call["cmd"]
@@ -352,6 +366,27 @@ def normalize_calls(payload: dict[str, Any], start_cwd: Path) -> list[tuple[dict
         child["tool_input"] = child_input
         normalized.append((child, workdir))
     return normalized
+
+
+def normalize_raw_call(payload: dict[str, Any], cwd: Path) -> list[tuple[dict[str, Any], Path]]:
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict) or not isinstance(tool_input.get("command"), str):
+        raise InputError("tool_input.command is missing")
+    child = dict(payload)
+    child["cwd"] = str(cwd)
+    child["tool_name"] = "Bash"
+    child["tool_input"] = dict(tool_input)
+    return [(child, cwd)]
+
+
+def normalize_payload(payload: dict[str, Any]) -> list[tuple[dict[str, Any], Path]]:
+    cwd = payload_cwd(payload)
+    tool_name = payload.get("tool_name")
+    if tool_name == "Bash":
+        return normalize_raw_call(payload, cwd)
+    if tool_name in {"code_mode_exec", "exec"}:
+        return normalize_calls(payload, cwd)
+    raise InputError("tool_name must be exactly Bash, code_mode_exec, or exec")
 
 
 def parse_hook_output(stdout: str) -> tuple[str | None, str | None]:
@@ -413,7 +448,7 @@ def main() -> int:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):
             raise InputError("hook input must be a JSON object")
-        calls = normalize_calls(payload, Path.cwd())
+        calls = normalize_payload(payload)
     except (InputError, OSError, json.JSONDecodeError) as error:
         return fail(str(error))
 
