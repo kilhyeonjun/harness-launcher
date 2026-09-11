@@ -20,5 +20,6 @@ done
   echo "FAIL: test-codex-surface requires Python 3.11+" >&2
   exit 1
 }
+"$PYTHON_BIN" "$ROOT/test/test_timed_unittest.py" -v
 "$PYTHON_BIN" "$ROOT/test/test_surface_runner.py" -v
 "$PYTHON_BIN" "$ROOT/test/surface_test_runner.py"

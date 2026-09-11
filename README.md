@@ -322,11 +322,20 @@ serial until reviewed in `test/surface_test_runner.py`.
 Use `HARNESS_SURFACE_TEST_JOBS=1 ./test/test-codex-surface.sh` for the original
 serial unittest command. The default is 2; larger values are rejected. The
 runner reports group and total wall time and preserves each group's failure
-output. `--report PATH` writes machine-readable timings when invoking the Python
-runner directly. In one same-host full-suite comparison, expanding the reviewed
-set reduced the serial group from 63 tests in 316.6 seconds to 41 tests in 86.6
-seconds, and total wall time from 353.9 seconds to 172.8 seconds. Host load
-varies, so these are observations, not a speed guarantee.
+output. `--report PATH` writes machine-readable group and individual-test wall
+times when invoking the Python runner directly. In one same-host full-suite
+comparison, expanding the reviewed set reduced the serial group from 63 tests
+in 316.6 seconds to 41 tests in 86.6 seconds, and total wall time from 353.9
+seconds to 172.8 seconds. Host load varies, so these are observations, not a
+speed guarantee.
+
+The Codex home integration suite runs its config/skills, hooks, and generated
+surface groups with isolated temporary homes. The default is three concurrent
+groups; use `HARNESS_HOME_PREPARE_TEST_JOBS=1` to run them sequentially.
+`./test/test-codex-home-prepare.sh --report PATH` writes group wall times as
+JSON. On one same-host comparison, isolation plus bounded concurrency reduced
+wall time from 132.5 seconds to 19.9 seconds; this is an observation, not a
+speed guarantee.
 
 Run syntax checks as well:
 

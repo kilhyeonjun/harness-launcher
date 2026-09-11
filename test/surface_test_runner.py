@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -106,13 +107,22 @@ def run_group(label, names, full=False):
     if not full:
         command += names
     start = time.monotonic()
-    try:
-        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
-        code, stdout, stderr = result.returncode, result.stdout, result.stderr
-    except OSError as error:
-        code, stdout, stderr = 127, '', str(error)
+    tests = []
+    with tempfile.TemporaryDirectory(prefix='surface-test-timing.') as directory:
+        timing_report = Path(directory) / 'tests.json'
+        environment = dict(os.environ)
+        environment['HARNESS_UNITTEST_TIMING_REPORT'] = str(timing_report)
+        try:
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
+                                    env=environment)
+            code, stdout, stderr = result.returncode, result.stdout, result.stderr
+            if timing_report.is_file():
+                payload = json.loads(timing_report.read_text(encoding='utf-8'))
+                tests = payload.get('tests', [])
+        except (OSError, json.JSONDecodeError) as error:
+            code, stdout, stderr = 127, '', str(error)
     return dict(label=label, test_count=len(names), returncode=code, stdout=stdout,
-                stderr=stderr, elapsed_s=time.monotonic() - start)
+                stderr=stderr, elapsed_s=time.monotonic() - start, tests=tests)
 
 
 def execute(groups, run=run_group):

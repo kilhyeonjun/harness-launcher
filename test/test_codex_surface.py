@@ -17,6 +17,8 @@ from unittest import mock
 import importlib.util
 from typing import Mapping
 
+from timed_unittest import runner_from_env
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOLVER = ROOT / "bin" / "codex-surface.py"
@@ -2755,4 +2757,4 @@ class SurfaceInspectionTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(testRunner=runner_from_env())
