@@ -231,6 +231,15 @@ opus   → GPT-5.6 Sol, medium
 ```
 
 Generated agent files are output. Edit the source agent definition instead.
+Launcher-generated custom roles set `model_context_window = 272000` and
+`model_auto_compact_token_limit = 217600` independently of the main profile.
+Consequently, selecting the 1M main-session mode retains its `1000000` and
+`414000` base-config values, while converted Claude agent roles remain at the
+272K/80% compact limit. This applies only to roles generated from
+`.claude/agents/*.md`; Codex's built-in and ad-hoc agents have no launcher
+generated role file and are not globally capped by this setting. Provider-owned
+external roles such as synchronized `glider-*` TOMLs are also preserved rather
+than regenerated, so their context remains under the provider's configuration.
 
 ## Bundled plugins and browser support
 

@@ -1411,7 +1411,7 @@ EOF
 # _index.md should be ignored
 echo "# index — not an agent" > "$TEST_HARNESS4/.claude/agents/_index.md"
 
-"$PREPARE" "$TEST_HARNESS4"
+HARNESS_CODEX_CONTEXT=1m "$PREPARE" "$TEST_HARNESS4"
 agents_out="$TEST_HARNESS4/.harness/codex/agents"
 
 [[ -d "$agents_out" ]] || { echo "FAIL: agents output dir missing"; exit 1; }
@@ -1422,6 +1422,21 @@ echo "PASS: agents output directory created"
 [[ -f "$agents_out/implementer.toml" ]] || { echo "FAIL: implementer.toml missing"; exit 1; }
 [[ -f "$agents_out/_index.toml" ]] && { echo "FAIL: _index.md should be skipped"; exit 1; }
 echo "PASS: 3 agents converted, _index.md skipped"
+
+# An explicit 1M main-session request must not expand launcher-generated
+# subagents. They use the routine 272K cost guardrail independently.
+grep -q '^model_context_window = 1000000$' "$TEST_HARNESS4/.harness/codex/config.toml" || {
+  echo "FAIL: 1M main config missing while testing subagent context cap"; exit 1;
+}
+for agent_toml in "$agents_out"/*.toml; do
+  grep -q '^model_context_window = 272000$' "$agent_toml" || {
+    echo "FAIL: generated subagent must cap context at 272000"; exit 1;
+  }
+  grep -q '^model_auto_compact_token_limit = 217600$' "$agent_toml" || {
+    echo "FAIL: generated subagent must compact at 217600"; exit 1;
+  }
+done
+echo "PASS: 1M main config keeps generated subagents at 272K with 80% compact"
 
 # explorer: haiku → Luna+low, read-only sandbox
 grep -q '^name = "explorer"' "$agents_out/explorer.toml" || { echo "FAIL: explorer name"; exit 1; }
@@ -1447,7 +1462,7 @@ echo "PASS: implementer (sonnet) → Terra + medium + workspace-write"
 # Idempotent
 mtime_a_before=$(stat -f %m "$agents_out/explorer.toml" 2>/dev/null || stat -c %Y "$agents_out/explorer.toml")
 sleep 1.1
-"$PREPARE" "$TEST_HARNESS4"
+HARNESS_CODEX_CONTEXT=1m "$PREPARE" "$TEST_HARNESS4"
 mtime_a_after=$(stat -f %m "$agents_out/explorer.toml" 2>/dev/null || stat -c %Y "$agents_out/explorer.toml")
 [[ "$mtime_a_before" == "$mtime_a_after" ]] || {
   echo "FAIL: agents toml mtime changed on no-op re-run"; exit 1;
@@ -1456,7 +1471,7 @@ echo "PASS: agents idempotent on no-op re-run"
 
 # Removing source agent should drop the generated toml
 rm "$TEST_HARNESS4/.claude/agents/reviewer.md"
-"$PREPARE" "$TEST_HARNESS4"
+HARNESS_CODEX_CONTEXT=1m "$PREPARE" "$TEST_HARNESS4"
 [[ ! -f "$agents_out/reviewer.toml" ]] || { echo "FAIL: stale reviewer.toml not removed"; exit 1; }
 [[ -f "$agents_out/explorer.toml" ]] || { echo "FAIL: explorer.toml should remain"; exit 1; }
 echo "PASS: removing source agent drops generated toml"
