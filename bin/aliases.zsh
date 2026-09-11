@@ -19,6 +19,36 @@ _harness_launcher_mcp_local_configs() { harness_mcp_local_configs "$@"; }
 
 _harness_launcher_validate_mcp_local_configs() { harness_validate_mcp_local_configs "$@"; }
 
+_harness_launcher_isolated_session_create() {
+  local source_root="$1" session_id="${2:-}" output key value
+  if [[ -n "$session_id" ]]; then
+    output="$("$_HARNESS_LAUNCHER_BIN/session-isolation.sh" resume "$source_root" "$session_id")" || return $?
+  else
+    output="$("$_HARNESS_LAUNCHER_BIN/session-isolation.sh" create "$source_root")" || return $?
+  fi
+  while IFS='=' read -r key value; do
+    case "$key" in
+      HARNESS_SESSION_ID|HARNESS_SOURCE_ROOT|HARNESS_SESSION_ROOT) export "$key=$value" ;;
+    esac
+  done <<< "$output"
+}
+
+_harness_launcher_isolated_heartbeat() {
+  local session_id="$1" interval="${HARNESS_SESSION_HEARTBEAT_SECONDS:-30}"
+  while "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" heartbeat "$session_id" 2>/dev/null; do
+    sleep "$interval"
+  done
+}
+
+_harness_launcher_isolated_finish() {
+  local session_id="$1" heartbeat_pid="${2:-}"
+  if [[ -n "$heartbeat_pid" ]]; then
+    kill "$heartbeat_pid" 2>/dev/null || true
+    wait "$heartbeat_pid" 2>/dev/null || true
+  fi
+  "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" exit "$session_id" 2>/dev/null || true
+}
+
 _harness_launcher_prepare_codex_global_mcp_allowlist() {
   local raw="${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-}" normalized
   [[ -n "$raw" ]] || { unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST; return 0; }
@@ -229,6 +259,8 @@ harness_register() {
 _harness_launcher_run() {
   local HARNESS_DIR="$1"; shift
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
+  local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
+  local config_root="$HARNESS_DIR"
   unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST
   source "$HARNESS_DIR/config/launcher.env"
   mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
@@ -243,6 +275,29 @@ _harness_launcher_run() {
       ;;
   esac
 
+  local isolated=false
+  local requested_session_id=""
+  if [[ "${1:-}" == "--isolated" ]]; then
+    isolated=true
+    shift
+  elif [[ "${1:-}" == "--isolated-session" ]]; then
+    [[ $# -ge 2 ]] || { echo 'harness-launcher: --isolated-session requires a UUID' >&2; return 2; }
+    isolated=true
+    requested_session_id="$2"
+    shift 2
+  elif [[ "${HARNESS_SESSION_ISOLATION:-0}" == "1" ]]; then
+    isolated=true
+  fi
+  if $isolated; then
+    local source_root="${HARNESS_DIR:A}"
+    _harness_launcher_isolated_session_create "$source_root" "$requested_session_id" || return $?
+    HARNESS_DIR="$HARNESS_SESSION_ROOT"
+    [[ -n "$HARNESS_RUN_DIR" ]] || HARNESS_RUN_DIR="$HARNESS_SESSION_ROOT"
+    export HARNESS_RUN_DIR
+    harness_export_local_env "$HARNESS_SOURCE_ROOT"
+  fi
+  local isolated_session_id="${HARNESS_SESSION_ID:-}"
+
   local -a claude_args=()
   local session_flag="" skip_tui=false env_effort="" provider_url="" gateway_api_key="" provider_name=""
   local mode_applied=false mcp_surface="full"
@@ -251,7 +306,7 @@ _harness_launcher_run() {
   case "${1:-}" in
     kiro)
       provider_name="kiro"
-      local _env_file="$HARNESS_DIR/config/.local/kiro-gateway.env"
+      local _env_file="$config_root/config/.local/kiro-gateway.env"
       if [[ -f "$_env_file" ]]; then
         source "$_env_file"
         [[ -n "${KIRO_GATEWAY_URL:-}" ]] && provider_url="$KIRO_GATEWAY_URL"
@@ -263,23 +318,35 @@ _harness_launcher_run() {
       skip_tui=true; shift ;;
     codex)
       shift
+      local isolated_heartbeat_pid=""
+      if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       _harness_launcher_run_codex_cli "$HARNESS_DIR" "$mcp_surface_policy" "$@"
-      return $?
+      local rc=$?
+      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
+      return $rc
       ;;
     codex-smoke)
       shift
       [[ $# -eq 0 ]] || { echo "harness-launcher: codex-smoke takes no arguments" >&2; return 2; }
+      local isolated_heartbeat_pid=""
+      if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       _harness_launcher_codex_synthetic_smoke "$HARNESS_DIR"
-      return $?
+      local rc=$?
+      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
+      return $rc
       ;;
     kiro-cli)
       shift
+      local isolated_heartbeat_pid=""
+      if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       _harness_launcher_run_kiro_cli "$HARNESS_DIR" "$@"
-      return $?
+      local rc=$?
+      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
+      return $rc
       ;;
     codex-gateway)
       provider_name="codex"
-      local _env_file="$HARNESS_DIR/config/.local/codex-gateway.env"
+      local _env_file="$config_root/config/.local/codex-gateway.env"
       if [[ -f "$_env_file" ]]; then
         source "$_env_file"
         [[ -n "${CODEX_GATEWAY_URL:-}" ]] && provider_url="$CODEX_GATEWAY_URL"
@@ -427,9 +494,11 @@ _harness_launcher_run() {
     # the launched process — Ctrl+C returns to the prompt instead of closing
     # the terminal window.
     local claude_broker_started=false
+    local isolated_heartbeat_pid=""
     if [[ "$mcp_surface" == "light" ]]; then
       local _light_file
       _light_file="$(harness_claude_light_mcp_config "$HARNESS_DIR")" || return $?
+      if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
       if [[ -n "$HARNESS_RUN_DIR" ]]; then
@@ -438,6 +507,7 @@ _harness_launcher_run() {
         claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}"
       fi
     else
+      if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
       if [[ -n "$HARNESS_RUN_DIR" ]]; then
@@ -448,12 +518,17 @@ _harness_launcher_run() {
     fi
     local rc=$?
     $claude_broker_started && harness_claude_cmux_broker_stop
+    [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
     return $rc
   else
+    local isolated_heartbeat_pid=""
+    if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
       HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
       "$_HARNESS_LAUNCHER_BIN/launcher.sh"
-    return $?
+    local rc=$?
+    [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
+    return $rc
   fi
 }
 

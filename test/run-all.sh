@@ -12,14 +12,16 @@ has_lockf=0
 
 for test_file in "$ROOT"/test/test-*.sh; do
   test_name="$(basename "$test_file")"
-  # This integration test verifies the macOS /usr/bin/lockf kernel-lock contract.
-  # Hosted macOS images without that system binary cannot exercise it safely;
-  # production preparation remains fail-closed when cache synchronization needs it.
+  # These integration tests verify the macOS /usr/bin/lockf kernel-lock contract.
+  # Hosted images without that system binary cannot exercise them safely;
+  # production preparation and session integration remain fail-closed when
+  # serialization needs it.
   if [[ "$has_lockf" -eq 0 ]]; then
     case "$test_name" in
       test-codex-config-preservation.sh|test-codex-global-mcp-drift.sh|\
         test-codex-home-lock.sh|test-codex-home-prepare.sh|\
-        test-codex-observability-profile.sh|test-codex-migrate-to-symlinks.sh)
+        test-codex-observability-profile.sh|test-codex-migrate-to-symlinks.sh|\
+        test-session-isolation.sh|test-session-isolation-concurrency.sh)
         printf '==> %s (SKIP: /usr/bin/lockf unavailable)\n' "$test_name"
         skipped=$((skipped + 1))
         continue

@@ -45,6 +45,7 @@ Important boundaries:
 - `.claude/settings.local.json` can provide local environment values to child runtimes. Treat it as sensitive and keep it out of version control.
 - `.mcp.local.json`, `mcp.local.json`, and `config/.local/**` are intended for machine-local configuration and secrets.
 - Shared Codex plugin/cache writes are serialized with the macOS kernel lock.
+- Opt-in harness sessions use detached per-UUID repositories with distinct Git directories and no remote plus a kernel-locked integration broker; only canonical-origin, non-force updates that pass the repository-owned verifier and whose delivered commit and exact path/mode/blob manifest are proven in fresh-cloned remote history become delivered.
 - `node_repl` browser integration trusts exact browser-client hashes. Project-writable runtime homes are not trusted code paths.
 - A gateway mode sends prompts and tool traffic to the configured gateway. Users are responsible for trusting that endpoint.
 - The launcher prefers runtime binaries from `PATH`. `HARNESS_CODEX_BIN` and app fallback options deliberately change the executable trust decision.

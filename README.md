@@ -138,6 +138,44 @@ This installs a profile entry under `~/.config/harness-launcher/profiles/` and a
 
 Registered commands are workspace-aware. If the current directory resolves inside the owning harness, the launcher uses it automatically; otherwise it preserves the legacy harness-root default. An explicit `--cwd` still takes precedence.
 
+### Experimental isolated sessions
+
+Root sessions can opt into a disposable detached Git repository with `--isolated`, or by
+setting `HARNESS_SESSION_ISOLATION=1`. The launcher exports
+`HARNESS_SOURCE_ROOT`, `HARNESS_SESSION_ROOT`, and `HARNESS_RUN_DIR`; a root
+launch runs from the remote-free session repository while an explicit product `--cwd` stays
+in that product worktree. Session records are written atomically below
+`${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher`. Machine-local
+`config/.local` is never copied, and `projects/` is linked back to the
+canonical harness so existing product worktrees remain available.
+
+The bundled `session-isolation.sh` can submit a session's immutable patch and
+manifest, then integrate it through a locally serialized remote fast-forward
+lane. It applies the patch three-way on the current remote tip, runs the
+repository-owned verifier with post-commit side effects disabled, retries once
+after a remote advance, records the successful non-force push, and verifies the
+exact delivered commit's path/mode/blob manifest from a fresh clone of remote
+history before marking `DELIVERED`. A later remote descendant does not turn an
+already accepted delivery into a false conflict. Homebrew exposes the lifecycle command
+as `harness-session`:
+
+```bash
+ex --isolated codex base
+harness-session list
+ex --isolated-session <uuid> codex resume
+harness-session close <uuid>
+```
+
+`close` snapshots all tracked and untracked session changes and binds the
+canonical source and its `origin` into the submission digest. The caller cannot
+replace the verifier or remote. Closing or normally exiting a clean session
+records terminal `CLOSED` without creating an empty submission. A failed
+apply, verifier, bounded remote retry, or verified readback mismatch becomes
+durable `CONFLICT`; a post-push readback outage remains `INTEGRATING` until
+recovery proves whether the pending commit reached remote history.
+`harness-session recover <uuid>` reconciles an indeterminate integration or
+reopens the same workspace for repair.
+
 Workspace managers that need to choose the profile instead of naming it can use `harness-auto`. It resolves the current directory against the private profile registry, selects the single most-specific owning harness, and fails closed outside or across ambiguous boundaries:
 
 ```bash
