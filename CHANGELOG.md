@@ -133,6 +133,11 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Changed
 
+- Keep launcher-generated Codex custom subagent roles at a 272,000-token
+  context window with a 217,600-token auto-compact limit, even when the main
+  session explicitly selects 1M context. Built-in and ad-hoc Codex agents are
+  outside this generated-role configuration, as are preserved provider-owned
+  external roles such as synchronized `glider-*` TOMLs.
 - Split the Codex home integration suite into three isolated fixture groups and
   run them with bounded concurrency. Optional JSON reports include each group's
   wall time, and Codex surface reports now include individual-test wall times.

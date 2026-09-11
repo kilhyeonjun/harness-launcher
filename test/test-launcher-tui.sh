@@ -39,6 +39,9 @@ write_stub() {
   echo "OPUS_MODEL:\${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
   echo "PCT:\${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}"
   echo "HISTORY_SUMMARY_LEAK:\${HISTORY_SUMMARY_LEAK:-<UNSET>}"
+  echo "CMUX_WORKSPACE_ID:\${CMUX_WORKSPACE_ID:-<UNSET>}"
+  echo "CMUX_TAB_ID:\${CMUX_TAB_ID:-<UNSET>}"
+  echo "CMUX_SURFACE_ID:\${CMUX_SURFACE_ID:-<UNSET>}"
 } >> "\$TEST_STUB_FILE"
 exit 0
 EOF
@@ -67,6 +70,7 @@ run_tui() {
   # servers into light-surface assertions.
   local input="$1" out_file="$2" stub_file="$3"; shift 3
   env -u HARNESS_DIR -u HARNESS_RUN_DIR -u HARNESS_PREFIX \
+    -u CMUX_WORKSPACE_ID -u CMUX_TAB_ID -u CMUX_SURFACE_ID \
     -u HARNESS_CODEX_MCP_PROFILE -u HARNESS_MCP_SURFACE_POLICY "$@" \
     TEST_STUB_FILE="$stub_file" \
     PATH="$TEST_BASE_PATH" \
@@ -82,6 +86,7 @@ run_seeded_tui_status() {
   local input="$1" out_file="$2" stub_file="$3"; shift 3
   set +e
   env -u HARNESS_DIR -u HARNESS_RUN_DIR -u HARNESS_PREFIX \
+    -u CMUX_WORKSPACE_ID -u CMUX_TAB_ID -u CMUX_SURFACE_ID \
     -u HARNESS_CODEX_MCP_PROFILE -u HARNESS_MCP_SURFACE_POLICY "$@" \
     TEST_STUB_FILE="$stub_file" \
     PATH="$TEST_BASE_PATH" \
@@ -106,12 +111,21 @@ assert_no_migration_temps() {
 
 write_stub claude
 write_node_stub
+export CMUX_WORKSPACE_ID="test-workspace"
+export CMUX_TAB_ID="test-tab"
+export CMUX_SURFACE_ID="test-surface"
 
 # --- 1. base start: session→mode(base)→start -------------------------------
 OUT="$TEST_TEMP/1.out"; STUB="$TEST_TEMP/1.stub"; reset_plan
 run_tui $'1\n2\n1\n' "$OUT" "$STUB"
 grep -q 'EXEC:claude --model sonnet --effort high --exclude-dynamic-system-prompt-sections' "$STUB" \
   || fail 'base mode should exec claude sonnet/high' "$OUT"
+grep -Fqx 'CMUX_WORKSPACE_ID:<UNSET>' "$STUB" \
+  || fail 'TUI fixture must clear CMUX_WORKSPACE_ID' "$STUB"
+grep -Fqx 'CMUX_TAB_ID:<UNSET>' "$STUB" \
+  || fail 'TUI fixture must clear CMUX_TAB_ID' "$STUB"
+grep -Fqx 'CMUX_SURFACE_ID:<UNSET>' "$STUB" \
+  || fail 'TUI fixture must clear CMUX_SURFACE_ID' "$STUB"
 [[ -f "$HISTORY" ]] || fail 'launch should save a history entry' "$OUT"
 head -1 "$HISTORY" | grep -q 'MODE=base' || fail 'history entry should record MODE=base'
 head -1 "$HISTORY" | grep -q 'RUNTIME=claude' || fail 'history entry should record RUNTIME=claude'

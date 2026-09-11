@@ -1911,6 +1911,11 @@ for path in sorted(glob.glob(os.path.join(src_dir, "*.md"))):
     out_lines.append(f'model = "{codex_model}"')
     if effort:
         out_lines.append(f'model_reasoning_effort = "{effort}"')
+    # Generated roles are bounded independently from the main session. This
+    # prevents an explicit 1M parent context from multiplying long-context
+    # usage across routine subagents.
+    out_lines.append('model_context_window = 272000')
+    out_lines.append('model_auto_compact_token_limit = 217600')
     out_lines.append(f'sandbox_mode = "{sandbox}"')
     body_text = body.rstrip() + "\n"
     out_lines.append('developer_instructions = """')
