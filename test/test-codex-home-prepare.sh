@@ -1218,13 +1218,17 @@ echo "PASS: missing hooks.yaml retains legacy Stop and post-edit exclusions"
 
 # Adapter wrapping: SessionStart, UserPromptSubmit, and PostToolUse may emit
 # Claude-format JSON ({"additionalContext": ...}) which Codex rejects. Those
-# events MUST be routed through codex-hook-adapter.sh; PreToolUse stays direct
-# so blocking guard decisions are not hidden.
+# events MUST be routed through codex-hook-adapter.sh. Two command-sensitive,
+# non-rewriting PreToolUse guards use the strict composite-exec adapter so they
+# see each resolved cmd/workdir while preserving exit-2 blocking.
 python3 - "$hooks_json" <<'PY' || exit 1
 import json, sys
 data = json.load(open(sys.argv[1]))
 adapted = {"SessionStart", "UserPromptSubmit", "PostToolUse"}
-direct = {"PreToolUse", "Stop"}
+strict_pretool = {
+    "pre-bash-harness-main-only-guard.sh",
+    "pre-bash-pr-gate.sh",
+}
 for event in adapted:
     for entry in data["hooks"].get(event, []):
         for h in entry.get("hooks", []):
@@ -1240,15 +1244,24 @@ for event in adapted:
             if event not in cmd:
                 print(f"FAIL: {event} adapter call missing event arg: {cmd}")
                 sys.exit(1)
-for event in direct:
-    for entry in data["hooks"].get(event, []):
-        for h in entry.get("hooks", []):
-            cmd = h.get("command", "")
-            if "codex-hook-adapter.sh" in cmd:
-                print(f"FAIL: {event} hook should NOT use adapter (no rewrite needed): {cmd}")
-                sys.exit(1)
+for entry in data["hooks"].get("PreToolUse", []):
+    for h in entry.get("hooks", []):
+        cmd = h.get("command", "")
+        matched = {name for name in strict_pretool if name in cmd}
+        if matched and "codex-pretool-adapter.py" not in cmd:
+            print(f"FAIL: strict PreToolUse hook not normalized: {cmd}")
+            sys.exit(1)
+        if not matched and "codex-pretool-adapter.py" in cmd:
+            print(f"FAIL: rewriting/unapproved PreToolUse hook uses strict adapter: {cmd}")
+            sys.exit(1)
+for entry in data["hooks"].get("Stop", []):
+    for h in entry.get("hooks", []):
+        cmd = h.get("command", "")
+        if "codex-hook-adapter.sh" in cmd or "codex-pretool-adapter.py" in cmd:
+            print(f"FAIL: Stop hook should stay direct: {cmd}")
+            sys.exit(1)
 PY
-echo "PASS: SessionStart/UserPromptSubmit/PostToolUse routed through codex-hook-adapter.sh; Stop direct"
+echo "PASS: lifecycle adapters, strict command guards, and direct Stop are separated"
 
 # Exercise the generated commands as Codex does: an adapted PostToolUse hook
 # records its adapter parent, then the direct Stop hook from that same parent
