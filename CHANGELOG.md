@@ -4,6 +4,19 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+### Added
+
+- Add opt-in `--isolated` / `HARNESS_SESSION_ISOLATION=1` root sessions. Each
+  launch receives a remote-free repository with an independent Git directory
+  and an atomic, durable session journal;
+  the default launcher path remains unchanged.
+- Add a local serialized submission broker with digest-bound patches, manifests,
+  canonical origin, non-force remote delivery, repository-owned candidate
+  verification, remote CAS acknowledgement, exact delivered-commit readback,
+  clean-session closeout, and crash reconciliation.
+- Add `harness-session` lifecycle commands, UUID workspace resume, live-session
+  heartbeats, and kernel-released integration locking for crash recovery.
+
 ### Fixed
 
 - Route native Codex `Bash` PreToolUse payloads directly to the canonical PR

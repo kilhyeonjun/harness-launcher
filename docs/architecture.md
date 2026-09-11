@@ -139,6 +139,35 @@ On macOS, preparation opens a persistent lock file and acquires `/usr/bin/lockf`
 
 Do not replace this with PID files, mtime-based stale reclamation, or signal cleanup that removes a directory while child work continues.
 
+### Isolated harness sessions
+
+The opt-in isolated-session canary separates three paths:
+
+- `HARNESS_SOURCE_ROOT` owns the canonical Git directory, product checkouts, and machine-local configuration.
+- `HARNESS_SESSION_ROOT` is a detached, per-UUID repository with a distinct Git directory and no remote, containing the session's tracked harness state and private index.
+- `HARNESS_RUN_DIR` is the runtime working directory: the session root for harness work, or the original product worktree selected with `--cwd`.
+
+Machine-local MCP files are referenced from the canonical source and excluded
+from submissions. `config/.local` is read from the source boundary and is never
+copied. A heartbeat keeps live `OPEN` sessions from being declared abandoned;
+the UUID workspace remains recoverable after an unclean exit.
+
+Delivery has one kernel-locked lane per host. The session submits a base SHA,
+binary patch, NUL-delimited path/mode/blob manifest, canonical source, and
+canonical remote bound by one digest and rechecked before and after verification.
+The broker clones the current remote tip, requires the repository-owned
+auto-delivery verifier on the staged candidate, applies the patch three-way,
+and performs a non-force push. Remote movement before that push discards the
+candidate and reruns apply plus verification. The successful push is the remote
+compare-and-swap acknowledgement; a fresh clone must then contain the delivered
+SHA as an ancestor and reproduce its exact path/mode/blob manifest before the
+journal can become `DELIVERED`. A later remote descendant therefore cannot turn
+an accepted delivery into a false conflict. Independent hosts rely on the remote
+non-fast-forward comparison; they never bypass it with force push. A crash in
+`INTEGRATING`, including between remote acceptance and the local acknowledgement,
+reconciles a proven pushed candidate to `DELIVERED` or returns an unpushed
+submission to `SUBMITTED`. Clean close or normal exit records terminal `CLOSED`.
+
 Manifest-enabled homes also keep an atomic successful-input fingerprint plus a source-identity watch snapshot. The lean warm path validates watched file identities, semantic TOML policy, launcher-owned output hashes, product-plugin skill digests, explicit-only policies, skill/plugin directory topology, every managed skill link, and the normalized global-MCP definition digest before returning; it does not rescan plugin tests/docs/assets. Changing selected global definitions or allowlist membership therefore invalidates the warm path. Unexpected generated-home skill routes force a cold rebuild and reversible quarantine, and marker membership alone never proves ownership. Auth contents, sessions, hook trust state, and generated output mtimes remain runtime state and do not invalidate source generation. A cold rebuild leaves the live success stamp in place while it prepares a candidate transaction, then publishes the replacement success stamp last.
 
 ## Browser and plugin trust
@@ -174,5 +203,6 @@ The launcher prefers visible failures over silent fallback when a boundary is am
 - duplicate MCP server names stop launch;
 - missing explicit runtime binary stops launch;
 - lock acquisition timeout stops shared cache mutation;
+- isolated-session apply, verification, remote comparison, or verified readback mismatch remains a recoverable `CONFLICT`; a post-push readback outage remains `INTEGRATING` for remote-history reconciliation;
 - failed runtime-home preparation stops the selected runtime;
 - app-bundled Codex fallback requires explicit opt-in.
