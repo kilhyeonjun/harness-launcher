@@ -39,8 +39,10 @@ jq -cn --arg command "$command" --arg cwd "$(pwd -P)" \
   '{command:$command,cwd:$cwd}' >> "$CAPTURE"
 case "$command" in
   gh\ pr\ create*|gh\ pr\ edit*)
-    echo "probe denied resolved gh mutation" >&2
-    exit 2
+    if [[ "${HARNESS_ALLOW_PR:-}" != "1" ]]; then
+      echo "probe denied resolved gh mutation" >&2
+      exit 2
+    fi
     ;;
   ADVISE*)
     jq -n --arg ctx "$command" '{additionalContext:$ctx}'
@@ -54,12 +56,64 @@ mkdir -p "$WORKDIR"
 WORKDIR_REAL="$(cd "$WORKDIR" && pwd -P)"
 
 payload() {
-  jq -cn --arg source "$1" --arg cwd "$TMP_ROOT" '{
+  local source="$1" tool_name="${2:-code_mode_exec}" cwd="${3:-$TMP_ROOT}"
+  jq -cn --arg source "$source" --arg cwd "$cwd" --arg tool_name "$tool_name" '{
     session_id:"session", turn_id:"turn", cwd:$cwd,
     hook_event_name:"PreToolUse", model:"gpt", permission_mode:"default",
-    tool_name:"Bash", tool_input:{command:$source}, tool_use_id:"call"
+    tool_name:$tool_name, tool_input:{command:$source}, tool_use_id:"call"
   }'
 }
+
+# A native Bash PreToolUse payload is already a shell command. It must reach
+# the canonical guard once, without being interpreted as JavaScript source.
+: > "$CAPTURE"
+raw_command='printf raw-shell && rg -n "/tools/" fixture'
+printf '%s' "$(payload "$raw_command" Bash "$WORKDIR")" | python3 "$ADAPTER" "$HOOK" >/dev/null
+assert_eq "raw Bash forwards command exactly once" \
+  "$(jq -r '.command' "$CAPTURE")" "$raw_command"
+assert_eq "raw Bash runs hook in payload cwd" \
+  "$(jq -r '.cwd' "$CAPTURE")" "$WORKDIR_REAL"
+
+: > "$CAPTURE"
+set +e
+printf '%s' "$(payload 'gh pr create --title blocked' Bash "$WORKDIR")" | python3 "$ADAPTER" "$HOOK" >/dev/null 2>"$TMP_ROOT/raw-pr.err"
+rc=$?
+set -e
+assert_eq "raw Bash gh PR mutation is blocked" "$rc" "2"
+assert_eq "raw Bash gh PR reaches canonical hook once" \
+  "$(wc -l < "$CAPTURE" | tr -d ' ')" "1"
+
+# HARNESS_ALLOW_PR is a canonical-hook override. The adapter must preserve it
+# for native Bash payloads and normalized composite children alike.
+: > "$CAPTURE"
+set +e
+printf '%s' "$(payload 'gh pr create --title allowed' Bash "$WORKDIR")" | HARNESS_ALLOW_PR=1 python3 "$ADAPTER" "$HOOK" >/dev/null 2>"$TMP_ROOT/raw-pr-allow.err"
+rc=$?
+set -e
+assert_eq "raw Bash preserves HARNESS_ALLOW_PR" "$rc" "0"
+
+: > "$CAPTURE"
+set +e
+printf '%s' "$(payload 'text(await tools.exec_command({cmd:"gh pr create --title composite",workdir:"/tmp"}));' code_mode_exec)" | HARNESS_ALLOW_PR=1 python3 "$ADAPTER" "$HOOK" >/dev/null 2>"$TMP_ROOT/composite-pr-allow.err"
+rc=$?
+set -e
+assert_eq "composite child preserves HARNESS_ALLOW_PR" "$rc" "0"
+
+: > "$CAPTURE"
+raw_command='rg -n "tools.exec_command" transcript.jsonl'
+printf '%s' "$(payload "$raw_command" Bash "$WORKDIR")" | python3 "$ADAPTER" "$HOOK" >/dev/null
+assert_eq "raw Bash tools text is not parsed as composite" \
+  "$(jq -r '.command' "$CAPTURE")" "$raw_command"
+: > "$CAPTURE"
+
+: > "$CAPTURE"
+set +e
+printf '%s' "$(payload 'gh pr create --title must-not-downgrade' code_mode_exec "$WORKDIR")" | python3 "$ADAPTER" "$HOOK" >/dev/null 2>"$TMP_ROOT/composite-raw.err"
+rc=$?
+set -e
+assert_eq "composite identity never downgrades raw shell" "$rc" "0"
+assert_eq "composite raw shell reaches no canonical hook" \
+  "$(wc -l < "$CAPTURE" | tr -d ' ')" "0"
 
 # Transcript-shaped static JSON object: pass the real command and nested cwd.
 source="const r = await tools.exec_command({\"cmd\":\"printf harmless\",\"workdir\":$(jq -Rn --arg v "$WORKDIR" '$v'),\"yield_time_ms\":10000}); text(r.output);"
@@ -69,12 +123,79 @@ assert_eq "static call forwards resolved command" \
 assert_eq "static call runs hook in resolved workdir" \
   "$(jq -r '.cwd' "$CAPTURE")" "$WORKDIR_REAL"
 
-# Missing workdir inherits the adapter's starting directory.
+# Missing workdir inherits the caller-provided payload cwd, never the adapter's
+# process cwd.
 : > "$CAPTURE"
 source='await tools.exec_command({cmd:"printf inherited"});'
 printf '%s' "$(payload "$source")" | (cd "$WORKDIR" && python3 "$ADAPTER" "$HOOK") >/dev/null
-assert_eq "absent workdir inherits adapter cwd" \
-  "$(jq -r '.cwd' "$CAPTURE")" "$WORKDIR_REAL"
+assert_eq "absent workdir inherits payload cwd" \
+  "$(jq -r '.cwd' "$CAPTURE")" "$(cd "$TMP_ROOT" && pwd -P)"
+
+# Both composite identities use strict parsing, while unrecognized/missing
+# identities and invalid payload cwd values fail before the canonical hook.
+for identity_case in exec unknown missing missing_command relative_cwd missing_cwd missing_cwd_path; do
+  : > "$CAPTURE"
+  case "$identity_case" in
+    exec) input="$(payload 'await tools.exec_command({cmd:"printf exec",workdir:"/tmp"});' exec)"; expected=0 ;;
+    unknown) input="$(payload 'printf unknown' Shell)"; expected=2 ;;
+    missing) input="$(payload 'printf missing' Bash | jq 'del(.tool_name)')"; expected=2 ;;
+    missing_command) input="$(payload 'printf missing-command' Bash | jq 'del(.tool_input.command)')"; expected=2 ;;
+    relative_cwd) input="$(payload 'printf cwd' Bash relative)"; expected=2 ;;
+    missing_cwd) input="$(payload 'printf cwd' Bash | jq 'del(.cwd)')"; expected=2 ;;
+    missing_cwd_path) input="$(payload 'printf cwd' Bash "$TMP_ROOT/does-not-exist")"; expected=2 ;;
+  esac
+  set +e
+  printf '%s' "$input" | python3 "$ADAPTER" "$HOOK" >/dev/null 2>"$TMP_ROOT/$identity_case.err"
+  rc=$?
+  set -e
+  assert_eq "$identity_case identity/cwd contract" "$rc" "$expected"
+  if [[ "$expected" == 2 ]]; then
+    assert_eq "$identity_case fails before canonical hook" "$(wc -l < "$CAPTURE" | tr -d ' ')" "0"
+  else
+    assert_eq "exec identity normalizes child tool name" "$(jq -r '.command' "$CAPTURE")" "printf exec"
+  fi
+done
+
+# `text(await tools.exec_command(...))` is a valid composite shape, not a
+# reason to reinterpret its source as raw Bash. Its nested mutation must be
+# seen and denied by the canonical hook.
+: > "$CAPTURE"
+set +e
+printf '%s' "$(payload 'text(await tools.exec_command({cmd:"gh pr create --title nested",workdir:"/tmp"}));' code_mode_exec)" | python3 "$ADAPTER" "$HOOK" >/dev/null 2>"$TMP_ROOT/text-await-deny.err"
+rc=$?
+set -e
+assert_eq "text await composite gh PR is blocked" "$rc" "2"
+assert_eq "text await composite reaches canonical hook once" \
+  "$(wc -l < "$CAPTURE" | tr -d ' ')" "1"
+
+# Each composite identity keeps the same strict static, multi-call, dynamic,
+# and deny behavior; neither may fall through to the raw Bash route.
+for identity in code_mode_exec exec; do
+  : > "$CAPTURE"
+  printf '%s' "$(payload 'await tools.exec_command({cmd:"printf static",workdir:"/tmp"});' "$identity")" | python3 "$ADAPTER" "$HOOK" >/dev/null
+  assert_eq "$identity static composite reaches hook" "$(jq -r '.command' "$CAPTURE")" "printf static"
+
+  : > "$CAPTURE"
+  set +e
+  printf '%s' "$(payload 'const args={cmd:"printf dynamic",workdir:"/tmp"}; await tools.exec_command(args);' "$identity")" | python3 "$ADAPTER" "$HOOK" >/dev/null 2>"$TMP_ROOT/$identity-dynamic.err"
+  rc=$?
+  set -e
+  assert_eq "$identity dynamic composite fails closed" "$rc" "2"
+  assert_eq "$identity dynamic composite runs no hook" "$(wc -l < "$CAPTURE" | tr -d ' ')" "0"
+
+  : > "$CAPTURE"
+  set +e
+  printf '%s' "$(payload 'await tools.exec_command({cmd:"gh pr create --title deny",workdir:"/tmp"});' "$identity")" | python3 "$ADAPTER" "$HOOK" >/dev/null 2>"$TMP_ROOT/$identity-deny.err"
+  rc=$?
+  set -e
+  assert_eq "$identity denied composite blocks" "$rc" "2"
+  assert_eq "$identity denied composite reaches hook once" "$(wc -l < "$CAPTURE" | tr -d ' ')" "1"
+
+  : > "$CAPTURE"
+  printf '%s' "$(payload 'await tools.exec_command({cmd:"printf first",workdir:"/tmp"}); await tools.exec_command({cmd:"printf second",workdir:"/tmp"});' "$identity")" | python3 "$ADAPTER" "$HOOK" >/dev/null
+  assert_eq "$identity multi composite preserves every call" \
+    "$(jq -r '.command' "$CAPTURE" | paste -sd '|' -)" "printf first|printf second"
+done
 
 # functions.exec operations without a nested shell call are irrelevant to Bash
 # guards and must not invoke the canonical hook.

@@ -1231,6 +1231,68 @@ print("OK")
 PY
 echo "PASS: missing hooks.yaml retains legacy Stop and post-edit exclusions"
 
+# Legacy synthesis has no settings.json matcher to preserve. The two strict
+# guards must still be split and widened, while ordinary Bash hooks stay raw.
+TEST_HARNESS_LEGACY="$TEST_TEMP/fake-harness-hook-legacy"
+mkdir -p "$TEST_HARNESS_LEGACY/core/hooks" "$TEST_HARNESS_LEGACY/.claude"
+echo "# rules" > "$TEST_HARNESS_LEGACY/CLAUDE.md"
+for h in pre-bash-irreversible-guard pre-bash-pr-gate pre-bash-harness-main-only-guard; do
+  : > "$TEST_HARNESS_LEGACY/core/hooks/$h.sh"
+done
+"$PREPARE" "$TEST_HARNESS_LEGACY"
+python3 - "$TEST_HARNESS_LEGACY/.harness/codex/hooks.json" <<'PY' || exit 1
+import json, sys
+data = json.load(open(sys.argv[1]))
+expected = {
+    "pre-bash-irreversible-guard.sh": "Bash",
+    "pre-bash-pr-gate.sh": "^(Bash|code_mode_exec|exec)$",
+    "pre-bash-harness-main-only-guard.sh": "^(Bash|code_mode_exec|exec)$",
+}
+found = {}
+for entry in data["hooks"].get("PreToolUse", []):
+    for hook in entry.get("hooks", []):
+        for script in expected:
+            if script in hook.get("command", ""):
+                if script in found:
+                    print(f"FAIL: legacy hook was duplicated: {script}")
+                    sys.exit(1)
+                found[script] = entry.get("matcher")
+if found != expected:
+    print(f"FAIL: legacy strict matcher split mismatch: {found}")
+    sys.exit(1)
+PY
+echo "PASS: legacy strict guards split from Bash-only hooks"
+
+# A strict command guard is unsafe without the installed composite adapter.
+# Both source modes must fail before they emit a direct Bash fallback, while a
+# harness without strict hooks remains valid (covered by the defaults fixture).
+MISSING_ADAPTER_BIN="$TEST_TEMP/missing-pretool-adapter-bin"
+cp -R "$LAUNCHER_DIR/bin" "$MISSING_ADAPTER_BIN"
+rm -f "$MISSING_ADAPTER_BIN/codex-pretool-adapter.py"
+PREPARE_WITHOUT_PRETOOL="$MISSING_ADAPTER_BIN/codex-home-prepare.sh"
+for strict_source in settings legacy; do
+  STRICT_HARNESS="$TEST_TEMP/fake-harness-missing-pretool-$strict_source"
+  mkdir -p "$STRICT_HARNESS/core/hooks" "$STRICT_HARNESS/.claude"
+  echo "# rules" > "$STRICT_HARNESS/CLAUDE.md"
+  : > "$STRICT_HARNESS/core/hooks/pre-bash-pr-gate.sh"
+  if [[ "$strict_source" == "settings" ]]; then
+    cat > "$STRICT_HARNESS/.claude/settings.json" <<'EOF'
+{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/core/hooks/pre-bash-pr-gate.sh\""}]}]}}
+EOF
+  fi
+  set +e
+  "$PREPARE_WITHOUT_PRETOOL" "$STRICT_HARNESS" >"$TEST_TEMP/missing-pretool-$strict_source.out" 2>"$TEST_TEMP/missing-pretool-$strict_source.err"
+  strict_rc=$?
+  set -e
+  [[ "$strict_rc" != "0" ]] || {
+    echo "FAIL: $strict_source strict hooks must fail when pretool adapter is absent"; exit 1;
+  }
+  [[ ! -f "$STRICT_HARNESS/.harness/codex/hooks.json" ]] || {
+    echo "FAIL: $strict_source must not emit insecure hooks.json without pretool adapter"; exit 1;
+  }
+done
+echo "PASS: strict hook generation fails closed without pretool adapter"
+
 # Adapter wrapping: SessionStart, UserPromptSubmit, and PostToolUse may emit
 # Claude-format JSON ({"additionalContext": ...}) which Codex rejects. Those
 # events MUST be routed through codex-hook-adapter.sh. Two command-sensitive,
@@ -1260,6 +1322,18 @@ for event in adapted:
                 print(f"FAIL: {event} adapter call missing event arg: {cmd}")
                 sys.exit(1)
 for entry in data["hooks"].get("PreToolUse", []):
+    scripts = {
+        name
+        for hook in entry.get("hooks", [])
+        for name in strict_pretool
+        if name in hook.get("command", "")
+    }
+    if scripts and entry.get("matcher") != "^(Bash|code_mode_exec|exec)$":
+        print(f"FAIL: strict PreToolUse hook must use the exact raw/composite matcher: {entry}")
+        sys.exit(1)
+    if scripts and len(entry.get("hooks", [])) != 1:
+        print(f"FAIL: strict PreToolUse hook must be split from Bash-only hooks: {entry}")
+        sys.exit(1)
     for h in entry.get("hooks", []):
         cmd = h.get("command", "")
         matched = {name for name in strict_pretool if name in cmd}

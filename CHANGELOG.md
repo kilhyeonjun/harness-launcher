@@ -2,6 +2,16 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+### Fixed
+
+- Route native Codex `Bash` PreToolUse payloads directly to the canonical PR
+  and harness-main-only guards, while strictly parsing only exact
+  `code_mode_exec`/`exec` composite inputs. Both routes validate the payload
+  cwd, and generated strict guard matchers now cover all three identities
+  without widening other Bash hooks.
+
 ## 0.29.4 — 2026-09-11
 
 ### Fixed

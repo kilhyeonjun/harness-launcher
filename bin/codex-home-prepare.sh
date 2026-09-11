@@ -1617,6 +1617,7 @@ STRICT_PRETOOL_SCRIPTS = {
     "pre-bash-harness-main-only-guard.sh",
     "pre-bash-pr-gate.sh",
 }
+STRICT_PRETOOL_MATCHER = "^(Bash|code_mode_exec|exec)$"
 adapter_available = os.path.isfile(adapter)
 pretool_adapter_available = os.path.isfile(pretool_adapter)
 
@@ -1626,7 +1627,11 @@ def cmd(script, event=None, timeout=None):
         command = " ".join(
             ("bash", shlex.quote(adapter), shlex.quote(event), shlex.quote(path))
         )
-    elif event == "PreToolUse" and script in STRICT_PRETOOL_SCRIPTS and pretool_adapter_available:
+    elif event == "PreToolUse" and script in STRICT_PRETOOL_SCRIPTS:
+        if not pretool_adapter_available:
+            raise RuntimeError(
+                f"strict PreToolUse hook requires codex-pretool-adapter.py: {script}"
+            )
         command = " ".join(
             (shlex.quote(python_bin), shlex.quote(pretool_adapter), shlex.quote(path))
         )
@@ -1704,9 +1709,14 @@ def settings_driven_config(exclusions):
                 script = extract_hook_script(hook.get("command", ""))
                 if not script or script in exclusions or not has(script):
                     continue
-                out_hooks.append(
-                    cmd(script, event=event, timeout=hook.get("timeout"))
-                )
+                normalized = cmd(script, event=event, timeout=hook.get("timeout"))
+                if event == "PreToolUse" and script in STRICT_PRETOOL_SCRIPTS:
+                    out_entries.append({
+                        "matcher": STRICT_PRETOOL_MATCHER,
+                        "hooks": [normalized],
+                    })
+                else:
+                    out_hooks.append(normalized)
             if not out_hooks:
                 continue
             out_entry = {"hooks": out_hooks}
@@ -1732,12 +1742,18 @@ def legacy_config():
         config["hooks"]["UserPromptSubmit"] = group(prompts, event="UserPromptSubmit")
 
     pre_bash = [s for s in ["pre-bash-irreversible-guard.sh", "pre-bash-gh-auth.sh",
-                            "pre-bash-pr-gate.sh", "pre-bash-worktree-gate.sh"] if has(s)]
+                            "pre-bash-pr-gate.sh", "pre-bash-harness-main-only-guard.sh",
+                            "pre-bash-worktree-gate.sh"] if has(s)]
     pre_edit = [s for s in ["pre-tool-budget-guard.sh", "pre-edit-config-protection.sh"] if has(s)]
     pre_entries = []
-    if pre_bash:
-        pre_entries.extend(group(pre_bash, matcher="Bash", event="PreToolUse",
+    ordinary_pre_bash = [s for s in pre_bash if s not in STRICT_PRETOOL_SCRIPTS]
+    strict_pre_bash = [s for s in pre_bash if s in STRICT_PRETOOL_SCRIPTS]
+    if ordinary_pre_bash:
+        pre_entries.extend(group(ordinary_pre_bash, matcher="Bash", event="PreToolUse",
                                  timeouts={"pre-bash-irreversible-guard.sh": 2000}))
+    if strict_pre_bash:
+        pre_entries.extend(group(strict_pre_bash, matcher=STRICT_PRETOOL_MATCHER,
+                                 event="PreToolUse"))
     if pre_edit:
         pre_entries.extend(group(pre_edit, matcher="apply_patch|Edit|Write", event="PreToolUse"))
     if pre_entries:
