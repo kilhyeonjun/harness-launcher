@@ -487,6 +487,17 @@ _harness_launcher_run() {
         && claude_args+=(--settings '{"alwaysThinkingEnabled":true}')
     fi
     claude_args+=(--exclude-dynamic-system-prompt-sections)
+    local HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID="" HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE=""
+    local _claude_interactive=0
+    harness_claude_stdio_is_tty && _claude_interactive=1
+    if harness_claude_bootstrap_eligible claude "${provider_name:-direct}" "$_claude_interactive" "${claude_args[@]}"; then
+      IFS=$'\t' read -r HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE \
+        < <(harness_claude_bootstrap_values) || true
+      if [[ -n "$HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID" ]]; then
+        export HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE
+        claude_args+=(--name "$HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE")
+      fi
+    fi
     harness_autocompact_pct "${provider_name:-direct}" "${claude_args[@]}"
     # Shared-table globals must not linger in the interactive shell.
     unset HARNESS_MODE_MODEL HARNESS_MODE_EFFORT

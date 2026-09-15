@@ -73,6 +73,50 @@ harness_python3_resolve() {
   return 1
 }
 
+# harness_claude_bootstrap_eligible <exe> <provider> <interactive> [final argv...]
+# Claude Code generates an auxiliary Haiku session title unless a new session
+# already has --name.  Only opt in when the harness title hook can safely adopt
+# and replace the reserved bootstrap title.  Existing-session, noninteractive,
+# hook-free, remote, and user-named paths retain Claude's native behavior.
+harness_claude_bootstrap_eligible() {
+  local exe="${1:-}" provider="${2:-}" interactive="${3:-0}" arg
+  shift 3 || return 1
+
+  [ "${HARNESS_CLAUDE_BOOTSTRAP_NAME:-1}" != "0" ] || return 1
+  [ "$exe" = "claude" ] || return 1
+  [ "$provider" = "direct" ] || return 1
+  [ "$interactive" = "1" ] || return 1
+
+  for arg in "$@"; do
+    case "$arg" in
+      -c|--continue|-r|-r?*|--resume|--resume=*|--fork-session|--fork-session=*|\
+      --from-pr|--from-pr=*|-p|-p?*|--print|--print=*|--background|--bg|\
+      --cloud|--cloud=*|--remote-control|--remote-control=*|--teleport|--teleport=*|attach|respawn|--bare|\
+      --safe-mode|--restricted|--setting-sources|--setting-sources=*|\
+      --session-id|--session-id=*|-w|-w?*|--worktree|--worktree=*|--tmux|\
+      --tmux=*|--environment|--environment=*|-n|-n?*|--name|--name=*)
+        return 1
+        ;;
+    esac
+  done
+  return 0
+}
+
+harness_claude_stdio_is_tty() {
+  [ -t 0 ] && [ -t 1 ]
+}
+
+harness_claude_bootstrap_values() {
+  local launch_id="" harness_python
+  if command -v uuidgen >/dev/null 2>&1; then
+    launch_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  else
+    harness_python="$(harness_python3_resolve)" || return 1
+    launch_id="$("$harness_python" -c 'import uuid; print(uuid.uuid4())')" || return 1
+  fi
+  printf '%s\t%s\n' "$launch_id" 'Harness startup'
+}
+
 # harness_codex_global_mcp_allowlist_normalize <raw> → normalized CSV.
 # The caller owns export/unset so each native entrypoint can keep its dynamic
 # launcher.env scope isolated before it starts codex-home-prepare.sh.

@@ -16,6 +16,14 @@ Claude launches now start a broker before the interactive runtime. Each launch
 gets a separate private `launch.*` directory under
 `<harness>/.harness/claude/.cmux-title-sync/`.
 
+For a brand-new interactive session on the native direct provider, the launcher
+also supplies a reserved `--name` plus a unique process-local marker. This skips
+Claude's separate AI title request; the paired harness may adopt that exact
+bootstrap only on the first startup SessionStart and then replace it with the
+normal semantic task title. Existing-session, remote, non-TTY, hook-free,
+Happy, and user-named argv remain untouched. Set
+`HARNESS_CLAUDE_BOOTSTRAP_NAME=0` to disable the optimization for a launch.
+
 A paired harness's main SessionStart command hook forwards its unchanged JSON
 stdin to the inherited helper:
 
@@ -60,6 +68,8 @@ integration. The installed helper keeps its existing filename for compatibility.
 
 ## Tests
 
-`test/test-claude-cmux-title-sync.sh` covers title priority, manual overrides,
-repeated handoffs and slow-command heartbeats with disposable fixtures. The
-Codex title suites continue to cover exact-session indexing and process ancestry.
+`test/test-claude-bootstrap-title.sh` covers argv eligibility, shortcut/TUI
+injection, marker lifetime, and the kill switch. `test/test-claude-cmux-title-sync.sh`
+covers title priority, manual overrides, repeated handoffs and slow-command
+heartbeats with disposable fixtures. The Codex title suites continue to cover
+exact-session indexing and process ancestry.

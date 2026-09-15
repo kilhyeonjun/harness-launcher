@@ -4,6 +4,11 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- Skip Claude Code's auxiliary AI session-title request for eligible new
+  native-direct interactive launches by using a one-shot, exact-session
+  bootstrap name while preserving resume, remote, hook-free, and manual-title
+  paths.
+
 ### Added
 
 - Add validated native Codex `--app asdk_app_*` one-shot opt-ins. They merge

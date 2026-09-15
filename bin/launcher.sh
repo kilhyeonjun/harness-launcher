@@ -1030,6 +1030,18 @@ launch_claude() {
     fi
   fi
 
+  local HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID="" HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE=""
+  local claude_interactive=0
+  harness_claude_stdio_is_tty && claude_interactive=1
+  if harness_claude_bootstrap_eligible "$exe" "$CHOICE_PROVIDER" "$claude_interactive" "${args[@]}"; then
+    IFS=$'\t' read -r HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE \
+      < <(harness_claude_bootstrap_values) || true
+    if [ -n "$HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID" ]; then
+      export HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE
+      args+=(--name "$HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE")
+    fi
+  fi
+
   [ "$CHOICE_MODE" = "ultracode" ] && harness_ultracode_hint
 
   history_save
