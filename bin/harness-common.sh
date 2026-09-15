@@ -106,6 +106,74 @@ harness_claude_stdio_is_tty() {
   [ -t 0 ] && [ -t 1 ]
 }
 
+# harness_session_isolation_default_route <interactive:0|1> [launcher argv...]
+# Prints isolate, legacy, reject, or invalid without mutating session state.
+harness_session_isolation_default_route() {
+  local interactive="${1:-0}" arg
+  shift || return 2
+  [ "$interactive" = 1 ] || { printf '%s\n' legacy; return 0; }
+  [ "$#" -gt 0 ] || { printf '%s\n' legacy; return 0; }
+
+  case "$1" in
+    --isolated|--no-isolated|--isolated-session)
+      printf '%s\n' invalid
+      return 0
+      ;;
+    codex-smoke|kiro|kiro-cli|codex-gateway)
+      printf '%s\n' legacy
+      return 0
+      ;;
+    codex)
+      shift
+      while [ "$#" -gt 0 ]; do
+        arg="$1"; shift
+        case "$arg" in
+          --) break ;;
+          --isolated|--no-isolated|--isolated-session) printf '%s\n' invalid; return 0 ;;
+          resume|continue|fork) printf '%s\n' reject; return 0 ;;
+          agents|exec|e|review|login|logout|mcp|plugin|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help|-h|--help|-V|--version)
+            printf '%s\n' legacy; return 0 ;;
+          fast|base|sol|plan|rich|astra|work|272k|1m|happy|full-auto|never|bypass) ;;
+          -c|--config|--enable|--disable|--remote|--remote-auth-token-env|-i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval|--app)
+            [ "$#" -gt 0 ] && shift || { printf '%s\n' invalid; return 0; }
+            ;;
+          --config=*|--enable=*|--disable=*|--remote=*|--remote-auth-token-env=*|--image=*|--model=*|--local-provider=*|--profile=*|--sandbox=*|--cd=*|--add-dir=*|--ask-for-approval=*|--app=*) ;;
+          --strict-config|--oss|--approve-for-me|--dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust|--worktree|--search|--no-alt-screen) ;;
+          -*) printf '%s\n' invalid; return 0 ;;
+          *) break ;;
+        esac
+      done
+      printf '%s\n' isolate
+      return 0
+      ;;
+  esac
+
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --) break ;;
+      --isolated|--no-isolated|--isolated-session) printf '%s\n' invalid; return 0 ;;
+      continue|resume|-c|--continue|-r|-r?*|--resume|--resume=*|--fork-session|--fork-session=*)
+        printf '%s\n' reject; return 0 ;;
+      -h|--help|-V|--version|-p|-p?*|--print|--print=*|--background|--bg|--cloud|--cloud=*|--remote-control|--remote-control=*|--teleport|--teleport=*|attach|respawn|--bare|--safe-mode|--restricted|--from-pr|--from-pr=*|--session-id|--session-id=*|-w|-w?*|--worktree|--worktree=*|--tmux|--tmux=*|--environment|--environment=*)
+        printf '%s\n' legacy; return 0 ;;
+      fast|base|plan|opus|rich|fable|ultracode|low|medium|high|xhigh|max|light|bypass|acceptEdits|dontAsk|--chrome|--no-chrome) ;;
+      --agent|--agents|--append-system-prompt|--autocompact|--debug-file|--effort|--fallback-model|--input-format|--json-schema|--max-budget-usd|--model|-n|--name|--output-format|--permission-mode|--permission-prompts|--plugin-dir|--plugin-url|--remote-control-session-name-prefix|--setting-sources|--settings|--system-prompt|--system-prompt-snapshot)
+        [ "$#" -gt 0 ] && shift || { printf '%s\n' invalid; return 0; }
+        ;;
+      --agent=*|--agents=*|--append-system-prompt=*|--autocompact=*|--debug-file=*|--effort=*|--fallback-model=*|--input-format=*|--json-schema=*|--max-budget-usd=*|--model=*|--name=*|--output-format=*|--permission-mode=*|--permission-prompts=*|--plugin-dir=*|--plugin-url=*|--remote-control-session-name-prefix=*|--setting-sources=*|--settings=*|--system-prompt=*|--system-prompt-snapshot=*) ;;
+      --add-dir|--allowedTools|--allowed-tools|--betas|--disallowedTools|--disallowed-tools|--file|--mcp-config|--tools)
+        printf '%s\n' invalid; return 0
+        ;;
+      --allow-dangerously-skip-permissions|--ax-screen-reader|--brief|--dangerously-skip-permissions|--disable-slash-commands|--exclude-dynamic-system-prompt-sections|--forward-subagent-text|--ide|--include-hook-events|--include-partial-messages|--no-chrome|--no-session-persistence|--replay-user-messages|--strict-mcp-config)
+        ;;
+      -*) printf '%s\n' invalid; return 0 ;;
+      *) break ;;
+    esac
+  done
+  printf '%s\n' isolate
+}
+
 harness_claude_bootstrap_values() {
   local launch_id="" harness_python
   if command -v uuidgen >/dev/null 2>&1; then

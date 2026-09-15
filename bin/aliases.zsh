@@ -41,12 +41,40 @@ _harness_launcher_isolated_heartbeat() {
 }
 
 _harness_launcher_isolated_finish() {
-  local session_id="$1" heartbeat_pid="${2:-}"
+  local session_id="$1" heartbeat_pid="${2:-}" lease_fd="${3:-}"
   if [[ -n "$heartbeat_pid" ]]; then
     kill "$heartbeat_pid" 2>/dev/null || true
     wait "$heartbeat_pid" 2>/dev/null || true
   fi
-  "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" exit "$session_id" 2>/dev/null || true
+  if ! "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" exit "$session_id"; then
+    echo "harness-launcher: warning: failed to finalize isolated session $session_id; workspace retained" >&2
+  fi
+  if [[ -n "$lease_fd" ]]; then
+    zsystem flock -u "$lease_fd" 2>/dev/null || true
+  fi
+}
+
+_harness_launcher_isolated_lease_acquire() {
+  local session_id="$1" state_home record marker lock
+  [[ "$session_id" =~ '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' ]] || {
+    echo "harness-launcher: invalid isolated session UUID: $session_id" >&2
+    return 2
+  }
+  state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  record="$state_home/sessions/$session_id"; marker="$record/lease-v1"; lock="$record/runtime.lock"
+  [[ -d "$record" && ! -L "$record" && -f "$marker" && ! -L "$marker" && "$(wc -c < "$marker" | tr -d ' ')" == 2 && "$(<"$marker")" == 1 && -f "$lock" && ! -L "$lock" ]] || {
+    echo "harness-launcher: invalid runtime lease record for $session_id" >&2
+    return 2
+  }
+  zmodload zsh/system || {
+    echo 'harness-launcher: zsh/system is required for isolated session leases' >&2
+    return 2
+  }
+  if ! zsystem flock -t 0 -f HARNESS_SESSION_LEASE_FD "$lock" 2>/dev/null; then
+    HARNESS_SESSION_LEASE_FD=""
+    echo "harness-launcher: isolated session $session_id is already active" >&2
+    return 2
+  fi
 }
 
 _harness_launcher_prepare_codex_global_mcp_allowlist() {
@@ -259,6 +287,7 @@ harness_register() {
 _harness_launcher_run() {
   local HARNESS_DIR="$1"; shift
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
+  local HARNESS_SESSION_ISOLATION_DEFAULT="0"
   local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
   local config_root="$HARNESS_DIR"
   unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST
@@ -275,26 +304,75 @@ _harness_launcher_run() {
       ;;
   esac
 
-  local isolated=false
-  local requested_session_id=""
+  case "$HARNESS_SESSION_ISOLATION_DEFAULT" in 0|1) ;; *) echo 'harness-launcher: HARNESS_SESSION_ISOLATION_DEFAULT must be 0 or 1' >&2; return 2;; esac
+  case "${HARNESS_SESSION_ISOLATION-}" in ''|0|1) ;; *) echo 'harness-launcher: HARNESS_SESSION_ISOLATION must be 0 or 1' >&2; return 2;; esac
+  local isolated=false explicit_isolation_control=false created_isolated_session=false
+  local requested_session_id="" isolation_route=""
   if [[ "${1:-}" == "--isolated" ]]; then
-    isolated=true
+    isolated=true; explicit_isolation_control=true
     shift
   elif [[ "${1:-}" == "--isolated-session" ]]; then
     [[ $# -ge 2 ]] || { echo 'harness-launcher: --isolated-session requires a UUID' >&2; return 2; }
-    isolated=true
+    isolated=true; explicit_isolation_control=true
     requested_session_id="$2"
     shift 2
-  elif [[ "${HARNESS_SESSION_ISOLATION:-0}" == "1" ]]; then
+  elif [[ "${1:-}" == "--no-isolated" ]]; then
+    explicit_isolation_control=true
+    shift
+  elif [[ "${HARNESS_SESSION_ISOLATION-}" == 1 ]]; then
     isolated=true
+  elif [[ "$HARNESS_SESSION_ISOLATION_DEFAULT" == 1 ]]; then
+    local isolation_interactive=0
+    harness_claude_stdio_is_tty && isolation_interactive=1
+    isolation_route="$(harness_session_isolation_default_route "$isolation_interactive" "$@")" || return $?
+    case "$isolation_route" in
+      isolate) isolated=true ;;
+      legacy) ;;
+      reject)
+        echo "harness-launcher: this profile isolates fresh sessions; use '${HARNESS_PREFIX} --isolated-session <uuid> $*' or '${HARNESS_PREFIX} --no-isolated $*'" >&2
+        return 2
+        ;;
+      *) echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2 ;;
+    esac
+  fi
+  if $isolated; then
+    isolation_route="$(harness_session_isolation_default_route 1 "$@")" || return $?
+    [[ "$isolation_route" != invalid ]] || { echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2; }
+    if [[ -z "$requested_session_id" && "$isolation_route" == reject ]]; then
+      echo "harness-launcher: continuation requires '${HARNESS_PREFIX} --isolated-session <uuid> $*' or intentional '${HARNESS_PREFIX} --no-isolated $*'" >&2
+      return 2
+    fi
+  elif $explicit_isolation_control; then
+    isolation_route="$(harness_session_isolation_default_route 1 "$@")" || return $?
+    [[ "$isolation_route" != invalid ]] || { echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2; }
   fi
   if $isolated; then
     local source_root="${HARNESS_DIR:A}"
-    _harness_launcher_isolated_session_create "$source_root" "$requested_session_id" || return $?
+    local HARNESS_SESSION_LEASE_FD=""
+    "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" gc >/dev/null 2>&1 || echo 'harness-launcher: warning: isolated-session GC failed; workspaces retained' >&2
+    if [[ -n "$requested_session_id" ]]; then
+      _harness_launcher_isolated_lease_acquire "$requested_session_id" || return $?
+      _harness_launcher_isolated_session_create "$source_root" "$requested_session_id" || {
+        local resume_rc=$?
+        zsystem flock -u "$HARNESS_SESSION_LEASE_FD" 2>/dev/null || true
+        return "$resume_rc"
+      }
+    else
+      _harness_launcher_isolated_session_create "$source_root" || return $?
+      _harness_launcher_isolated_lease_acquire "$HARNESS_SESSION_ID" || return $?
+      created_isolated_session=true
+    fi
     HARNESS_DIR="$HARNESS_SESSION_ROOT"
     [[ -n "$HARNESS_RUN_DIR" ]] || HARNESS_RUN_DIR="$HARNESS_SESSION_ROOT"
     export HARNESS_RUN_DIR
     harness_export_local_env "$HARNESS_SOURCE_ROOT"
+    if $created_isolated_session; then
+      if [[ "${1:-}" == codex ]]; then
+        echo "harness-launcher: isolated session $HARNESS_SESSION_ID; continue: ${HARNESS_PREFIX} --isolated-session $HARNESS_SESSION_ID codex resume" >&2
+      else
+        echo "harness-launcher: isolated session $HARNESS_SESSION_ID; continue: ${HARNESS_PREFIX} --isolated-session $HARNESS_SESSION_ID resume" >&2
+      fi
+    fi
   fi
   local isolated_session_id="${HARNESS_SESSION_ID:-}"
 
@@ -322,7 +400,7 @@ _harness_launcher_run() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       _harness_launcher_run_codex_cli "$HARNESS_DIR" "$mcp_surface_policy" "$@"
       local rc=$?
-      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
+      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
       return $rc
       ;;
     codex-smoke)
@@ -332,7 +410,7 @@ _harness_launcher_run() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       _harness_launcher_codex_synthetic_smoke "$HARNESS_DIR"
       local rc=$?
-      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
+      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
       return $rc
       ;;
     kiro-cli)
@@ -341,7 +419,7 @@ _harness_launcher_run() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       _harness_launcher_run_kiro_cli "$HARNESS_DIR" "$@"
       local rc=$?
-      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
+      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
       return $rc
       ;;
     codex-gateway)
@@ -529,7 +607,7 @@ _harness_launcher_run() {
     fi
     local rc=$?
     $claude_broker_started && harness_claude_cmux_broker_stop
-    [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
+    [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
     return $rc
   else
     local isolated_heartbeat_pid=""
@@ -538,7 +616,7 @@ _harness_launcher_run() {
       HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
       "$_HARNESS_LAUNCHER_BIN/launcher.sh"
     local rc=$?
-    [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid"
+    [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
     return $rc
   fi
 }
