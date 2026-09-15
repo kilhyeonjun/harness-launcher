@@ -536,6 +536,7 @@ _harness_launcher_run() {
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
 #   Modes:    fast | base | sol | plan | rich | astra → -p <profile>
 #   Surface:  work → work MCP surface (combinable with any profile)
+#   Apps:     --app <asdk_app_id> → add one app for this launch only
 #   Wrapper:  happy → `happy codex ...`
 #   Sessions: resume → `codex resume`,  continue → `codex resume --last`,
 #             fork   → `codex fork`
@@ -558,6 +559,7 @@ _harness_launcher_run_codex_cli() {
   local profile=""
   local profile_explicit=false
   local mcp_profile=""
+  local HARNESS_CODEX_APPS_ALLOWLIST="${HARNESS_CODEX_APPS_ALLOWLIST:-}"
   local HARNESS_CODEX_CONTEXT="272k"
   local subcmd=""
   local use_happy=false
@@ -596,6 +598,24 @@ _harness_launcher_run_codex_cli() {
           shift
         fi
         ;;
+      --app)
+        if $freeform; then
+          codex_args+=("$1")
+          shift
+          [[ $# -gt 0 ]] && { codex_args+=("$1"); shift; }
+        else
+          [[ $# -ge 2 ]] || {
+            echo "harness-launcher: --app requires an asdk_app_* id" >&2
+            return 2
+          }
+          if [[ -n "$HARNESS_CODEX_APPS_ALLOWLIST" ]]; then
+            HARNESS_CODEX_APPS_ALLOWLIST="$HARNESS_CODEX_APPS_ALLOWLIST,$2"
+          else
+            HARNESS_CODEX_APPS_ALLOWLIST="$2"
+          fi
+          shift 2
+        fi
+        ;;
       272k|1m)
         if $freeform; then
           codex_args+=("$1")
@@ -613,6 +633,9 @@ _harness_launcher_run_codex_cli() {
       *)                   freeform=true; codex_args+=("$1"); shift ;;
     esac
   done
+
+  HARNESS_CODEX_APPS_ALLOWLIST="$(harness_codex_apps_allowlist_normalize "$HARNESS_CODEX_APPS_ALLOWLIST")" || return $?
+  export HARNESS_CODEX_APPS_ALLOWLIST
 
   [[ -z "$profile" ]] && profile="base"
   export HARNESS_CODEX_CONTEXT

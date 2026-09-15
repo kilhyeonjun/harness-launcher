@@ -209,6 +209,7 @@ The same command shape works for every registered prefix:
 <prefix> continue|resume         Claude Code session shortcut
 <prefix> light                   Claude Code with the light MCP surface (SSH-backed servers excluded)
 <prefix> codex [profile] [272k|1m] native Codex CLI; 272K default, 1M opt-in
+<prefix> codex --app <id> [profile]  enable one ChatGPT app for this launch only
 <prefix> codex [profile] work    native Codex CLI with the work MCP surface (any profile)
 <prefix> codex continue          Codex `resume --last`
 <prefix> codex resume            Codex resume picker
@@ -301,6 +302,11 @@ Before each native Codex launch, `bin/codex-home-prepare.sh` prepares an isolate
 To expose selected user-global MCP definitions, set `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST` in the trusted project `config/launcher.env`, for example `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST="docs,jira"`. The launcher trims and deduplicates names before every native Codex preparation; an empty or omitted value is explicitly unset, so a prior launch or caller environment cannot add global MCPs. Definitions remain authoritative in `$HOME/.codex/config.toml`, while the project surface manifest must explicitly opt into `codex-global-allowlist`.
 
 ChatGPT Apps and connectors follow the same shape but stay off unless requested: `HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_<id>"` turns on `[features].apps` and enables only the named ids, while `[apps._default]` keeps every other app disabled. Omitting the variable leaves `[features].apps = false`, so no connector tool reaches a session. Changing or removing the list regenerates the managed home before the next native Codex launch.
+
+For a one-shot opt-in, use `<prefix> codex --app asdk_app_<id> [profile]`. The
+validated id is merged with that harness's trusted default allowlist for this
+launch only; it is not written to `config/launcher.env` and is absent again on
+the next launch unless explicitly requested.
 
 The terminal `codex` from `PATH` is preferred. Set `HARNESS_CODEX_BIN` for an explicit binary. Codex.app's bundled CLI is only used when `HARNESS_CODEX_ALLOW_APP_FALLBACK=1` because app bundles can lag behind the terminal release.
 

@@ -455,6 +455,51 @@ apps_prepare_values=("${(@f)$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$STUB_APPS
 }
 echo "PASS: native Codex shortcut isolates and normalizes app allowlist"
 
+# --app adds validated app ids for exactly one native Codex launch. It merges
+# with the trusted project default, deduplicates, and must not persist into the
+# following launch in the same shell.
+STUB_ONESHOT_APPS_SEQUENCE="$TEST_TEMP/output-codex-cli-oneshot-apps-sequence.txt"
+: > "$STUB_ONESHOT_APPS_SEQUENCE"
+(
+  export TEST_STUB_FILE="$STUB_ONESHOT_APPS_SEQUENCE"
+  export PATH="$TEST_BIN:$PATH"
+  export HARNESS_CODEX_BIN="$CODEX_STUB"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+
+  printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
+    'HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_default"' \
+    > "$TEST_HARNESS/config/launcher.env"
+  _harness_launcher_run "$TEST_HARNESS" codex --app asdk_app_yogiyo --app asdk_app_default base
+  _harness_launcher_run "$TEST_HARNESS" codex base
+) 2>/dev/null || exit 1
+oneshot_apps_values=("${(@f)$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$STUB_ONESHOT_APPS_SEQUENCE")}")
+[[ "${oneshot_apps_values[*]}" = "asdk_app_default,asdk_app_yogiyo asdk_app_default" ]] || {
+  echo "FAIL: native Codex one-shot app did not merge, deduplicate, or expire"
+  cat "$STUB_ONESHOT_APPS_SEQUENCE"
+  exit 1
+}
+echo "PASS: native Codex --app opt-in is merged, deduplicated, and one-shot"
+
+for invalid_oneshot_app in 'not-an-app' '_default' 'asdk_app_bad.dot'; do
+  invalid_oneshot_stub="$TEST_TEMP/output-invalid-oneshot-app-${invalid_oneshot_app//[^A-Za-z0-9]/_}.txt"
+  : > "$invalid_oneshot_stub"
+  (
+    export TEST_STUB_FILE="$invalid_oneshot_stub"
+    export PATH="$TEST_BIN:$PATH"
+    export HARNESS_CODEX_BIN="$CODEX_STUB"
+    source "$LAUNCHER_DIR/bin/aliases.zsh"
+    _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+    ! _harness_launcher_run "$TEST_HARNESS" codex --app "$invalid_oneshot_app" base
+  ) >/dev/null 2>&1 || { echo "FAIL: invalid one-shot app id $invalid_oneshot_app did not fail closed"; exit 1; }
+  [[ ! -s "$invalid_oneshot_stub" ]] || {
+    echo "FAIL: invalid one-shot app id $invalid_oneshot_app reached prepare or Codex"
+    cat "$invalid_oneshot_stub"
+    exit 1
+  }
+done
+echo "PASS: invalid one-shot Codex app ids fail before native preparation"
+
 STUB_CONTEXT_1M="$TEST_TEMP/output-codex-cli-context-1m.txt"
 : > "$STUB_CONTEXT_1M"
 run_codex "$STUB_CONTEXT_1M" base 1m
