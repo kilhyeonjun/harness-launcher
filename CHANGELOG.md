@@ -6,6 +6,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Added
 
+- Add validated native Codex `--app asdk_app_*` one-shot opt-ins. They merge
+  with the trusted per-harness default allowlist for one launch without
+  persisting connector exposure into the next session.
 - Add opt-in `--isolated` / `HARNESS_SESSION_ISOLATION=1` root sessions. Each
   launch receives a remote-free repository with an independent Git directory
   and an atomic, durable session journal;
