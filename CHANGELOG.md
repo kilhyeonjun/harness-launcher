@@ -11,6 +11,12 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Added
 
+- Add a profile-scoped default-isolation canary for fresh interactive
+  direct-Claude and native-Codex sessions, with exact-UUID continuation,
+  explicit `--no-isolated` rollback, and allocation-free rejection of
+  ambiguous continuation commands.
+- Add per-UUID close-on-exec runtime leases and conservative terminal-workspace
+  garbage collection with a validated 24-hour default retention window.
 - Add validated native Codex `--app asdk_app_*` one-shot opt-ins. They merge
   with the trusted per-harness default allowlist for one launch without
   persisting connector exposure into the next session.

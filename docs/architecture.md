@@ -152,6 +152,28 @@ from submissions. `config/.local` is read from the source boundary and is never
 copied. A heartbeat keeps live `OPEN` sessions from being declared abandoned;
 the UUID workspace remains recoverable after an unclean exit.
 
+Profiles may default only fresh interactive direct-Claude and native-Codex
+routes into this boundary. The router classifies arguments before allocating a
+UUID: non-interactive, batch, help, diagnostics, gateway/Kiro, and no-argument
+TUI routes remain legacy, while generic continuation commands require either an
+exact `--isolated-session <uuid>` or an intentional `--no-isolated` rollback.
+Argument classification stops at the prompt/freeform boundary so prompt text
+that resembles a launcher switch cannot alter isolation.
+
+Each lease-v1 session has a per-UUID `runtime.lock`. The launcher acquires it
+before resume and holds it for the complete runtime; its close-on-exec descriptor
+prevents runtime, heartbeat, and title-broker children from extending ownership.
+`OPEN` can resume only while that launcher lease is held. `ABANDONED`,
+`CONFLICT`, and retained `CLOSED` records reopen the same UUID; `SUBMITTED` and
+`INTEGRATING` require delivery recovery; `DELIVERED` is permanently terminal.
+
+Serialized garbage collection retains nonterminal, malformed, legacy, future-
+dated, leased, and within-grace records. For an expired `CLOSED` or `DELIVERED`
+record, it rereads state while holding the runtime lease, validates that the
+workspace is the canonical state directory's exact direct child, renames it to
+a same-parent tombstone, and removes only that tombstone. The durable journal is
+retained. The default grace is 24 hours and the accepted range is 0–7 days.
+
 Delivery has one kernel-locked lane per host. The session submits a base SHA,
 binary patch, NUL-delimited path/mode/blob manifest, canonical source, and
 canonical remote bound by one digest and rechecked before and after verification.

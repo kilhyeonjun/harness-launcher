@@ -52,20 +52,165 @@ create() {
   printf '%s\n' "$source" > "$dir/source-root"
   printf '%s\n' "$root" > "$dir/session-root"
   printf '%s\n' "$sha" > "$dir/base-sha"
+  printf '1\n' > "$dir/lease-v1"
+  : > "$dir/runtime.lock"
   write_journal "$dir" OPEN ""
   write_heartbeat "$dir"
   printf 'HARNESS_SESSION_ID=%s\nHARNESS_SOURCE_ROOT=%s\nHARNESS_SESSION_ROOT=%s\nHARNESS_RUN_DIR=%s\n' "$id" "$source" "$root" "$root"
 }
-resume_session() {
-  local source="$1" id="$2" dir recorded root state
-  source="$(cd "$source" && pwd -P)"; dir="$(session_dir "$id")"
-  [[ -d "$dir" && -f "$dir/source-root" && -f "$dir/session-root" && -f "$dir/journal" ]] || return 2
-  recorded="$(cd "$(<"$dir/source-root")" && pwd -P)"; [[ "$recorded" == "$source" ]] || return 2
-  root="$(<"$dir/session-root")"; [[ -d "$root" ]] || return 2; state="$(field "$dir/journal" state)"
+valid_id() { [[ "$1" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; }
+journal_valid() {
+  local journal="$1"
+  [[ -f "$journal" && ! -L "$journal" ]] || return 1
+  awk '
+    NR == 1 && $0 ~ /^state=(OPEN|ABANDONED|CONFLICT|CLOSED|SUBMITTED|INTEGRATING|DELIVERED)$/ { state = 1; next }
+    NR == 2 && $0 ~ /^identity=[^[:cntrl:]]*$/ { identity = 1; next }
+    NR == 3 && $0 ~ /^heartbeat=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/ { heartbeat = 1; next }
+    { bad = 1 }
+    END { exit !(NR == 3 && state && identity && heartbeat && !bad) }
+  ' "$journal"
+}
+lease_marker_valid() {
+  local marker="$1"
+  [[ -f "$marker" && ! -L "$marker" && "$(wc -c < "$marker" | tr -d ' ')" == 2 ]] && grep -qx 1 "$marker"
+}
+git_object_id_file_valid() {
+  local path="$1" oid bytes
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  oid="$(<"$path")"; bytes="$(wc -c < "$path" | tr -d ' ')"
+  [[ "$oid" =~ ^([0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$ ]] || return 1
+  [[ "$bytes" == 41 || "$bytes" == 65 ]]
+}
+delivered_manifest_valid() {
+  local manifest="$1" kind mode oid path count=0
+  [[ -s "$manifest" && ! -L "$manifest" ]] || return 1
+  exec 7< "$manifest" || return 1
+  while :; do
+    kind=""
+    if ! IFS= read -r -d '' kind <&7; then
+      exec 7<&-
+      [[ -z "$kind" && "$count" -gt 0 ]]
+      return
+    fi
+    IFS= read -r -d '' mode <&7 && IFS= read -r -d '' oid <&7 && IFS= read -r -d '' path <&7 || { exec 7<&-; return 1; }
+    case "$kind" in
+      F)
+        [[ "$mode" == 100644 || "$mode" == 100755 || "$mode" == 120000 || "$mode" == 160000 ]] || { exec 7<&-; return 1; }
+        [[ "$oid" =~ ^([0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$ ]] || { exec 7<&-; return 1; }
+        ;;
+      D) [[ "$mode" == - && "$oid" == - ]] || { exec 7<&-; return 1; } ;;
+      *) exec 7<&-; return 1 ;;
+    esac
+    case "$path" in ''|/*|.|..|./*|../*|*/.|*/..|*/./*|*/../*|*//*) exec 7<&-; return 1 ;; esac
+    count=$((count + 1))
+  done
+}
+terminal_record_valid() {
+  local dir="$1" journal="$dir/journal" state identity
+  journal_valid "$journal" || return 1
+  state="$(field "$journal" state)"; identity="$(field "$journal" identity)"
   case "$state" in
-    OPEN) ;;
+    CLOSED) [[ -z "$identity" ]] ;;
+    DELIVERED)
+      [[ "$identity" =~ ^[0-9A-Fa-f]{64}$ ]] && git_object_id_file_valid "$dir/delivered-sha" && delivered_manifest_valid "$dir/delivered-manifest"
+      ;;
+    *) return 1 ;;
+  esac
+}
+terminal_epoch() {
+  local journal="$1" value
+  value="$(field "$journal" heartbeat)"
+  date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$value" +%s 2>/dev/null \
+    || date -u -d "$value" +%s 2>/dev/null
+}
+gc_unlocked() {
+  local state sessions worktrees retention now started scanned=0 retired=0 retained=0
+  local dir id journal status epoch age marker lock root source expected tomb tomb_name tomb_id tomb_nonce
+  state="$(state_home)"; sessions="$state/sessions"; worktrees="$state/worktrees"
+  retention="${HARNESS_SESSION_RETENTION_SECONDS:-86400}"
+  [[ "$retention" =~ ^[0-9]+$ ]] && [[ "$retention" -le 604800 ]] || {
+    echo 'ERROR: HARNESS_SESSION_RETENTION_SECONDS must be 0..604800' >&2
+    return 2
+  }
+  mkdir -p "$sessions" "$worktrees"
+  [[ ! -L "$sessions" && ! -L "$worktrees" ]] || return 2
+  sessions="$(cd "$sessions" && pwd -P)"; worktrees="$(cd "$worktrees" && pwd -P)"
+  now="$(date -u +%s)"; started="$now"
+
+  for tomb in "$worktrees"/.retired-*; do
+    [[ -d "$tomb" && ! -L "$tomb" ]] || continue
+    tomb_name="${tomb##*/}"; tomb_id="${tomb_name#.retired-}"; tomb_id="${tomb_id%-*}"; tomb_nonce="${tomb_name##*-}"
+    valid_id "$tomb_id" && [[ "$tomb_nonce" =~ ^[0-9]+$ ]] || continue
+    rm -rf -- "$tomb"
+  done
+
+  for dir in "$sessions"/*; do
+    [[ -d "$dir" && ! -L "$dir" ]] || continue
+    id="${dir##*/}"; valid_id "$id" || continue
+    scanned=$((scanned + 1)); journal="$dir/journal"; marker="$dir/lease-v1"; lock="$dir/runtime.lock"
+    [[ -f "$lock" && ! -L "$lock" ]] && lease_marker_valid "$marker" && terminal_record_valid "$dir" || { retained=$((retained + 1)); continue; }
+    status="$(field "$journal" state)"
+    epoch="$(terminal_epoch "$journal")" || { retained=$((retained + 1)); continue; }
+    age=$((now - epoch)); [[ "$age" -ge 0 && "$age" -ge "$retention" ]] || { retained=$((retained + 1)); continue; }
+    (
+      exec 8>"$lock"
+      /usr/bin/lockf -s -t 0 8 || exit 11
+      lease_marker_valid "$marker" && terminal_record_valid "$dir" || exit 12
+      status="$(field "$journal" state)"
+      epoch="$(terminal_epoch "$journal")" || exit 13
+      age=$(( $(date -u +%s) - epoch )); [[ "$age" -ge 0 && "$age" -ge "$retention" ]] || exit 13
+      [[ -f "$dir/session-root" && ! -L "$dir/session-root" && -f "$dir/source-root" && ! -L "$dir/source-root" ]] || exit 14
+      IFS= read -r root < "$dir/session-root"; IFS= read -r source < "$dir/source-root"
+      expected="$worktrees/$id"
+      [[ "${root##*/}" == "$id" && -d "$root" && ! -L "$root" ]] || exit 15
+      [[ "$(cd "${root%/*}" && pwd -P)/${root##*/}" == "$expected" ]] || exit 16
+      [[ "$(cd "$root" && pwd -P)" == "$expected" && -d "$source" && "$(cd "$source" && pwd -P)" != "$expected" ]] || exit 17
+      tomb="$worktrees/.retired-$id-$BASHPID"
+      [[ ! -e "$tomb" && ! -L "$tomb" ]] || exit 18
+      mv "$root" "$tomb" || exit 19
+      rm -rf -- "$tomb" || exit 20
+    ) && retired=$((retired + 1)) || retained=$((retained + 1))
+  done
+  printf 'harness-session gc: scanned=%s retired=%s retained=%s elapsed_seconds=%s\n' "$scanned" "$retired" "$retained" "$(( $(date -u +%s) - started ))" >&2
+}
+gc_sessions() { with_lock gc_unlocked; }
+resume_session() {
+  local source="$1" id="$2" dir recorded root state lock worktrees expected
+  valid_id "$id" || { echo "cannot resume $id: invalid session UUID" >&2; return 2; }
+  source="$(cd "$source" && pwd -P)"; dir="$(session_dir "$id")"
+  [[ -d "$dir" && ! -L "$dir" && -f "$dir/source-root" && ! -L "$dir/source-root" && -f "$dir/session-root" && ! -L "$dir/session-root" && -f "$dir/journal" && ! -L "$dir/journal" ]] || {
+    echo "cannot resume $id: session record is missing or invalid" >&2
+    return 2
+  }
+  lease_marker_valid "$dir/lease-v1" && [[ -f "$dir/runtime.lock" && ! -L "$dir/runtime.lock" ]] || {
+    echo "cannot resume $id: invalid runtime lease record" >&2
+    return 2
+  }
+  recorded="$(cd "$(<"$dir/source-root")" && pwd -P)"; [[ "$recorded" == "$source" ]] || { echo "cannot resume $id: source root does not match" >&2; return 2; }
+  root="$(<"$dir/session-root")"; [[ -d "$root" && ! -L "$root" ]] || { echo "cannot resume $id: workspace is missing or retired; start a fresh isolated session" >&2; return 2; }
+  worktrees="$(state_home)/worktrees"
+  [[ -d "$worktrees" && ! -L "$worktrees" ]] || { echo "cannot resume $id: invalid workspace state root" >&2; return 2; }
+  worktrees="$(cd "$worktrees" && pwd -P)"; expected="$worktrees/$id"
+  [[ "${root##*/}" == "$id" && "$(cd "${root%/*}" && pwd -P)/${root##*/}" == "$expected" && "$(cd "$root" && pwd -P)" == "$expected" ]] || {
+    echo "cannot resume $id: workspace is outside the isolated session root" >&2
+    return 2
+  }
+  journal_valid "$dir/journal" || { echo "cannot resume $id: invalid session journal" >&2; return 2; }
+  state="$(field "$dir/journal" state)"
+  case "$state" in
+    OPEN)
+      lock="$dir/runtime.lock"
+      [[ -f "$lock" && ! -L "$lock" ]] || { echo "cannot resume OPEN session: runtime lease is missing" >&2; return 2; }
+      if ( exec 8>"$lock"; /usr/bin/lockf -s -t 0 8 ); then
+        echo 'cannot resume OPEN session without an active launcher lease' >&2
+        return 2
+      fi
+      ;;
     ABANDONED|CONFLICT|CLOSED) reopen_session "$id" ;;
-    *) echo "cannot resume $state session" >&2; return 2 ;;
+    SUBMITTED) echo 'cannot resume SUBMITTED session; run harness-session integrate or recover' >&2; return 2 ;;
+    INTEGRATING) echo 'cannot resume INTEGRATING session; run harness-session recover' >&2; return 2 ;;
+    DELIVERED) echo 'cannot resume DELIVERED session; start a fresh isolated session' >&2; return 2 ;;
+    *) echo "cannot resume $state session: invalid journal state" >&2; return 2 ;;
   esac
   write_heartbeat "$dir"
   printf 'HARNESS_SESSION_ID=%s\nHARNESS_SOURCE_ROOT=%s\nHARNESS_SESSION_ROOT=%s\nHARNESS_RUN_DIR=%s\n' "$id" "$source" "$root" "$root"
@@ -299,8 +444,9 @@ case "${1:-}" in
   recover) shift; recover "$1" ;;
   list) list ;;
   heartbeat) shift; heartbeat_session "$1" ;;
+  gc) shift; [[ $# -eq 0 ]] || exit 2; gc_sessions ;;
   submit) shift; submit "$1" ;;
   integrate) shift; [[ $# -eq 1 ]] || exit 2; integrate "$1" ;;
   close) shift; [[ $# -eq 1 ]] || exit 2; close_session "$1" ;;
-  *) echo 'usage: harness-session {create|resume|transition|exit|recover|list|heartbeat|submit|integrate|close}' >&2; exit 2 ;;
+  *) echo 'usage: harness-session {create|resume|transition|exit|recover|list|heartbeat|gc|submit|integrate|close}' >&2; exit 2 ;;
 esac

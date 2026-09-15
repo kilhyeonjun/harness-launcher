@@ -56,6 +56,10 @@ grep -qx 'state=OPEN' "$STATE/sessions/$first_id/journal" || { echo 'FAIL: journ
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" transition "$second_id" SUBMITTED submit-one
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" transition "$second_id" SUBMITTED submit-one
 grep -qx 'state=SUBMITTED' "$STATE/sessions/$second_id/journal" || { echo 'FAIL: idempotent submit must retain SUBMITTED'; exit 1; }
+if HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" resume "$SOURCE" "$second_id" 2>"$TMP/submitted-resume.err"; then
+  echo 'FAIL: SUBMITTED sessions must not reopen'; exit 1
+fi
+grep -q 'cannot resume SUBMITTED session; run harness-session integrate or recover' "$TMP/submitted-resume.err" || { echo 'FAIL: SUBMITTED rejection must name the recovery action'; exit 1; }
 
 printf '%s\n' dirty > "$first_root/new.txt"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$first_id"
@@ -77,9 +81,84 @@ git -C "$SOURCE" push -q -u origin main
 clean_close="$(create)"; clean_close_id="$(printf '%s\n' "$clean_close" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$clean_close_id"
 grep -qx state=CLOSED "$STATE/sessions/$clean_close_id/journal" || { echo 'FAIL: closing a clean session must terminate it without submission'; exit 1; }
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" resume "$SOURCE" "$clean_close_id" >/dev/null
+grep -qx state=OPEN "$STATE/sessions/$clean_close_id/journal" || { echo 'FAIL: retained CLOSED sessions must reopen with the same UUID'; exit 1; }
 clean_exit="$(create)"; clean_exit_id="$(printf '%s\n' "$clean_exit" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+clean_exit_root="$(printf '%s\n' "$clean_exit" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$clean_exit_id"
 grep -qx state=CLOSED "$STATE/sessions/$clean_exit_id/journal" || { echo 'FAIL: a clean normal exit must not remain OPEN until stale'; exit 1; }
+grep -qx 1 "$STATE/sessions/$clean_exit_id/lease-v1" || { echo 'FAIL: new sessions must opt into the runtime lease contract'; exit 1; }
+
+tampered_root="$(create)"; tampered_root_id="$(printf '%s\n' "$tampered_root" | sed -n 's/^HARNESS_SESSION_ID=//p')"; tampered_root_path="$(printf '%s\n' "$tampered_root" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$tampered_root_id"
+printf '%s\n' "$SOURCE" > "$STATE/sessions/$tampered_root_id/session-root"
+if HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" resume "$SOURCE" "$tampered_root_id"; then echo 'FAIL: resume must reject a journal-controlled canonical root'; exit 1; fi
+grep -qx state=CLOSED "$STATE/sessions/$tampered_root_id/journal" || { echo 'FAIL: rejected tampered root must not reopen the journal'; exit 1; }
+printf '%s\n' "$tampered_root_path" > "$STATE/sessions/$tampered_root_id/session-root"
+if HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" resume "$SOURCE" '../not-a-uuid'; then echo 'FAIL: resume must reject path traversal IDs'; exit 1; fi
+
+# Terminal roots survive the grace period, then GC retires only an exact,
+# unlocked launcher-owned direct child. Journals remain as audit evidence.
+HARNESS_SESSION_RETENTION_SECONDS=86400 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$clean_exit_root" ]] || { echo 'FAIL: GC must retain a fresh CLOSED root during grace'; exit 1; }
+python3 - "$STATE/sessions/$clean_exit_id/journal" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+lines = p.read_text().splitlines()
+p.write_text("\n".join("heartbeat=2000-01-01T00:00:00Z" if line.startswith("heartbeat=") else line for line in lines) + "\n")
+PY
+exec 8>"$STATE/sessions/$clean_exit_id/runtime.lock"
+/usr/bin/lockf -s -t 0 8
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$clean_exit_root" ]] || { echo 'FAIL: GC must retain a terminal root while its runtime lease is held'; exit 1; }
+exec 8>&-
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ ! -e "$clean_exit_root" && -f "$STATE/sessions/$clean_exit_id/journal" ]] || { echo 'FAIL: GC must retire an expired unlocked CLOSED root and retain its journal'; exit 1; }
+
+legacy="$(create)"; legacy_id="$(printf '%s\n' "$legacy" | sed -n 's/^HARNESS_SESSION_ID=//p')"; legacy_root="$(printf '%s\n' "$legacy" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$legacy_id"
+printf 'legacy\n' > "$STATE/sessions/$legacy_id/lease-v1"
+python3 - "$STATE/sessions/$legacy_id/journal" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+p.write_text(p.read_text().replace(next(line for line in p.read_text().splitlines() if line.startswith("heartbeat=")), "heartbeat=2000-01-01T00:00:00Z"))
+PY
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$legacy_root" ]] || { echo 'FAIL: GC must retain records outside the exact lease-v1 contract'; exit 1; }
+suffix_tomb="$STATE/worktrees/.retired-$legacy_id-1-userdata"
+exact_tomb="$STATE/worktrees/.retired-$legacy_id-1"
+mkdir "$suffix_tomb" "$exact_tomb"; printf keep > "$suffix_tomb/sentinel"
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -f "$suffix_tomb/sentinel" ]] || { echo 'FAIL: tomb cleanup must reject a numeric prefix with arbitrary suffix'; exit 1; }
+[[ ! -e "$exact_tomb" ]] || { echo 'FAIL: exact stale tombstones must be cleaned'; exit 1; }
+
+malformed="$(create)"; malformed_id="$(printf '%s\n' "$malformed" | sed -n 's/^HARNESS_SESSION_ID=//p')"; malformed_root="$(printf '%s\n' "$malformed" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$malformed_id"
+python3 - "$STATE/sessions/$malformed_id/journal" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+lines = p.read_text().splitlines()
+lines = ["heartbeat=2000-01-01T00:00:00Z" if line.startswith("heartbeat=") else line for line in lines]
+p.write_text("\n".join(lines + ["garbage=1"]) + "\n")
+PY
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$malformed_root" ]] || { echo 'FAIL: GC must retain a journal with unknown fields'; exit 1; }
+sed -i '' '/^garbage=/d;/^identity=/d' "$STATE/sessions/$malformed_id/journal"
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$malformed_root" ]] || { echo 'FAIL: GC must retain a journal missing identity'; exit 1; }
+printf 'identity=\nidentity=duplicate\n' >> "$STATE/sessions/$malformed_id/journal"
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$malformed_root" ]] || { echo 'FAIL: GC must retain duplicate journal fields'; exit 1; }
+
+future="$(create)"; future_id="$(printf '%s\n' "$future" | sed -n 's/^HARNESS_SESSION_ID=//p')"; future_root="$(printf '%s\n' "$future" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$future_id"
+sed -i '' 's/^heartbeat=.*/heartbeat=2999-01-01T00:00:00Z/' "$STATE/sessions/$future_id/journal"
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$future_root" ]] || { echo 'FAIL: GC must retain future-dated terminal journals'; exit 1; }
 ADVANCE_CLONE="$TMP/create-advance"
 git clone -q "$REMOTE" "$ADVANCE_CLONE"
 git -C "$ADVANCE_CLONE" config user.email test@example.invalid
@@ -106,7 +185,33 @@ HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$third_id"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$third_id"
 git --git-dir="$REMOTE" show main:broker.txt | grep -qx broker-change || { echo 'FAIL: broker must deliver submitted paths'; exit 1; }
 grep -qx 'state=DELIVERED' "$STATE/sessions/$third_id/journal" || { echo 'FAIL: successful readback must mark DELIVERED'; exit 1; }
+if HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" resume "$SOURCE" "$third_id" 2>"$TMP/delivered-resume.err"; then
+  echo 'FAIL: DELIVERED sessions must be permanently terminal'; exit 1
+fi
+grep -q 'cannot resume DELIVERED session; start a fresh isolated session' "$TMP/delivered-resume.err" || { echo 'FAIL: DELIVERED rejection must require a fresh session'; exit 1; }
 if grep -R -- '--force' "$STATE/sessions/$third_id"; then echo 'FAIL: broker must never record force push'; exit 1; fi
+python3 - "$STATE/sessions/$third_id/journal" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+p.write_text(p.read_text().replace(next(line for line in p.read_text().splitlines() if line.startswith("heartbeat=")), "heartbeat=2000-01-01T00:00:00Z"))
+PY
+mv "$STATE/sessions/$third_id/delivered-manifest" "$TMP/delivered-manifest"
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$third_root" ]] || { echo 'FAIL: GC must retain DELIVERED roots with incomplete delivery evidence'; exit 1; }
+: > "$STATE/sessions/$third_id/delivered-manifest"
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$third_root" ]] || { echo 'FAIL: GC must retain DELIVERED roots with an empty manifest'; exit 1; }
+printf 'F\0' > "$STATE/sessions/$third_id/delivered-manifest"
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$third_root" ]] || { echo 'FAIL: GC must retain DELIVERED roots with a truncated manifest'; exit 1; }
+mv "$TMP/delivered-manifest" "$STATE/sessions/$third_id/delivered-manifest"
+mv "$STATE/sessions/$third_id/delivered-sha" "$TMP/delivered-sha"
+printf 'garbage\n' > "$STATE/sessions/$third_id/delivered-sha"
+HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
+[[ -d "$third_root" ]] || { echo 'FAIL: GC must retain DELIVERED roots with a malformed delivered SHA'; exit 1; }
+mv "$TMP/delivered-sha" "$STATE/sessions/$third_id/delivered-sha"
 
 tampered="$(create)"; tampered_root="$(printf '%s\n' "$tampered" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; tampered_id="$(printf '%s\n' "$tampered" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 printf tampered > "$tampered_root/tampered.txt"; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$tampered_id"

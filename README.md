@@ -138,7 +138,7 @@ This installs a profile entry under `~/.config/harness-launcher/profiles/` and a
 
 Registered commands are workspace-aware. If the current directory resolves inside the owning harness, the launcher uses it automatically; otherwise it preserves the legacy harness-root default. An explicit `--cwd` still takes precedence.
 
-### Experimental isolated sessions
+### Isolated sessions
 
 Root sessions can opt into a disposable detached Git repository with `--isolated`, or by
 setting `HARNESS_SESSION_ISOLATION=1`. The launcher exports
@@ -148,6 +148,14 @@ in that product worktree. Session records are written atomically below
 `${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher`. Machine-local
 `config/.local` is never copied, and `projects/` is linked back to the
 canonical harness so existing product worktrees remain available.
+
+A profile can set `HARNESS_SESSION_ISOLATION_DEFAULT=1` to route fresh,
+interactive direct-Claude and native-Codex launches into isolation by default.
+Batch, help, diagnostics, gateway/Kiro, and the no-argument launcher TUI remain
+on the legacy path. Ambiguous `resume`, `continue`, and `fork` commands fail
+before creating a workspace: resume with the exact UUID shown at session start,
+or use `--no-isolated` when canonical runtime history is intentional. This
+profile setting is a bounded canary switch; it does not change other profiles.
 
 The bundled `session-isolation.sh` can submit a session's immutable patch and
 manifest, then integrate it through a locally serialized remote fast-forward
@@ -163,6 +171,7 @@ as `harness-session`:
 ex --isolated codex base
 harness-session list
 ex --isolated-session <uuid> codex resume
+ex --no-isolated resume
 harness-session close <uuid>
 ```
 
@@ -175,6 +184,14 @@ durable `CONFLICT`; a post-push readback outage remains `INTEGRATING` until
 recovery proves whether the pending commit reached remote history.
 `harness-session recover <uuid>` reconciles an indeterminate integration or
 reopens the same workspace for repair.
+
+Only one launcher may own a UUID at a time. A kernel lease covers the complete
+runtime and is not inherited by Claude, Codex, heartbeat, or title-broker child
+processes. `CLOSED` workspaces remain resumable for 24 hours by default;
+launcher startup garbage collection retires expired `CLOSED` or `DELIVERED`
+roots only after acquiring that lease. Journals remain for audit. Set
+`HARNESS_SESSION_RETENTION_SECONDS` to a validated value from `0` through
+`604800`; `0` makes a terminal root eligible on the next collection.
 
 Workspace managers that need to choose the profile instead of naming it can use `harness-auto`. It resolves the current directory against the private profile registry, selects the single most-specific owning harness, and fails closed outside or across ambiguous boundaries:
 
