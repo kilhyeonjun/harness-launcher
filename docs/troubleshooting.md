@@ -143,6 +143,7 @@ Deliver the value through `.claude/settings.local.json` `env` or the harness's
 local environment; do not paste a credential into the committed `.mcp.json`.
 
 ## Duplicate MCP server error
+
 Committed and local MCP files are merged. The same server name cannot appear in more than one file:
 
 ```text
