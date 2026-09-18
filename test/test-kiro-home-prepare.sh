@@ -333,11 +333,12 @@ grep -q "duplicate MCP server 'committed'" "$TEST_TEMP/kiro-overlay-duplicate.lo
 }
 echo "PASS: Kiro overlay cannot shadow committed MCP servers"
 
-# ─── HTTP header placeholders ────────────────────────────────────────────────
-# Kiro CLI transmits header values verbatim, so an env-indirect Authorization
-# header would be sent literally and rejected. Preparation resolves the
-# placeholders from the launcher environment instead.
-HEADER_HARNESS="$TEST_TEMP/header-expansion-harness"
+# ─── Authenticated HTTP servers become stdio bridges ────────────────────────
+# Kiro ignores `headers` on http transport and falls back to OAuth discovery, so
+# preparation rewrites those servers into an stdio bridge that carries them. The
+# placeholder must survive verbatim: the bridge resolves it from the inherited
+# environment, so no credential is written to disk.
+HEADER_HARNESS="$TEST_TEMP/http-bridge-harness"
 mkdir -p "$HEADER_HARNESS/.claude/agents"
 cat > "$HEADER_HARNESS/.claude/agents/reader.md" <<'EOF'
 ---
@@ -351,72 +352,99 @@ EOF
 cat > "$HEADER_HARNESS/.mcp.json" <<'EOF'
 {
   "mcpServers": {
-    "with-token": {
+    "authed-http": {
       "type": "http",
       "url": "https://example.invalid/mcp",
+      "timeout": 45000,
       "headers": {
-        "Authorization": "Bearer ${TEST_HEADER_TOKEN:-}",
-        "X-Fallback": "${TEST_HEADER_ABSENT:-fallback-value}",
-        "X-Empty-Falls-Back": "${TEST_HEADER_EMPTY:-empty-default}",
-        "X-Pair": "${TEST_HEADER_TOKEN}/${TEST_HEADER_ABSENT:-second}",
-        "X-Missing": "${TEST_HEADER_NO_DEFAULT}",
+        "Authorization": "Bearer ${TEST_BRIDGE_TOKEN:-}",
+        "X-Bare": "${TEST_BRIDGE_TOKEN}",
+        "X-Defaulted": "${TEST_BRIDGE_ABSENT:-committed-default}",
+        "X-Unset": "${TEST_BRIDGE_ABSENT}",
+        "X-Pair": "${TEST_BRIDGE_TOKEN}/${TEST_BRIDGE_ABSENT:-second}",
         "X-Plain": "literal-value"
       }
-    }
+    },
+    "plain-http": {
+      "type": "http",
+      "url": "http://127.0.0.1:38100/mcp"
+    },
+    "already-stdio": { "command": "/bin/echo", "args": ["hi"] }
   }
 }
 EOF
 set +e
-TEST_HEADER_TOKEN="resolved-secret" TEST_HEADER_EMPTY="" "$PREPARE" "$HEADER_HARNESS" \
-  >"$TEST_TEMP/header-expansion.out" 2>"$TEST_TEMP/header-expansion.err"
-header_rc=$?
+TEST_BRIDGE_TOKEN="resolved-secret" "$PREPARE" "$HEADER_HARNESS" \
+  >"$TEST_TEMP/http-bridge.out" 2>"$TEST_TEMP/http-bridge.err"
+bridge_rc=$?
 set -e
-[[ "$header_rc" -eq 0 ]] || { echo "FAIL: preparation failed on placeholder headers"; cat "$TEST_TEMP/header-expansion.err"; FAIL=1; }
+[[ "$bridge_rc" -eq 0 ]] || { echo "FAIL: preparation failed on an authenticated http server"; cat "$TEST_TEMP/http-bridge.err"; FAIL=1; }
 
-header_settings="$HEADER_HARNESS/.harness/kiro/settings/mcp.json"
-python3 - "$header_settings" "$HEADER_HARNESS/.harness/kiro/agents/harness.json" <<'PY' || FAIL=1
+bridge_settings="$HEADER_HARNESS/.harness/kiro/settings/mcp.json"
+python3 - "$bridge_settings" "$HEADER_HARNESS/.harness/kiro/agents/harness.json" <<'PY' || FAIL=1
 import json, sys
-h = json.load(open(sys.argv[1]))["mcpServers"]["with-token"]["headers"]
+servers = json.load(open(sys.argv[1]))["mcpServers"]
 ok = True
-if h.get("Authorization") != "Bearer resolved-secret":
-    print(f"FAIL: set variable not expanded: {h.get('Authorization')!r}"); ok = False
-if h.get("X-Fallback") != "fallback-value":
-    print(f"FAIL: :- default not applied: {h.get('X-Fallback')!r}"); ok = False
-if h.get("X-Empty-Falls-Back") != "empty-default":
-    print(f"FAIL: set-but-empty must fall back like shell :- : {h.get('X-Empty-Falls-Back')!r}"); ok = False
-if h.get("X-Pair") != "resolved-secret/second":
-    print(f"FAIL: multiple placeholders in one value: {h.get('X-Pair')!r}"); ok = False
-if h.get("X-Missing") != "":
-    print(f"FAIL: unset variable without default should resolve empty: {h.get('X-Missing')!r}"); ok = False
-if h.get("X-Plain") != "literal-value":
-    print(f"FAIL: literal header value was altered: {h.get('X-Plain')!r}"); ok = False
-agent = json.load(open(sys.argv[2]))["mcpServers"]["with-token"]["headers"]
-if agent.get("Authorization") != "Bearer resolved-secret":
-    print(f"FAIL: inlined agent header not expanded: {agent.get('Authorization')!r}"); ok = False
+bridged = servers["authed-http"]
+if bridged.get("type") != "stdio" or bridged.get("command") != "npx":
+    print(f"FAIL: authenticated http server not bridged: {bridged}"); ok = False
+if "url" in bridged or "headers" in bridged:
+    print(f"FAIL: bridged server kept http-only fields: {sorted(bridged)}"); ok = False
+args = bridged.get("args", [])
+for expected in ("mcp-remote@0.14.2", "https://example.invalid/mcp",
+                 "Authorization: Bearer ${TEST_BRIDGE_TOKEN}", "X-Bare: ${TEST_BRIDGE_TOKEN}",
+                 "X-Defaulted: committed-default", "X-Unset: ${TEST_BRIDGE_ABSENT}",
+                 "X-Pair: ${TEST_BRIDGE_TOKEN}/second", "X-Plain: literal-value"):
+    if expected not in args:
+        print(f"FAIL: bridge args missing {expected!r}: {args}"); ok = False
+if any(":-" in arg for arg in args):
+    print(f"FAIL: mcp-remote cannot substitute the ${{VAR:-}} form; args still contain it: {args}"); ok = False
+if bridged.get("timeout") != 45000:
+    print(f"FAIL: bridge dropped the configured timeout: {bridged.get('timeout')}"); ok = False
+plain = servers["plain-http"]
+if plain.get("type") != "http" or plain.get("url") != "http://127.0.0.1:38100/mcp":
+    print(f"FAIL: header-free http server must stay untouched: {plain}"); ok = False
+if servers["already-stdio"].get("command") != "/bin/echo":
+    print(f"FAIL: stdio server must stay untouched: {servers['already-stdio']}"); ok = False
+agent_args = json.load(open(sys.argv[2]))["mcpServers"]["authed-http"].get("args", [])
+if "Authorization: Bearer ${TEST_BRIDGE_TOKEN}" not in agent_args:
+    print(f"FAIL: inlined agent config lost the bridge header: {agent_args}"); ok = False
 sys.exit(0 if ok else 1)
 PY
 
-grep -q 'TEST_HEADER_NO_DEFAULT' "$TEST_TEMP/header-expansion.err" || {
-  echo "FAIL: unset placeholder without a default must be reported by name"
+# The resolved credential must not reach generated state or the launcher output.
+if grep -rq 'resolved-secret' "$HEADER_HARNESS/.harness" "$TEST_TEMP/http-bridge.out" "$TEST_TEMP/http-bridge.err" 2>/dev/null; then
+  echo "FAIL: a resolved credential was written to generated state or output"
   FAIL=1
-}
-grep -q 'resolved-secret' "$TEST_TEMP/header-expansion.err" "$TEST_TEMP/header-expansion.out" && {
-  echo "FAIL: preparation output leaked a resolved header value"
-  FAIL=1
-}
+fi
+echo "PASS: authenticated http servers become stdio bridges without materializing secrets"
 
-# Resolved credentials land in generated files, so those files must not be
-# world- or group-readable — including generated subagents.
-[[ -f "$HEADER_HARNESS/.harness/kiro/agents/reader.json" ]] || {
-  echo "FAIL: subagent JSON missing from the header fixture"; FAIL=1
+# The light surface filter must still drop an SSH-tunnel server before any
+# translation can hide its loopback URL.
+LIGHT_HARNESS="$TEST_TEMP/light-bridge-harness"
+mkdir -p "$LIGHT_HARNESS"
+cat > "$LIGHT_HARNESS/.mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "tunnel": {
+      "type": "http",
+      "url": "http://127.0.0.1:38205/mcp",
+      "headers": { "Authorization": "Bearer ${TEST_BRIDGE_TOKEN}" }
+    },
+    "keep": { "command": "/bin/echo", "args": ["hi"] }
+  }
 }
-for secret_file in "$header_settings" \
-  "$HEADER_HARNESS/.harness/kiro/agents/harness.json" \
-  "$HEADER_HARNESS/.harness/kiro/agents/reader.json"; do
-  mode=$(stat -f '%Lp' "$secret_file" 2>/dev/null || stat -c '%a' "$secret_file")
-  [[ "$mode" == "600" ]] || { echo "FAIL: $secret_file mode $mode, expected 600"; FAIL=1; }
-done
-echo "PASS: HTTP header placeholders resolve and generated secrets stay owner-only"
+EOF
+HARNESS_KIRO_MCP_PROFILE=light "$PREPARE" "$LIGHT_HARNESS" >/dev/null 2>&1
+python3 - "$LIGHT_HARNESS/.harness/kiro/settings/mcp.json" <<'PY' || FAIL=1
+import json, sys
+servers = json.load(open(sys.argv[1]))["mcpServers"]
+if "tunnel" in servers:
+    print(f"FAIL: light surface kept an SSH-tunnel server: {sorted(servers)}"); sys.exit(1)
+if "keep" not in servers:
+    print(f"FAIL: light surface dropped a local server: {sorted(servers)}"); sys.exit(1)
+PY
+echo "PASS: light surface filters tunnel servers before bridge translation"
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 if [[ $FAIL -gt 0 ]]; then
