@@ -140,7 +140,7 @@ echo "Test: kiro-cli base"
 stub="$TEST_TEMP/out-base.txt"
 run_kiro_cli "$stub" base
 
-assert_eq "model" "claude-sonnet-4.6" "$(get_flag_value "--model" "$stub")"
+assert_eq "model" "claude-sonnet-5" "$(get_flag_value "--model" "$stub")"
 assert_eq "effort" "high" "$(get_flag_value "--effort" "$stub")"
 
 # ─── Test: plan mode ─────────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ echo "Test: kiro-cli plan"
 stub="$TEST_TEMP/out-plan.txt"
 run_kiro_cli "$stub" plan
 
-assert_eq "model" "claude-opus-4.6" "$(get_flag_value "--model" "$stub")"
+assert_eq "model" "claude-opus-5" "$(get_flag_value "--model" "$stub")"
 assert_eq "effort" "high" "$(get_flag_value "--effort" "$stub")"
 
 # ─── Test: rich mode ─────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ echo "Test: kiro-cli rich"
 stub="$TEST_TEMP/out-rich.txt"
 run_kiro_cli "$stub" rich
 
-assert_eq "model" "claude-opus-4.6" "$(get_flag_value "--model" "$stub")"
+assert_eq "model" "claude-opus-5" "$(get_flag_value "--model" "$stub")"
 assert_eq "effort" "max" "$(get_flag_value "--effort" "$stub")"
 
 # ─── Test: default (no mode) ─────────────────────────────────────────────────
@@ -164,7 +164,7 @@ echo "Test: kiro-cli (no mode, defaults to base)"
 stub="$TEST_TEMP/out-default.txt"
 run_kiro_cli "$stub"
 
-assert_eq "model" "claude-sonnet-4.6" "$(get_flag_value "--model" "$stub")"
+assert_eq "model" "claude-sonnet-5" "$(get_flag_value "--model" "$stub")"
 assert_eq "effort" "high" "$(get_flag_value "--effort" "$stub")"
 
 # ─── Test: resume ────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ stub="$TEST_TEMP/out-bypass.txt"
 run_kiro_cli "$stub" rich bypass
 
 assert_contains "trust-all" "-a" "$stub"
-assert_eq "model" "claude-opus-4.6" "$(get_flag_value "--model" "$stub")"
+assert_eq "model" "claude-opus-5" "$(get_flag_value "--model" "$stub")"
 
 # ─── Test: no --v3 flag (default is already v3) ─────────────────────────────
 echo "Test: kiro-cli no --v3 flag by default"
@@ -218,7 +218,7 @@ stub="$TEST_TEMP/out-light.txt"
 run_kiro_cli "$stub" base light
 
 assert_eq "light surface: prepare sees profile" "light" "$(get_field "PREPARE_PROFILE" "$stub")"
-assert_eq "model still applies with light" "claude-sonnet-4.6" "$(get_flag_value "--model" "$stub")"
+assert_eq "model still applies with light" "claude-sonnet-5" "$(get_flag_value "--model" "$stub")"
 
 # light must not leak HARNESS_KIRO_MCP_PROFILE into the calling shell
 leak=$(
@@ -245,6 +245,86 @@ leak_missing=$(
   echo "rc=$rc profile=${HARNESS_KIRO_MCP_PROFILE:-unset}"
 )
 assert_eq "light surface: no leak when kiro bin missing" "rc=1 profile=unset" "$leak_missing"
+
+# ─── Test: granular model= / effort= overrides ───────────────────────────────
+# A one-off combination must not require a new preset (Claude-style custom).
+echo "Test: kiro-cli model=/effort= overrides"
+stub="$TEST_TEMP/out-custom-pair.txt"
+run_kiro_cli "$stub" model=claude-opus-4.8 effort=xhigh
+
+assert_eq "custom model" "claude-opus-4.8" "$(get_flag_value "--model" "$stub")"
+assert_eq "custom effort" "xhigh" "$(get_flag_value "--effort" "$stub")"
+
+# model= alone falls back to that model's recommended effort, not base's model
+echo "Test: kiro-cli model= alone"
+stub="$TEST_TEMP/out-custom-model.txt"
+run_kiro_cli "$stub" model=claude-haiku-4.5
+
+assert_eq "model-only: model applied" "claude-haiku-4.5" "$(get_flag_value "--model" "$stub")"
+assert_eq "model-only: recommended effort" "low" "$(get_flag_value "--effort" "$stub")"
+
+# a bare catalog ID is accepted as the model
+echo "Test: kiro-cli bare model ID"
+stub="$TEST_TEMP/out-bare-model.txt"
+run_kiro_cli "$stub" claude-sonnet-4.6 effort=medium
+
+assert_eq "bare ID: model applied" "claude-sonnet-4.6" "$(get_flag_value "--model" "$stub")"
+assert_eq "bare ID: effort applied" "medium" "$(get_flag_value "--effort" "$stub")"
+
+# effort= on a preset overrides only the effort half
+echo "Test: kiro-cli preset + effort override"
+stub="$TEST_TEMP/out-preset-effort.txt"
+run_kiro_cli "$stub" plan effort=medium
+
+assert_eq "preset model kept" "claude-opus-5" "$(get_flag_value "--model" "$stub")"
+assert_eq "preset effort overridden" "medium" "$(get_flag_value "--effort" "$stub")"
+
+# ─── Test: explicit overrides win regardless of argument order ────────────────
+echo "Test: kiro-cli override order independence"
+stub="$TEST_TEMP/out-order-a.txt"
+run_kiro_cli "$stub" effort=medium plan
+assert_eq "effort= before preset survives" "medium" "$(get_flag_value "--effort" "$stub")"
+assert_eq "effort= before preset keeps preset model" "claude-opus-5" "$(get_flag_value "--model" "$stub")"
+
+stub="$TEST_TEMP/out-order-b.txt"
+run_kiro_cli "$stub" model=claude-opus-4.8 plan
+assert_eq "model= before preset survives" "claude-opus-4.8" "$(get_flag_value "--model" "$stub")"
+assert_eq "model= before preset keeps preset effort" "high" "$(get_flag_value "--effort" "$stub")"
+
+stub="$TEST_TEMP/out-order-c.txt"
+run_kiro_cli "$stub" glm-5 effort=low
+assert_eq "non-Claude bare ID accepted" "glm-5" "$(get_flag_value "--model" "$stub")"
+assert_eq "non-Claude bare ID effort" "low" "$(get_flag_value "--effort" "$stub")"
+
+# ─── Test: invalid effort is rejected before exec ─────────────────────────────
+# The Kiro CLI silently swallows an unknown --effort, so the launcher must fail.
+echo "Test: kiro-cli rejects an out-of-enum effort"
+bad_stub="$TEST_TEMP/out-bad-effort.txt"
+bad_err="$TEST_TEMP/out-bad-effort.err"
+bad_rc=$(
+  export TEST_STUB_FILE="$bad_stub"
+  export PATH="$TEST_BIN:$PATH"
+  export HARNESS_KIRO_BIN="$KIRO_STUB"
+  export _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+  _harness_launcher_run "$TEST_HARNESS" 'kiro-cli' base effort=banana >/dev/null 2>"$bad_err" && echo 0 || echo $?
+)
+assert_eq "invalid effort: non-zero exit" "1" "$bad_rc"
+if grep -q "잘못된 effort" "$bad_err"; then
+  echo "  ✓ invalid effort: explains the rejection"
+  PASS=$((PASS + 1))
+else
+  echo "  ✗ invalid effort: expected a rejection message, got: $(cat "$bad_err")"
+  FAIL=$((FAIL + 1))
+fi
+if [[ -s "$bad_stub" ]]; then
+  echo "  ✗ invalid effort: must not exec kiro-cli"
+  FAIL=$((FAIL + 1))
+else
+  echo "  ✓ invalid effort: no exec"
+  PASS=$((PASS + 1))
+fi
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo ""

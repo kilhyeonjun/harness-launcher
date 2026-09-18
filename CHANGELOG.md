@@ -11,6 +11,20 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Added
 
+- Add granular native-Kiro selection. The TUI mode menu ends with `🔧 Custom`,
+  which lists the runtime's live model catalog with each model's credit
+  multiplier (`chat --list-models`, a local listing — no API call) and then the
+  effort enum with the recommended level marked; the picked pair is stored in
+  history and replays exactly. `<prefix> kiro-cli` gained `model=<id>` /
+  `effort=<level>` (and bare catalog IDs), which override either half of a
+  preset regardless of argument order.
+- Validate native-Kiro effort against the runtime enum
+  (`low|medium|high|xhigh|max`). The Kiro CLI silently accepts an unknown
+  `--effort` and falls back to its default, so a typo used to downgrade a session
+  invisibly; the launcher now fails before exec.
+- Kiro preset labels now carry operational intent between the icon and the
+  model, matching the native-Codex profile labels.
+
 - Add a Kiro-only MCP overlay, `mcp.kiro.local.json`. Kiro preparation merges it
   after the shared `.mcp.json`, `.mcp.local.json`, and `mcp.local.json` inputs,
   while Claude and Codex preparation continue to ignore it, so a server intended
@@ -45,6 +59,14 @@ Notable changes are recorded here. This project follows semantic versioning for 
   clean-session closeout, and crash reconciliation.
 - Add `harness-session` lifecycle commands, UUID workspace resume, live-session
   heartbeats, and kernel-released integration locking for crash recovery.
+
+### Changed
+
+- Bump the native-Kiro session and subagent tiers to the current generation:
+  sonnet → `claude-sonnet-5`, opus → `claude-opus-5`. The haiku tier stays on
+  `claude-haiku-4.5` (no newer haiku in the catalog). The bump is rate-neutral:
+  `chat --list-models` reports the same `rate_multiplier` and 1M context window
+  for opus 4.6/4.7/4.8/5 (2.2x) and for sonnet 4.6/5 (1.3x).
 
 ### Fixed
 

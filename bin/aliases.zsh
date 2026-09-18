@@ -791,19 +791,31 @@ _harness_launcher_run_codex_cli() {
 # _harness_launcher_run_kiro_cli <harness-dir> [args...]
 #   Launches Kiro CLI natively against a per-harness KIRO_HOME.
 #   Modes:    fast | base | plan | rich → --model + --effort
+#   Granular: model=<id> and/or effort=<low|medium|high|xhigh|max> override the
+#             mode pair, so a one-off combination needs no new preset. A bare
+#             model ID (claude-*, gpt-*, auto) is accepted as model=<id>.
 #   Sessions: resume → --resume-picker, continue → -r
 _harness_launcher_run_kiro_cli() {
   local HARNESS_DIR="$1"; shift
   local run_dir="${HARNESS_RUN_DIR:-$HARNESS_DIR}"
   local model="" effort="" agent="harness" mcp_surface="full"
+  local model_set=0 effort_set=0
   local -a kiro_args=()
   local session_flag=""
 
+  # Explicit model=/effort= win over a preset regardless of argument order:
+  # `effort=medium plan` and `plan effort=medium` must behave identically.
   while [[ $# -gt 0 ]]; do
     case "$1" in
       fast|base|plan|rich)
         harness_kiro_mode_resolve "$1"
-        model="$HARNESS_KIRO_MODEL"; effort="$HARNESS_KIRO_EFFORT"; shift ;;
+        [[ $model_set -eq 1 ]] || model="$HARNESS_KIRO_MODEL"
+        [[ $effort_set -eq 1 ]] || effort="$HARNESS_KIRO_EFFORT"
+        shift ;;
+      model=*)  model="${1#model=}"; model_set=1; shift ;;
+      effort=*) effort="${1#effort=}"; effort_set=1; shift ;;
+      claude-*|gpt-*|glm-*|qwen*|minimax-*|deepseek-*|auto)
+        model="$1"; model_set=1; shift ;;
       resume)   session_flag="--resume-picker"; shift ;;
       continue) session_flag="-r"; shift ;;
       bypass)   kiro_args+=(-a); shift ;;
@@ -814,7 +826,19 @@ _harness_launcher_run_kiro_cli() {
 
   if [[ -z "$model" ]]; then
     harness_kiro_mode_resolve base
-    model="$HARNESS_KIRO_MODEL"; effort="$HARNESS_KIRO_EFFORT"
+    model="$HARNESS_KIRO_MODEL"
+    if [[ -z "$effort" ]]; then
+      effort="$HARNESS_KIRO_EFFORT"
+    fi
+  fi
+  if [[ -z "$effort" ]]; then
+    effort="$(harness_kiro_effort_recommended "$model")"
+  fi
+  # The Kiro CLI validates --model (it errors with the live catalog) but NOT
+  # --effort: an unknown level is silently swallowed, so guard it here.
+  if ! harness_kiro_effort_is_valid "$effort"; then
+    echo "❌ 잘못된 effort: '$effort' (가능한 값: $HARNESS_KIRO_EFFORT_LEVELS)" >&2
+    return 1
   fi
 
   # Resolve the binary before exporting the surface profile: an early failure

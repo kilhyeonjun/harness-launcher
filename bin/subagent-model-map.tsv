@@ -28,6 +28,6 @@
 # Columns (tab-separated): claude_tier  codex_model  codex_effort  kiro_model
 # claude_tier "default" applies to any agent with no/unknown model: field.
 haiku	gpt-5.6-luna	low	claude-haiku-4.5
-sonnet	gpt-5.6-terra	medium	claude-sonnet-4.6
-opus	gpt-5.6-sol	medium	claude-opus-4.6
-default	gpt-5.6-terra	medium	claude-sonnet-4.6
+sonnet	gpt-5.6-terra	medium	claude-sonnet-5
+opus	gpt-5.6-sol	medium	claude-opus-5
+default	gpt-5.6-terra	medium	claude-sonnet-5

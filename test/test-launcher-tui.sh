@@ -285,7 +285,7 @@ rm -f "$TEST_BIN/claude" "$TEST_BIN/happy"   # kiro becomes the only runtime
 OUT="$TEST_TEMP/13.out"; STUB="$TEST_TEMP/13.stub"; reset_plan
 run_tui $'1\n2\n1\n' "$OUT" "$STUB" \
   HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro" HARNESS_RUN_DIR="$TEST_WORKTREE"
-grep -q 'EXEC:kiro chat --model claude-sonnet-4.6 --effort high --agent harness' "$STUB" \
+grep -q 'EXEC:kiro chat --model claude-sonnet-5 --effort high --agent harness' "$STUB" \
   || fail 'HARNESS_KIRO_BIN should surface kiro runtime in the TUI' "$OUT"
 grep -Fqx "PWD:$TEST_WORKTREE_REAL" "$STUB" || fail 'TUI native Kiro should use HARNESS_RUN_DIR' "$STUB"
 write_stub claude
@@ -673,5 +673,61 @@ grep -q 'harness.test' "$LIGHT_FILE" || fail 'harness scope must win user-scope 
 grep -q 'user.test' "$LIGHT_FILE" && fail 'user-scope duplicate of a harness server must not override it' "$OUT"
 rm -f "$TEST_HARNESS/.mcp.json" "$TEST_HOME/.claude.json"; reset_plan
 echo 'PASS: user-scope servers merge into the light surface (harness wins collisions)'
+
+# --- 26. Kiro granular custom model/effort flow ----------------------------------
+# claude + kiro both installed here → runtime 2 (kiro) → session 1 → mode 5
+# (Custom) → model 2 → effort 4 → start 1. The catalog is pinned so the menu
+# order is deterministic offline.
+OUT="$TEST_TEMP/26.out"; STUB="$TEST_TEMP/26.stub"; reset_plan
+run_tui $'2\n1\n5\n2\n4\n1\n' "$OUT" "$STUB" \
+  HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro" \
+  HARNESS_KIRO_MODEL_CATALOG="claude-opus-5 claude-sonnet-5 claude-haiku-4.5"
+grep -q 'EXEC:kiro chat --model claude-sonnet-5 --effort xhigh --agent harness' "$STUB" \
+  || fail 'custom flow should exec the picked model/effort pair' "$OUT"
+head -1 "$HISTORY" | grep -q 'MODE=custom' || fail 'custom launch should record MODE=custom' "$OUT"
+head -1 "$HISTORY" | grep -q 'C_MODEL=claude-sonnet-5' || fail 'custom launch should record C_MODEL' "$OUT"
+head -1 "$HISTORY" | grep -q 'C_EFFORT=xhigh' || fail 'custom launch should record C_EFFORT' "$OUT"
+grep -q 'Recommended' "$OUT" || fail 'custom menus should mark recommended entries' "$OUT"
+echo 'PASS: Kiro custom flow selects an arbitrary model/effort pair'
+
+# Replay of that custom row must reproduce the same pair, not fall back to base.
+# The saved row is the newest history entry → menu row 3 (after the two
+# composer entries for claude/kiro).
+OUT="$TEST_TEMP/26b.out"; STUB="$TEST_TEMP/26b.stub"
+run_seeded_tui_status $'3\n' "$OUT" "$STUB" \
+  HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro" >/dev/null 2>&1 || true
+grep -q 'EXEC:kiro chat --model claude-sonnet-5 --effort xhigh --agent harness' "$STUB" \
+  || fail 'replaying a custom row should keep its model/effort pair' "$OUT"
+echo 'PASS: custom Kiro row replays with the same model/effort'
+reset_plan
+
+# --- 27. Kiro preset labels carry operational intent (Codex-style) ---------------
+OUT="$TEST_TEMP/27.out"; STUB="$TEST_TEMP/27.stub"; reset_plan
+run_tui $'2\n1\n\n\n' "$OUT" "$STUB" HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro"
+grep -q 'Fast — .* — claude-haiku-4.5 · low' "$OUT" \
+  || fail 'Kiro mode menu should show intent between icon and model' "$OUT"
+grep -q 'Rich — .* — claude-opus-5 · max' "$OUT" \
+  || fail 'Kiro rich label should show the bumped opus model' "$OUT"
+grep -q 'Custom — model/effort' "$OUT" || fail 'Kiro mode menu should offer Custom' "$OUT"
+reset_plan
+echo 'PASS: Kiro mode labels expose intent + model · effort and a Custom entry'
+
+# --- 27b. an unresolvable Kiro row fails instead of launching something else ----
+# Regression guard: the launcher used to rewrite an unknown mode to `base`, so a
+# corrupt custom row silently launched a different model than it recorded.
+OUT="$TEST_TEMP/27b.out"; STUB="$TEST_TEMP/27b.stub"; reset_plan
+mkdir -p "$(dirname "$HISTORY")"
+cat > "$HISTORY" <<'EOF'
+TS=900	SUMMARY=Kiro · new · claude-sonnet-5 · xhigh · custom	RUNTIME=kiro	PROVIDER=direct	SESSION=new	MODE=custom	C_MODEL=	C_EFFORT=banana	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=272k	KIRO_TRUST=0
+EOF
+run_seeded_tui_status $'3\n' "$OUT" "$STUB" \
+  HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro" >/dev/null 2>&1 || true
+if [[ -s "$STUB" ]]; then
+  fail 'a corrupt custom row must not launch any model' "$STUB"
+fi
+grep -qE 'custom 모드에는 model이 필요합니다|잘못된 effort' "$OUT" \
+  || fail 'an unresolvable Kiro row should explain why it did not launch' "$OUT"
+reset_plan
+echo 'PASS: unresolvable Kiro row fails loudly instead of substituting a preset'
 
 echo 'ALL launcher TUI tests passed'

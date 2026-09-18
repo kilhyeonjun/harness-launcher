@@ -844,8 +844,15 @@ collect_codex() {
 
 # --- Kiro flow -------------------------------------------------------------
 kiro_summary() {
-  harness_kiro_mode_resolve "${CHOICE_MODE:-base}"
-  PLAN_SUMMARY="Kiro · $CHOICE_SESSION · $HARNESS_KIRO_MODEL · $HARNESS_KIRO_EFFORT"
+  if harness_kiro_selection_resolve "${CHOICE_MODE:-base}" "$CHOICE_C_MODEL" "$CHOICE_C_EFFORT" 2>/dev/null; then
+    PLAN_SUMMARY="Kiro · $CHOICE_SESSION · $HARNESS_KIRO_MODEL · $HARNESS_KIRO_EFFORT"
+    [ "$CHOICE_MODE" = "custom" ] && PLAN_SUMMARY="$PLAN_SUMMARY · custom"
+  else
+    # Unresolvable pair (e.g. a replayed row from a newer/older version): show
+    # what is stored rather than silently substituting a different launch.
+    # launch_kiro fails on the same input, so display and launch agree.
+    PLAN_SUMMARY="Kiro · $CHOICE_SESSION · ${CHOICE_C_MODEL:-${CHOICE_MODE:-base}} · ${CHOICE_C_EFFORT:-?} · ⚠ 확인 필요"
+  fi
   [ "$CHOICE_MCP_SURFACE" = "light" ] && PLAN_SUMMARY="$PLAN_SUMMARY · mcp-light"
   [ "$CHOICE_KIRO_TRUST" = 1 ] && PLAN_SUMMARY="$PLAN_SUMMARY · trust-all"
 }
@@ -874,10 +881,47 @@ collect_kiro() {
           label=$(harness_kiro_mode_label "$m") || continue
           kopts+=("$label"); modes+=("$m")
         done
+        kopts+=("🔧 Custom — model/effort 직접 선택"); modes+=("custom")
         menu "Mode" "${kopts[@]}" || { step=session; continue; }
         for i in "${!kopts[@]}"; do
           [ "$MENU_RESULT" = "${kopts[$i]}" ] && { CHOICE_MODE="${modes[$i]}"; break; }
         done
+        if [ "$CHOICE_MODE" = "custom" ]; then
+          step=custom_model
+        else
+          # A preset launch must not carry a leftover custom pair into history —
+          # two rows would otherwise share a label but hash differently.
+          CHOICE_C_MODEL=""; CHOICE_C_EFFORT=""
+          step=final
+        fi ;;
+
+      custom_model)
+        BREADCRUMB="$HARNESS_NAME ▸ Kiro ▸ custom"
+        local mopts=() models=() row model_id model_mult
+        while IFS= read -r row; do
+          [ -n "$row" ] || continue
+          model_id="${row%%	*}"
+          if [ "$model_id" = "$row" ]; then model_mult=""; else model_mult="${row#*	}"; fi
+          [ -n "$model_id" ] || continue
+          models+=("$model_id")
+          mopts+=("$(harness_kiro_catalog_label "$model_id" "$model_mult")")
+        done <<< "$(harness_kiro_catalog_rows "$KIRO_BIN")"
+        [ ${#models[@]} -gt 0 ] || { echo "⚠️  모델 목록을 가져오지 못했습니다" >&2; step=mode; continue; }
+        menu "Model" "${mopts[@]}" || { step=mode; continue; }
+        for i in "${!mopts[@]}"; do
+          [ "$MENU_RESULT" = "${mopts[$i]}" ] && { CHOICE_C_MODEL="${models[$i]}"; break; }
+        done
+        step=custom_effort ;;
+
+      custom_effort)
+        BREADCRUMB="$HARNESS_NAME ▸ Kiro ▸ custom ▸ $CHOICE_C_MODEL"
+        local eopts=() level
+        while IFS= read -r level; do
+          [ -n "$level" ] || continue
+          eopts+=("$level")
+        done <<< "$(harness_kiro_efforts_for_model "$CHOICE_C_MODEL")"
+        menu "Effort" "${eopts[@]}" || { step=custom_model; continue; }
+        CHOICE_C_EFFORT="${MENU_RESULT%% *}"
         step=final ;;
 
       final)
@@ -887,14 +931,18 @@ collect_kiro() {
           "🚀 Start now" \
           "🔓 Trust all tools: $( [ "$CHOICE_KIRO_TRUST" = 1 ] && echo on || echo off )" \
           "🔌 MCP surface: $CHOICE_MCP_SURFACE" \
-          "↩ Back" || { step=mode; continue; }
+          "↩ Back" || {
+            if [ "$CHOICE_MODE" = "custom" ]; then step=custom_effort; else step=mode; fi
+            continue
+          }
         case "$MENU_RESULT" in
           *Start*) return 0 ;;
           *Trust*)
             if [ "$CHOICE_KIRO_TRUST" = 1 ]; then CHOICE_KIRO_TRUST=0; else CHOICE_KIRO_TRUST=1; fi ;;
           *"MCP surface"*)
             if [ "$CHOICE_MCP_SURFACE" = "light" ]; then CHOICE_MCP_SURFACE="full"; else CHOICE_MCP_SURFACE="light"; fi ;;
-          *Back*) step=mode ;;
+          *Back*)
+            if [ "$CHOICE_MODE" = "custom" ]; then step=custom_effort; else step=mode; fi ;;
         esac ;;
     esac
   done
@@ -1116,7 +1164,7 @@ launch_kiro() {
   harness_export_local_env "$HARNESS_DIR"
 
   [ -n "$KIRO_BIN" ] || { echo "❌ kiro-cli not found in PATH" >&2; return 1; }
-  harness_kiro_mode_resolve "${CHOICE_MODE:-base}"
+  harness_kiro_selection_resolve "${CHOICE_MODE:-base}" "$CHOICE_C_MODEL" "$CHOICE_C_EFFORT" || return 1
   local cmd=("$KIRO_BIN" chat)
   case "$CHOICE_SESSION" in
     continue) cmd+=(-r) ;;

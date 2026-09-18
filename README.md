@@ -234,11 +234,30 @@ The same command shape works for every registered prefix:
 <prefix> codex full-auto|never|bypass   Codex safety level (bypass disables sandbox — dangerous)
 <prefix> kiro-cli [mode]         native Kiro CLI
 <prefix> kiro-cli light          native Kiro CLI with the light MCP surface
+<prefix> kiro-cli model=<id>     native Kiro CLI on one catalog model (bare ID also works)
+<prefix> kiro-cli effort=<level> native Kiro CLI effort: low|medium|high|xhigh|max
 <prefix> kiro [mode]             Claude Code through a Kiro gateway
 <prefix> codex-gateway [mode]    Claude Code through a Codex gateway
 ```
 
 Extra arguments pass through to the selected runtime.
+
+Native Kiro accepts a granular pair as well as a preset. `model=<id>` (or a bare
+catalog ID such as `claude-opus-4.8`) and `effort=<low|medium|high|xhigh|max>`
+override either half, in any argument order, so a one-off combination needs no
+new preset — `wh kiro-cli plan effort=medium` keeps the preset's model and lowers
+only the effort. The Kiro CLI validates `--model` itself (it errors with the live
+catalog), but it silently swallows an unknown `--effort`, so the launcher rejects
+an out-of-enum level before exec. The TUI mirrors the Claude custom path: the
+Kiro mode menu ends with `🔧 Custom`, which lists the runtime's model catalog
+with each model's credit multiplier, then the effort enum with the recommended
+level marked. The catalog comes from `kiro-cli chat --list-models` (a local
+listing — no API call) cached for a day under
+`${XDG_STATE_HOME:-~/.local/state}/harness-launcher/kiro-models.tsv`;
+`HARNESS_KIRO_CATALOG_TTL` changes the window and `HARNESS_KIRO_MODEL_CATALOG`
+overrides the list outright. If the listing fails the launcher serves the last
+cache, or a built-in list, and suppresses retries for five minutes
+(`HARNESS_KIRO_CATALOG_FAIL_TTL`) so an offline session never waits twice.
 
 Run the prefix without arguments for the TUI. The top screen is a **launchpad**:
 your recent launch configurations (up to 8, newest first, deduped per harness in
