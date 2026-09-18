@@ -45,6 +45,8 @@ atomic_write() {
 # ─── 1. settings/mcp.json ───────────────────────────────────────────────────
 # Merge committed and local MCP sources into kiro-cli format. Local files extend
 # the committed configuration; duplicate server names fail rather than override.
+# mcp.kiro.local.json is read here and nowhere else, so a server that only Kiro
+# should reach is declared once instead of being suppressed per runtime.
 
 mcp_out="$KIRO_HOME/settings/mcp.json"
 tmp_mcp="$STAGING_DIR/mcp.json"
@@ -56,7 +58,7 @@ harness = sys.argv[1]
 merged = {}
 seen = {}
 
-for name in (".mcp.json", ".mcp.local.json", "mcp.local.json"):
+for name in (".mcp.json", ".mcp.local.json", "mcp.local.json", "mcp.kiro.local.json"):
     path = os.path.join(harness, name)
     if not os.path.isfile(path):
         continue

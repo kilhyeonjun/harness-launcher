@@ -305,6 +305,8 @@ work-harness/
 
 The launcher merges `.mcp.json`, `.mcp.local.json`, and `mcp.local.json`. Duplicate MCP server names fail fast instead of silently overriding one another.
 
+Kiro preparation additionally reads `mcp.kiro.local.json`. No other runtime reads that file, so a server that should reach Kiro alone is declared once there instead of being suppressed for Claude and Codex afterwards. The duplicate rule still applies across all four files.
+
 ## Codex integration
 
 Before each native Codex launch, `bin/codex-home-prepare.sh` prepares an isolated `CODEX_HOME` under `<project>/.harness/codex`:
@@ -342,6 +344,7 @@ config/.local/codex-gateway.env
 .claude/settings.local.json
 .mcp.local.json
 mcp.local.json
+mcp.kiro.local.json
 ```
 
 Use environment-variable references in committed MCP configuration when authentication is required. Never paste credentials into bug reports, logs, screenshots, or pull requests.

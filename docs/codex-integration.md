@@ -155,6 +155,8 @@ Preparation reads, in order:
 
 Local files extend the committed file. Duplicate server names are rejected.
 
+`mcp.kiro.local.json` is intentionally absent from this list: it is the Kiro-only overlay, and Codex preparation must not read it.
+
 Supported input forms include HTTP and stdio servers:
 
 ```json

@@ -11,6 +11,13 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Added
 
+- Add a Kiro-only MCP overlay, `mcp.kiro.local.json`. Kiro preparation merges it
+  after the shared `.mcp.json`, `.mcp.local.json`, and `mcp.local.json` inputs,
+  while Claude and Codex preparation continue to ignore it, so a server intended
+  for a single runtime no longer has to be suppressed in the others. Duplicate
+  server names across all four inputs are still rejected before any generated
+  Kiro state is written.
+
 - Add a profile-scoped default-isolation canary for fresh interactive
   direct-Claude and native-Codex sessions, with exact-UUID continuation,
   explicit `--no-isolated` rollback, and allocation-free rejection of

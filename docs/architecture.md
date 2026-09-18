@@ -92,6 +92,7 @@ config/codex-surface.json
 .mcp.json
 .mcp.local.json
 mcp.local.json
+mcp.kiro.local.json
 .claude/skills/
 .codex-only/skills/
 .claude/settings.local.json
@@ -105,6 +106,8 @@ When `config/codex-surface.json` is present, it is the membership boundary for g
 ## MCP configuration
 
 Committed MCP definitions can live in `.mcp.json`. Machine-local additions can live in `.mcp.local.json` or `mcp.local.json`.
+
+Those three files are shared by every runtime. `mcp.kiro.local.json` is read only by Kiro preparation, which is the supported way to give one runtime a server the others must not receive; Claude and Codex preparation never read it.
 
 The launcher rejects duplicate server names across these files. Local config extends committed config; it does not override it silently. Native Kiro validates and renders MCP configuration in external staging before it materializes a runtime home: a duplicate leaves an existing `.harness/kiro` unchanged and creates no `.harness/kiro` state for a fresh project.
 
