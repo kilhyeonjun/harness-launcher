@@ -109,6 +109,8 @@ Committed MCP definitions can live in `.mcp.json`. Machine-local additions can l
 
 Those three files are shared by every runtime. `mcp.kiro.local.json` is read only by Kiro preparation, which is the supported way to give one runtime a server the others must not receive; Claude and Codex preparation never read it.
 
+Runtimes differ in how an env-indirect header reaches the server. Claude expands `${VAR}` itself, Codex preparation translates an `Authorization: Bearer ${VAR}` header into `bearer_token_env_var`, and Kiro CLI performs no expansion at all — it would transmit the placeholder text. Kiro preparation therefore resolves `${VAR}` and `${VAR:-default}` in header values before writing the runtime home, with shell `:-` semantics; a variable that is missing and has no default resolves to an empty value and is reported by name on stderr. Generated files that can hold a resolved credential (`settings/mcp.json`, `agents/*.json`) are owner-only.
+
 The launcher rejects duplicate server names across these files. Local config extends committed config; it does not override it silently. Native Kiro validates and renders MCP configuration in external staging before it materializes a runtime home: a duplicate leaves an existing `.harness/kiro` unchanged and creates no `.harness/kiro` state for a fresh project.
 
 Codex preparation translates supported MCP entries into TOML:

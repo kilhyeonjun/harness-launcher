@@ -118,8 +118,31 @@ Disable automatic preparation temporarily:
 HARNESS_LAUNCHER_DISABLE_CODEX_WRAPPER=1 codex --version
 ```
 
-## Duplicate MCP server error
+## HTTP MCP server fails only in Kiro
 
+An HTTP MCP server that works in Claude and Codex but reports a failed status in
+Kiro is usually an authentication header that never resolved. Kiro CLI sends
+header values verbatim, so `Bearer ${MY_TOKEN:-}` used to reach the service as
+that literal text and came back `401`.
+
+Preparation now resolves `${VAR}` and `${VAR:-default}` in header values. If a
+server still fails, check in this order:
+
+```bash
+# 1. Is the variable in the launcher environment at all?
+printenv MY_TOKEN >/dev/null && echo set || echo missing
+
+# 2. Did preparation report an unresolved placeholder?
+<prefix> kiro 2>&1 | grep 'header'
+
+# 3. What did the generated runtime home actually receive?
+python3 -c "import json;print(json.load(open('.harness/kiro/settings/mcp.json'))['mcpServers']['<name>']['headers'])"
+```
+
+Deliver the value through `.claude/settings.local.json` `env` or the harness's
+local environment; do not paste a credential into the committed `.mcp.json`.
+
+## Duplicate MCP server error
 Committed and local MCP files are merged. The same server name cannot appear in more than one file:
 
 ```text

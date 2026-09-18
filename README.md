@@ -307,6 +307,8 @@ The launcher merges `.mcp.json`, `.mcp.local.json`, and `mcp.local.json`. Duplic
 
 Kiro preparation additionally reads `mcp.kiro.local.json`. No other runtime reads that file, so a server that should reach Kiro alone is declared once there instead of being suppressed for Claude and Codex afterwards. The duplicate rule still applies across all four files.
 
+Kiro CLI sends MCP header values verbatim, so preparation resolves `${VAR}` and `${VAR:-default}` in header values from the launcher environment. Because a resolved header can carry a credential, the generated `settings/mcp.json` and `agents/*.json` are written owner-only.
+
 ## Codex integration
 
 Before each native Codex launch, `bin/codex-home-prepare.sh` prepares an isolated `CODEX_HOME` under `<project>/.harness/codex`:
