@@ -81,6 +81,17 @@ cat > "$TEST_HARNESS/mcp.local.json" <<'EOF'
 }
 EOF
 
+# Kiro-only overlay: loaded by Kiro preparation and by no other runtime, so a
+# server that exists for one runtime does not have to be hidden per runtime
+# elsewhere.
+cat > "$TEST_HARNESS/mcp.kiro.local.json" <<'EOF'
+{
+  "mcpServers": {
+    "kiro-only-read": { "command": "/bin/echo", "args": ["kiro-only"] }
+  }
+}
+EOF
+
 "$PREPARE" "$TEST_HARNESS"
 
 KIRO_HOME="$TEST_HARNESS/.harness/kiro"
@@ -94,19 +105,56 @@ cli_settings="$KIRO_HOME/settings/cli.json"
 mcp_settings="$KIRO_HOME/settings/mcp.json"
 [[ -f "$mcp_settings" ]] || { echo "FAIL: settings/mcp.json missing"; exit 1; }
 settings_count=$(python3 -c "import json;print(len(json.load(open('$mcp_settings'))['mcpServers']))")
-[[ "$settings_count" == "4" ]] || { echo "FAIL: settings/mcp.json should merge 4 servers, got $settings_count"; FAIL=1; }
+[[ "$settings_count" == "5" ]] || { echo "FAIL: settings/mcp.json should merge 5 servers, got $settings_count"; FAIL=1; }
 # stdio type inferred for command-only entries
 python3 -c "import json,sys; d=json.load(open('$mcp_settings'))['mcpServers']; sys.exit(0 if d['harness-rag'].get('type')=='stdio' else 1)" \
   || { echo "FAIL: harness-rag should get type=stdio"; FAIL=1; }
 echo "PASS: settings/mcp.json merges committed + local servers with type field"
+
+# ─── Kiro-only overlay (mcp.kiro.local.json) ─────────────────────────────────
+python3 -c "import json,sys; d=json.load(open('$mcp_settings'))['mcpServers']; sys.exit(0 if 'kiro-only-read' in d else 1)" \
+  || { echo "FAIL: mcp.kiro.local.json server missing from the Kiro surface"; FAIL=1; }
+
+# The overlay must stay invisible to the Claude surface generated from the same
+# harness directory, on both Claude paths: the --mcp-config argument list and
+# the generated light surface.
+source "$LAUNCHER_DIR/bin/harness-common.sh"
+if harness_mcp_local_configs "$TEST_HARNESS" | grep -q 'mcp\.kiro\.local\.json'; then
+  echo "FAIL: Kiro-only overlay was offered to Claude as an --mcp-config input"
+  FAIL=1
+fi
+if light_file="$(harness_claude_light_mcp_config "$TEST_HARNESS")"; then
+  python3 - "$light_file" <<'PY' || FAIL=1
+import json, sys
+servers = json.load(open(sys.argv[1])).get("mcpServers", {})
+ok = True
+if "kiro-only-read" in servers:
+    print("FAIL: Kiro-only overlay leaked into the Claude MCP surface"); ok = False
+if "atlassian" not in servers:
+    print("FAIL: Claude surface lost the committed servers"); ok = False
+sys.exit(0 if ok else 1)
+PY
+else
+  echo "FAIL: harness_claude_light_mcp_config failed on a harness with a Kiro overlay"
+  FAIL=1
+fi
+
+# Structural guard for every other runtime: only the Kiro preparation path may
+# read the overlay filename.
+other_readers=$(grep -rl 'mcp\.kiro\.local\.json' "$LAUNCHER_DIR/bin" 2>/dev/null | grep -v 'kiro-home-prepare\.sh' || true)
+[[ -z "$other_readers" ]] || {
+  echo "FAIL: Kiro-only overlay is read outside kiro-home-prepare.sh: $other_readers"
+  FAIL=1
+}
+echo "PASS: Kiro-only overlay reaches Kiro and no other runtime"
 
 # ─── agents/harness.json: MCP inlined (regression) ───────────────────────────
 agent="$KIRO_HOME/agents/harness.json"
 [[ -f "$agent" ]] || { echo "FAIL: agents/harness.json missing"; exit 1; }
 
 agent_count=$(python3 -c "import json;print(len(json.load(open('$agent')).get('mcpServers',{})))")
-[[ "$agent_count" == "4" ]] || {
-  echo "FAIL: harness agent must inline all 4 merged MCP servers, got $agent_count"
+[[ "$agent_count" == "5" ]] || {
+  echo "FAIL: harness agent must inline all 5 merged MCP servers, got $agent_count"
   echo "      (empty mcpServers + useLegacyMcpJson:false = agent sees zero MCP)"
   FAIL=1
 }
@@ -183,7 +231,7 @@ cmp -s "$TEST_TEMP/harness-agent.reserved-before.json" "$KIRO_HOME/agents/harnes
   FAIL=1
 }
 harness_mcp=$(python3 -c "import json;print(len(json.load(open('$KIRO_HOME/agents/harness.json')).get('mcpServers',{})))")
-[[ "$harness_mcp" == "4" ]] || { echo "FAIL: harness.json lost its inlined MCP servers (got $harness_mcp)"; FAIL=1; }
+[[ "$harness_mcp" == "5" ]] || { echo "FAIL: harness.json lost its inlined MCP servers (got $harness_mcp)"; FAIL=1; }
 rm "$TEST_HARNESS/.claude/agents/harness.md"
 echo "PASS: reserved harness.md source cannot overwrite the launcher harness.json"
 
@@ -256,6 +304,34 @@ grep -q "duplicate MCP server 'committed'" "$TEST_TEMP/fresh-duplicate-mcp.log" 
   FAIL=1
 }
 echo "PASS: fresh duplicate rejection creates no generated Kiro state"
+
+# The Kiro-only overlay is subject to the same duplicate rule: it extends the
+# committed configuration and must not silently shadow a committed server.
+KIRO_DUP_HARNESS="$TEST_TEMP/kiro-overlay-duplicate-harness"
+mkdir -p "$KIRO_DUP_HARNESS"
+cat > "$KIRO_DUP_HARNESS/.mcp.json" <<'EOF'
+{"mcpServers":{"committed":{"command":"echo"}}}
+EOF
+cat > "$KIRO_DUP_HARNESS/mcp.kiro.local.json" <<'EOF'
+{"mcpServers":{"committed":{"command":"echo","args":["shadowed"]}}}
+EOF
+set +e
+"$PREPARE" "$KIRO_DUP_HARNESS" >"$TEST_TEMP/kiro-overlay-duplicate.log" 2>&1
+kiro_overlay_duplicate_rc=$?
+set -e
+[[ "$kiro_overlay_duplicate_rc" -ne 0 ]] || {
+  echo "FAIL: Kiro overlay was allowed to shadow a committed MCP server"
+  FAIL=1
+}
+grep -q "duplicate MCP server 'committed'" "$TEST_TEMP/kiro-overlay-duplicate.log" || {
+  echo "FAIL: Kiro overlay duplicate rejection did not identify the server"
+  FAIL=1
+}
+[[ ! -e "$KIRO_DUP_HARNESS/.harness" ]] || {
+  echo "FAIL: Kiro overlay duplicate rejection created generated Kiro state"
+  FAIL=1
+}
+echo "PASS: Kiro overlay cannot shadow committed MCP servers"
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 if [[ $FAIL -gt 0 ]]; then

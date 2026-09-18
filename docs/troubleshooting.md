@@ -126,9 +126,10 @@ Committed and local MCP files are merged. The same server name cannot appear in 
 .mcp.json
 .mcp.local.json
 mcp.local.json
+mcp.kiro.local.json
 ```
 
-Rename the local server or remove the duplicate. Local files extend committed config; they do not override it. Native Kiro validates this before creating a fresh `.harness/kiro` home or changing an existing generated Kiro configuration.
+Rename the local server or remove the duplicate. Local files extend committed config; they do not override it. `mcp.kiro.local.json` is Kiro-only but is not exempt from this rule. Native Kiro validates this before creating a fresh `.harness/kiro` home or changing an existing generated Kiro configuration.
 
 Do not solve this by moving credentials into `.mcp.json`.
 
