@@ -333,6 +333,91 @@ grep -q "duplicate MCP server 'committed'" "$TEST_TEMP/kiro-overlay-duplicate.lo
 }
 echo "PASS: Kiro overlay cannot shadow committed MCP servers"
 
+# ─── HTTP header placeholders ────────────────────────────────────────────────
+# Kiro CLI transmits header values verbatim, so an env-indirect Authorization
+# header would be sent literally and rejected. Preparation resolves the
+# placeholders from the launcher environment instead.
+HEADER_HARNESS="$TEST_TEMP/header-expansion-harness"
+mkdir -p "$HEADER_HARNESS/.claude/agents"
+cat > "$HEADER_HARNESS/.claude/agents/reader.md" <<'EOF'
+---
+name: reader
+description: read-only agent so a subagent JSON is generated
+model: haiku
+tools: Read, Glob
+---
+Reader body.
+EOF
+cat > "$HEADER_HARNESS/.mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "with-token": {
+      "type": "http",
+      "url": "https://example.invalid/mcp",
+      "headers": {
+        "Authorization": "Bearer ${TEST_HEADER_TOKEN:-}",
+        "X-Fallback": "${TEST_HEADER_ABSENT:-fallback-value}",
+        "X-Empty-Falls-Back": "${TEST_HEADER_EMPTY:-empty-default}",
+        "X-Pair": "${TEST_HEADER_TOKEN}/${TEST_HEADER_ABSENT:-second}",
+        "X-Missing": "${TEST_HEADER_NO_DEFAULT}",
+        "X-Plain": "literal-value"
+      }
+    }
+  }
+}
+EOF
+set +e
+TEST_HEADER_TOKEN="resolved-secret" TEST_HEADER_EMPTY="" "$PREPARE" "$HEADER_HARNESS" \
+  >"$TEST_TEMP/header-expansion.out" 2>"$TEST_TEMP/header-expansion.err"
+header_rc=$?
+set -e
+[[ "$header_rc" -eq 0 ]] || { echo "FAIL: preparation failed on placeholder headers"; cat "$TEST_TEMP/header-expansion.err"; FAIL=1; }
+
+header_settings="$HEADER_HARNESS/.harness/kiro/settings/mcp.json"
+python3 - "$header_settings" "$HEADER_HARNESS/.harness/kiro/agents/harness.json" <<'PY' || FAIL=1
+import json, sys
+h = json.load(open(sys.argv[1]))["mcpServers"]["with-token"]["headers"]
+ok = True
+if h.get("Authorization") != "Bearer resolved-secret":
+    print(f"FAIL: set variable not expanded: {h.get('Authorization')!r}"); ok = False
+if h.get("X-Fallback") != "fallback-value":
+    print(f"FAIL: :- default not applied: {h.get('X-Fallback')!r}"); ok = False
+if h.get("X-Empty-Falls-Back") != "empty-default":
+    print(f"FAIL: set-but-empty must fall back like shell :- : {h.get('X-Empty-Falls-Back')!r}"); ok = False
+if h.get("X-Pair") != "resolved-secret/second":
+    print(f"FAIL: multiple placeholders in one value: {h.get('X-Pair')!r}"); ok = False
+if h.get("X-Missing") != "":
+    print(f"FAIL: unset variable without default should resolve empty: {h.get('X-Missing')!r}"); ok = False
+if h.get("X-Plain") != "literal-value":
+    print(f"FAIL: literal header value was altered: {h.get('X-Plain')!r}"); ok = False
+agent = json.load(open(sys.argv[2]))["mcpServers"]["with-token"]["headers"]
+if agent.get("Authorization") != "Bearer resolved-secret":
+    print(f"FAIL: inlined agent header not expanded: {agent.get('Authorization')!r}"); ok = False
+sys.exit(0 if ok else 1)
+PY
+
+grep -q 'TEST_HEADER_NO_DEFAULT' "$TEST_TEMP/header-expansion.err" || {
+  echo "FAIL: unset placeholder without a default must be reported by name"
+  FAIL=1
+}
+grep -q 'resolved-secret' "$TEST_TEMP/header-expansion.err" "$TEST_TEMP/header-expansion.out" && {
+  echo "FAIL: preparation output leaked a resolved header value"
+  FAIL=1
+}
+
+# Resolved credentials land in generated files, so those files must not be
+# world- or group-readable — including generated subagents.
+[[ -f "$HEADER_HARNESS/.harness/kiro/agents/reader.json" ]] || {
+  echo "FAIL: subagent JSON missing from the header fixture"; FAIL=1
+}
+for secret_file in "$header_settings" \
+  "$HEADER_HARNESS/.harness/kiro/agents/harness.json" \
+  "$HEADER_HARNESS/.harness/kiro/agents/reader.json"; do
+  mode=$(stat -f '%Lp' "$secret_file" 2>/dev/null || stat -c '%a' "$secret_file")
+  [[ "$mode" == "600" ]] || { echo "FAIL: $secret_file mode $mode, expected 600"; FAIL=1; }
+done
+echo "PASS: HTTP header placeholders resolve and generated secrets stay owner-only"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 if [[ $FAIL -gt 0 ]]; then
   echo "Results: FAILED"

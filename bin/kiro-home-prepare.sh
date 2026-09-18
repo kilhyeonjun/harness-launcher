@@ -88,6 +88,40 @@ def _is_ssh_backed(spec):
 if os.environ.get("HARNESS_KIRO_MCP_PROFILE") == "light":
     merged = {name: spec for name, spec in merged.items() if not _is_ssh_backed(spec)}
 
+# Kiro CLI transmits header values verbatim: it performs no ${VAR} expansion, so
+# an env-indirect Authorization header reaches the server as its own literal text
+# and is rejected. Resolve the placeholders here, from the launcher environment,
+# using shell ${VAR:-default} semantics: a set-but-empty variable falls back to
+# the default, and a missing variable without a default resolves empty so the
+# server degrades to an authentication failure instead of a startup error.
+_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+def _expand_placeholders(value, server, header):
+    def replace(match):
+        name, default = match.group(1), match.group(2)
+        resolved = os.environ.get(name)
+        if resolved:
+            return resolved
+        if default is not None:
+            return default
+        print(
+            f"warning: MCP server '{server}' header '{header}' references "
+            f"{name}, which is unset or empty; it resolves to an empty value",
+            file=sys.stderr,
+        )
+        return ""
+
+    return _PLACEHOLDER.sub(replace, value)
+
+for srv_name, spec in merged.items():
+    headers = spec.get("headers")
+    if not isinstance(headers, dict):
+        continue
+    spec["headers"] = {
+        key: _expand_placeholders(value, srv_name, key) if isinstance(value, str) else value
+        for key, value in headers.items()
+    }
+
 # Convert to kiro-cli format: ensure "type" field
 output = {}
 for name, spec in sorted(merged.items()):
@@ -107,6 +141,8 @@ PY
 # the per-harness runtime home and atomically install generated files.
 mkdir -p "$KIRO_HOME/settings" "$KIRO_HOME/agents" "$KIRO_HOME/steering" "$KIRO_HOME/skills"
 atomic_write "$mcp_out" "$tmp_mcp"
+# Expanded header placeholders can carry credentials into generated files.
+chmod 600 "$mcp_out"
 
 # ─── 2. settings/cli.json ───────────────────────────────────────────────────
 # Generate only after MCP validation succeeds, so a rejected local duplicate
@@ -203,6 +239,8 @@ sys.stdout.write("\n")
 PY
 
 atomic_write "$agents_out" "$tmp_agents"
+# Inlined MCP servers repeat the resolved headers, credentials included.
+chmod 600 "$agents_out"
 
 # ─── 3b. per-subagent agents/<name>.json ─────────────────────────────────────
 # Convert .claude/agents/*.md (Claude subagent defs) to Kiro agent JSONs so
@@ -351,8 +389,12 @@ for path in sorted(glob.glob(os.path.join(src_dir, "*.md"))):
             while os.path.lexists(dest):
                 dest = os.path.join(quarantine_dir, f"{name}.json.{suffix}"); suffix += 1
             shutil.move(out_path, dest)
-    with open(out_path, "w", encoding="utf-8") as f:
+    # Inlined MCP servers repeat resolved headers, so never let the file exist
+    # group- or world-readable, not even between the write and a later chmod.
+    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(new_content)
+    os.chmod(out_path, 0o600)
     generated.append(f"{name}.json")
 
 # Reversible-quarantine any generated (owned) agent JSON whose source .md is gone.
@@ -385,6 +427,8 @@ for path in sorted(glob.glob(os.path.join(out_dir, "*.json"))):
         dest = os.path.join(quarantine_dir, f"{base}.{suffix}"); suffix += 1
     shutil.move(path, dest)
 PY
+  # Subagents inline the same resolved MCP headers as the harness agent.
+  chmod 600 "$KIRO_HOME"/agents/*.json
 fi
 
 # ─── 4. steering/AGENTS.md ───────────────────────────────────────────────────

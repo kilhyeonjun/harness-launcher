@@ -18,6 +18,14 @@ Notable changes are recorded here. This project follows semantic versioning for 
   server names across all four inputs are still rejected before any generated
   Kiro state is written.
 
+- Resolve `${VAR}` and `${VAR:-default}` in Kiro MCP header values during
+  preparation. Kiro CLI sends header values verbatim, so an env-indirect
+  `Authorization` header reached the service as literal placeholder text and any
+  such HTTP MCP server failed to authenticate, while the same definition worked
+  in Claude and Codex. A missing variable without a default resolves empty and
+  is reported by name. Generated files that can now hold a resolved credential
+  (`settings/mcp.json`, `agents/*.json`) are written owner-only.
+
 - Add a profile-scoped default-isolation canary for fresh interactive
   direct-Claude and native-Codex sessions, with exact-UUID continuation,
   explicit `--no-isolated` rollback, and allocation-free rejection of
