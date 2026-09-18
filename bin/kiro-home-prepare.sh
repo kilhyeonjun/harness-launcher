@@ -267,9 +267,9 @@ owned_marker = "_generated-by-kiro-home-prepare"
 # launcher's proven production IDs if the table is missing.
 model_map = {
     "haiku": "claude-haiku-4.5",
-    "sonnet": "claude-sonnet-4.6",
-    "opus": "claude-opus-4.6",
-    "default": "claude-sonnet-4.6",
+    "sonnet": "claude-sonnet-5",
+    "opus": "claude-opus-5",
+    "default": "claude-sonnet-5",
 }
 if map_tsv and os.path.exists(map_tsv):
     loaded = {}
@@ -286,7 +286,7 @@ if map_tsv and os.path.exists(map_tsv):
 
 def map_model(tier):
     t = (tier or "").strip().lower()
-    return model_map.get(t, model_map.get("default", "claude-sonnet-4.6"))
+    return model_map.get(t, model_map.get("default", "claude-sonnet-5"))
 
 def parse_frontmatter(text):
     if not text.startswith("---"):

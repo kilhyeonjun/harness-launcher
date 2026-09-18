@@ -52,6 +52,15 @@ tools: Read, Edit, Write, Bash
 ---
 Builder body.
 EOF
+cat > "$TEST_HARNESS/.claude/agents/judge.md" <<'EOF'
+---
+name: judge
+description: review agent
+model: opus
+tools: Read, Glob, Grep
+---
+Judge body.
+EOF
 
 # Committed servers (shared)
 cat > "$TEST_HARNESS/.mcp.json" <<'EOF'
@@ -187,8 +196,8 @@ builder = json.load(open(sys.argv[2]))
 ok = True
 if scout.get("model") != "claude-haiku-4.5":
     print(f"FAIL: scout (haiku) model={scout.get('model')} != claude-haiku-4.5"); ok = False
-if builder.get("model") != "claude-sonnet-4.6":
-    print(f"FAIL: builder (sonnet) model={builder.get('model')} != claude-sonnet-4.6"); ok = False
+if builder.get("model") != "claude-sonnet-5":
+    print(f"FAIL: builder (sonnet) model={builder.get('model')} != claude-sonnet-5"); ok = False
 # read-only agent: no fs_write; workspace agent: has fs_write
 if "fs_write" in scout.get("allowedTools", []):
     print("FAIL: read-only scout must not auto-approve fs_write"); ok = False
@@ -200,6 +209,18 @@ if not scout.get("mcpServers"):
 sys.exit(0 if ok else 1)
 PY
 echo "PASS: per-subagent JSONs carry tier-resolved model + read/write allowedTools"
+
+# ─── opus tier resolves from the SSOT column ─────────────────────────────────
+# (tsv ↔ in-script fallback parity is covered by test-subagent-model-map.sh)
+judge_agent="$KIRO_HOME/agents/judge.json"
+[[ -f "$judge_agent" ]] || { echo "FAIL: agents/judge.json missing"; FAIL=1; }
+judge_model=$(python3 -c "import json;print(json.load(open('$judge_agent')).get('model'))" 2>/dev/null)
+tsv_opus=$(awk -F'\t' '$1=="opus"{print $4}' "$LAUNCHER_DIR/bin/subagent-model-map.tsv")
+[[ -n "$tsv_opus" ]] || { echo "FAIL: subagent-model-map.tsv has no opus row"; FAIL=1; }
+[[ "$judge_model" == "$tsv_opus" ]] || {
+  echo "FAIL: judge (opus) model=$judge_model != tsv opus column $tsv_opus"; FAIL=1
+}
+echo "PASS: opus-tier agent resolves to the tsv opus model ($tsv_opus)"
 
 # Idempotent + source-removal reversal: dropping builder.md quarantines its json.
 "$PREPARE" "$TEST_HARNESS" >/dev/null

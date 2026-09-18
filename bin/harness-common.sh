@@ -305,30 +305,311 @@ harness_mode_label() {
 
 # --- kiro-native mode table -------------------------------------------------
 # Kiro CLI takes literal model IDs; shared by the TUI menu and `<prefix> kiro-cli`.
+# Tier IDs live here only for the SESSION model. Subagent tiers resolve through
+# bin/subagent-model-map.tsv — bump both together (see the cascading matrix).
+HARNESS_KIRO_MODEL_FAST="claude-haiku-4.5"
+HARNESS_KIRO_MODEL_BASE="claude-sonnet-5"
+HARNESS_KIRO_MODEL_DEEP="claude-opus-5"
+
+# Effort enum the Kiro runtime accepts (verified against the live session
+# schema: enum [low medium high xhigh max], default high). The CLI does NOT
+# reject an unknown value — it silently falls back — so the launcher validates.
+# Kept as a display string plus an emitter: zsh does not word-split unquoted
+# parameters, so `for x in $VAR` is not portable between bash and zsh.
+HARNESS_KIRO_EFFORT_LEVELS="low medium high xhigh max"
+harness_kiro_effort_each() { printf '%s\n' "$HARNESS_KIRO_EFFORT_LEVELS" | tr ' ' '\n' | grep -v '^$'; }
+
+# Static fallback catalog: used when the live listing is unavailable (offline,
+# stub binary, not logged in). `id<TAB>rate_multiplier`, in the same order the
+# runtime returns — including `auto` first — so a keystroke picks the same row
+# online and offline. Captured 2026-09-18 from `kiro-cli chat --list-models`.
+HARNESS_KIRO_MODEL_FALLBACK_CATALOG="auto	1.00
+claude-opus-5	2.20
+claude-sonnet-5	1.30
+claude-opus-4.8	2.20
+gpt-5.6-sol	4.40
+gpt-5.6-terra	2.20
+gpt-5.6-luna	1.10
+claude-opus-4.7	2.20
+claude-opus-4.6	2.20
+claude-sonnet-4.6	1.30
+claude-opus-4.5	2.20
+claude-sonnet-4.5	1.30
+claude-sonnet-4	1.30
+claude-haiku-4.5	0.40
+deepseek-3.2	0.25
+minimax-m2.5	0.25
+minimax-m2.1	0.15
+glm-5	0.50
+qwen3-coder-next	0.05"
+
+# harness_kiro_catalog_fallback — static list plus one notice, so a frozen list
+# (e.g. the runtime changed its listing format) can never look like live data.
+harness_kiro_catalog_fallback() {
+  # Once per process: the TUI can re-enter the model menu on Back navigation.
+  if [ -z "${_HARNESS_KIRO_FALLBACK_NOTICED:-}" ]; then
+    _HARNESS_KIRO_FALLBACK_NOTICED=1
+    echo "ℹ️  Kiro 모델 목록을 조회하지 못해 내장 목록을 사용합니다 (kiro-cli chat --list-models 확인)" >&2
+  fi
+  printf '%s\n' "$HARNESS_KIRO_MODEL_FALLBACK_CATALOG"
+}
+
 harness_kiro_mode_resolve() {
   local mode="$1"
   HARNESS_KIRO_MODEL=""
   HARNESS_KIRO_EFFORT=""
   case "$mode" in
-    fast) HARNESS_KIRO_MODEL="claude-haiku-4.5";  HARNESS_KIRO_EFFORT="low" ;;
-    base) HARNESS_KIRO_MODEL="claude-sonnet-4.6"; HARNESS_KIRO_EFFORT="high" ;;
-    plan) HARNESS_KIRO_MODEL="claude-opus-4.6";   HARNESS_KIRO_EFFORT="high" ;;
-    rich) HARNESS_KIRO_MODEL="claude-opus-4.6";   HARNESS_KIRO_EFFORT="max" ;;
+    fast) HARNESS_KIRO_MODEL="$HARNESS_KIRO_MODEL_FAST"; HARNESS_KIRO_EFFORT="low" ;;
+    base) HARNESS_KIRO_MODEL="$HARNESS_KIRO_MODEL_BASE"; HARNESS_KIRO_EFFORT="high" ;;
+    plan) HARNESS_KIRO_MODEL="$HARNESS_KIRO_MODEL_DEEP"; HARNESS_KIRO_EFFORT="high" ;;
+    rich) HARNESS_KIRO_MODEL="$HARNESS_KIRO_MODEL_DEEP"; HARNESS_KIRO_EFFORT="max" ;;
     *) return 1 ;;
   esac
   return 0
 }
 
+# Operational intent per preset — same idea as codex_profile_intent, so the menu
+# says what a mode is FOR, not just which model it picks.
+harness_kiro_mode_intent() {
+  case "$1" in
+    fast) printf '%s\n' "로그·요약·단순 확인" ;;
+    base) printf '%s\n' "일반 구현·탐색" ;;
+    plan) printf '%s\n' "설계·계획 수립" ;;
+    rich) printf '%s\n' "리뷰·복잡 디버깅" ;;
+    *) return 1 ;;
+  esac
+}
+
 harness_kiro_mode_label() {
-  local mode="$1" icon=""
+  local mode="$1" icon="" intent=""
   harness_kiro_mode_resolve "$mode" || return 1
+  intent="$(harness_kiro_mode_intent "$mode")" || intent=""
   case "$mode" in
     fast) icon="⚡ Fast" ;;
     base) icon="⚖️  Base" ;;
     plan) icon="🗺️  Plan" ;;
     rich) icon="🧠 Rich" ;;
   esac
-  printf '%s — %s · %s\n' "$icon" "$HARNESS_KIRO_MODEL" "$HARNESS_KIRO_EFFORT"
+  if [ -n "$intent" ]; then
+    printf '%s — %s — %s · %s\n' "$icon" "$intent" "$HARNESS_KIRO_MODEL" "$HARNESS_KIRO_EFFORT"
+  else
+    printf '%s — %s · %s\n' "$icon" "$HARNESS_KIRO_MODEL" "$HARNESS_KIRO_EFFORT"
+  fi
+}
+
+# harness_kiro_effort_is_valid <effort> — enum guard for --effort.
+harness_kiro_effort_is_valid() {
+  local candidate="$1"
+  [ -n "$candidate" ] || return 1
+  case " $HARNESS_KIRO_EFFORT_LEVELS " in
+    *" $candidate "*) return 0 ;;
+  esac
+  return 1
+}
+
+# harness_kiro_effort_recommended <model> — the effort a model is tuned for.
+# This is the mode-neutral default (it matches the runtime's own `high` default
+# for the Claude tiers); the `rich` preset deliberately escalates to `max`, which
+# stays an explicit choice rather than a recommendation.
+harness_kiro_effort_recommended() {
+  case "$1" in
+    *haiku*) printf 'low\n' ;;
+    *sonnet*) printf 'high\n' ;;
+    *) printf 'high\n' ;;
+  esac
+}
+
+# harness_kiro_efforts_for_model <model> — ordered enum with the recommended
+# level marked, mirroring the Claude custom-effort menu.
+harness_kiro_efforts_for_model() {
+  local model="$1" rec level
+  rec="$(harness_kiro_effort_recommended "$model")"
+  harness_kiro_effort_each | while IFS= read -r level; do
+    if [ "$level" = "$rec" ]; then
+      printf '%s ← Recommended\n' "$level"
+    else
+      printf '%s\n' "$level"
+    fi
+  done
+}
+
+# harness_kiro_catalog_cache_path — per-user cache for the probed model list.
+harness_kiro_catalog_cache_path() {
+  local state="${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher"
+  printf '%s/kiro-models.tsv\n' "$state"
+}
+
+# harness_kiro_catalog_probe <bin> — `kiro-cli chat --list-models` is a local,
+# documented listing (no API call, no credits). stdin is redirected because the
+# TUI's terminal must not be consumed by the child process, and stdout goes to a
+# file rather than a pipe: capturing through `$( )` would wait for stdout EOF, so
+# a lingering grandchild holding the pipe could outlast the timeout.
+# Output: `id<TAB>rate_multiplier` per line.
+harness_kiro_catalog_probe() {
+  local bin="$1" tmp rc
+  [ -n "$bin" ] || return 1
+  tmp="$(mktemp "${TMPDIR:-/tmp}/harness-kiro-models.XXXXXX")" || return 1
+  harness_kiro_bounded_run 8 "$bin" chat --list-models --format plain \
+    </dev/null >"$tmp" 2>/dev/null
+  rc=$?
+  if [ "$rc" -ne 0 ]; then rm -f "$tmp"; return 1; fi
+  awk '
+    { line = $0
+      sub(/^[[:space:]]*\*?[[:space:]]*/, "", line)
+      if (split(line, f, /[[:space:]]+/) < 2) next
+      if (f[2] !~ /^[0-9]+(\.[0-9]+)?x$/) next
+      sub(/x$/, "", f[2])
+      printf "%s\t%s\n", f[1], f[2] }' "$tmp"
+  rc=$?
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# harness_kiro_bounded_run <seconds> <cmd...> — `timeout` is not on macOS by
+# default; perl is. The child runs in its own process group and the supervisor
+# SIGKILLs the whole group on expiry: a plain `alarm`+`exec` only signals the
+# direct child, which a shell defers while waiting on its own child (measured
+# 12s overshoot) and which leaves descendants running. Falls back to an
+# unbounded run if perl is missing.
+harness_kiro_bounded_run() {
+  local secs="$1"; shift
+  if harness_path_lookup perl >/dev/null 2>&1; then
+    perl -e '
+      use POSIX ();
+      my $secs = shift;
+      my $pid = fork();
+      exit 127 unless defined $pid;
+      if ($pid == 0) {
+        eval { POSIX::setpgid(0, 0) };
+        exec @ARGV;
+        POSIX::_exit(127);
+      }
+      eval { POSIX::setpgid($pid, $pid) };
+      my $rc = 0;
+      my $timed_out = 0;
+      eval {
+        local $SIG{ALRM} = sub { $timed_out = 1; kill("KILL", -$pid); die "timeout\n" };
+        alarm $secs;
+        waitpid($pid, 0);
+        alarm 0;
+        $rc = $? >> 8;
+        $rc = 128 + ($? & 127) if $rc == 0 && ($? & 127);
+        1;
+      };
+      if ($timed_out) { waitpid($pid, 0); exit 124 }
+      exit $rc;
+    ' "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
+# harness_kiro_catalog_rows [bin] — `id<TAB>multiplier` rows for the model menu.
+# Precedence: explicit override → fresh cache → live probe → stale cache →
+# static fallback. A failed probe is stamped so an offline session does not pay
+# the timeout again on every menu entry.
+harness_kiro_catalog_rows() {
+  local bin="${1:-}" cache stamp ttl probed
+  if [ -n "${HARNESS_KIRO_MODEL_CATALOG:-}" ]; then
+    printf '%s\n' "$HARNESS_KIRO_MODEL_CATALOG" | tr ' ,' '\n\n' | grep -v '^$'
+    return 0
+  fi
+  cache="$(harness_kiro_catalog_cache_path)"
+  stamp="$cache.failed"
+  ttl="${HARNESS_KIRO_CATALOG_TTL:-86400}"
+  if [ -s "$cache" ] && harness_file_age_below "$cache" "$ttl"; then
+    cat "$cache"
+    return 0
+  fi
+  if harness_file_age_below "$stamp" "${HARNESS_KIRO_CATALOG_FAIL_TTL:-300}"; then
+    [ -s "$cache" ] && { cat "$cache"; return 0; }
+    harness_kiro_catalog_fallback
+    return 0
+  fi
+  probed="$(harness_kiro_catalog_probe "$bin")" || probed=""
+  if [ -n "$probed" ]; then
+    mkdir -p "$(dirname "$cache")" 2>/dev/null || true
+    # $$ is the launcher PID (command substitution does not change it); the
+    # temp name only needs to be unique per process, and the mv is atomic.
+    if printf '%s\n' "$probed" > "$cache.tmp.$$" 2>/dev/null; then
+      mv "$cache.tmp.$$" "$cache" 2>/dev/null || rm -f "$cache.tmp.$$" 2>/dev/null
+    else
+      rm -f "$cache.tmp.$$" 2>/dev/null
+    fi
+    rm -f "$stamp" 2>/dev/null
+    printf '%s\n' "$probed"
+    return 0
+  fi
+  mkdir -p "$(dirname "$stamp")" 2>/dev/null && : > "$stamp" 2>/dev/null || true
+  [ -s "$cache" ] && { cat "$cache"; return 0; }
+  harness_kiro_catalog_fallback
+}
+
+# harness_kiro_catalog_models [bin] — just the model IDs, menu order preserved.
+harness_kiro_catalog_models() {
+  harness_kiro_catalog_rows "${1:-}" | cut -f1
+}
+
+# harness_kiro_catalog_label <id> <multiplier> — menu row: cost is the decision
+# input here, the same way the Codex profile labels expose model · effort.
+harness_kiro_catalog_label() {
+  local id="$1" mult="$2" label="$1"
+  [ -n "$mult" ] && label="$label · ${mult}x credits"
+  harness_kiro_model_is_recommended "$id" && label="$label ← Recommended"
+  printf '%s\n' "$label"
+}
+
+# harness_file_age_below <path> <seconds> — true when the file exists and its
+# mtime is within the window. Guards against a non-numeric stat fallback.
+# NOTE: the local must not be named `path` — zsh ties $path to $PATH, so a
+# `local path=...` here would make stat/date unresolvable inside the function.
+harness_file_age_below() {
+  local target="$1" window="$2" mtime now
+  [ -e "$target" ] || return 1
+  mtime="$(harness_file_mtime "$target")"
+  case "$mtime" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  now="$(date +%s)"
+  [ "$((now - mtime))" -lt "$window" ]
+}
+
+# harness_file_mtime <path> — epoch mtime (BSD stat first, GNU second).
+harness_file_mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+}
+
+# harness_kiro_model_is_recommended <model> — one of the three session tiers.
+harness_kiro_model_is_recommended() {
+  case "$1" in
+    "$HARNESS_KIRO_MODEL_FAST"|"$HARNESS_KIRO_MODEL_BASE"|"$HARNESS_KIRO_MODEL_DEEP") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# harness_kiro_selection_resolve <mode> [model] [effort] — single entry point
+# for "what does this launch actually run". `custom` takes the explicit pair;
+# every preset ignores it. Rejects an out-of-enum effort instead of letting the
+# runtime swallow it.
+harness_kiro_selection_resolve() {
+  local mode="${1:-base}" model="${2:-}" effort="${3:-}"
+  if [ "$mode" = "custom" ]; then
+    [ -n "$model" ] || { echo "❌ custom 모드에는 model이 필요합니다" >&2; return 1; }
+    [ -n "$effort" ] || effort="$(harness_kiro_effort_recommended "$model")"
+    if ! harness_kiro_effort_is_valid "$effort"; then
+      echo "❌ 잘못된 effort: '$effort' (가능한 값: $HARNESS_KIRO_EFFORT_LEVELS)" >&2
+      return 1
+    fi
+    HARNESS_KIRO_MODEL="$model"
+    HARNESS_KIRO_EFFORT="$effort"
+    return 0
+  fi
+  harness_kiro_mode_resolve "$mode" || return 1
+  harness_kiro_effort_is_valid "$HARNESS_KIRO_EFFORT" || {
+    echo "❌ 모드 '$mode'의 effort가 유효하지 않습니다: '$HARNESS_KIRO_EFFORT'" >&2
+    return 1
+  }
+  return 0
 }
 
 # --- binary resolution ----------------------------------------------------------
