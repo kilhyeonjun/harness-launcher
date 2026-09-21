@@ -39,6 +39,19 @@ Notable changes are recorded here. This project follows semantic versioning for 
   in Claude and Codex. A missing variable without a default resolves empty and
   is reported by name. Generated files that can now hold a resolved credential
   (`settings/mcp.json`, `agents/*.json`) are written owner-only.
+  **Superseded below:** Kiro ignores `headers` on http transport entirely, so
+  resolving them changed nothing and only put credentials on disk.
+
+- Bridge header-authenticated HTTP MCP servers for Kiro instead of resolving
+  their headers. The upstream agent schema takes only `url` into account for http
+  transport, so Kiro dropped the headers and failed with
+  `OAuth discovery failed: the server does not advertise OAuth endpoints`.
+  Preparation now rewrites such a server into an equivalent pinned `mcp-remote` stdio
+  bridge that carries the headers, passing `${VAR}` through unresolved so the
+  bridge substitutes it from the inherited environment. No credential reaches
+  argv or generated state, which also reverts the owner-only file modes that the
+  previous approach required. HTTP servers without headers, servers already using
+  stdio, and the SSH-tunnel light filter are unaffected.
 
 - Add a profile-scoped default-isolation canary for fresh interactive
   direct-Claude and native-Codex sessions, with exact-UUID continuation,

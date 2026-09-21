@@ -24,7 +24,7 @@ wh codex base work
 wh kiro-cli base
 ```
 
-Orca starts project terminals in the selected worktree. `harness-auto` resolves that canonical directory against the registered profile boundaries and delegates to the single most-specific harness. Starting with the next release after v0.31.1, check the decision without launching an agent with `harness-auto --explain codex`; the JSON reports the chosen profile, harness root, work root, and selection reason. `harness-auto --profile <prefix> codex base` pins a profile but fails if the current directory belongs to another boundary. Use a named profile command for manual terminals, and use `harness-exec <harness-dir> --cwd . ...` only for automation that cannot use either public adapter.
+Orca starts project terminals in the selected worktree. `harness-auto` resolves that canonical directory against the registered profile boundaries and delegates to the single most-specific harness. In v0.31.2+, check the decision without launching an agent with `harness-auto --explain codex`; the JSON reports the chosen profile, harness root, work root, and selection reason. `harness-auto --profile <prefix> codex base` pins a profile but fails if the current directory belongs to another boundary. Use a named profile command for manual terminals, and use `harness-exec <harness-dir> --cwd . ...` only for automation that cannot use either public adapter.
 
 ## Project and worktree layout
 

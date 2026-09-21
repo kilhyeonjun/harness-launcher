@@ -120,27 +120,28 @@ HARNESS_LAUNCHER_DISABLE_CODEX_WRAPPER=1 codex --version
 
 ## HTTP MCP server fails only in Kiro
 
-An HTTP MCP server that works in Claude and Codex but reports a failed status in
-Kiro is usually an authentication header that never resolved. Kiro CLI sends
-header values verbatim, so `Bearer ${MY_TOKEN:-}` used to reach the service as
-that literal text and came back `401`.
+An HTTP MCP server that works in Claude and Codex but fails in Kiro with
+`OAuth discovery failed: the server does not advertise OAuth endpoints` is
+header-authenticated. Kiro's agent schema takes only `url` into account for http
+transport, so the headers are dropped and the client tries OAuth instead.
 
-Preparation now resolves `${VAR}` and `${VAR:-default}` in header values. If a
-server still fails, check in this order:
+Preparation now rewrites such a server into an `mcp-remote` stdio bridge. If one
+still fails, check in this order:
 
 ```bash
-# 1. Is the variable in the launcher environment at all?
+# 1. Did preparation bridge it? Expect command "npx" and a --header argument.
+python3 -c "import json;print(json.load(open('.harness/kiro/settings/mcp.json'))['mcpServers']['<name>'])"
+
+# 2. Is the credential variable in the session environment the bridge inherits?
 printenv MY_TOKEN >/dev/null && echo set || echo missing
 
-# 2. Did preparation report an unresolved placeholder?
-<prefix> kiro 2>&1 | grep 'header'
-
-# 3. What did the generated runtime home actually receive?
-python3 -c "import json;print(json.load(open('.harness/kiro/settings/mcp.json'))['mcpServers']['<name>']['headers'])"
+# 3. Does the bridge reach the endpoint by hand?
+npx -y mcp-remote <url> --header "Authorization: Bearer \${MY_TOKEN}"
 ```
 
-Deliver the value through `.claude/settings.local.json` `env` or the harness's
-local environment; do not paste a credential into the committed `.mcp.json`.
+Keep the `${VAR}` placeholder in the committed header; `mcp-remote` substitutes it
+from the environment. Deliver the value through `.claude/settings.local.json` env
+or the harness's local environment, never in the committed `.mcp.json`.
 
 ## Duplicate MCP server error
 
