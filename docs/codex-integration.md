@@ -25,6 +25,14 @@ The app fallback is opt-in because the bundled CLI may be older than the termina
 
 A global `codex` wrapper is also defined after sourcing `aliases.zsh`. When a direct Codex invocation includes `--cd`/`-C` pointing at a registered project, the wrapper prepares the matching project `CODEX_HOME` before delegating to the real binary. Set `HARNESS_LAUNCHER_DISABLE_CODEX_WRAPPER=1` to disable this behavior.
 
+Interactive Zsh can opt that wrapper into PWD-based profile selection with
+`harness_shell_enable`. While enabled, plain `codex` delegates to the
+package-local `harness-auto`, and explicit `--cd`/`--cd=`/`-C` targets must stay
+within the selected harness. The activation state is deliberately not exported
+to the child launcher shell. `harness_shell_disable` restores the preceding
+wrapper behavior; `command codex` always bypasses both wrapper modes and calls
+the executable selected from `PATH`.
+
 ## Generated layout
 
 Before launch, `codex-home-prepare.sh` converges:

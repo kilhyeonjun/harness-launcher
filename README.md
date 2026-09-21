@@ -204,6 +204,28 @@ harness-auto kiro-cli base
 
 This is the supported command override for Orca's built-in Claude, Codex, and Kiro agent entries. It does not infer a profile from repository names or remotes; the worktree must live below its registered harness boundary.
 
+Interactive Zsh users can opt plain `codex` and `claude` commands into the
+same location-based routing after every harness has been persisted once with
+`harness-profile register`:
+
+```zsh
+source "$(brew --prefix harness-launcher)/share/harness-launcher/aliases.zsh"
+harness_shell_enable
+
+cd /path/inside/a/registered/harness
+codex                 # location selects the registered profile
+claude                # equivalent direct-Claude base launch
+```
+
+The opt-in is shell-local and fails closed outside registered boundaries.
+Codex `--cd`/`-C` targets must remain inside the profile selected from the
+shell's current directory. Use `command codex` or `command claude` as an
+explicit native escape hatch, and `harness_shell_disable` to restore the
+previous plain-command behavior. The enable step refuses to overwrite an
+existing Claude alias/function or a replaced Codex function. Add
+`harness_shell_enable` to `.zshrc` after the source and registration lines for
+persistent activation, then start a new shell (or re-source `.zshrc`).
+
 External orchestrators and non-interactive shells can bypass `.zshrc` while keeping the same project policy:
 
 ```bash

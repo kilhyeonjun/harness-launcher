@@ -11,6 +11,12 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ### Added
 
+- Add opt-in `harness_shell_enable` / `harness_shell_disable` routing for plain
+  interactive-Zsh `codex` and `claude` commands. Selection uses the existing
+  registered-profile resolver and fails closed outside a boundary; Codex
+  `--cd`/`-C` cannot escape the selected harness, while `command codex` and
+  `command claude` remain explicit native escape hatches.
+
 - Add granular native-Kiro selection. The TUI mode menu ends with `🔧 Custom`,
   which lists the runtime's live model catalog with each model's credit
   multiplier (`chat --list-models`, a local listing — no API call) and then the

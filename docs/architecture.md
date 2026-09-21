@@ -39,6 +39,16 @@ HARNESS_PREFIX="ex"
 
 `harness_register` resolves the project to an absolute path, sources `launcher.env`, defines the prefix function, and attaches completion when Zsh's `compdef` is available. `harness-profile register` persists the same prefix as an executable command without copying policy. `harness-auto` uses the Python `harness_profile_resolver.py` to read only regular registry entries, resolve the canonical current directory, and select the single longest owning boundary before delegating to `harness-exec`; it never guesses from a repository name or remote. `--explain` uses the same resolver without launching an agent.
 
+`harness_shell_enable` is an opt-in interactive adapter over that executable
+boundary. It keeps its activation flag as an unexported Zsh global, so the
+child `harness-exec` shell cannot reactivate the wrapper and recurse. The
+launcher-owned `codex` function switches to `harness-auto codex`; a temporary
+launcher-owned `claude` function uses `harness-auto claude base` so native
+Claude arguments still enter the direct base route. `harness_shell_disable`
+removes only the exact Claude function it installed. Existing aliases/functions
+are never overwritten, and `command codex` / `command claude` bypass functions
+without modifying `PATH`.
+
 Because `launcher.env` is sourced, registration is a trust decision. The launcher does not attempt to parse or sandbox arbitrary shell code in that file.
 
 Native Codex entrypoints treat `HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST` as trusted launcher configuration, not an ambient user-shell setting. Immediately before each `codex-home-prepare.sh` child, they trim and deduplicate it and either export the resulting nonempty comma-separated list or unset it. This makes consecutive configured, explicitly empty, and absent values independent.
@@ -58,6 +68,12 @@ ex codex-gateway <mode>    Claude Code through a Codex gateway
 ```
 
 Runtime-specific arguments remain arrays until execution. The launcher passes unknown arguments through to the selected CLI.
+
+In shell-auto mode, PWD remains the profile-selection authority. Explicit
+Codex `--cd`, `--cd=`, and `-C` values are canonicalized and must exist inside
+the selected harness boundary. An outside PWD cannot select a profile by
+pointing `--cd` inward, and an inside PWD cannot escape outward through a later
+Codex argument.
 
 ## Binary selection
 
