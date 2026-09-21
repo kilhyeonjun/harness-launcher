@@ -189,10 +189,12 @@ stub_file="$TEST_TEMP/output-local-mcp.txt"
 ) 2>/dev/null || true
 args_line=$(grep "^ARGS:" "$stub_file" | head -1 | cut -d: -f2-)
 case "$args_line" in
-  *"--mcp-config $TEST_HARNESS/.mcp.local.json $TEST_HARNESS/mcp.local.json"*)
-    echo "PASS: Claude launcher appends local MCP overlay files" ;;
+  *"--mcp-config $TEST_HARNESS/.harness/claude/mcp-full.json"*)
+    jq -e '.mcpServers | has("committed") and has("local_private") and has("legacy_local")' \
+      "$TEST_HARNESS/.harness/claude/mcp-full.json" >/dev/null || exit 1
+    echo "PASS: Claude launcher renders merged MCP definitions" ;;
   *)
-    echo "FAIL: Claude launcher did not append both local MCP overlay files"
+    echo "FAIL: Claude launcher did not pass merged MCP configuration"
     echo "  Full args: $args_line"
     exit 1 ;;
 esac
@@ -310,7 +312,7 @@ grep -Fq 'light MCP surface is deprecated for this project; using full' "$compat
 }
 case "$compat_args" in
   *--strict-mcp-config*) echo "FAIL: compat light retained strict MCP config"; exit 1 ;;
-  *"--mcp-config $TEST_HARNESS/.mcp.local.json"*) ;;
+  *"--mcp-config $TEST_HARNESS/.harness/claude/mcp-full.json"*) ;;
   *) echo "FAIL: compat light did not use the full MCP path: $compat_args"; exit 1 ;;
 esac
 echo "PASS: compat light warns and uses the full Claude MCP path"

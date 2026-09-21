@@ -1063,18 +1063,18 @@ launch_claude() {
     # Light surface: SSH-backed servers filtered out. The generated file is the
     # complete surface (its merge step already validates duplicates).
     local light_file
-    light_file=$(harness_claude_light_mcp_config "$HARNESS_DIR") || return 1
+    light_file=$(harness_claude_light_mcp_config "$HARNESS_DIR" "$LAUNCHER_BIN_DIR") || return 1
     if [ "$exe" = "claude" ]; then
       args+=(--strict-mcp-config --mcp-config "$light_file")
     fi
   else
-    harness_validate_mcp_local_configs "$HARNESS_DIR" || return 1
     # --mcp-config is a claude flag; happy does not accept it.
     if [ "$exe" = "claude" ]; then
-      local f
-      while IFS= read -r f; do
-        [ -n "$f" ] && args+=(--mcp-config "$f")
-      done < <(harness_mcp_local_configs "$HARNESS_DIR")
+      local full_file
+      full_file=$(harness_claude_mcp_runtime_config "$HARNESS_DIR" "$LAUNCHER_BIN_DIR") || return 1
+      args+=(--mcp-config "$full_file")
+    else
+      harness_validate_mcp_local_configs "$HARNESS_DIR" || return 1
     fi
   fi
 
