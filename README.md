@@ -355,6 +355,8 @@ work-harness/
 
 The launcher merges `.mcp.json`, `.mcp.local.json`, and `mcp.local.json`. Duplicate MCP server names fail fast instead of silently overriding one another.
 
+For a harness-owned stdio script, write an explicit root-relative path such as `"${HARNESS_ROOT}/core/scripts/rag-cli.sh"` in the MCP `command` or `args`. Claude, Codex, and Kiro receive a checked absolute path even when launched from a nested `projects/` directory. Bare relative script paths for `bash`, `sh`, `zsh`, `python`, and `node` are rejected before launch with a migration hint; the generated runtime files are not another configuration source.
+
 Kiro preparation additionally reads `mcp.kiro.local.json`. No other runtime reads that file, so a server that should reach Kiro alone is declared once there instead of being suppressed for Claude and Codex afterwards. The duplicate rule still applies across all four files.
 
 Kiro CLI ignores `headers` on http transport and falls back to OAuth discovery, so preparation rewrites an authenticated HTTP server into an equivalent pinned `mcp-remote` stdio bridge that carries those headers. `${VAR}` in a header is passed through unresolved on purpose: the bridge resolves it from the inherited session environment, so the credential reaches neither argv nor a generated file. An HTTP server without headers is left as-is.

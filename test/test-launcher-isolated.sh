@@ -17,7 +17,7 @@ git -C "$HARNESS" config user.email test@example.invalid
 git -C "$HARNESS" config user.name test
 print -r -- 'HARNESS_NAME="test"' 'HARNESS_PREFIX="test"' > "$HARNESS/config/launcher.env"
 print -r -- 'KIRO_GATEWAY_URL="http://127.0.0.1:9999"' > "$HARNESS/config/.local/kiro-gateway.env"
-print -r -- '{"mcpServers":{}}' > "$HARNESS/.mcp.local.json"
+print -r -- '{"mcpServers":{"local-docs":{"command":"echo","args":["ready"]}}}' > "$HARNESS/.mcp.local.json"
 print -r -- tracked > "$HARNESS/tracked.txt"
 git -C "$HARNESS" add config/launcher.env tracked.txt && git -C "$HARNESS" commit -qm initial
 print -r -- dirty > "$HARNESS/tracked.txt"

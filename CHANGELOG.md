@@ -4,6 +4,12 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- Treat each profile's MCP JSON as the definition SSOT and materialize explicit
+  `${HARNESS_ROOT}/...` stdio script paths once for Claude, Codex, and Kiro.
+  Nested project/worktree launches now use the same checked absolute path;
+  bare relative interpreter scripts fail with a migration hint. Existing
+  machine-local overlays should use the explicit prefix.
+
 - Route plain-shell Claude management commands such as `mcp`, `auth`,
   `plugin`, and `doctor` directly to the native CLI after location-based
   profile selection. Their argv, project PWD, and local environment are kept,

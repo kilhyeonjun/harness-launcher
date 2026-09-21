@@ -259,6 +259,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --launcher-file "$GLOBAL_MCP_RESOLVER"
     --launcher-file "$0"
     --launcher-file "$SCRIPT_DIR/harness-common.sh"
+    --launcher-file "$SCRIPT_DIR/mcp_paths.py"
     --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
     --launcher-file "$SCRIPT_DIR/codex-pretool-adapter.py"
     --launcher-file "$TITLE_SYNC_PATH"
@@ -936,13 +937,16 @@ TOML
 surface_catalog=""
 [[ "$SURFACE_ENABLED" -eq 0 ]] || surface_catalog="$CODEX_HOME/skill-catalog.json"
 if [[ ${#mcp_json_files[@]} -gt 0 ]]; then
-  python3 - "$browser_client_sha256s" "$browser_use_app_version" "$FINAL_CODEX_HOME" "$surface_catalog" "${mcp_json_files[@]}" >> "$tmp_config" <<'PY'
+  python3 - "$browser_client_sha256s" "$browser_use_app_version" "$FINAL_CODEX_HOME" "$surface_catalog" "$SCRIPT_DIR" "$HARNESS_DIR" "${mcp_json_files[@]}" >> "$tmp_config" <<'PY'
 import json, re, sys
 browser_client_sha256s = re.findall(r"\b[a-fA-F0-9]{64}\b", sys.argv[1] if len(sys.argv) > 1 else "")
 browser_use_app_version = sys.argv[2] if len(sys.argv) > 2 else ""
 codex_home = sys.argv[3] if len(sys.argv) > 3 else ""
 surface_catalog = sys.argv[4] if len(sys.argv) > 4 else ""
-mcp_paths = sys.argv[5:]
+sys.path.insert(0, sys.argv[5])
+from mcp_paths import normalize_servers
+harness_root = sys.argv[6]
+mcp_paths = sys.argv[7:]
 surface_enabled = None
 surface_policies = {}
 if surface_catalog:
@@ -963,7 +967,11 @@ for path in mcp_paths:
                 file=sys.stderr,
             )
             sys.exit(1)
-        servers[name] = spec
+        try:
+            servers[name] = normalize_servers({name: spec}, harness_root)[name]
+        except ValueError as error:
+            print(f"ERROR: {path}: {error}", file=sys.stderr)
+            sys.exit(1)
         owners[name] = path
 for name in sorted(servers):
     spec = servers[name]

@@ -132,7 +132,7 @@ if harness_mcp_local_configs "$TEST_HARNESS" | grep -q 'mcp\.kiro\.local\.json';
   echo "FAIL: Kiro-only overlay was offered to Claude as an --mcp-config input"
   FAIL=1
 fi
-if light_file="$(harness_claude_light_mcp_config "$TEST_HARNESS")"; then
+if light_file="$(harness_claude_light_mcp_config "$TEST_HARNESS" "$LAUNCHER_DIR/bin")"; then
   python3 - "$light_file" <<'PY' || FAIL=1
 import json, sys
 servers = json.load(open(sys.argv[1])).get("mcpServers", {})

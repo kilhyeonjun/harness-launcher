@@ -108,16 +108,10 @@ _harness_launcher_prepare_codex_apps_allowlist() {
 
 _harness_launcher_add_claude_mcp_local_args() {
   local HARNESS_DIR="$1"; shift
-  local -a local_files=()
-  local f
-
-  _harness_launcher_validate_mcp_local_configs "$HARNESS_DIR" || return $?
-  while IFS= read -r f; do
-    [[ -n "$f" ]] && local_files+=("$f")
-  done < <(_harness_launcher_mcp_local_configs "$HARNESS_DIR")
-
-  if [[ ${#local_files[@]} -gt 0 ]]; then
-    "$@" --mcp-config "${local_files[@]}"
+  local rendered
+  rendered="$(harness_claude_mcp_runtime_config "$HARNESS_DIR" "$_HARNESS_LAUNCHER_BIN")" || return $?
+  if [[ -n "$rendered" ]]; then
+    "$@" --mcp-config "$rendered"
   else
     "$@"
   fi
@@ -712,7 +706,7 @@ _harness_launcher_run() {
     local isolated_heartbeat_pid=""
     if [[ "$mcp_surface" == "light" ]]; then
       local _light_file
-      _light_file="$(harness_claude_light_mcp_config "$HARNESS_DIR")" || return $?
+      _light_file="$(harness_claude_light_mcp_config "$HARNESS_DIR" "$_HARNESS_LAUNCHER_BIN")" || return $?
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true

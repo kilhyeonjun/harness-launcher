@@ -17,6 +17,8 @@ TEST_TEMP="$(mktemp -d)"
 TEST_HARNESS="$TEST_TEMP/fake-harness"
 TEST_BIN="$TEST_TEMP/bin"
 mkdir -p "$TEST_HARNESS/config" "$TEST_BIN"
+mkdir -p "$TEST_HARNESS/core/bin"
+touch "$TEST_HARNESS/core/bin/start-ssh-mcp.sh"
 TEST_WORKTREE="$TEST_HARNESS/.worktrees/sample"
 mkdir -p "$TEST_WORKTREE"
 TEST_WORKTREE_REAL="$(cd -P "$TEST_WORKTREE" && pwd -P)"
@@ -268,7 +270,7 @@ cat > "$TEST_HARNESS/mcp.local.json" <<'EOF'
 {"mcpServers": {"only-local": {"command": "x"}}}
 EOF
 run_tui $'1\n2\n1\n' "$OUT" "$STUB"
-grep -q -- "--mcp-config $TEST_HARNESS/mcp.local.json" "$STUB" || fail 'valid local MCP config should be passed' "$OUT"
+grep -q -- "--mcp-config $TEST_HARNESS/.harness/claude/mcp-full.json" "$STUB" || fail 'valid local MCP config should be passed' "$OUT"
 rm -f "$TEST_HARNESS/mcp.local.json"
 echo 'PASS: valid local MCP config forwarded'
 
@@ -342,7 +344,7 @@ echo 'PASS: legacy launcher-last migrates into history and replays'
 OUT="$TEST_TEMP/17.out"; STUB="$TEST_TEMP/17.stub"; reset_plan
 cat > "$TEST_HARNESS/.mcp.json" <<'EOF'
 {"mcpServers": {
-  "ssh_rag": {"command": "bash", "args": ["core/bin/start-ssh-mcp.sh", "rag"]},
+  "ssh_rag": {"command": "bash", "args": ["${HARNESS_ROOT}/core/bin/start-ssh-mcp.sh", "rag"]},
   "tunnel_rag": {"type": "http", "url": "http://127.0.0.1:38206/mcp"},
   "local_service": {"type": "http", "url": "http://localhost:38100/mcp"},
   "normal_http": {"type": "http", "url": "https://x.test/mcp"}
@@ -419,7 +421,7 @@ echo 'PASS: launchpad dedupes by identity and reorders on replay'
 # final menu with happy: 1 Start / 2 Perm / 3 Chrome / 4 MCP / 5 Happy / 6 Back
 write_stub happy
 cat > "$TEST_HARNESS/.mcp.json" <<'EOF'
-{"mcpServers": {"ssh_rag": {"command": "bash", "args": ["core/bin/start-ssh-mcp.sh", "rag"]}}}
+{"mcpServers": {"ssh_rag": {"command": "bash", "args": ["${HARNESS_ROOT}/core/bin/start-ssh-mcp.sh", "rag"]}}}
 EOF
 OUT="$TEST_TEMP/20.out"; STUB="$TEST_TEMP/20.stub"; reset_plan
 # light(4) then happy(5): happy wins, surface reverts to full → happy exec, no strict
@@ -655,7 +657,7 @@ echo 'PASS: legacy plan deleted without merging into existing history'
 OUT="$TEST_TEMP/25.out"; STUB="$TEST_TEMP/25.stub"; reset_plan
 cat > "$TEST_HARNESS/.mcp.json" <<'EOF'
 {"mcpServers": {
-  "ssh_rag": {"command": "bash", "args": ["core/bin/start-ssh-mcp.sh", "rag"]},
+  "ssh_rag": {"command": "bash", "args": ["${HARNESS_ROOT}/core/bin/start-ssh-mcp.sh", "rag"]},
   "shared_name": {"type": "http", "url": "https://harness.test/mcp"}
 }}
 EOF

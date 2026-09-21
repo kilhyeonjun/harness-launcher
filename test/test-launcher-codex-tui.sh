@@ -39,6 +39,7 @@ mkdir -p "$TEST_WORKTREE"
 TEST_WORKTREE_REAL="$(cd -P "$TEST_WORKTREE" && pwd -P)"
 cp "$LAUNCHER_DIR/bin/launcher.sh" "$TEST_LAUNCHER_BIN/launcher.sh"
 cp "$LAUNCHER_DIR/bin/harness-common.sh" "$TEST_LAUNCHER_BIN/harness-common.sh"
+cp "$LAUNCHER_DIR/bin/mcp_paths.py" "$TEST_LAUNCHER_BIN/mcp_paths.py"
 cat > "$TEST_LAUNCHER_BIN/codex-home-prepare.sh" <<'EOF'
 #!/usr/bin/env bash
 set -e

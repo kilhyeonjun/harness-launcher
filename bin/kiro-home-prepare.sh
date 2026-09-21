@@ -51,10 +51,12 @@ atomic_write() {
 mcp_out="$KIRO_HOME/settings/mcp.json"
 tmp_mcp="$STAGING_DIR/mcp.json"
 
-"$PYTHON_BIN" - "$HARNESS_DIR" > "$tmp_mcp" <<'PY'
+"$PYTHON_BIN" - "$HARNESS_DIR" "$LAUNCHER_BIN_DIR" > "$tmp_mcp" <<'PY'
 import json, os, re, sys
 
 harness = sys.argv[1]
+sys.path.insert(0, sys.argv[2])
+from mcp_paths import normalize_servers
 merged = {}
 seen = {}
 
@@ -87,6 +89,12 @@ def _is_ssh_backed(spec):
 
 if os.environ.get("HARNESS_KIRO_MCP_PROFILE") == "light":
     merged = {name: spec for name, spec in merged.items() if not _is_ssh_backed(spec)}
+
+try:
+    merged = normalize_servers(merged, harness)
+except ValueError as error:
+    print(f"ERROR: {error}", file=sys.stderr)
+    raise SystemExit(1)
 
 # Kiro CLI ignores `headers` for http transport — the upstream agent schema says
 # only `url` is taken into account — and then attempts OAuth discovery, so an

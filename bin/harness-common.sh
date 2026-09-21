@@ -946,6 +946,81 @@ for path in sys.argv[1:]:
 PY
 }
 
+# Isolated runtime artifacts must never enter the session Git worktree: they
+# can contain host-local MCP credentials and would contaminate submission.
+harness_claude_mcp_output_path() {
+  local harness_dir="$1" filename="$2" harness_python
+  harness_python="$(harness_python3_resolve)" || return 1
+  "$harness_python" - "$harness_dir" "$filename" <<'PY'
+import os, re, sys
+from pathlib import Path
+
+root, filename = sys.argv[1:]
+if filename not in ("mcp-full.json", "mcp-light.json"):
+    raise SystemExit("invalid Claude MCP runtime filename")
+session_id = os.environ.get("HARNESS_SESSION_ID", "")
+if session_id:
+    if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", session_id):
+        raise SystemExit("invalid isolated session ID")
+    if Path(root).resolve() != Path(os.environ.get("HARNESS_SESSION_ROOT", "")).resolve():
+        raise SystemExit("isolated MCP root mismatch")
+    state_home = Path(os.environ.get("HARNESS_SESSION_STATE_HOME") or
+                      Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "harness-launcher")
+    session_dir = state_home / "sessions" / session_id
+    if not session_dir.is_dir() or session_dir.is_symlink():
+        raise SystemExit("isolated MCP state directory missing or unsafe")
+    print(session_dir / filename)
+else:
+    print(Path(root) / ".harness/claude" / filename)
+PY
+}
+
+# Render the definition SSOT once for Claude, independent of its launch CWD.
+# Runtime files are derived state, never an MCP definition authority.
+harness_claude_mcp_runtime_config() {
+  local harness_dir="$1" launcher_bin="$2" out harness_python
+  harness_python="$(harness_python3_resolve)" || return 1
+  out="$(harness_claude_mcp_output_path "$harness_dir" mcp-full.json)" || return 1
+  mkdir -p "$(dirname "$out")" || return 1
+  "$harness_python" - "$harness_dir" "$launcher_bin" "$out" <<'PY'
+import json, os, sys, tempfile
+root, launcher_bin, out = sys.argv[1:]
+sys.path.insert(0, launcher_bin)
+from mcp_paths import normalize_servers
+
+merged, seen = {}, {}
+for name in (".mcp.json", ".mcp.local.json", "mcp.local.json"):
+    source = os.path.join(root, name)
+    if not os.path.isfile(source):
+        continue
+    try:
+        with open(source, encoding="utf-8") as stream:
+            servers = json.load(stream).get("mcpServers")
+        if not isinstance(servers, dict):
+            raise ValueError("mcpServers must be an object")
+        for server, spec in servers.items():
+            if server in seen:
+                raise ValueError(f"duplicate MCP server '{server}' in {seen[server]} and {source}")
+            seen[server] = source
+            merged.update(normalize_servers({server: spec}, root))
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {source}: {error}", file=sys.stderr)
+        raise SystemExit(1)
+if not merged:
+    raise SystemExit(0)
+fd, tmp = tempfile.mkstemp(prefix=".mcp-full.", dir=os.path.dirname(out))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump({"mcpServers": merged}, stream, indent=2)
+        stream.write("\n")
+    os.replace(tmp, out)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+print(out)
+PY
+}
+
 # --- MCP surface (light) ----------------------------------------------------------
 # The "light" surface drops SSH-backed MCP servers — the heavy class that
 # opens remote connections per session — and keeps everything else. Two shapes
@@ -959,17 +1034,22 @@ PY
 #
 # harness_claude_light_mcp_config <harness-dir> → prints generated file path.
 # Merges .mcp.json + local overlays, filters the SSH class, writes the result
-# under .harness/claude/. Fails (rc 1) on duplicate server names.
+# under .harness/claude/ (isolated sessions use external session state).
+# Fails (rc 1) on duplicate server names.
 harness_claude_light_mcp_config() {
   local harness_dir="$1"
-  local out="$harness_dir/.harness/claude/mcp-light.json"
+  local launcher_bin="$2"
+  local out
   local harness_python
-  mkdir -p "$harness_dir/.harness/claude"
   harness_python="$(harness_python3_resolve)" || return 1
-  "$harness_python" - "$harness_dir" "$out" <<'PY' || return 1
-import json, os, re, sys
+  out="$(harness_claude_mcp_output_path "$harness_dir" mcp-light.json)" || return 1
+  mkdir -p "$(dirname "$out")" || return 1
+  "$harness_python" - "$harness_dir" "$out" "$launcher_bin" <<'PY' || return 1
+import json, os, re, sys, tempfile
 
 harness_dir, out = sys.argv[1], sys.argv[2]
+sys.path.insert(0, sys.argv[3])
+from mcp_paths import normalize_servers
 
 def is_ssh_backed(spec):
     args = spec.get("args") or []
@@ -996,7 +1076,11 @@ for name in (".mcp.json", ".mcp.local.json", "mcp.local.json"):
         seen[srv] = path
         if is_ssh_backed(spec):
             continue  # SSH-backed heavy class — excluded from the light surface
-        merged[srv] = spec
+        try:
+            merged[srv] = normalize_servers({srv: spec}, harness_dir)[srv]
+        except ValueError as error:
+            print(f"ERROR: {path}: {error}", file=sys.stderr)
+            sys.exit(1)
 
 # --strict-mcp-config also drops user-scope servers (~/.claude.json), so the
 # generated file must carry every non-SSH server the session would otherwise
@@ -1012,10 +1096,15 @@ if os.path.isfile(user_cfg):
         if srv not in seen and not is_ssh_backed(spec):
             merged[srv] = spec
 
-tmp = f"{out}.tmp.{os.getpid()}"
-with open(tmp, "w", encoding="utf-8") as f:
-    json.dump({"mcpServers": merged}, f, indent=2)
-os.replace(tmp, out)
+fd, tmp = tempfile.mkstemp(prefix=".mcp-light.", dir=os.path.dirname(out))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"mcpServers": merged}, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, out)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
 print(out)
 PY
 }

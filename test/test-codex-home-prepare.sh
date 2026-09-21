@@ -34,6 +34,8 @@ trap cleanup EXIT
 TEST_TEMP="$(mktemp -d)"
 TEST_HARNESS="$TEST_TEMP/fake-harness"
 mkdir -p "$TEST_HARNESS"
+mkdir -p "$TEST_HARNESS/core/bin"
+touch "$TEST_HARNESS/core/bin/start-google-workspace-mcp.sh"
 
 CODEX_BIN_STUB="$TEST_TEMP/codex"
 cat > "$CODEX_BIN_STUB" <<'EOF'
@@ -64,7 +66,7 @@ cat > "$TEST_HARNESS/.mcp.json" <<'EOF'
     },
     "google_workspace": {
       "command": "bash",
-      "args": ["core/bin/start-google-workspace-mcp.sh"],
+      "args": ["${HARNESS_ROOT}/core/bin/start-google-workspace-mcp.sh"],
       "env": { "FOO": "bar" }
     }
   }
