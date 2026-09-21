@@ -27,6 +27,10 @@ TEST_HARNESS="$TEST_TEMP/fake-harness"
 
 # Setup fake harness
 mkdir -p "$TEST_HARNESS/config"
+mkdir -p "$TEST_HARNESS/.claude"
+cat > "$TEST_HARNESS/.claude/settings.local.json" <<'EOF'
+{"env":{"TEST_CLAUDE_MCP_TOKEN":"fixture-token"}}
+EOF
 cat > "$TEST_HARNESS/config/launcher.env" <<'EOF'
 HARNESS_NAME="test harness"
 HARNESS_PREFIX="test"
@@ -39,6 +43,7 @@ cat > "$CLAUDE_STUB" <<'EOF'
 # Stub claude: capture all args and env vars to a file
 echo "ARGS:$@" >> "$TEST_STUB_FILE"
 echo "EFFORT:${CLAUDE_CODE_EFFORT_LEVEL:-}" >> "$TEST_STUB_FILE"
+[[ "${TEST_CLAUDE_MCP_TOKEN:-}" == fixture-token ]] && echo "MCP_AUTH:loaded" >> "$TEST_STUB_FILE"
 exit 0
 EOF
 chmod +x "$CLAUDE_STUB"
@@ -140,6 +145,46 @@ run_mode "base" "sonnet" "high"    false || exit 1
 run_mode "plan" "opusplan" "high"  false || exit 1
 run_mode "opus" "opus[1m]" "high"  false || exit 1
 run_mode "rich" "opus[1m]" "xhigh" true  || exit 1
+grep -Fqx 'MCP_AUTH:loaded' "$TEST_TEMP/output-base.txt" || {
+  echo 'FAIL: direct Claude did not inherit harness-local MCP credentials' >&2
+  exit 1
+}
+(
+  unset TEST_CLAUDE_MCP_TOKEN
+  export TEST_STUB_FILE="$TEST_TEMP/output-parent-env.txt"
+  export PATH="$TEST_TEMP:$PATH"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _harness_launcher_run "$TEST_HARNESS" base >/dev/null 2>&1
+  [[ -z "${TEST_CLAUDE_MCP_TOKEN:-}" ]]
+) || {
+  echo 'FAIL: direct Claude left the MCP credential in the parent shell' >&2
+  exit 1
+}
+(
+  unset TEST_CLAUDE_MCP_TOKEN
+  export TEST_STUB_FILE="$TEST_TEMP/output-management-env.txt"
+  export PATH="$TEST_TEMP:$PATH"
+  source "$LAUNCHER_DIR/bin/aliases.zsh"
+  _harness_launcher_run "$TEST_HARNESS" claude-management mcp list >/dev/null 2>&1
+  [[ -z "${TEST_CLAUDE_MCP_TOKEN:-}" ]]
+) || {
+  echo 'FAIL: Claude management left the MCP credential in the parent shell' >&2
+  exit 1
+}
+grep -Fqx 'MCP_AUTH:loaded' "$TEST_TEMP/output-management-env.txt" || {
+  echo 'FAIL: Claude management did not inherit harness-local MCP credentials' >&2
+  exit 1
+}
+(
+  source "$LAUNCHER_DIR/bin/harness-common.sh"
+  set -x
+  harness_export_local_env "$TEST_HARNESS"
+  set +x
+) 2>"$TEST_TEMP/xtrace-auth.err"
+if grep -Fq 'fixture-token' "$TEST_TEMP/xtrace-auth.err"; then
+  echo 'FAIL: MCP credential was printed by shell xtrace' >&2
+  exit 1
+fi
 
 # Explicit effort tokens must get the same treatment as mode-derived efforts.
 run_effort_token() {  # <token> <expected_thinking>
@@ -262,6 +307,11 @@ grep -q "ssh_rag" "$LIGHT_FILE" && { echo "FAIL: light surface must exclude SSH 
 grep -q "tunnel_rag" "$LIGHT_FILE" && { echo "FAIL: light surface must exclude 382xx tunnel servers"; exit 1; }
 grep -q "committed" "$LIGHT_FILE" || { echo "FAIL: light surface must keep committed non-SSH servers"; exit 1; }
 grep -q "legacy_local" "$LIGHT_FILE" || { echo "FAIL: light surface must keep local non-SSH servers"; exit 1; }
+grep -Fqx 'MCP_AUTH:loaded' "$light_stub_file" || { echo 'FAIL: light Claude did not inherit harness-local MCP credentials'; exit 1; }
+if grep -Fq 'fixture-token' "$light_stub_file" "$LIGHT_FILE"; then
+  echo 'FAIL: light Claude exposed the MCP credential in argv or generated config' >&2
+  exit 1
+fi
 echo "PASS: light shortcut filters SSH servers with --strict-mcp-config"
 
 # Light shortcut must fail closed on duplicate server names (no launch).

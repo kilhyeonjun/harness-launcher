@@ -184,10 +184,21 @@ echo "PASS: harness-exec rejects symlink escapes from the profile boundary"
 CLAUDE_LOG="$TMP/claude.log"
 FAKE_HOME="$TMP/home"
 mkdir -p "$FAKE_HOME"
+mkdir -p "$HARNESS/.claude"
+cat > "$HARNESS/.claude/settings.local.json" <<'EOF'
+{"env":{"GAMEDUO_SCM_TOKEN":"fixture-scm-token","HYPERDX_API_KEY":"fixture-hyperdx-key"}}
+EOF
+bash -c 'source "$1"; set -x; harness_export_local_env "$2"; set +x' _ \
+  "$ROOT/bin/harness-common.sh" "$HARNESS" 2>"$TMP/bash-xtrace.err"
+if grep -Eq 'fixture-(scm-token|hyperdx-key)' "$TMP/bash-xtrace.err"; then
+  echo 'FAIL: Bash xtrace exposed harness-local MCP credentials' >&2
+  exit 1
+fi
 cat > "$STUB_BIN/claude" <<'EOF'
 #!/usr/bin/env bash
 {
   printf 'PWD:%s\n' "$PWD"
+  [[ "${GAMEDUO_SCM_TOKEN:-}" == fixture-scm-token && "${HYPERDX_API_KEY:-}" == fixture-hyperdx-key ]] && printf 'MCP_AUTH:loaded\n'
   printf 'ARGV:'
   printf ' <%s>' "$@"
   printf '\n'
@@ -204,6 +215,10 @@ if ! grep -Fqx "PWD:$WORKTREE_REAL" "$CLAUDE_LOG"; then
   sed 's/^/  /' "$CLAUDE_LOG" >&2
   exit 1
 fi
+grep -Fqx 'MCP_AUTH:loaded' "$CLAUDE_LOG" || {
+  echo "FAIL: Claude did not inherit harness-local MCP credentials in a nested worktree" >&2
+  exit 1
+}
 
 echo "PASS: harness-exec launches Claude in the explicit worktree"
 
@@ -225,6 +240,10 @@ if ! grep -Fqx "PWD:$WORKTREE_REAL" "$CLAUDE_LOG"; then
   sed 's/^/  /' "$CLAUDE_LOG" >&2
   exit 1
 fi
+grep -Fqx 'MCP_AUTH:loaded' "$CLAUDE_LOG" || {
+  echo "FAIL: harness-auto Claude did not inherit harness-local MCP credentials" >&2
+  exit 1
+}
 grep -Fq 'ARGV: <--resume>' "$CLAUDE_LOG" || {
   echo "FAIL: harness-auto did not preserve the Claude resume selector" >&2
   sed 's/^/  /' "$CLAUDE_LOG" >&2

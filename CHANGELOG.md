@@ -4,6 +4,11 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- Pass each profile's existing local MCP credentials to Claude sessions launched
+  from nested projects, including direct, light, TUI, and isolated routes. Keep
+  credentials scoped to the Claude child and suppress shell tracing while
+  loading them; no token rotation or generated-config secret copy is needed.
+
 - Treat each profile's MCP JSON as the definition SSOT and materialize explicit
   `${HARNESS_ROOT}/...` stdio script paths once for Claude, Codex, and Kiro.
   Nested project/worktree launches now use the same checked absolute path;
