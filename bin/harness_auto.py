@@ -62,7 +62,7 @@ def main(argv):
         return 2
 
     agent = args.pop(0) if args else None
-    if agent not in (None, "claude", "codex", "kiro-cli"):
+    if agent not in (None, "claude", "claude-management", "codex", "kiro-cli"):
         print(f"harness-auto: unsupported agent: {agent}", file=sys.stderr)
         return 2
     if agent is None and args:

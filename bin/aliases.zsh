@@ -213,10 +213,25 @@ _harness_launcher_auto_runtime() {
     return 2
   }
   if [[ "$runtime" == claude ]]; then
-    "$harness_auto" claude base "$@"
+    if _harness_launcher_is_claude_management_command "${1:-}"; then
+      "$harness_auto" claude-management "$@"
+    else
+      "$harness_auto" claude base "$@"
+    fi
   else
     "$harness_auto" "$runtime" "$@"
   fi
+}
+
+_harness_launcher_is_claude_management_command() {
+  case "${1:-}" in
+    agents|attach|auth|auto-mode|doctor|gateway|help|import|install|logs|mcp|plugin|plugins|project|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade|-h|--help|-v|-V|--version)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 _harness_launcher_auto_claude() {
@@ -394,6 +409,26 @@ _harness_launcher_run() {
       shift 2
       ;;
   esac
+
+  if [[ "${1:-}" == claude-management ]]; then
+    shift
+    [[ $# -gt 0 ]] || {
+      echo 'harness-launcher: claude-management requires a native Claude subcommand' >&2
+      return 2
+    }
+    local claude_management_bin="${commands[claude]:-}"
+    [[ -n "$claude_management_bin" && -x "$claude_management_bin" ]] || {
+      echo 'harness-launcher: claude not found in PATH' >&2
+      return 1
+    }
+    harness_export_local_env "$HARNESS_DIR" || return $?
+    if [[ -n "$HARNESS_RUN_DIR" ]]; then
+      (cd "$HARNESS_RUN_DIR" && "$claude_management_bin" "$@")
+    else
+      "$claude_management_bin" "$@"
+    fi
+    return $?
+  fi
 
   case "$HARNESS_SESSION_ISOLATION_DEFAULT" in 0|1) ;; *) echo 'harness-launcher: HARNESS_SESSION_ISOLATION_DEFAULT must be 0 or 1' >&2; return 2;; esac
   case "${HARNESS_SESSION_ISOLATION-}" in ''|0|1) ;; *) echo 'harness-launcher: HARNESS_SESSION_ISOLATION must be 0 or 1' >&2; return 2;; esac

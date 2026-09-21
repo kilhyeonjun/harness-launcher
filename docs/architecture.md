@@ -43,11 +43,18 @@ HARNESS_PREFIX="ex"
 boundary. It keeps its activation flag as an unexported Zsh global, so the
 child `harness-exec` shell cannot reactivate the wrapper and recurse. The
 launcher-owned `codex` function switches to `harness-auto codex`; a temporary
-launcher-owned `claude` function uses `harness-auto claude base` so native
-Claude arguments still enter the direct base route. `harness_shell_disable`
-removes only the exact Claude function it installed. Existing aliases/functions
-are never overwritten, and `command codex` / `command claude` bypass functions
-without modifying `PATH`.
+launcher-owned `claude` function classifies only its first argument. Native
+Claude management subcommands use an internal `claude-management` route;
+everything else uses `harness-auto claude base`. The management route preserves
+argv and the selected project's PWD, loads its local environment, and returns
+before model/effort, MCP-argument, observability, title, or session-isolation
+mutation. It deliberately does not inject the launcher's Claude session MCP
+overlay: `claude mcp list` reports what the native CLI discovers from user and
+project configuration. Authentication remains in Claude's native user-global
+store rather than becoming profile-local. `harness_shell_disable` removes only
+the exact Claude function it installed. Existing aliases/functions are never
+overwritten, and `command codex` / `command claude` bypass functions without
+modifying `PATH`.
 
 Because `launcher.env` is sourced, registration is a trust decision. The launcher does not attempt to parse or sandbox arbitrary shell code in that file.
 
@@ -73,7 +80,10 @@ In shell-auto mode, PWD remains the profile-selection authority. Explicit
 Codex `--cd`, `--cd=`, and `-C` values are canonicalized and must exist inside
 the selected harness boundary. An outside PWD cannot select a profile by
 pointing `--cd` inward, and an inside PWD cannot escape outward through a later
-Codex argument.
+Codex argument. Claude management classification is intentionally first-token
+only, so prompt text (`claude 'mcp list'`), `-p doctor`, and tokens after `--`
+remain session launches. Option-before-subcommand syntax is not reordered;
+`command claude` is the native escape for that form.
 
 ## Binary selection
 

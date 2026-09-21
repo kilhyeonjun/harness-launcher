@@ -33,6 +33,16 @@ to the child launcher shell. `harness_shell_disable` restores the preceding
 wrapper behavior; `command codex` always bypasses both wrapper modes and calls
 the executable selected from `PATH`.
 
+The same opt-in installs a shell-local `claude` wrapper. Session-shaped input
+uses the selected harness's direct base route. A native Claude management
+subcommand in first-token position (`mcp`, `auth`, `plugin`, `doctor`, and the
+other commands shown by `claude --help`) instead preserves exact argv and PWD,
+loads the selected project's local environment, and bypasses all session-only
+launcher mutations including isolation. Claude authentication is still the
+native user-global login, not a generated per-profile auth home. Use
+`command claude` for an unscoped native launch or when a global option must
+precede the management subcommand.
+
 ## Generated layout
 
 Before launch, `codex-home-prepare.sh` converges:
