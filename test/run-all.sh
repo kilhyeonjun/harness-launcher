@@ -40,4 +40,8 @@ for test_file in "$ROOT"/test/test-*.sh; do
   passed=$((passed + 1))
 done
 
+printf '==> test_profile_resolver.py (python3)\n'
+python3 -m unittest discover -s "$ROOT/test" -p 'test_profile_resolver.py'
+passed=$((passed + 1))
+
 printf '\n%d test scripts passed; %d skipped.\n' "$passed" "$skipped"

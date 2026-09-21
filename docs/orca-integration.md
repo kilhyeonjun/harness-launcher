@@ -24,7 +24,7 @@ wh codex base work
 wh kiro-cli base
 ```
 
-Orca starts project terminals in the selected worktree. `harness-auto` resolves that canonical directory against the registered profile boundaries and delegates to the single most-specific harness. Use a named profile command for manual terminals, and use `harness-exec <harness-dir> --cwd . ...` only for automation that cannot use either public adapter.
+Orca starts project terminals in the selected worktree. `harness-auto` resolves that canonical directory against the registered profile boundaries and delegates to the single most-specific harness. Starting with the next release after v0.31.1, check the decision without launching an agent with `harness-auto --explain codex`; the JSON reports the chosen profile, harness root, work root, and selection reason. `harness-auto --profile <prefix> codex base` pins a profile but fails if the current directory belongs to another boundary. Use a named profile command for manual terminals, and use `harness-exec <harness-dir> --cwd . ...` only for automation that cannot use either public adapter.
 
 ## Project and worktree layout
 
@@ -34,7 +34,7 @@ Register the actual code repository in Orca, not the harness repository itself. 
 <registered-harness>/.worktrees/<repo-name>/
 ```
 
-Add `.worktrees/` to the harness `.gitignore`. Keeping worktrees below the harness preserves ancestor-level Claude instructions while the launcher keeps Codex and Kiro runtime homes under the harness root.
+Add `.worktrees/` to the harness `.gitignore`. Keeping worktrees below the harness keeps the launcher boundary and Claude's ancestor path available, while the launcher keeps Codex and Kiro runtime homes under the harness root. Codex discovers project instructions from the Git root toward the working directory, plus its configured `CODEX_HOME`; do not assume a harness-level `AGENTS.md` above a nested code repository is loaded solely because the worktree is under the harness ([official OpenAI Docs](https://learn.chatgpt.com/docs/agent-configuration/agents-md)). A repository under `<harness>/projects/` and a worktree nested anywhere under that harness already use the same **profile selection**; verify effective runtime instructions separately. An external linked worktree remains unsupported: Git ownership alone does not prove equivalent instruction loading, and `harness-exec` rejects outside `--cwd`.
 
 Orca exposes `worktreeBasePath` in project setup. In the UI, set the project's worktree base path to the absolute profile-local directory above. The CLI also accepts `--worktree-base-path` on `orca project setup-create` and `orca project setup-update`.
 

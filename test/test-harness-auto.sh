@@ -68,6 +68,43 @@ grep -Fqx 'ARGV: <codex> <base>' "$LOG" || {
 echo "PASS: harness-auto selects alpha from a nested worktree"
 
 : > "$LOG"
+EXPLAIN="$(
+  cd "$ALPHA_WORKTREE"
+  HOME="$HOME_DIR" "$PREFIX/bin/harness-auto" --explain codex
+)"
+python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["profile"] == "alpha"; assert d["agent"] == "codex"; assert d["reason"] == "registered-ancestor"' "$EXPLAIN"
+[[ ! -s "$LOG" ]] || {
+  echo "FAIL: harness-auto --explain launched an agent" >&2
+  exit 1
+}
+echo "PASS: harness-auto --explain reports the selected profile without launch"
+
+MINIMAL_EXPLAIN="$(
+  cd "$ALPHA_WORKTREE"
+  PATH=/usr/bin:/bin HOME="$HOME_DIR" "$PREFIX/bin/harness-auto" --explain codex
+)"
+python3 -c 'import json,sys; assert json.loads(sys.argv[1])["profile"] == "alpha"' "$MINIMAL_EXPLAIN"
+echo "PASS: harness-auto resolves Python with a minimal PATH"
+
+if (
+  cd "$ALPHA_WORKTREE"
+  HOME="$HOME_DIR" HARNESS_AUTO_TEST_LOG="$LOG" \
+    "$PREFIX/bin/harness-auto" --profile gamma codex base
+) >"$TMP/mismatch.out" 2>"$TMP/mismatch.err"; then
+  echo "FAIL: harness-auto accepted an explicit profile from another boundary" >&2
+  exit 1
+fi
+grep -Fq 'does not own the current directory' "$TMP/mismatch.err" || {
+  echo "FAIL: harness-auto did not explain explicit profile mismatch" >&2
+  exit 1
+}
+[[ ! -s "$LOG" ]] || {
+  echo "FAIL: harness-auto launched an agent after profile mismatch" >&2
+  exit 1
+}
+echo "PASS: harness-auto rejects mismatched explicit profiles"
+
+: > "$LOG"
 (
   cd "$GAMMA_PROJECT"
   HOME="$HOME_DIR" HARNESS_AUTO_TEST_LOG="$LOG" \

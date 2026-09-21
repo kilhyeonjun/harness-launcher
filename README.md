@@ -11,6 +11,7 @@ wh             interactive runtime and mode picker
 wh base        Claude Code with the base preset
 wh codex fast  Codex CLI with the fast profile
 wh kiro-cli    Kiro CLI with an isolated KIRO_HOME
+harness-auto --explain codex  inspect the current directory's registered profile (next release after v0.31.1)
 ```
 
 ## Why use it?
