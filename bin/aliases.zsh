@@ -6,7 +6,18 @@
 
 _HARNESS_LAUNCHER_BIN="$(cd "$(dirname "${(%):-%x}")" 2>/dev/null && pwd)"
 typeset -ga _HARNESS_LAUNCHER_REGISTERED_DIRS=()
-typeset -gi _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=0
+if (( ${+parameters[_HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED]} )) && \
+    [[ "${(t)_HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED}" == *-export* ]]; then
+  unset _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED
+fi
+typeset -gi _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED="${_HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED:-0}"
+typeset -g +x _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED
+if (( _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED )); then
+  typeset -gi _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED="${_HARNESS_LAUNCHER_SHELL_AUTO_ENABLED:-1}"
+else
+  typeset -gi _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=0
+fi
+typeset -g +x _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED
 typeset -g _HARNESS_LAUNCHER_CODEX_WRAPPER_BODY=""
 
 # Single source of truth for mode tables, bin resolution, probes, MCP config
@@ -279,8 +290,13 @@ harness_shell_enable() {
     echo 'harness_shell_enable: codex function is not launcher-owned' >&2
     return 2
   fi
-  if (( $+functions[claude] )) && \
-      [[ "$functions[claude]" != "$functions[_harness_launcher_auto_claude]" ]]; then
+  if (( _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED )); then
+    if (( $+functions[claude] )) && \
+        [[ "$functions[claude]" != "$functions[_harness_launcher_auto_claude]" ]]; then
+      echo 'harness_shell_enable: launcher-owned claude function was replaced' >&2
+      return 2
+    fi
+  elif (( $+functions[claude] )); then
     echo 'harness_shell_enable: claude function already exists' >&2
     return 2
   fi
@@ -288,11 +304,16 @@ harness_shell_enable() {
   if (( ! $+functions[claude] )); then
     functions -c _harness_launcher_auto_claude claude || return 2
   fi
+  typeset -g _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED=1
+  typeset -g +x _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED
   typeset -g _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=1
+  typeset -g +x _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED
 }
 
 harness_shell_disable() {
   typeset -g _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=0
+  typeset -g +x _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED
+  (( _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED )) || return 0
   if (( $+functions[claude] )); then
     if [[ "$functions[claude]" == "$functions[_harness_launcher_auto_claude]" ]]; then
       unfunction claude
@@ -301,6 +322,8 @@ harness_shell_disable() {
       return 2
     fi
   fi
+  typeset -g _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED=0
+  typeset -g +x _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED
 }
 
 # harness_register <harness-dir>

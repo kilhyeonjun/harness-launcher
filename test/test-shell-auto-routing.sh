@@ -54,6 +54,7 @@ export PATH="$NATIVE_BIN:/usr/bin:/bin"
 export HARNESS_SHELL_ROUTE_LOG="$ROUTE_LOG"
 export HARNESS_SHELL_NATIVE_LOG="$NATIVE_LOG"
 export HARNESS_CODEX_MCP_PROFILE=""
+export _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=9
 source "$PREFIX/share/harness-launcher/aliases.zsh"
 harness_register "$HARNESS"
 
@@ -69,6 +70,14 @@ baseline_codex_line="$(tail -1 "$NATIVE_LOG")"
 : > "$NATIVE_LOG"
 
 harness_shell_enable
+[[ "${(t)_HARNESS_LAUNCHER_SHELL_AUTO_ENABLED}" != *-export* ]] || {
+  echo 'FAIL: enable retained an inherited export attribute on its shell-local flag' >&2
+  exit 1
+}
+env | grep -q '^_HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=' && {
+  echo 'FAIL: shell-local enable state leaked into the child environment' >&2
+  exit 1
+}
 (( $+functions[claude] )) || { echo 'FAIL: enable did not define claude function' >&2; exit 1; }
 
 (
@@ -176,6 +185,7 @@ echo 'PASS: routed Codex validates explicit working directories against PWD owne
 
 : > "$NATIVE_LOG"
 harness_shell_disable
+harness_shell_disable
 (( ! $+functions[claude] )) || { echo 'FAIL: disable left the claude wrapper active' >&2; exit 1; }
 (
   cd "$PROJECT"
@@ -217,6 +227,15 @@ grep -Fq '<real-codex>' "$NATIVE_LOG" && grep -Fq '<real-claude>' "$NATIVE_LOG" 
 harness_shell_disable
 echo 'PASS: shell-local activation does not recurse through real harness-exec'
 
+source "$PREFIX/share/harness-launcher/aliases.zsh"
+harness_shell_enable
+harness_shell_disable
+(( ! $+functions[claude] )) || {
+  echo 'FAIL: re-sourcing aliases lost launcher ownership of the Claude wrapper' >&2
+  exit 1
+}
+echo 'PASS: re-sourcing aliases preserves shell-local wrapper ownership'
+
 claude() { return 37; }
 if harness_shell_enable >"$TMP/collision.out" 2>"$TMP/collision.err"; then
   echo 'FAIL: enable replaced a pre-existing claude function' >&2
@@ -231,6 +250,20 @@ claude || [[ $? -eq 37 ]] || {
 echo 'PASS: enable preserves a pre-existing claude function'
 
 unfunction claude
+claude() { _harness_launcher_auto_runtime claude "$@"; }
+if harness_shell_enable >"$TMP/same-body.out" 2>"$TMP/same-body.err"; then
+  echo 'FAIL: enable claimed a same-body user claude function' >&2
+  exit 1
+fi
+grep -Fq 'claude function already exists' "$TMP/same-body.err" || {
+  echo 'FAIL: same-body function collision was not explained' >&2; exit 1
+}
+(( $+functions[claude] )) || {
+  echo 'FAIL: same-body user claude function was deleted' >&2; exit 1
+}
+unfunction claude
+echo 'PASS: enable never infers Claude wrapper ownership from function text'
+
 alias claude='return 41'
 if harness_shell_enable >"$TMP/alias-collision.out" 2>"$TMP/alias-collision.err"; then
   echo 'FAIL: enable replaced a pre-existing claude alias' >&2
@@ -271,3 +304,11 @@ claude || [[ $? -eq 39 ]] || {
 unfunction claude
 harness_shell_disable
 echo 'PASS: repeated enable is idempotent and disable preserves replaced functions'
+
+claude() { return 40; }
+harness_shell_disable
+claude || [[ $? -eq 40 ]] || {
+  echo 'FAIL: no-op disable changed an unowned claude function' >&2; exit 1
+}
+unfunction claude
+echo 'PASS: repeated disable is a no-op when the launcher owns no Claude wrapper'
