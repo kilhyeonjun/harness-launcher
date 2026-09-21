@@ -26,6 +26,10 @@ cat > "$TEST_HARNESS/config/launcher.env" <<'EOF'
 HARNESS_NAME="test harness"
 HARNESS_PREFIX="test"
 EOF
+mkdir -p "$TEST_HARNESS/.claude"
+cat > "$TEST_HARNESS/.claude/settings.local.json" <<'EOF'
+{"env":{"TEST_CLAUDE_MCP_TOKEN":"fixture-token"}}
+EOF
 
 TEST_BASE_PATH="$TEST_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -40,6 +44,7 @@ write_stub() {
   echo "AUTH_TOKEN:\${ANTHROPIC_AUTH_TOKEN:-}"
   echo "OPUS_MODEL:\${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
   echo "PCT:\${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-}"
+  [[ "\${TEST_CLAUDE_MCP_TOKEN:-}" == fixture-token ]] && echo "MCP_AUTH:loaded"
   echo "HISTORY_SUMMARY_LEAK:\${HISTORY_SUMMARY_LEAK:-<UNSET>}"
   echo "CMUX_WORKSPACE_ID:\${CMUX_WORKSPACE_ID:-<UNSET>}"
   echo "CMUX_TAB_ID:\${CMUX_TAB_ID:-<UNSET>}"
@@ -122,6 +127,15 @@ OUT="$TEST_TEMP/1.out"; STUB="$TEST_TEMP/1.stub"; reset_plan
 run_tui $'1\n2\n1\n' "$OUT" "$STUB"
 grep -q 'EXEC:claude --model sonnet --effort high --exclude-dynamic-system-prompt-sections' "$STUB" \
   || fail 'base mode should exec claude sonnet/high' "$OUT"
+grep -Fqx 'MCP_AUTH:loaded' "$STUB" || fail 'TUI Claude did not inherit harness-local MCP credentials' "$OUT"
+FOREIGN_HARNESS="$TEST_TEMP/foreign-harness"
+mkdir -p "$FOREIGN_HARNESS/.claude"
+cat > "$FOREIGN_HARNESS/.claude/settings.local.json" <<'EOF'
+{"env":{"TEST_CLAUDE_MCP_TOKEN":"wrong-profile-token"}}
+EOF
+FOREIGN_OUT="$TEST_TEMP/1-foreign.out"; FOREIGN_STUB="$TEST_TEMP/1-foreign.stub"; reset_plan
+run_tui $'1\n2\n1\n' "$FOREIGN_OUT" "$FOREIGN_STUB" HARNESS_SOURCE_ROOT="$FOREIGN_HARNESS"
+grep -Fqx 'MCP_AUTH:loaded' "$FOREIGN_STUB" || fail 'TUI Claude used ambient foreign profile credentials' "$FOREIGN_OUT"
 grep -Fqx 'CMUX_WORKSPACE_ID:<UNSET>' "$STUB" \
   || fail 'TUI fixture must clear CMUX_WORKSPACE_ID' "$STUB"
 grep -Fqx 'CMUX_TAB_ID:<UNSET>' "$STUB" \

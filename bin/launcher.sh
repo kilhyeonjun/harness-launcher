@@ -954,6 +954,7 @@ collect_kiro() {
 
 launch_claude() {
   local provider_url="" gateway_api_key=""
+  harness_export_local_env "$HARNESS_DIR" || return $?
   local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED
   local HARNESS_OTLP_HTTP_ENDPOINT obs_rc
   # Per-harness GitHub identity: fail-open, never overrides with an empty token.

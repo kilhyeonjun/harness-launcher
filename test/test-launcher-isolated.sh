@@ -18,6 +18,8 @@ git -C "$HARNESS" config user.name test
 print -r -- 'HARNESS_NAME="test"' 'HARNESS_PREFIX="test"' > "$HARNESS/config/launcher.env"
 print -r -- 'KIRO_GATEWAY_URL="http://127.0.0.1:9999"' > "$HARNESS/config/.local/kiro-gateway.env"
 print -r -- '{"mcpServers":{"local-docs":{"command":"echo","args":["ready"]}}}' > "$HARNESS/.mcp.local.json"
+mkdir -p "$HARNESS/.claude"
+print -r -- '{"env":{"TEST_ISOLATED_MCP_TOKEN":"fixture-isolated-token"}}' > "$HARNESS/.claude/settings.local.json"
 print -r -- tracked > "$HARNESS/tracked.txt"
 git -C "$HARNESS" add config/launcher.env tracked.txt && git -C "$HARNESS" commit -qm initial
 print -r -- dirty > "$HARNESS/tracked.txt"
@@ -25,6 +27,7 @@ print -r -- dirty > "$HARNESS/tracked.txt"
 cat > "$TMP/claude" <<'EOF'
 #!/usr/bin/env bash
 printf 'PWD=%s\nSOURCE=%s\nSESSION=%s\nRUN=%s\nBASE=%s\n' "$PWD" "${HARNESS_SOURCE_ROOT:-}" "${HARNESS_SESSION_ROOT:-}" "${HARNESS_RUN_DIR:-}" "${ANTHROPIC_BASE_URL:-}" > "$ISOLATED_LOG"
+[[ "${TEST_ISOLATED_MCP_TOKEN:-}" == fixture-isolated-token ]] && printf 'MCP_AUTH=loaded\n' >> "$ISOLATED_LOG"
 if [[ -n "${WAIT_START:-}" ]]; then
   touch "$WAIT_START"
   while [[ ! -e "$WAIT_RELEASE" ]]; do sleep 0.05; done
@@ -43,6 +46,7 @@ root="$(sed -n 's/^SESSION=//p' "$TMP/log")"
 [[ "$(sed -n 's/^SOURCE=//p' "$TMP/log")" == "${HARNESS:A}" ]] || { echo 'FAIL: --isolated must export canonical source root'; exit 1; }
 [[ "$(<"$root/tracked.txt")" == tracked ]] || { echo 'FAIL: --isolated must not use canonical dirty files'; exit 1; }
 [[ -L "$root/.mcp.local.json" && "$(readlink "$root/.mcp.local.json")" == "${HARNESS:A}/.mcp.local.json" ]] || { echo 'FAIL: isolated session must reference canonical machine-local MCP config'; exit 1; }
+[[ "$(sed -n 's/^MCP_AUTH=//p' "$TMP/log")" == loaded ]] || { echo 'FAIL: isolated Claude did not inherit canonical MCP credentials'; exit 1; }
 first_id="$(basename "$root")"
 grep -q "isolated session $first_id; continue: test --isolated-session $first_id resume" "$TMP/explicit-isolated.err" || { echo 'FAIL: explicit isolation must print the UUID continuation command'; exit 1; }
 explicit_count="$(find "$STATE/sessions" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
@@ -191,6 +195,7 @@ EXPECT
   source "$ROOT/bin/aliases.zsh"
   export ISOLATED_LOG="$TMP/leak-isolated-log"
   _harness_launcher_run "$HARNESS" --isolated base
+  [[ -z "${TEST_ISOLATED_MCP_TOKEN:-}" ]] || { echo 'FAIL: isolated MCP credential leaked to caller shell'; exit 1; }
   export ISOLATED_LOG="$TMP/leak-default-log"
   _harness_launcher_run "$HARNESS" base
 )

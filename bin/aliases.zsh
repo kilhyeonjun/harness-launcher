@@ -415,12 +415,11 @@ _harness_launcher_run() {
       echo 'harness-launcher: claude not found in PATH' >&2
       return 1
     }
-    harness_export_local_env "$HARNESS_DIR" || return $?
-    if [[ -n "$HARNESS_RUN_DIR" ]]; then
-      (cd "$HARNESS_RUN_DIR" && "$claude_management_bin" "$@")
-    else
+    (
+      [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
+      harness_export_local_env "$HARNESS_DIR" || exit $?
       "$claude_management_bin" "$@"
-    fi
+    )
     return $?
   fi
 
@@ -485,7 +484,6 @@ _harness_launcher_run() {
     HARNESS_DIR="$HARNESS_SESSION_ROOT"
     [[ -n "$HARNESS_RUN_DIR" ]] || HARNESS_RUN_DIR="$HARNESS_SESSION_ROOT"
     export HARNESS_RUN_DIR
-    harness_export_local_env "$HARNESS_SOURCE_ROOT"
     if $created_isolated_session; then
       if [[ "${1:-}" == codex ]]; then
         echo "harness-launcher: isolated session $HARNESS_SESSION_ID; continue: ${HARNESS_PREFIX} --isolated-session $HARNESS_SESSION_ID codex resume" >&2
@@ -710,20 +708,20 @@ _harness_launcher_run() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
-      if [[ -n "$HARNESS_RUN_DIR" ]]; then
-        (cd "$HARNESS_RUN_DIR" && claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}")
-      else
+      (
+        [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
+        harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
         claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}"
-      fi
+      )
     else
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
-      if [[ -n "$HARNESS_RUN_DIR" ]]; then
-        (cd "$HARNESS_RUN_DIR" && _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}")
-      else
+      (
+        [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
+        harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
         _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}"
-      fi
+      )
     fi
     local rc=$?
     $claude_broker_started && harness_claude_cmux_broker_stop

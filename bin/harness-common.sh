@@ -873,7 +873,8 @@ harness_export_local_env() {
   local harness_python
   [ -f "$harness_dir/.claude/settings.local.json" ] || return 0
   harness_python="$(harness_python3_resolve)" || return 1
-  local _mk _mv
+  local _mk _mv _restore_xtrace=0
+  case $- in *x*) _restore_xtrace=1; set +x ;; esac
   while IFS=$'\t' read -r _mk _mv; do
     [ -n "$_mk" ] && export "$_mk=$_mv"
   done < <("$harness_python" - "$harness_dir/.claude/settings.local.json" 2>/dev/null <<'PY'
@@ -884,6 +885,8 @@ for k, v in env.items():
     print(k + "\t" + str(v))
 PY
 )
+  if [ "$_restore_xtrace" = 1 ]; then set -x; fi
+  return 0
 }
 
 # --- auto-compact PCT -----------------------------------------------------------
