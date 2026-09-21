@@ -4,6 +4,12 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- Route plain-shell Claude management commands such as `mcp`, `auth`,
+  `plugin`, and `doctor` directly to the native CLI after location-based
+  profile selection. Their argv, project PWD, and local environment are kept,
+  while session-only model/effort, MCP overlay, title, observability, and
+  isolation mutations are bypassed; prompt-shaped inputs stay on the normal
+  harness session route.
 - Skip Claude Code's auxiliary AI session-title request for eligible new
   native-direct interactive launches by using a one-shot, exact-session
   bootstrap name while preserving resume, remote, hook-free, and manual-title

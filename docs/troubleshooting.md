@@ -88,6 +88,24 @@ back to an unscoped runtime. Use `command codex` or `command claude` only when
 that native, unharnessed launch is intentional. `harness_shell_disable` turns
 off routing for the current shell.
 
+If `claude mcp list`, `claude auth status`, `claude plugin list`, or
+`claude doctor` reports an unexpected launcher option such as `--effort`, the
+installed launcher predates the native-management route. Upgrade it, start a
+new login shell, and retry with the management subcommand as the first token:
+
+```zsh
+brew update
+brew upgrade harness-launcher
+exec zsh
+claude mcp list
+```
+
+These commands use the project selected from the current directory and load
+its local environment, while Claude login state remains user-global. Native
+`mcp list` reflects Claude's user/project discovery; it does not include a
+launcher-only session overlay. Use `command claude --debug mcp list` when a
+global option must precede the subcommand.
+
 ## `codex` reports `ENOENT`
 
 A version-manager shim can exist while its platform package is missing. Check the executable selected by the login shell:

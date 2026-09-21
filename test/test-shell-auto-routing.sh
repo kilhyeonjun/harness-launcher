@@ -19,6 +19,11 @@ mkdir -p "$HARNESS/config" "$PROJECT" "$PROFILE_BIN" "$NATIVE_BIN"
 cat > "$HARNESS/config/launcher.env" <<'EOF'
 HARNESS_NAME="alpha test"
 HARNESS_PREFIX="alpha"
+HARNESS_SESSION_ISOLATION_DEFAULT="${TEST_ISOLATION_DEFAULT:-0}"
+EOF
+mkdir -p "$HARNESS/.claude"
+cat > "$HARNESS/.claude/settings.local.json" <<'EOF'
+{"env":{"HARNESS_SHELL_TEST_SECRET":"loaded"}}
 EOF
 
 bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$PREFIX"
@@ -45,6 +50,10 @@ for runtime in codex claude; do
 printf '%s:' "$(basename "$0")" >> "$HARNESS_SHELL_NATIVE_LOG"
 printf ' <%s>' "$@" >> "$HARNESS_SHELL_NATIVE_LOG"
 printf '\n' >> "$HARNESS_SHELL_NATIVE_LOG"
+printf '%s-pwd:<%s>\n' "$(basename "$0")" "$(pwd -P)" >> "$HARNESS_SHELL_NATIVE_LOG"
+if [[ -n "${HARNESS_SHELL_TEST_SECRET:-}" ]]; then
+  printf '%s-env:<set>\n' "$(basename "$0")" >> "$HARNESS_SHELL_NATIVE_LOG"
+fi
 EOF
   chmod 755 "$NATIVE_BIN/$runtime"
 done
@@ -96,6 +105,52 @@ grep -Fqx 'ARGV: <base> <--resume> <session-123>' "$ROUTE_LOG" || {
 }
 echo 'PASS: enabled plain codex and claude route by current directory'
 
+(
+  cd "$PROJECT"
+  claude mcp list
+  claude mcp add demo -- command --flag
+  claude mcp remove demo
+  claude auth status
+  claude auth login
+  claude auth logout
+  claude plugin list
+  claude plugin install demo
+  claude doctor
+)
+for expected in \
+  'ARGV: <claude-management> <mcp> <list>' \
+  'ARGV: <claude-management> <mcp> <add> <demo> <--> <command> <--flag>' \
+  'ARGV: <claude-management> <mcp> <remove> <demo>' \
+  'ARGV: <claude-management> <auth> <status>' \
+  'ARGV: <claude-management> <auth> <login>' \
+  'ARGV: <claude-management> <auth> <logout>' \
+  'ARGV: <claude-management> <plugin> <list>' \
+  'ARGV: <claude-management> <plugin> <install> <demo>' \
+  'ARGV: <claude-management> <doctor>'; do
+  grep -Fqx "$expected" "$ROUTE_LOG" || {
+    echo "FAIL: plain Claude management command did not preserve native argv: $expected" >&2
+    exit 1
+  }
+done
+echo 'PASS: plain Claude management commands use the profile-scoped native route'
+
+(
+  cd "$PROJECT"
+  claude 'mcp list'
+  claude -p doctor
+  claude -- mcp list
+)
+for expected in \
+  'ARGV: <base> <mcp list>' \
+  'ARGV: <base> <-p> <doctor>' \
+  'ARGV: <base> <--> <mcp> <list>'; do
+  grep -Fqx "$expected" "$ROUTE_LOG" || {
+    echo "FAIL: Claude prompt syntax was misclassified as management: $expected" >&2
+    exit 1
+  }
+done
+echo 'PASS: Claude prompts and post-- tokens remain on the harness session route'
+
 : > "$ROUTE_LOG"
 if (
   cd "$TMP"
@@ -109,6 +164,16 @@ grep -Fq 'no registered harness contains the current directory' "$TMP/outside.er
 }
 [[ ! -s "$ROUTE_LOG" && ! -s "$NATIVE_LOG" ]] || {
   echo 'FAIL: outside-boundary command launched a runtime' >&2; exit 1
+}
+if (
+  cd "$TMP"
+  claude mcp list
+) >"$TMP/outside-claude.out" 2>"$TMP/outside-claude.err"; then
+  echo 'FAIL: enabled plain Claude management command ran outside every registered boundary' >&2
+  exit 1
+fi
+grep -Fq 'no registered harness contains the current directory' "$TMP/outside-claude.err" || {
+  echo 'FAIL: outside-boundary Claude management failure was not explained' >&2; exit 1
 }
 echo 'PASS: enabled plain commands fail closed outside registered boundaries'
 
@@ -211,21 +276,44 @@ cp "$TMP/real-harness-exec" "$PREFIX/share/harness-launcher/harness-exec"
 : > "$NATIVE_LOG"
 harness_shell_enable
 (
+  export TEST_ISOLATION_DEFAULT=1 HARNESS_SESSION_ISOLATION=1
+  export HARNESS_SESSION_STATE_HOME="$TMP/isolation-state"
+  cd "$PROJECT"
+  claude mcp list
+)
+grep -Fqx 'claude: <mcp> <list>' "$NATIVE_LOG" || {
+  echo 'FAIL: Claude management command entered default session isolation' >&2; exit 1
+}
+grep -Fqx "claude-pwd:<$PROJECT>" "$NATIVE_LOG" || {
+  echo 'FAIL: Claude management command changed the original project PWD' >&2; exit 1
+}
+[[ ! -e "$TMP/isolation-state" ]] || {
+  echo 'FAIL: Claude management command created isolation state' >&2; exit 1
+}
+: > "$NATIVE_LOG"
+(
   cd "$PROJECT"
   codex real-codex
   claude real-claude
+  claude mcp list
 )
 [[ "$(grep -c '^codex:' "$NATIVE_LOG")" -eq 1 ]] || {
   echo 'FAIL: real harness-exec did not reach Codex exactly once' >&2; exit 1
 }
-[[ "$(grep -c '^claude:' "$NATIVE_LOG")" -eq 1 ]] || {
-  echo 'FAIL: real harness-exec did not reach Claude exactly once' >&2; exit 1
+[[ "$(grep -c '^claude:.*<real-claude>' "$NATIVE_LOG")" -eq 1 ]] || {
+  echo 'FAIL: real harness-exec did not reach the Claude session exactly once' >&2; exit 1
 }
 grep -Fq '<real-codex>' "$NATIVE_LOG" && grep -Fq '<real-claude>' "$NATIVE_LOG" || {
   echo 'FAIL: real harness-exec lost runtime arguments' >&2; exit 1
 }
+grep -Fqx 'claude: <mcp> <list>' "$NATIVE_LOG" || {
+  echo 'FAIL: real harness-exec changed native Claude management arguments' >&2; exit 1
+}
+grep -Fqx 'claude-env:<set>' "$NATIVE_LOG" || {
+  echo 'FAIL: native Claude management route did not load profile-local environment' >&2; exit 1
+}
 harness_shell_disable
-echo 'PASS: shell-local activation does not recurse through real harness-exec'
+echo 'PASS: real harness-exec preserves session and management routes without recursion'
 
 source "$PREFIX/share/harness-launcher/aliases.zsh"
 harness_shell_enable

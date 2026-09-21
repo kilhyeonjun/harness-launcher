@@ -215,14 +215,22 @@ harness_shell_enable
 cd /path/inside/a/registered/harness
 codex                 # location selects the registered profile
 claude                # equivalent direct-Claude base launch
+claude mcp list       # native management command, same selected project/PWD
 ```
 
 The opt-in is shell-local and fails closed outside registered boundaries.
 Codex `--cd`/`-C` targets must remain inside the profile selected from the
-shell's current directory. Use `command codex` or `command claude` as an
-explicit native escape hatch, and `harness_shell_disable` to restore the
-previous plain-command behavior. The enable step refuses to overwrite an
-existing Claude alias/function or a replaced Codex function. Add
+shell's current directory. Claude management commands (`mcp`, `auth`,
+`plugin`, `doctor`, and the other native first-token subcommands) keep the
+selected project's working directory and local environment, but bypass session
+presets, model/effort injection, and session isolation. Claude authentication
+itself remains native and user-global; the selected project controls project
+settings and MCP definitions, not a separate login. Put the subcommand first;
+for option-before-subcommand forms such as `claude --debug mcp list`, use the
+explicit native escape `command claude`. `command codex` also bypasses routing,
+and `harness_shell_disable` restores the previous plain-command behavior. The
+enable step refuses to overwrite an existing Claude alias/function or a
+replaced Codex function. Add
 `harness_shell_enable` to `.zshrc` after the source and registration lines for
 persistent activation, then start a new shell (or re-source `.zshrc`).
 
