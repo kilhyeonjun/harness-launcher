@@ -37,7 +37,7 @@ HARNESS_NAME="Example harness"
 HARNESS_PREFIX="ex"
 ```
 
-`harness_register` resolves the project to an absolute path, sources `launcher.env`, defines the prefix function, and attaches completion when Zsh's `compdef` is available. `harness-profile register` persists the same prefix as an executable command without copying policy. `harness-auto` reads only those regular registry entries, resolves the canonical current directory, selects the single longest owning boundary, and delegates to `harness-exec`; it never guesses from a repository name or remote.
+`harness_register` resolves the project to an absolute path, sources `launcher.env`, defines the prefix function, and attaches completion when Zsh's `compdef` is available. `harness-profile register` persists the same prefix as an executable command without copying policy. `harness-auto` uses the Python `harness_profile_resolver.py` to read only regular registry entries, resolve the canonical current directory, and select the single longest owning boundary before delegating to `harness-exec`; it never guesses from a repository name or remote. `--explain` uses the same resolver without launching an agent.
 
 Because `launcher.env` is sourced, registration is a trust decision. The launcher does not attempt to parse or sandbox arbitrary shell code in that file.
 
