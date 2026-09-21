@@ -9,6 +9,41 @@ sys.dont_write_bytecode = True
 from harness_profile_resolver import ResolutionError, resolve
 
 
+def validate_codex_working_dirs(args, cwd, harness_root):
+    """Reject explicit Codex working directories outside the selected profile."""
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            break
+        value = None
+        if arg in ("--cd", "-C"):
+            if index + 1 >= len(args):
+                raise ResolutionError(f"{arg} requires a directory")
+            value = args[index + 1]
+            index += 1
+        elif arg.startswith("--cd="):
+            value = arg.split("=", 1)[1]
+
+        if value is not None:
+            target = Path(value)
+            if not target.is_absolute():
+                target = cwd / target
+            try:
+                target = target.resolve(strict=True)
+            except (OSError, RuntimeError):
+                raise ResolutionError(f"Codex working directory is unavailable: {value}")
+            if not target.is_dir():
+                raise ResolutionError(f"Codex working directory is not a directory: {value}")
+            try:
+                target.relative_to(harness_root)
+            except ValueError:
+                raise ResolutionError(
+                    f"Codex working directory is outside selected harness boundary: {value}"
+                )
+        index += 1
+
+
 def main(argv):
     explain = False
     explicit_profile = None
@@ -39,7 +74,10 @@ def main(argv):
         config_home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
         profile_home = str(Path(config_home) / "harness-launcher")
     try:
-        selection = resolve(Path.cwd(), Path(profile_home) / "profiles", explicit_profile)
+        cwd = Path.cwd().resolve(strict=True)
+        selection = resolve(cwd, Path(profile_home) / "profiles", explicit_profile)
+        if agent == "codex":
+            validate_codex_working_dirs(args, cwd, selection.harness_root)
     except ResolutionError as exc:
         print(f"harness-auto: {exc}", file=sys.stderr)
         return 2

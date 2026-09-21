@@ -67,6 +67,27 @@ harness-auto codex --version
 
 `no registered harness contains the current directory` means the Orca worktree is outside every registered harness boundary. Move only the disposable worktree base into the owning harness; do not move the harness or dirty source repository. `ambiguous registered harness boundary` means duplicate registry entries resolve to the same most-specific path and must be corrected before launch.
 
+## Plain `codex` or `claude` does not select a harness
+
+Plain-command routing is opt-in and depends on persistent profile entries:
+
+```zsh
+harness-profile register "/path/to/harness"
+source "$(brew --prefix harness-launcher)/share/harness-launcher/aliases.zsh"
+harness_shell_enable
+```
+
+Place `harness_shell_enable` after the launcher source line in `.zshrc`, then
+run `exec zsh` after upgrading Homebrew. The enable command refuses to replace
+an existing `claude` alias/function or a `codex` function no longer owned by
+the launcher. Remove or rename that collision deliberately; the launcher will
+not do so automatically.
+
+An enabled command outside every registered boundary fails rather than falling
+back to an unscoped runtime. Use `command codex` or `command claude` only when
+that native, unharnessed launch is intentional. `harness_shell_disable` turns
+off routing for the current shell.
+
 ## `codex` reports `ENOENT`
 
 A version-manager shim can exist while its platform package is missing. Check the executable selected by the login shell:

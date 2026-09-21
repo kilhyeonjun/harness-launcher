@@ -6,6 +6,8 @@
 
 _HARNESS_LAUNCHER_BIN="$(cd "$(dirname "${(%):-%x}")" 2>/dev/null && pwd)"
 typeset -ga _HARNESS_LAUNCHER_REGISTERED_DIRS=()
+typeset -gi _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=0
+typeset -g _HARNESS_LAUNCHER_CODEX_WRAPPER_BODY=""
 
 # Single source of truth for mode tables, bin resolution, probes, MCP config
 # validation, secrets export, and autocompact PCT — shared with launcher.sh.
@@ -192,7 +194,29 @@ _harness_launcher_codex_harness_for_args() {
   return 1
 }
 
+_harness_launcher_auto_runtime() {
+  local runtime="$1"; shift
+  local harness_auto="$_HARNESS_LAUNCHER_BIN/harness-auto"
+  [[ -x "$harness_auto" ]] || {
+    echo "harness-launcher: missing executable: $harness_auto" >&2
+    return 2
+  }
+  if [[ "$runtime" == claude ]]; then
+    "$harness_auto" claude base "$@"
+  else
+    "$harness_auto" "$runtime" "$@"
+  fi
+}
+
+_harness_launcher_auto_claude() {
+  _harness_launcher_auto_runtime claude "$@"
+}
+
 codex() {
+  if (( _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED )); then
+    _harness_launcher_auto_runtime codex "$@"
+    return $?
+  fi
   local codex_bin harness_dir broker_started=false
   local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE HARNESS_OTLP_HTTP_ENDPOINT
   local OTEL_RESOURCE_ATTRIBUTES obs_rc
@@ -233,6 +257,50 @@ codex() {
   local rc=$?
   $broker_started && harness_codex_cmux_broker_stop
   return $rc
+}
+
+_HARNESS_LAUNCHER_CODEX_WRAPPER_BODY="$functions[codex]"
+
+harness_shell_enable() {
+  local harness_auto="$_HARNESS_LAUNCHER_BIN/harness-auto"
+  [[ -x "$harness_auto" ]] || {
+    echo "harness_shell_enable: missing executable: $harness_auto" >&2
+    return 2
+  }
+  if alias claude >/dev/null 2>&1; then
+    echo 'harness_shell_enable: claude alias already exists' >&2
+    return 2
+  fi
+  if alias codex >/dev/null 2>&1; then
+    echo 'harness_shell_enable: codex alias already exists' >&2
+    return 2
+  fi
+  if [[ "$functions[codex]" != "$_HARNESS_LAUNCHER_CODEX_WRAPPER_BODY" ]]; then
+    echo 'harness_shell_enable: codex function is not launcher-owned' >&2
+    return 2
+  fi
+  if (( $+functions[claude] )) && \
+      [[ "$functions[claude]" != "$functions[_harness_launcher_auto_claude]" ]]; then
+    echo 'harness_shell_enable: claude function already exists' >&2
+    return 2
+  fi
+
+  if (( ! $+functions[claude] )); then
+    functions -c _harness_launcher_auto_claude claude || return 2
+  fi
+  typeset -g _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=1
+}
+
+harness_shell_disable() {
+  typeset -g _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=0
+  if (( $+functions[claude] )); then
+    if [[ "$functions[claude]" == "$functions[_harness_launcher_auto_claude]" ]]; then
+      unfunction claude
+    else
+      echo 'harness_shell_disable: claude function is no longer launcher-owned; preserved it' >&2
+      return 2
+    fi
+  fi
 }
 
 # harness_register <harness-dir>
