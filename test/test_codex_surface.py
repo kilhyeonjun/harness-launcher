@@ -1461,8 +1461,12 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
         self.assertEqual(self.compiler_calls(), 2)
 
-    def test_astra_profile_survives_warm_prepare_and_repairs_drift(self):
+    def test_opt_in_profiles_survive_warm_prepare_and_repair_drift(self):
         self.prepare()
+        luna6 = self.codex_home / "luna6.config.toml"
+        sol6 = self.codex_home / "sol6.config.toml"
+        self.assertEqual(tomllib.loads(luna6.read_text()), {"model": "gpt-6-luna", "model_reasoning_effort": "low"})
+        self.assertEqual(tomllib.loads(sol6.read_text()), {"model": "gpt-6-sol", "model_reasoning_effort": "medium"})
         profile = self.codex_home / "astra.config.toml"
         expected = {"model": "gpt-6-astra", "model_reasoning_effort": "medium"}
         self.assertEqual(tomllib.loads(profile.read_text()), expected)
@@ -1472,16 +1476,20 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
         self.assertEqual(self.compiler_calls(), 1)
         self.assertEqual(profile.stat().st_mtime_ns, before)
-        profile.write_text('model = "wrong-model"\n')
+        sol6.unlink()
         self.prepare()
         self.assertEqual(self.compiler_calls(), 2)
+        self.assertEqual(tomllib.loads(sol6.read_text())["model"], "gpt-6-sol")
+        profile.write_text('model = "wrong-model"\n')
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3)
         self.assertEqual(tomllib.loads(profile.read_text()), expected)
         profile.unlink()
         self.prepare()
-        self.assertEqual(self.compiler_calls(), 3)
+        self.assertEqual(self.compiler_calls(), 4)
         self.assertEqual(tomllib.loads(profile.read_text()), expected)
         self.prepare()
-        self.assertEqual(self.compiler_calls(), 3)
+        self.assertEqual(self.compiler_calls(), 4)
 
     def test_preflight_failure_preserves_every_managed_output(self):
         self.prepare()
@@ -1498,6 +1506,7 @@ out.mkdir(parents=True, exist_ok=True)
                 "config.toml",
                 "fast.config.toml",
                 "hooks.json",
+                "luna6.config.toml",
                 "plan.config.toml",
                 "plugins/cache/openai-bundled/browser",
                 "plugins/cache/openai-bundled/chrome",
@@ -1510,6 +1519,7 @@ out.mkdir(parents=True, exist_ok=True)
                 "skills/brainstorming",
                 "skills/project-explicit",
                 "sol.config.toml",
+                "sol6.config.toml",
                 "surface.config.toml",
             ],
         )
@@ -2665,7 +2675,7 @@ class SurfaceInspectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             for name in ("AGENTS.md", "hooks.json", "skill-catalog.json", "surface.config.toml",
-                         "fast.config.toml", "base.config.toml", "sol.config.toml", "astra.config.toml",
+                         "fast.config.toml", "base.config.toml", "sol.config.toml", "luna6.config.toml", "sol6.config.toml", "astra.config.toml",
                          "plan.config.toml", "rich.config.toml", "skills/.harness-managed"):
                 path = home / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -2689,7 +2699,7 @@ class SurfaceInspectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             for name in ("AGENTS.md", "hooks.json", "skill-catalog.json", "surface.config.toml",
-                         "fast.config.toml", "base.config.toml", "sol.config.toml", "astra.config.toml",
+                         "fast.config.toml", "base.config.toml", "sol.config.toml", "luna6.config.toml", "sol6.config.toml", "astra.config.toml",
                          "plan.config.toml", "rich.config.toml", "skills/.harness-managed"):
                 path = home / name
                 path.parent.mkdir(parents=True, exist_ok=True)

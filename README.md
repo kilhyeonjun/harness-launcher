@@ -319,6 +319,8 @@ on Codex 0.152.0+ where it defaults to disabled. See [native task progress](docs
 | `fast` | Haiku, low effort | GPT-5.6 Luna, low effort | Small edits and quick checks |
 | `base` | Sonnet | GPT-5.6 Terra, medium effort | Everyday work — recommended default |
 | `sol` (Codex only) | — | GPT-5.6 Sol, medium effort | Stronger main model — slower |
+| `luna6` (Codex only) | — | GPT-6 Luna, low effort | Focused tasks, opt-in evaluation |
+| `sol6` (Codex only) | — | GPT-6 Sol, medium effort | Complex coding, opt-in evaluation |
 | `fable` (Claude direct only) | Fable, high effort | — | Explicit frontier-model selection |
 | `astra` (Codex only) | — | GPT-6 Astra, medium effort | Explicit frontier-model selection |
 | `plan` | Opus Plan | GPT-5.6 Sol, high effort, read-only | Investigation and planning |
@@ -329,7 +331,7 @@ These are task-oriented operational presets, not claims about OpenAI's model def
 
 Use `<prefix> fable` for Claude Code's opt-in `fable` alias with `high` effort, or select Fable in the direct TUI preset or Custom model menus. Existing numbered choices stay stable; the Fable preset is appended after Custom. Effort tokens still override the preset, for example `<prefix> fable xhigh`. The launcher rejects this preset on Kiro and Codex gateways. The alias follows the installed Claude Code runtime and any `ANTHROPIC_DEFAULT_FABLE_MODEL` override; availability remains account-dependent. As of September 8, 2026, Claude Code v2.1.255+ resolves it to Fable 5.1 by default ([official model configuration](https://code.claude.com/docs/en/model-config)).
 
-Use `<prefix> codex astra` for the opt-in native profile. The default remains Terra and `sol` remains Sol; do not rename the model inside a generated `sol.config.toml`, because preparation restores launcher-owned profiles. Astra availability and the loaded model/effort must be verified in the selected Codex account. No API probe or silent model fallback is added.
+Use `<prefix> codex luna6`, `<prefix> codex sol6`, or `<prefix> codex astra` for opt-in native profiles. The default remains Terra, `fast` remains GPT-5.6 Luna, and `sol` remains GPT-5.6 Sol. Do not rename models inside generated profile files: preparation restores launcher-owned profiles. Availability and the loaded model/effort must be verified in the selected Codex account. No API probe or silent model fallback is added.
 
 The main profile does not downgrade reviewers: reviewer subagents route independently to Sol/medium by default and may explicitly escalate effort for unusually risky work.
 
@@ -366,7 +368,7 @@ Kiro CLI ignores `headers` on http transport and falls back to OAuth discovery, 
 Before each native Codex launch, `bin/codex-home-prepare.sh` prepares an isolated `CODEX_HOME` under `<project>/.harness/codex`:
 
 - `config.toml` with project MCP servers and the default Terra/medium route
-- `fast.config.toml`, `base.config.toml`, `sol.config.toml`, `plan.config.toml`, `rich.config.toml`, and `astra.config.toml`
+- `fast.config.toml`, `base.config.toml`, `sol.config.toml`, `luna6.config.toml`, `sol6.config.toml`, `plan.config.toml`, `rich.config.toml`, and `astra.config.toml`
 - generated `AGENTS.md`
 - exact manifest-selected skills and MCP flags, or legacy merged links when no surface manifest exists
 - project-scoped sessions and history

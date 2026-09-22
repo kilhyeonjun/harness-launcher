@@ -142,6 +142,10 @@ for p in fast base sol plan rich astra; do
   fi
 done
 grep -q '^model = "gpt-6-astra"' "$CODEX_HOME/astra.config.toml" || { echo "FAIL: astra model"; exit 1; }
+grep -q '^model = "gpt-6-luna"' "$CODEX_HOME/luna6.config.toml" || { echo "FAIL: luna6 model"; exit 1; }
+grep -q '^model_reasoning_effort = "low"' "$CODEX_HOME/luna6.config.toml" || { echo "FAIL: luna6 effort"; exit 1; }
+grep -q '^model = "gpt-6-sol"' "$CODEX_HOME/sol6.config.toml" || { echo "FAIL: sol6 model"; exit 1; }
+grep -q '^model_reasoning_effort = "medium"' "$CODEX_HOME/sol6.config.toml" || { echo "FAIL: sol6 effort"; exit 1; }
 grep -q '^model_reasoning_effort = "medium"' "$CODEX_HOME/astra.config.toml" || { echo "FAIL: astra effort"; exit 1; }
 grep -q '^model = "gpt-5.6-luna"' "$CODEX_HOME/fast.config.toml" || { echo "FAIL: fast model should use Luna"; exit 1; }
 grep -q '^model = "gpt-5.6-terra"' "$CODEX_HOME/base.config.toml" || { echo "FAIL: base model should use Terra"; exit 1; }

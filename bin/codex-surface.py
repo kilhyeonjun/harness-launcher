@@ -1590,6 +1590,8 @@ SURFACE_FIXED_OUTPUTS = (
     "fast.config.toml",
     "base.config.toml",
     "sol.config.toml",
+    "luna6.config.toml",
+    "sol6.config.toml",
     "astra.config.toml",
     "plan.config.toml",
     "rich.config.toml",
@@ -1606,6 +1608,7 @@ MANAGED_OUTPUT_ROOTS = (
     "config.toml",
     "fast.config.toml",
     "hooks.json",
+    "luna6.config.toml",
     "plan.config.toml",
     "plugins/cache/openai-bundled/browser",
     "plugins/cache/openai-bundled/chrome",
@@ -1615,6 +1618,7 @@ MANAGED_OUTPUT_ROOTS = (
     "skills/.harness-managed",
     "skills/.harness-managed-cmds",
     "sol.config.toml",
+    "sol6.config.toml",
     "surface.config.toml",
 )
 

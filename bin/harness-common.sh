@@ -133,7 +133,7 @@ harness_session_isolation_default_route() {
           resume|continue|fork) printf '%s\n' reject; return 0 ;;
           agents|exec|e|review|login|logout|mcp|plugin|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help|-h|--help|-V|--version)
             printf '%s\n' legacy; return 0 ;;
-          fast|base|sol|plan|rich|astra|work|272k|1m|happy|full-auto|never|bypass) ;;
+          fast|base|sol|luna6|sol6|plan|rich|astra|work|272k|1m|happy|full-auto|never|bypass) ;;
           -c|--config|--enable|--disable|--remote|--remote-auth-token-env|-i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval|--app)
             [ "$#" -gt 0 ] && shift || { printf '%s\n' invalid; return 0; }
             ;;
