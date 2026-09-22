@@ -4,6 +4,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- Shorten the Codex surface test stage by overlapping its reviewed serial
+  safety group with three isolated private-fixture shards. New tests still run
+  through a serial gate, and the original one-job route remains available.
+
 - Add native Codex `luna6` and `sol6` opt-in profiles for GPT-6 Luna/low and
   GPT-6 Sol/medium. Keep existing defaults, profiles, and subagent routing.
 
