@@ -433,21 +433,23 @@ cd harness-launcher
 ```
 
 The suite dispatches each test through its declared Bash or Zsh interpreter.
-Codex surface tests run unlisted and safety-sensitive cases serially, then run
-36 reviewed private-HOME metadata/configuration tests in at most two subprocess
-shards. Every test keeps its own repo, generated home, lock and compiler counter;
-the actual prepare and publication assertions are unchanged. New tests stay
-serial until reviewed in `test/surface_test_runner.py`.
+Codex surface tests run new/unlisted cases first in a serial gate. Reviewed
+publication, signal, auth, and revocation cases then stay serial with each other
+in one subprocess while 36 reviewed private-HOME metadata/configuration cases
+run in up to three shards. Every integration test keeps its own repo, generated
+home, lock, and compiler counter; the prepare and publication assertions are
+unchanged. New tests remain in the serial gate until reviewed in
+`test/surface_test_runner.py`. A failing gate prevents all reviewed groups from
+starting.
 
 Use `HARNESS_SURFACE_TEST_JOBS=1 ./test/test-codex-surface.sh` for the original
-serial unittest command. The default is 2; larger values are rejected. The
-runner reports group and total wall time and preserves each group's failure
-output. `--report PATH` writes machine-readable group and individual-test wall
-times when invoking the Python runner directly. In one same-host full-suite
-comparison, expanding the reviewed set reduced the serial group from 63 tests
-in 316.6 seconds to 41 tests in 86.6 seconds, and total wall time from 353.9
-seconds to 172.8 seconds. Host load varies, so these are observations, not a
-speed guarantee.
+serial unittest command. The default is three private shards plus the reviewed
+serial subprocess (up to four group subprocesses); `1` and `2` remain supported,
+and larger values are rejected. The runner reports group and total wall time,
+planned versus executed test counts, and each group's failure output. `--report
+PATH` writes machine-readable group and individual-test wall times when invoking
+the Python runner directly. Host load varies, so measured times are not a speed
+guarantee.
 
 The Codex home integration suite runs its config/skills, hooks, and generated
 surface groups with isolated temporary homes. The default is three concurrent

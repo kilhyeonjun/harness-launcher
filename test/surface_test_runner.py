@@ -3,9 +3,10 @@
 
 Each allowlisted method uses PrepareIntegrationTests.setUp's private HOME,
 repo, CODEX_HOME, compiler counter and lock. These methods change fixture
-metadata/configuration only. Publication, signal, auth and revocation tests,
-and all future/unlisted tests, remain serial. Weights balance work; they are
-approximate prepare counts, never measured timing claims.
+metadata/configuration only. Future/unlisted tests finish before parallel work.
+Reviewed publication, signal, auth and revocation tests stay serial with each
+other in one subprocess, but may overlap private-fixture shards. Weights balance
+work; they are approximate prepare counts, never measured timing claims.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -59,6 +60,52 @@ ALLOWLIST = [
     ('PrepareIntegrationTests.test_manifest_explicit_command_remains_callable_without_prompt_exposure', 1),
 ]
 
+# Exact reviewed serial set: no new test can overlap shards without a review.
+# These cases retain their original order and one-process safety boundary.
+REVIEWED_SERIAL = [
+    'CoordinationTimeoutTests.test_coordination_timeout_accepts_bounded_integer_override',
+    'CoordinationTimeoutTests.test_coordination_timeout_defaults_to_30_seconds',
+    'CoordinationTimeoutTests.test_coordination_timeout_rejects_non_integer_or_out_of_range_override',
+    'PrepareIntegrationTests.test_apps_allowlist_changes_rebuild_once_and_revoke_permissions',
+    'PrepareIntegrationTests.test_candidate_failure_and_signal_preserve_managed_and_runtime_state',
+    'PrepareIntegrationTests.test_concurrent_auth_create_wins_post_publish_repair',
+    'PrepareIntegrationTests.test_concurrent_runtime_config_write_is_merged_before_publish',
+    'PrepareIntegrationTests.test_existing_auth_file_is_never_overwritten_on_warm_prepare',
+    'PrepareIntegrationTests.test_external_agent_allowlist_does_not_preserve_other_files_or_symlinks',
+    'PrepareIntegrationTests.test_external_agent_broken_and_directory_symlinks_force_quarantine',
+    'PrepareIntegrationTests.test_failure_after_first_of_two_quarantines_restores_both_conflicts',
+    'PrepareIntegrationTests.test_fresh_home_gets_auth_symlink_without_managing_auth',
+    'PrepareIntegrationTests.test_legacy_command_marker_cannot_escape_skills_directory',
+    'PrepareIntegrationTests.test_local_publish_failure_rolls_back_global_marketplace',
+    'PrepareIntegrationTests.test_new_unapproved_plugin_invalidates_and_is_disabled',
+    'PrepareIntegrationTests.test_new_unlisted_codex_only_skill_invalidates_empty_default_profile',
+    'PrepareIntegrationTests.test_outer_terminate_after_first_of_two_quarantines_rolls_back_transaction',
+    'PrepareIntegrationTests.test_poisoned_agent_marker_quarantines_unowned_agent_and_next_prepare_is_warm',
+    'PrepareIntegrationTests.test_poisoned_managed_marker_quarantines_unowned_skill',
+    'PrepareIntegrationTests.test_preflight_failure_preserves_every_managed_output',
+    'PrepareIntegrationTests.test_publish_failure_rolls_back_every_managed_output',
+    'PrepareIntegrationTests.test_quarantine_destination_race_preserves_concurrent_entry',
+    'PrepareIntegrationTests.test_signal_after_global_exchange_rolls_back_global_marketplace',
+    'PrepareIntegrationTests.test_success_publishes_managed_outputs_without_touching_runtime_state',
+    'PrepareIntegrationTests.test_unowned_generated_skill_is_quarantined_and_next_prepare_is_warm',
+    'ResolverTests.test_design_profile_is_exact_and_missing_source_fails',
+    'ResolverTests.test_divergent_duplicate_requires_manifest_choice',
+    'ResolverTests.test_enabled_without_definition_is_dropped_not_fatal',
+    'ResolverTests.test_exact_mcp_profiles_validate_required_servers',
+    'ResolverTests.test_exact_resolution_explicit_policy_and_managed_pruning',
+    'ResolverTests.test_global_allowlist_duplicate_with_each_json_source_fails',
+    'ResolverTests.test_global_allowlist_duplicate_with_product_source_fails',
+    'ResolverTests.test_identical_selected_duplicates_follow_source_precedence',
+    'ResolverTests.test_mcp_profile_policies_reject_invalid_shapes_and_membership',
+    'ResolverTests.test_mcp_profile_runtime_policy_is_preserved_in_catalog',
+    'ResolverTests.test_product_managed_mcp_policy_without_emitted_definition_fails',
+    'SurfaceInspectionTests.test_inspection_distinguishes_metadata_trust_and_managed_settings',
+    'SurfaceInspectionTests.test_missing_profile_never_falls_back_and_malformed_config_is_redacted',
+    'SurfaceInspectionTests.test_profile_overlay_is_read_only_and_omits_secrets',
+    'SurfaceInspectionTests.test_stamp_consistency_detects_changed_and_deleted_outputs',
+    'WarmIdentityTests.test_directory_enumeration_failure_requests_cold_rebuild',
+]
+
 
 def discover():
     sys.path.insert(0, str(ROOT / 'test'))
@@ -72,29 +119,38 @@ def discover():
     return list(flatten(unittest.defaultTestLoader.loadTestsFromModule(module)))
 
 
-def partition(discovered, allowlist, jobs, selected=None):
+def partition(discovered, allowlist, jobs, selected=None, reviewed_serial=()):
     allowed = [name for name, _ in allowlist]
-    if jobs not in (1, 2):
-        raise ValueError('surface test jobs must be 1 or 2')
-    if len(discovered) != len(set(discovered)) or len(allowed) != len(set(allowed)):
-        raise ValueError('duplicate test ID in discovery or allowlist')
-    if set(allowed) - set(discovered):
-        raise ValueError('stale allowlist test IDs: ' + ', '.join(sorted(set(allowed) - set(discovered))))
+    reviewed = list(reviewed_serial)
+    if jobs not in (1, 2, 3):
+        raise ValueError('surface test jobs must be 1, 2 or 3')
+    if (len(discovered) != len(set(discovered)) or len(allowed) != len(set(allowed))
+            or len(reviewed) != len(set(reviewed))):
+        raise ValueError('duplicate test ID in discovery or registry')
+    missing = (set(allowed) | set(reviewed)) - set(discovered)
+    if missing:
+        raise ValueError('stale registry test IDs: ' + ', '.join(sorted(missing)))
+    overlap = set(allowed) & set(reviewed)
+    if overlap:
+        raise ValueError('test IDs in both reviewed registries: ' + ', '.join(sorted(overlap)))
     names = list(discovered if selected is None else selected)
     if len(names) != len(set(names)) or set(names) - set(discovered):
         raise ValueError('unknown or duplicate selected test ID')
     if jobs == 1:
         return [('serial', names)]
-    serial = [name for name in names if name not in allowed]
-    shards, weights = [[], []], [0, 0]
+    future = [name for name in names if name not in allowed and name not in reviewed]
+    serial = [name for name in names if name in reviewed]
+    shards, weights = [[] for _ in range(jobs)], [0] * jobs
     for name, weight in sorted(allowlist, key=lambda item: (-item[1], item[0])):
         if name not in names:
             continue
         index = weights.index(min(weights))
         shards[index].append(name)
         weights[index] += weight
-    groups = [('serial', serial)] + [(f'shard-{index + 1}', sorted(shard))
-                                     for index, shard in enumerate(shards) if shard]
+    groups = [('future-serial', future), ('reviewed-serial', serial)] + [
+        (f'shard-{index + 1}', sorted(shard))
+        for index, shard in enumerate(shards) if shard
+    ]
     assigned = [name for _, group in groups for name in group]
     if len(assigned) != len(names) or set(assigned) != set(names):
         raise ValueError('incomplete surface test partition')
@@ -108,6 +164,8 @@ def run_group(label, names, full=False):
         command += names
     start = time.monotonic()
     tests = []
+    timing_error = None
+    timing_complete = False
     with tempfile.TemporaryDirectory(prefix='surface-test-timing.') as directory:
         timing_report = Path(directory) / 'tests.json'
         environment = dict(os.environ)
@@ -116,26 +174,43 @@ def run_group(label, names, full=False):
             result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
                                     env=environment)
             code, stdout, stderr = result.returncode, result.stdout, result.stderr
-            if timing_report.is_file():
-                payload = json.loads(timing_report.read_text(encoding='utf-8'))
-                tests = payload.get('tests', [])
-        except (OSError, json.JSONDecodeError) as error:
+        except OSError as error:
             code, stdout, stderr = 127, '', str(error)
-    return dict(label=label, test_count=len(names), returncode=code, stdout=stdout,
-                stderr=stderr, elapsed_s=time.monotonic() - start, tests=tests)
+        try:
+            if not timing_report.is_file():
+                raise ValueError('timing report missing')
+            else:
+                payload = json.loads(timing_report.read_text(encoding='utf-8'))
+                if not isinstance(payload, dict) or payload.get('schema_version') != 1 or not isinstance(payload.get('tests'), list):
+                    raise ValueError('timing report has invalid schema')
+                tests = payload['tests']
+                timing_complete = True
+        except (OSError, ValueError) as error:
+            timing_error = f'timing report unavailable: {error}'
+            stderr += ('\n' if stderr and not stderr.endswith('\n') else '') + timing_error + '\n'
+            if code == 0:
+                code = 127
+    return dict(label=label, test_count=len(names),
+                executed_count=len(tests) if timing_complete else None,
+                returncode=code, stdout=stdout, stderr=stderr,
+                elapsed_s=time.monotonic() - start, tests=tests,
+                timing_complete=timing_complete, timing_error=timing_error)
 
 
 def execute(groups, run=run_group):
     reports = []
-    serial_label, serial = groups[0]
-    if serial:
-        print(f'==> {serial_label}: {len(serial)} tests', flush=True)
-        reports.append(run(serial_label, serial))
-    parallel = groups[1:]
+    gate = next((group for group in groups if group[0] in ('serial', 'future-serial')), None)
+    if gate and gate[1]:
+        print(f'==> {gate[0]}: {len(gate[1])} tests', flush=True)
+        reports.append(run(*gate))
+        if gate[0] == 'future-serial' and not successful(reports):
+            return reports
+    parallel = [(label, names) for label, names in groups
+                if label not in ('serial', 'future-serial') and names]
     if parallel:
         for label, names in parallel:
             print(f'==> {label}: {len(names)} tests', flush=True)
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        with ThreadPoolExecutor(max_workers=len(parallel)) as pool:
             reports.extend(pool.map(lambda group: run(*group), parallel))
     return reports
 
@@ -144,16 +219,24 @@ def successful(reports):
     return all(report['returncode'] == 0 for report in reports)
 
 
+def make_summary(jobs, groups, reports, elapsed_s):
+    planned = sum(len(group) for _, group in groups)
+    counts = [report.get('executed_count', report.get('test_count')) for report in reports]
+    executed = None if None in counts else sum(counts)
+    return dict(jobs=jobs, selected_tests=planned, planned_tests=planned,
+                executed_tests=executed, elapsed_s=elapsed_s, groups=reports)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--jobs', type=int, choices=(1, 2), default=os.environ.get('HARNESS_SURFACE_TEST_JOBS', '2'))
+    parser.add_argument('--jobs', type=int, choices=(1, 2, 3), default=os.environ.get('HARNESS_SURFACE_TEST_JOBS', '3'), help='private shards (plus one reviewed-serial subprocess)')
     parser.add_argument('--test', action='append', help='run a validated subset (repeatable)')
     parser.add_argument('--report', type=Path, help='write group timing/status JSON')
     args = parser.parse_args()
     started = time.monotonic()
     try:
         names = discover()
-        groups = partition(names, ALLOWLIST, args.jobs, args.test)
+        groups = partition(names, ALLOWLIST, args.jobs, args.test, REVIEWED_SERIAL)
     except ValueError as error:
         parser.error(str(error))
     full = args.jobs == 1 and args.test is None
@@ -162,11 +245,11 @@ def main():
         print(f"--- {report['label']} ({report['elapsed_s']:.3f}s, exit={report['returncode']}) ---", flush=True)
         print(report['stdout'], end='')
         print(report['stderr'], end='', file=sys.stderr)
-    summary = dict(jobs=args.jobs, selected_tests=sum(len(group) for _, group in groups),
-                   elapsed_s=time.monotonic() - started, groups=reports)
+    summary = make_summary(args.jobs, groups, reports, time.monotonic() - started)
     if args.report:
         args.report.write_text(json.dumps(summary, indent=2) + '\n')
-    print(f"SURFACE_TEST_TOTAL seconds={summary['elapsed_s']:.3f} tests={summary['selected_tests']} jobs={args.jobs}")
+    executed = 'unknown' if summary['executed_tests'] is None else summary['executed_tests']
+    print(f"SURFACE_TEST_TOTAL seconds={summary['elapsed_s']:.3f} tests={executed} planned={summary['planned_tests']} jobs={args.jobs}")
     return 0 if successful(reports) else 1
 
 
