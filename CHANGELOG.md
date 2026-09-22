@@ -4,6 +4,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- Add native Codex `luna6` and `sol6` opt-in profiles for GPT-6 Luna/low and
+  GPT-6 Sol/medium. Keep existing defaults, profiles, and subagent routing.
+
 - Pass each profile's existing local MCP credentials to Claude sessions launched
   from nested projects, including direct, light, TUI, and isolated routes. Keep
   credentials scoped to the Claude child and suppress shell tracing while

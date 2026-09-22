@@ -53,6 +53,8 @@ Before launch, `codex-home-prepare.sh` converges:
 ├── fast.config.toml
 ├── base.config.toml
 ├── sol.config.toml
+├── luna6.config.toml
+├── sol6.config.toml
 ├── astra.config.toml
 ├── plan.config.toml
 ├── rich.config.toml
@@ -108,20 +110,23 @@ Current routing:
 | fast | GPT-5.6 Luna | low | Runtime defaults | Quick, shallow work |
 | base | GPT-5.6 Terra | medium | Runtime defaults | Everyday work — recommended default |
 | sol | GPT-5.6 Sol | medium | Runtime defaults | Stronger main model — slower |
+| luna6 | GPT-6 Luna | low | Runtime defaults | Focused tasks — opt-in evaluation |
+| sol6 | GPT-6 Sol | medium | Runtime defaults | Complex coding — opt-in evaluation |
 | astra | GPT-6 Astra | medium | Runtime defaults | Explicit frontier-model selection |
 | plan | GPT-5.6 Sol | high | read-only, on-request | Deep planning — slower |
 | rich | GPT-5.6 Sol | high | Runtime defaults | Deep work — slowest normal preset |
 
 These profiles are task-oriented operational presets, not OpenAI default-effort claims. This launcher deliberately uses Luna/low for the speed preset and Sol/high for the deep plan and rich presets; an unscoped model picker may use a different general starting effort. Effort can still be overridden independently in native Codex. Reserve max or multi-agent ultra execution for exceptional workloads rather than normal profile defaults.
 
-`<prefix> codex astra` selects the native Astra profile explicitly. It is also
-available as the last Profile menu entry, preserving existing numeric choices.
+`<prefix> codex astra`, `<prefix> codex luna6`, and `<prefix> codex sol6` select
+their native profiles explicitly. Luna6 and Sol6 follow Astra in the Profile
+menu, preserving existing numeric choices.
 The menu reads the generated model and effort; native `--model` and `-c` options
 still pass through. Availability is enforced by the selected Codex CLI/account;
 the launcher does not issue a paid readiness probe or silently fall back.
 `sol` remains Sol. A prior manual Astra edit to generated `sol.config.toml` is
 restored on preparation; select `astra` instead for a persistent launch choice.
-The new profile participates in atomic publication and warm-cache drift repair.
+The opt-in profiles participate in atomic publication and warm-cache drift repair.
 
 The main profile does not downgrade reviewers: reviewer subagents route independently to Sol/medium by default and may explicitly escalate effort for unusually risky work.
 
@@ -374,6 +379,8 @@ command through `/hooks` when Codex requests it.
 ```text
 <prefix> codex                 new session with base profile
 <prefix> codex fast            new session with fast profile
+<prefix> codex luna6           new session with GPT-6 Luna at low effort
+<prefix> codex sol6            new session with GPT-6 Sol at medium effort
 <prefix> codex astra           new session with Astra at medium effort
 <prefix> codex base 1m         explicit long-context session
 <prefix> codex [profile] work   new session with the work MCP surface (any profile)

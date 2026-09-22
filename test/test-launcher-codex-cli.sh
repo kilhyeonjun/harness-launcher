@@ -238,6 +238,8 @@ run_session() {
 run_mode "fast" "fast" || exit 1
 run_mode "base" "base" || exit 1
 run_mode "sol" "sol" || exit 1
+run_mode "luna6" "luna6" || exit 1
+run_mode "sol6" "sol6" || exit 1
 run_mode "astra" "astra" || exit 1
 run_mode "plan" "plan" || exit 1
 run_mode "rich" "rich" || exit 1
@@ -256,6 +258,23 @@ case "$(get_field ARGV "$ASTRA_ARGS_STUB")" in
   *) echo 'FAIL: Astra must preserve native model and effort overrides'; exit 1 ;;
 esac
 echo 'PASS: Astra prompt and native override arguments'
+
+for profile_keyword in luna6 sol6; do
+  PROFILE_ARGS_STUB="$TEST_TEMP/$profile_keyword-arguments.txt"
+  : > "$PROFILE_ARGS_STUB"
+  run_codex "$PROFILE_ARGS_STUB" exec "$profile_keyword"
+  case "$(get_field ARGV "$PROFILE_ARGS_STUB")" in
+    *"-p base exec $profile_keyword"*) ;;
+    *) echo "FAIL: exec $profile_keyword must preserve prompt text"; exit 1 ;;
+  esac
+  : > "$PROFILE_ARGS_STUB"
+  run_codex "$PROFILE_ARGS_STUB" base --model "$profile_keyword"
+  case "$(get_field ARGV "$PROFILE_ARGS_STUB")" in
+    *"-p base --model $profile_keyword"*) ;;
+    *) echo "FAIL: --model $profile_keyword must preserve native option value"; exit 1 ;;
+  esac
+done
+echo 'PASS: GPT-6 profile keywords preserve native prompts and option values'
 
 # The dynamically scoped prefix is exported only for the native launch. It
 # must not create a global parameter after the launcher function returns.

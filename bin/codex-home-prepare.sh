@@ -1250,6 +1250,12 @@ write_profile base \
 write_profile sol \
   'model = "gpt-5.6-sol"' \
   'model_reasoning_effort = "medium"'
+write_profile luna6 \
+  'model = "gpt-6-luna"' \
+  'model_reasoning_effort = "low"'
+write_profile sol6 \
+  'model = "gpt-6-sol"' \
+  'model_reasoning_effort = "medium"'
 write_profile astra \
   'model = "gpt-6-astra"' \
   'model_reasoning_effort = "medium"'

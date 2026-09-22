@@ -468,6 +468,8 @@ codex_profile_intent() {
   case "$1" in
     base) printf '%s\n' 'Everyday · Recommended' ;;
     sol)  printf '%s\n' 'Stronger · slower' ;;
+    luna6) printf '%s\n' 'Focused · opt-in' ;;
+    sol6) printf '%s\n' 'Coding · opt-in' ;;
     astra) printf '%s\n' 'Frontier · opt-in' ;;
     rich) printf '%s\n' 'Deep · slowest' ;;
     fast) printf '%s\n' 'Quick · shallow' ;;
@@ -777,11 +779,15 @@ collect_codex() {
           "🌞 $(codex_profile_label sol)" \
           "🗺️  $(codex_profile_label plan)" \
           "🧠 $(codex_profile_label rich)" \
-          "✨ $(codex_profile_label astra)" || { step=session; continue; }
+          "✨ $(codex_profile_label astra)" \
+          "🌙 $(codex_profile_label luna6)" \
+          "☀️  $(codex_profile_label sol6)" || { step=session; continue; }
         case "$MENU_RESULT" in
           "⚡"*) CHOICE_CODEX_PROFILE="fast" ;;
           "🌞"*) CHOICE_CODEX_PROFILE="sol" ;;
           "✨"*) CHOICE_CODEX_PROFILE="astra" ;;
+          "🌙"*) CHOICE_CODEX_PROFILE="luna6" ;;
+          "☀️"*) CHOICE_CODEX_PROFILE="sol6" ;;
           "🗺"*) CHOICE_CODEX_PROFILE="plan" ;;
           "🧠"*) CHOICE_CODEX_PROFILE="rich" ;;
           *)     CHOICE_CODEX_PROFILE="base" ;;

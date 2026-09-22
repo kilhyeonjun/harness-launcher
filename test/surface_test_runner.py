@@ -32,7 +32,7 @@ ALLOWLIST = [
     ('PrepareIntegrationTests.test_fixture_environment_removes_inherited_surface_overrides', 2),
     ('PrepareIntegrationTests.test_nonlogin_system_python_path_falls_back_to_homebrew_python', 1),
     ('PrepareIntegrationTests.test_curated_metadata_rewrite_stays_warm_but_new_version_invalidates', 3),
-    ('PrepareIntegrationTests.test_astra_profile_survives_warm_prepare_and_repairs_drift', 3),
+    ('PrepareIntegrationTests.test_opt_in_profiles_survive_warm_prepare_and_repair_drift', 3),
     ('PrepareIntegrationTests.test_invalid_live_config_fails_preflight_before_staging', 1),
     ('PrepareIntegrationTests.test_hook_commands_shell_quote_special_harness_path', 1),
     ('PrepareIntegrationTests.test_context_management_capability_change_rebuilds_once_then_stays_warm', 3),
