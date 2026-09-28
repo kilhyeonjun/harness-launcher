@@ -147,7 +147,7 @@ argv_check '"alwaysThinkingEnabled" not in s' || fail "high effort must not forc
 argv_check "sorted(vals('--add-dir')) == sorted(['$HOME_DIR/.claude/plugins', '$HOME_DIR/.claude/skills'])" || fail "--add-dir must list only existing ~/.claude config subdirectories"
 argv_check '"--cwd" not in a and "--mcp-config" not in a and not any("bypass" in x.lower() for x in a) and "--allowedTools" not in a' || fail "forbidden argument present"
 [[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" == 1 ]] || fail "stdout must be exactly one status line: $out"
-[[ "$out" == "checkup prompt-audit: ok report=$REPORTS/prompt-audit-"*".md cost_usd=1.25 duration_s=4.5 turns=7 denials=0" ]] || fail "unexpected status line: $out"
+[[ "$out" =~ ^"checkup prompt-audit: ok report=$REPORTS/prompt-audit-"[^\ ]*".md cost_usd=1.25 duration_s="[0-9]+" turns=7 denials=0"$ ]] || fail "unexpected status line: $out"
 md="${out#*report=}"; md="${md%% cost_usd=*}"
 [[ -f "$md" ]] || fail "report file missing: $md"
 grep -Fq "$BODY" "$md" || fail "report file does not contain the result"

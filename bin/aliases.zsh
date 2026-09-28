@@ -832,7 +832,9 @@ PY
   fi
 
   echo "checkup prompt-audit: running at $HARNESS_DIR (model=$model effort=$effort budget=\$$budget); this can take several minutes" >&2
-  local rc=0
+  # Claude's duration_ms leaves out time spent waiting on subagents; report the
+  # launcher's own wall-clock time.
+  local rc=0 started=$SECONDS
   (
     cd "$HARNESS_DIR" || exit $?
     # A caller launched through a gateway profile must not route this harness's
@@ -860,6 +862,7 @@ PY
       --output-format json --max-budget-usd "$budget" --no-session-persistence \
       < /dev/null > "$base.json" 2> "$base.stderr"
   ) || rc=$?
+  local duration=$(( SECONDS - started ))
   [[ -s "$base.stderr" ]] || rm -f "$base.stderr"
 
   local extra=""
@@ -875,8 +878,8 @@ PY
   fi
   [[ -f "$base.stderr" ]] && extra=" stderr=$base.stderr$extra"
 
-  local state subtype cost duration turns denials
-  IFS=$'\t' read -r state subtype cost duration turns denials < <("$py" - "$base.json" "$base.md" <<'PY'
+  local state subtype cost turns denials
+  IFS=$'\t' read -r state subtype cost turns denials < <("$py" - "$base.json" "$base.md" <<'PY'
 import json, os, sys
 raw, md = sys.argv[1], sys.argv[2]
 try:
@@ -898,11 +901,10 @@ ok = d.get("is_error") is False and subtype == "success" and wrote
 if not ok and subtype == "success":
     subtype = "error" if d.get("is_error") else "empty result"
 num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
-cost, dur, turns = d.get("total_cost_usd"), d.get("duration_ms"), d.get("num_turns")
+cost, turns = d.get("total_cost_usd"), d.get("num_turns")
 print("\t".join([
     "ok" if ok else "fail", subtype,
     f"{cost:.2f}" if num(cost) else "-",
-    f"{dur / 1000:.1f}" if num(dur) else "-",
     str(turns) if num(turns) else "-",
     str(len(d.get("permission_denials") or [])),
 ]))
