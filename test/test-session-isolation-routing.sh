@@ -33,6 +33,7 @@ assert_route legacy 1 base --print='batch task'
 assert_route legacy 1 codex exec 'batch task'
 assert_route legacy 1 codex review
 assert_route legacy 1 codex-smoke
+assert_route legacy 1 checkup prompt-audit
 assert_route legacy 1 kiro-cli base
 assert_route legacy 1 kiro base
 assert_route legacy 1 codex-gateway base
