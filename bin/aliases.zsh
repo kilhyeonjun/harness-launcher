@@ -454,6 +454,11 @@ _harness_launcher_run() {
       *) echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2 ;;
     esac
   fi
+  # checkup audits the harness root itself; reject before any clone exists.
+  if $isolated && [[ "${1:-}" == checkup ]]; then
+    echo "harness-launcher: checkup audits the harness root and cannot run in an isolated session; use '${HARNESS_PREFIX} --no-isolated checkup prompt-audit'" >&2
+    return 2
+  fi
   if $isolated; then
     isolation_route="$(harness_session_isolation_default_route 1 "$@")" || return $?
     [[ "$isolation_route" != invalid ]] || { echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2; }
@@ -520,6 +525,11 @@ _harness_launcher_run() {
       local rc=$?
       [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
       return $rc
+      ;;
+    checkup)
+      shift
+      _harness_launcher_run_checkup "$HARNESS_DIR" "$@"
+      return $?
       ;;
     codex-smoke)
       shift
@@ -737,6 +747,183 @@ _harness_launcher_run() {
     [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
     return $rc
   fi
+}
+
+# _harness_launcher_run_checkup <harness-dir> prompt-audit [preset] [--max-budget-usd N]
+#   Runs Claude Code's `/checkup prompt-audit` headless at the harness root.
+#   --restricted drops user/project/local settings (hooks, allow rules, default
+#   modes) and MCP. Under dontAsk the allow list adds only two git commands that
+#   neither write files, run commands, nor print file contents; other Bash
+#   commands run only when Claude Code's read-only check accepts them. An allow
+#   rule for git blame/log/show would also accept --contents/--output. Secrets
+#   and earlier reports are denied even though Glob could list them. The session is not persisted, so `<prefix> continue` never
+#   resumes the audit. The raw JSON, stderr, and report stay under
+#   .harness/reports/checkup/; stdout gets one status line without report text,
+#   so a caller running several profiles never sees another profile's content.
+_harness_launcher_run_checkup() {
+  local HARNESS_DIR="$1"; shift
+  local usage="usage: ${HARNESS_PREFIX:-<prefix>} checkup prompt-audit [fast|base|opus|rich|fable] [--max-budget-usd N]"
+  if [[ "${1:-}" != prompt-audit ]]; then
+    echo "harness-launcher: $usage" >&2
+    return 2
+  fi
+  shift
+  # `plan` (opusplan) is left out: without plan mode it runs as Sonnet.
+  local preset="opus" preset_set=false budget="${HARNESS_CHECKUP_MAX_BUDGET_USD:-20}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      fast|base|opus|rich|fable)
+        $preset_set && { echo "harness-launcher: checkup accepts one preset; $usage" >&2; return 2; }
+        preset="$1"; preset_set=true; shift ;;
+      --max-budget-usd)
+        [[ $# -ge 2 ]] || { echo "harness-launcher: --max-budget-usd requires a value" >&2; return 2; }
+        budget="$2"; shift 2 ;;
+      --max-budget-usd=*) budget="${1#*=}"; shift ;;
+      *) echo "harness-launcher: checkup does not accept '$1'; $usage" >&2; return 2 ;;
+    esac
+  done
+  if [[ ! "$budget" =~ '^[0-9]+(\.[0-9]+)?$' ]] || (( budget <= 0 )); then
+    echo "harness-launcher: --max-budget-usd must be a positive number (got '$budget')" >&2
+    return 2
+  fi
+
+  harness_mode_resolve "$preset" direct || return 2
+  local model="$HARNESS_MODE_MODEL" effort="$HARNESS_MODE_EFFORT"
+  unset HARNESS_MODE_MODEL HARNESS_MODE_EFFORT
+  local py settings
+  py="$(harness_python3_resolve)" || return 1
+  settings="$("$py" - "$HARNESS_DIR" "$effort" <<'PY'
+import json, sys
+root, effort = sys.argv[1].rstrip("/"), sys.argv[2]
+private = [".claude/settings*.json", ".mcp*.json", "mcp*.local.json",
+           "config/.local/**", ".harness/**"]
+settings = {"permissions": {
+    "allow": ["Bash(git ls-files:*)", "Bash(git check-ignore:*)"],
+    # `//` anchors a rule at the filesystem root; `**/` covers nested
+    # worktrees and projects.
+    "deny": ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]
+            + [f"Read(/{root}/{prefix}{path})" for path in private for prefix in ("", "**/")],
+}}
+if effort in ("xhigh", "max"):
+    settings["alwaysThinkingEnabled"] = True
+print(json.dumps(settings))
+PY
+)" || return 1
+  # User-level configuration the audit covers; the ~/.claude root (settings,
+  # credentials) is deliberately not added.
+  local -a add_dirs=()
+  local sub
+  for sub in skills commands agents output-styles rules plugins; do
+    [[ -d "$HOME/.claude/$sub" ]] && add_dirs+=(--add-dir "$HOME/.claude/$sub")
+  done
+
+  local report_dir="$HARNESS_DIR/.harness/reports/checkup"
+  local stem="$report_dir/prompt-audit-$(date -u +%Y%m%dT%H%M%SZ)-$$" n=0
+  local base="$stem"
+  while [[ -e "$base.json" ]]; do n=$(( n + 1 )); base="$stem-$n"; done
+  ( umask 077; mkdir -p "$report_dir" && chmod 700 "$report_dir" ) || return 1
+
+  # Best-effort signal, not a boundary: concurrent sessions on the same tree
+  # also change it.
+  local guard=false tree_before="" tree_after=""
+  if git -C "$HARNESS_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    guard=true
+    tree_before="$(git -C "$HARNESS_DIR" status --porcelain=v1 --untracked-files=all -- . ':(exclude).harness/reports/checkup' 2>/dev/null)"
+  fi
+
+  echo "checkup prompt-audit: running at $HARNESS_DIR (model=$model effort=$effort budget=\$$budget); this can take several minutes" >&2
+  local rc=0
+  (
+    cd "$HARNESS_DIR" || exit $?
+    # A caller launched through a gateway profile must not route this harness's
+    # audit through its provider or hand it its GitHub token; the harness's own
+    # local env below may set them again.
+    unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_CUSTOM_HEADERS \
+      ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL \
+      GH_TOKEN
+    harness_export_local_env "$HARNESS_DIR" || exit $?
+    # A caller that is itself a Claude session must not link this run to its
+    # session, messaging socket, terminal, or telemetry profile.
+    unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT \
+      CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_SESSION_ATTENDED \
+      CLAUDE_CODE_EXECPATH CLAUDE_CODE_ENABLE_TELEMETRY \
+      HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE \
+      HARNESS_SESSION_ID HARNESS_SESSION_ROOT HARNESS_SOURCE_ROOT HARNESS_RUN_DIR
+    unset -m 'OTEL_*' 'CMUX_*'
+    # --restricted skips project settings env; keep Glob honoring .gitignore.
+    export CLAUDE_CODE_GLOB_NO_IGNORE=false CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
+    umask 077
+    claude -p "/checkup prompt-audit" --restricted \
+      --tools "Read,Grep,Glob,Bash,Agent" --permission-mode dontAsk \
+      --settings "$settings" --strict-mcp-config "${add_dirs[@]}" \
+      --model "$model" --effort "$effort" \
+      --output-format json --max-budget-usd "$budget" --no-session-persistence \
+      < /dev/null > "$base.json" 2> "$base.stderr"
+  ) || rc=$?
+  [[ -s "$base.stderr" ]] || rm -f "$base.stderr"
+
+  local extra=""
+  if $guard; then
+    tree_after="$(git -C "$HARNESS_DIR" status --porcelain=v1 --untracked-files=all -- . ':(exclude).harness/reports/checkup' 2>/dev/null)"
+    local -a before_lines=(${(f)tree_before}) after_lines=(${(f)tree_after})
+    local -a gone=(${before_lines:|after_lines}) added=(${after_lines:|before_lines})
+    local changed=$(( ${#gone} + ${#added} ))
+    if (( changed )); then
+      extra+=" tree_changed=$changed"
+      echo "harness-launcher: working tree changed during checkup ($changed git status entries); if no other session was writing, review git status" >&2
+    fi
+  fi
+  [[ -f "$base.stderr" ]] && extra=" stderr=$base.stderr$extra"
+
+  local state subtype cost duration turns denials
+  IFS=$'\t' read -r state subtype cost duration turns denials < <("$py" - "$base.json" "$base.md" <<'PY'
+import json, os, sys
+raw, md = sys.argv[1], sys.argv[2]
+try:
+    with open(raw, encoding="utf-8") as f:
+        d = json.load(f)
+    if not isinstance(d, dict):
+        raise ValueError("not an object")
+except Exception:
+    print("nojson")
+    sys.exit(0)
+res = d.get("result")
+wrote = isinstance(res, str) and bool(res.strip())
+if wrote:
+    fd = os.open(md, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(res if res.endswith("\n") else res + "\n")
+subtype = str(d.get("subtype") or "unknown")
+ok = d.get("is_error") is False and subtype == "success" and wrote
+if not ok and subtype == "success":
+    subtype = "error" if d.get("is_error") else "empty result"
+num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+cost, dur, turns = d.get("total_cost_usd"), d.get("duration_ms"), d.get("num_turns")
+print("\t".join([
+    "ok" if ok else "fail", subtype,
+    f"{cost:.2f}" if num(cost) else "-",
+    f"{dur / 1000:.1f}" if num(dur) else "-",
+    str(turns) if num(turns) else "-",
+    str(len(d.get("permission_denials") or [])),
+]))
+PY
+)
+
+  local exit_code=0
+  case "$state" in
+    ok)
+      echo "checkup prompt-audit: ok report=$base.md cost_usd=$cost duration_s=$duration turns=$turns denials=$denials$extra"
+      ;;
+    fail)
+      echo "checkup prompt-audit: failed ($subtype) raw=$base.json cost_usd=$cost denials=$denials$extra"
+      exit_code=$(( rc ? rc : 1 ))
+      ;;
+    *)
+      echo "checkup prompt-audit: failed (exit $rc) raw=$base.json$extra"
+      exit_code=$(( rc ? rc : 1 ))
+      ;;
+  esac
+  return $exit_code
 }
 
 # _harness_launcher_run_codex_cli <harness-dir> <resolved-policy> [args...]
@@ -1027,6 +1214,7 @@ _harness_launcher_complete() {
     '--no-chrome:Disable Claude in Chrome integration'
     "codex:Codex CLI native (272K default · 1m opt-in · profiles${codex_surface_desc}/fork/safety)"
     'codex-smoke:Send one bounded metadata-only Codex verification event'
+    'checkup:Headless read-only /checkup prompt-audit at the harness root'
     "kiro-cli:Kiro CLI native${kiro_surface_desc}"
     'happy:Use Happy mobile wrapper for Codex CLI'
   )

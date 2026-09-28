@@ -4,6 +4,15 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- Add `<prefix> checkup prompt-audit` to run Claude Code's `/checkup
+  prompt-audit` headless at the harness root in restricted, read-only mode with
+  a budget cap, and `harness-profile checkup prompt-audit (--all | <prefix>...)`
+  to run it for several profiles in turn. Reports stay in each harness under
+  `.harness/reports/checkup/`; the terminal shows only a status line.
+  `checkup` and `register` become reserved profile prefixes. `<prefix> checkup
+  ...` previously started Claude with `checkup ...` as the prompt; it now runs
+  the audit instead.
+
 - Shorten the Codex surface test stage by overlapping its reviewed serial
   safety group with three isolated private-fixture shards. New tests still run
   through a serial gate, and the original one-job route remains available.

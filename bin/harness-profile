@@ -14,10 +14,14 @@ usage() {
 Usage:
   harness-profile register <harness-dir>
   harness-profile <profile> [launcher arguments...]
+  harness-profile checkup prompt-audit (--all | <profile>...) [--mode <preset>] [--max-budget-usd N]
   <profile> [launcher arguments...]  # through a registered symlink
 
 Registered profile commands use the current directory when it resolves inside
 that harness. Otherwise they preserve the legacy harness-root default.
+`checkup` runs `<profile> checkup prompt-audit` for each selected profile, one
+at a time, and prints only each run's status line. The budget applies to each
+run, so N profiles can spend N times the budget.
 EOF
 }
 
@@ -25,8 +29,9 @@ valid_prefix() {
   [[ "$1" =~ '^[A-Za-z_][A-Za-z0-9_-]*$' ]]
 }
 
-run_profile() {
-  local profile="$1"; shift
+# profile_harness_dir <profile>: print the registered harness directory.
+profile_harness_dir() {
+  local profile="$1"
   valid_prefix "$profile" || {
     echo "harness-profile: invalid profile name: $profile" >&2
     return 2
@@ -42,7 +47,73 @@ run_profile() {
     echo "harness-profile: registered harness is unavailable: $harness_dir" >&2
     return 2
   }
+  print -r -- "$harness_dir"
+}
+
+run_profile() {
+  local profile="$1"; shift
+  local harness_dir
+  harness_dir="$(profile_harness_dir "$profile")" || return $?
   exec "$SCRIPT_DIR/harness-exec" "$harness_dir" "$@"
+}
+
+# run_checkup prompt-audit (--all | <profile>...) [--mode <preset>] [--max-budget-usd N]
+#   Validates every selected profile before starting any run, then runs them
+#   sequentially as separate launcher processes so each report stays in its
+#   own harness.
+run_checkup() {
+  local usage="usage: harness-profile checkup prompt-audit (--all | <profile>...) [--mode <preset>] [--max-budget-usd N]"
+  [[ "${1:-}" == prompt-audit ]] || { echo "harness-profile: $usage" >&2; return 2; }
+  shift
+  local all=false mode="" budget=""
+  local -aU names=()
+  local -a forward=()
+  while (( $# )); do
+    case "$1" in
+      --all) all=true; shift ;;
+      --mode)
+        [[ $# -ge 2 ]] || { echo "harness-profile: --mode requires a preset" >&2; return 2; }
+        [[ "$2" == (fast|base|opus|rich|fable) ]] || { echo "harness-profile: unsupported checkup preset: $2" >&2; return 2; }
+        [[ -z "$mode" ]] || { echo "harness-profile: --mode accepts one preset" >&2; return 2; }
+        mode="$2"; shift 2 ;;
+      --max-budget-usd|--max-budget-usd=*)
+        if [[ "$1" == *=* ]]; then budget="${1#*=}"; shift; else budget="${2-}"; shift $(( $# >= 2 ? 2 : 1 )); fi
+        [[ "$budget" =~ '^[0-9]+(\.[0-9]+)?$' ]] && (( budget > 0 )) || {
+          echo "harness-profile: --max-budget-usd requires a positive number" >&2
+          return 2
+        }
+        ;;
+      -*) echo "harness-profile: checkup does not accept '$1'; $usage" >&2; return 2 ;;
+      *) names+=("$1"); shift ;;
+    esac
+  done
+  if $all; then
+    (( ${#names} == 0 )) || { echo "harness-profile: use --all or profile names, not both" >&2; return 2; }
+    local entry
+    for entry in "$PROFILE_DIR"/*(N.); do names+=("${entry:t}"); done
+  fi
+  (( ${#names} )) || { echo "harness-profile: no profiles selected; $usage" >&2; return 2; }
+  [[ -n "$mode" ]] && forward+=("$mode")
+  [[ -n "$budget" ]] && forward+=(--max-budget-usd "$budget")
+
+  local -a dirs=()
+  local name dir
+  for name in "${names[@]}"; do
+    dir="$(profile_harness_dir "$name")" || return $?
+    dirs+=("$dir")
+  done
+
+  local ok=0 failed=0 i
+  for (( i = 1; i <= ${#names}; i++ )); do
+    print -u2 -r -- "== ${names[i]} =="
+    if "$SCRIPT_DIR/harness-exec" "${dirs[i]}" checkup prompt-audit "${forward[@]}"; then
+      ok=$(( ok + 1 ))
+    else
+      failed=$(( failed + 1 ))
+    fi
+  done
+  print -r -- "checkup prompt-audit: $ok ok, $failed failed"
+  (( failed == 0 ))
 }
 
 register_profile() {
@@ -60,6 +131,12 @@ register_profile() {
     echo "harness-profile: invalid HARNESS_PREFIX: $HARNESS_PREFIX" >&2
     return 2
   }
+  case "$HARNESS_PREFIX" in
+    checkup|register)
+      echo "harness-profile: HARNESS_PREFIX is reserved by harness-profile: $HARNESS_PREFIX" >&2
+      return 2
+      ;;
+  esac
 
   local command_path="$PROFILE_BIN_DIR/$HARNESS_PREFIX"
   local profile_file="$PROFILE_DIR/$HARNESS_PREFIX"
@@ -117,6 +194,7 @@ register_profile() {
 
 if [[ "$INVOKED_NAME" != "harness-profile" ]]; then
   run_profile "$INVOKED_NAME" "$@"
+  exit $?
 fi
 
 case "${1:-}" in
@@ -124,6 +202,10 @@ case "${1:-}" in
   register)
     shift
     register_profile "$@"
+    ;;
+  checkup)
+    shift
+    run_checkup "$@"
     ;;
   *)
     profile="$1"

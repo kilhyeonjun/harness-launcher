@@ -269,6 +269,10 @@ The same command shape works for every registered prefix:
 <prefix> kiro-cli effort=<level> native Kiro CLI effort: low|medium|high|xhigh|max
 <prefix> kiro [mode]             Claude Code through a Kiro gateway
 <prefix> codex-gateway [mode]    Claude Code through a Codex gateway
+<prefix> checkup prompt-audit [preset] [--max-budget-usd N]
+                                 headless Claude Code `/checkup prompt-audit` at the harness root
+harness-profile checkup prompt-audit (--all | <prefix>...) [--mode <preset>] [--max-budget-usd N]
+                                 run the checkup for each selected profile, one at a time
 ```
 
 Extra arguments pass through to the selected runtime.
@@ -334,6 +338,72 @@ Use `<prefix> fable` for Claude Code's opt-in `fable` alias with `high` effort, 
 Use `<prefix> codex luna6`, `<prefix> codex sol6`, or `<prefix> codex astra` for opt-in native profiles. The default remains Terra, `fast` remains GPT-5.6 Luna, and `sol` remains GPT-5.6 Sol. Do not rename models inside generated profile files: preparation restores launcher-owned profiles. Availability and the loaded model/effort must be verified in the selected Codex account. No API probe or silent model fallback is added.
 
 The main profile does not downgrade reviewers: reviewer subagents route independently to Sol/medium by default and may explicitly escalate effort for unusually risky work.
+
+### Configuration checkup
+
+`<prefix> checkup prompt-audit` runs Claude Code's built-in `/checkup prompt-audit`
+(an alias of `/doctor prompt-audit`) without a TTY, always from the harness root,
+so the audit covers that project's instruction files plus the user-level
+`~/.claude` skills, commands, agents, output styles, rules, and plugins. The audit
+proposes edits; it never applies them.
+
+The run is read-only by construction:
+
+- `--restricted` ignores user, project, and local settings files, so hooks,
+  allow rules, and default permission modes from those files do not apply, and
+  `--strict-mcp-config` starts no MCP servers.
+- Tools are limited to Read, Grep, Glob, Bash, and Agent under `dontAsk`, and
+  Edit, Write, NotebookEdit, WebFetch, and WebSearch are denied. The allow list
+  adds only `git ls-files` and `git check-ignore`, which neither write files,
+  run commands, nor print file contents. Any other Bash command runs only if
+  Claude Code's own read-only check accepts it: `head`, `git log`, `git blame`,
+  and `git show` work inside the working directories, while write or
+  other-file options (`git log --output`, `git blame --contents`) and paths
+  outside them (including `git -C` and `--git-dir`) are refused. `git blame`
+  is kept off the allow list because an allow rule would also accept
+  `--contents <any file>`.
+- File access is confined to the harness plus the existing `~/.claude`
+  subdirectories above; the `~/.claude` root, which holds settings and
+  credentials, is not added. Inside the harness, at the root and in nested
+  directories such as worktrees, reads of `.claude/settings*.json`, the
+  `.mcp*.json` and `mcp*.local.json` files, `config/.local/`, and `.harness/`
+  (including earlier reports) are denied.
+- Claude reads no standard input, and the caller's Claude session, messaging,
+  terminal, and telemetry variables (`CLAUDECODE`, `CLAUDE_CODE_*` session
+  variables, `OTEL_*`, `CMUX_*`) are removed, so running the checkup from inside
+  another Claude session does not link the two. The caller's gateway routing
+  (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_DEFAULT_*_MODEL`,
+  `ANTHROPIC_CUSTOM_HEADERS`) and `GH_TOKEN` are removed before the harness's
+  own local environment is loaded. `ANTHROPIC_API_KEY` is kept.
+- The session is not saved, so `<prefix> continue` at the root never resumes
+  the audit.
+- A working-tree check compares `git status` entries before and after the run.
+  If an entry outside the report directory appears or disappears, the status
+  line ends with `tree_changed=N` and a warning goes to standard error. It does
+  not see new edits to files that were already modified or changes to ignored
+  paths, and another session writing to the same tree triggers it too, so it is
+  a signal rather than a boundary and does not change the exit status.
+
+The default preset is `opus`; pass another preset (`fast`, `base`, `rich`,
+`fable`) as the next argument. `plan` is not accepted because opusplan runs as
+Sonnet outside plan mode. Spending stops at `--max-budget-usd` (default 20, or
+`HARNESS_CHECKUP_MAX_BUDGET_USD`); Claude Code checks the limit between turns, so
+a run can end slightly above it.
+
+The raw JSON result, Claude's standard error (kept only when non-empty), and the
+report are written with private permissions to
+`.harness/reports/checkup/prompt-audit-<UTC timestamp>-<pid>.{json,stderr,md}`
+inside the harness. Standard output is a single status line — report path, cost,
+duration, turns, and the number of permission denials, never report text —
+so `harness-profile checkup prompt-audit --all` can run several profiles from one
+terminal without mixing their content. `harness-profile checkup` validates every
+selected profile before the first run, runs each profile once even if it is named
+twice, and applies the budget to each run, so N profiles can spend up to N times
+the budget. A run takes several minutes; start a long fan-out in its own terminal
+or in the background. Profiles that isolate sessions by default run the checkup
+at the root; `--isolated` with `checkup` is rejected before any session is
+created. Plugins enabled in user settings are not loaded under `--restricted`;
+the audit reads their files from `~/.claude/plugins` instead.
 
 ## Project layout
 

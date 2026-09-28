@@ -119,7 +119,7 @@ harness_session_isolation_default_route() {
       printf '%s\n' invalid
       return 0
       ;;
-    codex-smoke|kiro|kiro-cli|codex-gateway)
+    codex-smoke|checkup|kiro|kiro-cli|codex-gateway)
       printf '%s\n' legacy
       return 0
       ;;
