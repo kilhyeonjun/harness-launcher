@@ -338,22 +338,20 @@ on Codex 0.152.0+ where it defaults to disabled. See [native task progress](docs
 
 | Preset | Claude Code | Codex CLI | Intended use |
 | --- | --- | --- | --- |
-| `fast` | Haiku, low effort | GPT-5.6 Luna, low effort | Small edits and quick checks |
+| `fast` | Haiku, low effort | GPT-6 Luna, low effort | Small edits and quick checks |
 | `base` | Sonnet | GPT-5.6 Terra, medium effort | Everyday work — recommended default |
-| `sol` (Codex only) | — | GPT-5.6 Sol, medium effort | Stronger main model — slower |
-| `luna6` (Codex only) | — | GPT-6 Luna, low effort | Focused tasks, opt-in evaluation |
-| `sol6` (Codex only) | — | GPT-6 Sol, medium effort | Complex coding, opt-in evaluation |
+| `sol` (Codex only) | — | GPT-6.1 Sol, medium effort | Stronger main model — slower |
 | `fable` (Claude direct only) | Fable, high effort | — | Explicit frontier-model selection |
 | `astra` (Codex only) | — | GPT-6 Astra, medium effort | Explicit frontier-model selection |
-| `plan` | Opus Plan | GPT-5.6 Sol, high effort, read-only | Investigation and planning |
+| `plan` | Opus Plan | GPT-6.1 Sol, high effort, read-only | Investigation and planning |
 | `opus` (Claude only) | Opus, high effort | — | Strong main model without `rich`'s xhigh cost |
-| `rich` | Opus | GPT-5.6 Sol, high effort | Deep work — slowest normal preset |
+| `rich` | Opus | GPT-6.1 Sol, high effort | Deep work — slowest normal preset |
 
 These are task-oriented operational presets, not claims about OpenAI's model defaults. The launcher deliberately lowers `fast` for speed and raises `plan`/`rich` for deeper work; an unscoped model picker may use a different general starting effort. Model names follow the capabilities exposed by the installed runtime. Generated homes default to a 272,000-token window with a 217,600-token compact threshold; explicit 1M mode requests 1,000,000 with a 414,000 threshold. Launcher-generated custom subagent roles always override to 272,000 with a 217,600-token compact threshold, so a 1M main session does not widen each generated role. Codex model metadata determines the effective window, and neither setting is Astra-specific tuning.
 
 Use `<prefix> fable` for Claude Code's opt-in `fable` alias with `high` effort, or select Fable in the direct TUI preset or Custom model menus. Existing numbered choices stay stable; the Fable preset is appended after Custom. Effort tokens still override the preset, for example `<prefix> fable xhigh`. The launcher rejects this preset on Kiro and Codex gateways. The alias follows the installed Claude Code runtime and any `ANTHROPIC_DEFAULT_FABLE_MODEL` override; availability remains account-dependent. As of September 8, 2026, Claude Code v2.1.255+ resolves it to Fable 5.1 by default ([official model configuration](https://code.claude.com/docs/en/model-config)).
 
-Use `<prefix> codex luna6`, `<prefix> codex sol6`, or `<prefix> codex astra` for opt-in native profiles. The default remains Terra, `fast` remains GPT-5.6 Luna, and `sol` remains GPT-5.6 Sol. Do not rename models inside generated profile files: preparation restores launcher-owned profiles. Availability and the loaded model/effort must be verified in the selected Codex account. No API probe or silent model fallback is added.
+Use `<prefix> codex fast`, `<prefix> codex sol`, or `<prefix> codex astra` for explicit native profiles. The default remains Terra; `fast` uses GPT-6 Luna and `sol` uses GPT-6.1 Sol. Do not rename models inside generated profile files: preparation restores launcher-owned profiles. Availability and the loaded model/effort must be verified in the selected Codex account. No API probe or silent model fallback is added.
 
 The main profile does not downgrade reviewers: reviewer subagents route independently to Sol/medium by default and may explicitly escalate effort for unusually risky work.
 
@@ -456,7 +454,7 @@ Kiro CLI ignores `headers` on http transport and falls back to OAuth discovery, 
 Before each native Codex launch, `bin/codex-home-prepare.sh` prepares an isolated `CODEX_HOME` under `<project>/.harness/codex`:
 
 - `config.toml` with project MCP servers and the default Terra/medium route
-- `fast.config.toml`, `base.config.toml`, `sol.config.toml`, `luna6.config.toml`, `sol6.config.toml`, `plan.config.toml`, `rich.config.toml`, and `astra.config.toml`
+- `fast.config.toml`, `base.config.toml`, `sol.config.toml`, `plan.config.toml`, `rich.config.toml`, and `astra.config.toml`
 - generated `AGENTS.md`
 - exact manifest-selected skills and MCP flags, or legacy merged links when no surface manifest exists
 - project-scoped sessions and history

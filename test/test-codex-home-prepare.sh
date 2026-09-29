@@ -142,15 +142,13 @@ for p in fast base sol plan rich astra; do
   fi
 done
 grep -q '^model = "gpt-6-astra"' "$CODEX_HOME/astra.config.toml" || { echo "FAIL: astra model"; exit 1; }
-grep -q '^model = "gpt-6-luna"' "$CODEX_HOME/luna6.config.toml" || { echo "FAIL: luna6 model"; exit 1; }
-grep -q '^model_reasoning_effort = "low"' "$CODEX_HOME/luna6.config.toml" || { echo "FAIL: luna6 effort"; exit 1; }
-grep -q '^model = "gpt-6-sol"' "$CODEX_HOME/sol6.config.toml" || { echo "FAIL: sol6 model"; exit 1; }
-grep -q '^model_reasoning_effort = "medium"' "$CODEX_HOME/sol6.config.toml" || { echo "FAIL: sol6 effort"; exit 1; }
+[[ ! -e "$CODEX_HOME/luna6.config.toml" && ! -e "$CODEX_HOME/sol6.config.toml" ]] || { echo "FAIL: obsolete GPT-6 profiles remain"; exit 1; }
 grep -q '^model_reasoning_effort = "medium"' "$CODEX_HOME/astra.config.toml" || { echo "FAIL: astra effort"; exit 1; }
-grep -q '^model = "gpt-5.6-luna"' "$CODEX_HOME/fast.config.toml" || { echo "FAIL: fast model should use Luna"; exit 1; }
+grep -q '^model = "gpt-6-luna"' "$CODEX_HOME/fast.config.toml" || { echo "FAIL: fast model should use GPT-6 Luna"; exit 1; }
 grep -q '^model = "gpt-5.6-terra"' "$CODEX_HOME/base.config.toml" || { echo "FAIL: base model should use Terra"; exit 1; }
-grep -q '^model = "gpt-5.6-sol"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan model should use Sol"; exit 1; }
-grep -q '^model = "gpt-5.6-sol"' "$CODEX_HOME/rich.config.toml" || { echo "FAIL: rich model should use Sol"; exit 1; }
+grep -q '^model = "gpt-6.1-sol"' "$CODEX_HOME/sol.config.toml" || { echo "FAIL: sol model should use GPT-6.1 Sol"; exit 1; }
+grep -q '^model = "gpt-6.1-sol"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan model should use GPT-6.1 Sol"; exit 1; }
+grep -q '^model = "gpt-6.1-sol"' "$CODEX_HOME/rich.config.toml" || { echo "FAIL: rich model should use GPT-6.1 Sol"; exit 1; }
 grep -q '^model_reasoning_effort = "low"' "$CODEX_HOME/fast.config.toml" || { echo "FAIL: fast effort wrong"; exit 1; }
 grep -q '^model_reasoning_effort = "medium"' "$CODEX_HOME/base.config.toml" || { echo "FAIL: base effort wrong"; exit 1; }
 grep -q '^model_reasoning_effort = "high"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan effort wrong"; exit 1; }
@@ -1520,7 +1518,7 @@ echo "PASS: 1M main config keeps generated subagents at 272K with 80% compact"
 
 # explorer: haiku → Luna+low, read-only sandbox
 grep -q '^name = "explorer"' "$agents_out/explorer.toml" || { echo "FAIL: explorer name"; exit 1; }
-grep -q '^model = "gpt-5.6-luna"' "$agents_out/explorer.toml" || { echo "FAIL: explorer model"; exit 1; }
+grep -q '^model = "gpt-6-luna"' "$agents_out/explorer.toml" || { echo "FAIL: explorer model"; exit 1; }
 grep -q '^model_reasoning_effort = "low"' "$agents_out/explorer.toml" || { echo "FAIL: explorer effort"; exit 1; }
 grep -q '^sandbox_mode = "read-only"' "$agents_out/explorer.toml" || { echo "FAIL: explorer sandbox"; exit 1; }
 grep -q '^developer_instructions = """' "$agents_out/explorer.toml" || { echo "FAIL: explorer developer_instructions"; exit 1; }
@@ -1528,7 +1526,7 @@ grep -q 'Quickly search and analyze' "$agents_out/explorer.toml" || { echo "FAIL
 echo "PASS: explorer (haiku) → Luna + low + read-only"
 
 # reviewer: opus → Sol+medium, read-only sandbox
-grep -q '^model = "gpt-5.6-sol"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer model"; exit 1; }
+grep -q '^model = "gpt-6.1-sol"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer model"; exit 1; }
 grep -q '^model_reasoning_effort = "medium"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer effort"; exit 1; }
 grep -q '^sandbox_mode = "read-only"' "$agents_out/reviewer.toml" || { echo "FAIL: reviewer sandbox"; exit 1; }
 echo "PASS: reviewer (opus) → Sol + medium + read-only"

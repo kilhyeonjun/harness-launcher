@@ -1331,7 +1331,7 @@ PY
 
 # _harness_launcher_run_codex_cli <harness-dir> <resolved-policy> [args...]
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
-#   Modes:    fast | base | sol | plan | rich | astra | luna6 | sol6 → -p <profile>
+#   Modes:    fast | base | sol | plan | rich | astra → -p <profile>
 #   Surface:  work → work MCP surface (combinable with any profile)
 #   Apps:     --app <asdk_app_id> → add one app for this launch only
 #   Wrapper:  happy → `happy codex ...`
@@ -1374,7 +1374,7 @@ _harness_launcher_run_codex_cli() {
         shift; passthrough=true; codex_passthrough_args=("$@"); break ;;
       fast|base|sol|plan|rich)
         profile="$1"; profile_explicit=true; shift ;;
-      astra|luna6|sol6)
+      astra)
         if $freeform; then
           codex_args+=("$1")
         else
