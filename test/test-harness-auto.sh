@@ -279,3 +279,30 @@ grep -Fq 'unsupported agent: unsupported-agent' "$TMP/unsupported.err" || {
 }
 
 echo "PASS: harness-auto rejects unsupported agent selectors"
+
+# Every Codex working-directory form is validated, also after --passthrough;
+# tokens after `--` are prompt text.
+OUTSIDE_DIR="$TMP/outside-cd"
+mkdir -p "$OUTSIDE_DIR"
+for form in "-C$OUTSIDE_DIR" "-C=$OUTSIDE_DIR" "--cd=$OUTSIDE_DIR" "--passthrough -C $OUTSIDE_DIR" \
+  "--passthrough -C$OUTSIDE_DIR"; do
+  : > "$LOG"
+  rc=0
+  # shellcheck disable=SC2086
+  ( cd "$ALPHA_WORKTREE"; HOME="$HOME_DIR" HARNESS_AUTO_TEST_LOG="$LOG" \
+      "$PREFIX/bin/harness-auto" codex $form exec x ) >/dev/null 2>"$TMP/cd-form.err" || rc=$?
+  [[ "$rc" == 2 && ! -s "$LOG" ]] || { echo "FAIL: harness-auto accepted outside Codex dir: $form" >&2; exit 1; }
+  grep -Fq 'outside selected harness boundary' "$TMP/cd-form.err" || {
+    echo "FAIL: harness-auto did not explain outside Codex dir: $form" >&2; cat "$TMP/cd-form.err" >&2; exit 1; }
+done
+accept_codex_args() {
+  : > "$LOG"
+  ( cd "$ALPHA_WORKTREE"; HOME="$HOME_DIR" HARNESS_AUTO_TEST_LOG="$LOG" \
+      "$PREFIX/bin/harness-auto" codex "$@" ) || { echo "FAIL: harness-auto rejected: $*" >&2; exit 1; }
+  grep -Fq 'ARGV: <codex>' "$LOG" || { echo "FAIL: harness-auto did not launch: $*" >&2; exit 1; }
+}
+accept_codex_args "-C$ALPHA_WORKTREE" exec x
+accept_codex_args "-C=$ALPHA_WORKTREE" exec x
+accept_codex_args --passthrough exec -- -C "$OUTSIDE_DIR"
+
+echo "PASS: harness-auto validates attached and post-marker Codex -C forms"

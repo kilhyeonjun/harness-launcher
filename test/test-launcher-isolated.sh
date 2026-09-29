@@ -224,4 +224,61 @@ HARNESS_SESSION_STATE_HOME="$STATE" HARNESS_SESSION_STALE_SECONDS=1 "$ROOT/bin/s
 touch "$WAIT_RELEASE"; wait "$launcher_pid"; sleep 1.2
 HARNESS_SESSION_STATE_HOME="$STATE" HARNESS_SESSION_STALE_SECONDS=1 "$ROOT/bin/session-isolation.sh" list | grep -qx "$heartbeat_id CLOSED" || { echo 'FAIL: clean normal runtime exit must become CLOSED'; exit 1; }
 
+# A launch that fails after the isolated session is acquired still finishes
+# it, and the same id relaunches.
+session_state() {
+  HARNESS_SESSION_STATE_HOME="$STATE" "$ROOT/bin/session-isolation.sh" list | awk -v id="$1" '$1 == id { print $2 }'
+}
+sessions_snapshot() { ls "$STATE/sessions" | sort; }
+new_session_since() { comm -13 <(print -r -- "$1") <(sessions_snapshot) | head -1; }
+before="$(sessions_snapshot)"
+if (
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/failed-gateway-log"
+  source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_probe_provider_health() { return 1; }
+  _harness_launcher_run "$HARNESS" --isolated kiro base
+) 2>/dev/null; then
+  echo 'FAIL: unreachable gateway fixture launched'; exit 1
+fi
+failed_id="$(new_session_since "$before")"
+[[ "$(session_state "$failed_id")" == CLOSED ]] || { echo "FAIL: gateway failure left session $failed_id $(session_state "$failed_id")"; exit 1; }
+if (
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/failed-conflict-log"
+  source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_run "$HARNESS" --isolated-session "$failed_id" continue --passthrough --session-id=0b5d1f3e-0000-4000-8000-000000000000
+) 2>/dev/null; then
+  echo 'FAIL: passthrough session conflict launched'; exit 1
+fi
+[[ "$(session_state "$failed_id")" == CLOSED ]] || { echo "FAIL: session conflict left session $(session_state "$failed_id")"; exit 1; }
+before="$(sessions_snapshot)"
+if (
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/failed-url-log"
+  source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_run "$HARNESS" --isolated codex-gateway base
+) >/dev/null 2>&1; then
+  echo 'FAIL: missing gateway URL launched'; exit 1
+fi
+[[ "$(session_state "$(new_session_since "$before")")" == CLOSED ]] || { echo 'FAIL: missing gateway URL left the session open'; exit 1; }
+cp "$HARNESS/config/launcher.env" "$TMP/launcher.env.orig"
+print -r -- 'HARNESS_MCP_SURFACE_POLICY="single-full"' >> "$HARNESS/config/launcher.env"
+before="$(sessions_snapshot)"
+if (
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/failed-light-log"
+  source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_run "$HARNESS" --isolated base light
+) >/dev/null 2>&1; then
+  cp "$TMP/launcher.env.orig" "$HARNESS/config/launcher.env"
+  echo 'FAIL: retired light surface launched'; exit 1
+fi
+cp "$TMP/launcher.env.orig" "$HARNESS/config/launcher.env"
+[[ "$(session_state "$(new_session_since "$before")")" == CLOSED ]] || { echo 'FAIL: retired light left the session open'; exit 1; }
+[[ ! -e "$TMP/failed-url-log" && ! -e "$TMP/failed-light-log" ]] || { echo 'FAIL: rejected launches ran Claude'; exit 1; }
+(
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/relaunch-log"
+  source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_run "$HARNESS" --isolated-session "$failed_id" base
+) 2>/dev/null || { echo 'FAIL: relaunch after a failed launch did not start'; exit 1; }
+[[ "$(basename "$(sed -n 's/^SESSION=//p' "$TMP/relaunch-log")")" == "$failed_id" ]] || { echo 'FAIL: relaunch used another session'; exit 1; }
+echo 'PASS: failures after isolated-session acquisition finish the session'
+
 echo 'PASS: --isolated opts root sessions into an isolated repository'

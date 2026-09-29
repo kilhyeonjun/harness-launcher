@@ -50,4 +50,10 @@ printf '==> test_mcp_paths.py (%s)\n' "$PYTHON_BIN"
 "$PYTHON_BIN" "$ROOT/test/test_mcp_paths.py"
 passed=$((passed + 1))
 
+for python_test in test_codex_app_server_guard.py test_harness_paseo.py; do
+  printf '==> %s (%s)\n' "$python_test" "$PYTHON_BIN"
+  "$PYTHON_BIN" "$ROOT/test/$python_test"
+  passed=$((passed + 1))
+done
+
 printf '\n%d test scripts passed; %d skipped.\n' "$passed" "$skipped"

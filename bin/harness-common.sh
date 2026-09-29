@@ -102,14 +102,61 @@ harness_claude_bootstrap_eligible() {
   return 0
 }
 
+# harness_claude_is_management_command <word>: native Claude subcommands and
+# informational flags that must run without launcher model/MCP flags.
+harness_claude_is_management_command() {
+  case "${1:-}" in
+    agents|attach|auth|auto-mode|doctor|gateway|help|import|install|logs|mcp|plugin|plugins|project|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade|-h|--help|-v|-V|--version)
+      return 0 ;;
+  esac
+  return 1
+}
+
 harness_claude_stdio_is_tty() {
   [ -t 0 ] && [ -t 1 ]
+}
+
+# harness_codex_option_takes_value <option>: top-level Codex options whose
+# value is the next argument.
+harness_codex_option_takes_value() {
+  case "${1:-}" in
+    -c|--config|--enable|--disable|--remote|--remote-auth-token-env|-i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval)
+      return 0 ;;
+  esac
+  return 1
+}
+
+# harness_codex_subcommand [codex args...]: print the first subcommand word
+# ("debug <next word>" for debug), or nothing for an interactive launch.
+harness_codex_subcommand() {
+  local arg
+  while [ "$#" -gt 0 ]; do
+    arg="$1"; shift
+    case "$arg" in
+      --) return 0 ;;
+      -*) if harness_codex_option_takes_value "$arg" && [ "$#" -gt 0 ]; then shift; fi ;;
+      debug) printf 'debug %s\n' "${1:-}"; return 0 ;;
+      *) printf '%s\n' "$arg"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+# harness_codex_subcommand_rejects_profile <subcommand>: Codex accepts
+# --profile only for runtime commands, `mcp`, and `debug prompt-input`.
+harness_codex_subcommand_rejects_profile() {
+  case "${1:-}" in
+    'debug prompt-input') return 1 ;;
+    agents|login|logout|plugin|app-server|remote-control|app|completion|update|doctor|apply|a|migrate-rollouts|cloud|exec-server|features|help|debug|debug\ *)
+      return 0 ;;
+  esac
+  return 1
 }
 
 # harness_session_isolation_default_route <interactive:0|1> [launcher argv...]
 # Prints isolate, legacy, reject, or invalid without mutating session state.
 harness_session_isolation_default_route() {
-  local interactive="${1:-0}" arg
+  local interactive="${1:-0}" arg passthrough=0
   shift || return 2
   [ "$interactive" = 1 ] || { printf '%s\n' legacy; return 0; }
   [ "$#" -gt 0 ] || { printf '%s\n' legacy; return 0; }
@@ -129,15 +176,23 @@ harness_session_isolation_default_route() {
         arg="$1"; shift
         case "$arg" in
           --) break ;;
+          --passthrough)
+            [ "$passthrough" = 0 ] || { printf '%s\n' invalid; return 0; }
+            passthrough=1 ;;
           --isolated|--no-isolated|--isolated-session) printf '%s\n' invalid; return 0 ;;
-          resume|continue|fork) printf '%s\n' reject; return 0 ;;
+          resume|fork) printf '%s\n' reject; return 0 ;;
+          continue)
+            [ "$passthrough" = 0 ] || break
+            printf '%s\n' reject; return 0 ;;
           agents|exec|e|review|login|logout|mcp|plugin|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help|-h|--help|-V|--version)
             printf '%s\n' legacy; return 0 ;;
-          fast|base|sol|luna6|sol6|plan|rich|astra|work|272k|1m|happy|full-auto|never|bypass) ;;
+          fast|base|sol|luna6|sol6|plan|rich|astra|work|272k|1m|happy|full-auto|never|bypass)
+            [ "$passthrough" = 0 ] || break ;;
           -c|--config|--enable|--disable|--remote|--remote-auth-token-env|-i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval|--app)
             [ "$#" -gt 0 ] && shift || { printf '%s\n' invalid; return 0; }
             ;;
           --config=*|--enable=*|--disable=*|--remote=*|--remote-auth-token-env=*|--image=*|--model=*|--local-provider=*|--profile=*|--sandbox=*|--cd=*|--add-dir=*|--ask-for-approval=*|--app=*) ;;
+          -c?*|-i?*|-m?*|-p?*|-s?*|-C?*|-a?*) ;;
           --strict-config|--oss|--approve-for-me|--dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust|--worktree|--search|--no-alt-screen) ;;
           -*) printf '%s\n' invalid; return 0 ;;
           *) break ;;
@@ -150,14 +205,15 @@ harness_session_isolation_default_route() {
 
   # After --passthrough, bare launcher keywords are Claude arguments (prompt
   # text), while Claude options keep their classification.
-  local passthrough=0
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
       --) break ;;
       --passthrough)
         [ "$passthrough" = 0 ] || { printf '%s\n' invalid; return 0; }
-        passthrough=1 ;;
+        passthrough=1
+        # A management subcommand right after the marker runs natively.
+        if harness_claude_is_management_command "${1:-}"; then printf '%s\n' legacy; return 0; fi ;;
       --isolated|--no-isolated|--isolated-session) printf '%s\n' invalid; return 0 ;;
       continue|resume)
         [ "$passthrough" = 0 ] || break

@@ -2,6 +2,47 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.35.0 — 2026-09-29
+
+- Codex through SDK hosts. New `harness-codex` executable: `--version`/`-V`
+  run native Codex (host feature probes), `--profile <name>` runs
+  `harness-profile <name> codex --passthrough …`, and without a profile the
+  current directory selects the harness.
+- Codex `--passthrough`: later tokens are native Codex arguments. A caller
+  `-p`/`--profile` replaces the launcher profile, and a caller `-C`/`--cd` in
+  any form replaces the launcher `--cd` after it is validated to stay inside
+  the harness (exit 2 otherwise).
+- The launcher no longer passes `-p <profile>` to Codex subcommands that
+  reject it (`app-server`, `login`, `features`, `debug` except
+  `debug prompt-input`, …); an explicit launcher profile with such a
+  subcommand exits 2. A test compares the table with the installed `codex`.
+- A plain `codex app-server` runs behind `codex-app-server-guard.py`, a
+  JSON-RPC relay that rejects thread and command working directories outside
+  the selected harness (or inside another registered harness nested in it) and
+  pins `thread/resume`/`thread/fork` without `cwd` to the server directory.
+  `app-server daemon`/`proxy`, non-stdio `--listen`, `remote-control`,
+  `exec-server`, and `mcp-server` exit 2 through the launcher (use `command codex`). A schema
+  drift test classifies every client-sent path field of the installed Codex.
+- New `harness-paseo print|sync|check` manages `harness-claude` and one
+  `harness-codex-<profile>` Paseo provider per registered profile, owning only
+  the IDs and fields it wrote (recorded in
+  `~/.config/harness-launcher/paseo-managed.json`), with a 0600 backup and a
+  concurrent-change abort.
+- Claude `--passthrough`: a management subcommand right after the marker
+  (`auth status`) runs natively; an explicit caller thinking disable drops a
+  launcher `xhigh`/`max` effort; a caller `--` ends option scanning.
+- A launcher `--` now ends keyword parsing: it and every later token are
+  forwarded last, after launcher flags, and imply a direct launch.
+- Isolated sessions are finished (heartbeat stopped, session closed) on every
+  exit after acquisition, including error returns.
+- `harness-auto` validates attached `-C<dir>` and `-C=<dir>` Codex forms.
+- Breaking: with `harness_shell_enable`, plain `claude` and `codex` keep native
+  argv (`harness-auto <runtime> --passthrough "$@"`), so `claude rich` passes
+  `rich` as a prompt; use `<prefix> rich` for presets. `codex --version`,
+  `-V`, and `--help` run native Codex.
+- Packaging: the formula installs and links `harness-codex` and
+  `harness-paseo`, plus `codex-app-server-guard.py` and `harness_paseo.py`.
+
 ## 0.34.0 — 2026-09-29
 
 - Add the `--passthrough` launcher marker for SDK hosts such as Paseo. Claude

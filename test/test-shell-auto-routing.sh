@@ -91,19 +91,40 @@ env | grep -q '^_HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=' && {
 
 (
   cd "$PROJECT"
-  codex --version
+  codex exec task
+  codex -a never
   claude --resume session-123
+  claude -p plan
+  claude rich
 )
-grep -Fqx 'ARGV: <codex> <--version>' "$ROUTE_LOG" || {
-  echo 'FAIL: plain codex did not route through harness-auto' >&2; exit 1
-}
-grep -Fqx 'ARGV: <base> <--resume> <session-123>' "$ROUTE_LOG" || {
-  echo 'FAIL: plain claude did not route through harness-auto' >&2; exit 1
-}
+for expected in \
+  'ARGV: <codex> <--passthrough> <exec> <task>' \
+  'ARGV: <codex> <--passthrough> <-a> <never>' \
+  'ARGV: <base> <--passthrough> <--resume> <session-123>' \
+  'ARGV: <base> <--passthrough> <-p> <plan>' \
+  'ARGV: <base> <--passthrough> <rich>'; do
+  grep -Fqx "$expected" "$ROUTE_LOG" || {
+    echo "FAIL: plain command did not route through harness-auto verbatim: $expected" >&2; exit 1
+  }
+done
 [[ ! -s "$NATIVE_LOG" ]] || {
   echo 'FAIL: routed commands bypassed the harness' >&2; exit 1
 }
-echo 'PASS: enabled plain codex and claude route by current directory'
+echo 'PASS: enabled plain codex and claude route by current directory with native argv'
+
+(
+  cd "$TMP"
+  codex --version
+  codex -V
+  codex --help
+)
+for expected in 'codex: <--version>' 'codex: <-V>' 'codex: <--help>'; do
+  grep -Fqx "$expected" "$NATIVE_LOG" || {
+    echo "FAIL: codex informational flag did not run natively: $expected" >&2; exit 1
+  }
+done
+: > "$NATIVE_LOG"
+echo 'PASS: codex --version, -V, and --help run native Codex anywhere'
 
 (
   cd "$PROJECT"
@@ -141,9 +162,9 @@ echo 'PASS: plain Claude management commands use the profile-scoped native route
   claude -- mcp list
 )
 for expected in \
-  'ARGV: <base> <mcp list>' \
-  'ARGV: <base> <-p> <doctor>' \
-  'ARGV: <base> <--> <mcp> <list>'; do
+  'ARGV: <base> <--passthrough> <mcp list>' \
+  'ARGV: <base> <--passthrough> <-p> <doctor>' \
+  'ARGV: <base> <--passthrough> <--> <mcp> <list>'; do
   grep -Fqx "$expected" "$ROUTE_LOG" || {
     echo "FAIL: Claude prompt syntax was misclassified as management: $expected" >&2
     exit 1
@@ -154,7 +175,7 @@ echo 'PASS: Claude prompts and post-- tokens remain on the harness session route
 : > "$ROUTE_LOG"
 if (
   cd "$TMP"
-  codex --version
+  codex exec task
 ) >"$TMP/outside.out" 2>"$TMP/outside.err"; then
   echo 'FAIL: enabled plain codex ran outside every registered boundary' >&2
   exit 1

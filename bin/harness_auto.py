@@ -10,7 +10,11 @@ from harness_profile_resolver import ResolutionError, resolve
 
 
 def validate_codex_working_dirs(args, cwd, harness_root):
-    """Reject explicit Codex working directories outside the selected profile."""
+    """Reject explicit Codex working directories outside the selected profile.
+
+    Covers `-C <dir>`, `-C<dir>`, `-C=<dir>`, `--cd <dir>`, and `--cd=<dir>`
+    before and after `--passthrough`; tokens after `--` are prompt text.
+    """
     index = 0
     while index < len(args):
         arg = args[index]
@@ -22,8 +26,10 @@ def validate_codex_working_dirs(args, cwd, harness_root):
                 raise ResolutionError(f"{arg} requires a directory")
             value = args[index + 1]
             index += 1
-        elif arg.startswith("--cd="):
+        elif arg.startswith(("--cd=", "-C=")):
             value = arg.split("=", 1)[1]
+        elif arg.startswith("-C"):
+            value = arg[2:]
 
         if value is not None:
             target = Path(value)

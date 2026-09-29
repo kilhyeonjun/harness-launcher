@@ -221,8 +221,12 @@ claude mcp list       # native management command, same selected project/PWD
 ```
 
 The opt-in is shell-local and fails closed outside registered boundaries.
-Codex `--cd`/`-C` targets must remain inside the profile selected from the
-shell's current directory. Claude management commands (`mcp`, `auth`,
+Plain commands keep native argv (v0.35.0+): arguments go after
+`--passthrough`, so `claude rich` passes `rich` as a prompt and `codex -a never`
+is a Codex option. Use the profile command (`<prefix> rich`) for launcher
+presets. `codex --version`, `-V`, and `--help` run native Codex anywhere.
+Codex `--cd`/`-C` targets (every form) must remain inside the profile selected
+from the shell's current directory. Claude management commands (`mcp`, `auth`,
 `plugin`, `doctor`, and the other native first-token subcommands) keep the
 selected project's working directory and local environment, but bypass session
 presets, model/effort injection, and session isolation. Claude authentication
@@ -244,13 +248,15 @@ harness-exec "$HOME/work-harness" codex base
 
 When the external terminal starts inside the harness, no `--cwd .` is needed. If supplied, `--cwd` must resolve inside the registered harness. This is the supported boundary for Orca and similar worktree managers; see [Orca ADE integration](docs/orca-integration.md).
 
-SDK hosts that append their own Claude argv to a command prefix put it after `--passthrough`, which ends launcher keyword parsing and lets explicit `--model`, `--effort`, and `--permission-mode` values override the launcher defaults:
+SDK hosts that append their own argv to a command prefix put it after `--passthrough`, which ends launcher keyword parsing and lets explicit caller options override the launcher defaults (`--model`, `--effort`, and `--permission-mode` for Claude; `-p`/`--profile` and `-C`/`--cd` for Codex):
 
 ```bash
 harness-auto claude base --passthrough --permission-mode plan --effort high
+harness-codex --profile wh app-server          # Codex executable for SDK hosts
+harness-paseo sync --reload                    # Paseo providers from the profile registry
 ```
 
-See [Paseo integration](docs/paseo-integration.md).
+A plain Codex `app-server` runs without `-p` behind a JSON-RPC guard that keeps every thread working directory inside the selected harness. See [Paseo integration](docs/paseo-integration.md).
 
 > [!WARNING]
 > `config/launcher.env` is sourced as shell code. Only register project directories you trust.

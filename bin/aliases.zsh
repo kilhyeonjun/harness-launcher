@@ -190,16 +190,43 @@ _harness_launcher_argv_has_option() {
   return 1
 }
 
+# _harness_launcher_argv_disables_thinking [args...]
+#   True for an explicit thinking disable: `--thinking disabled`,
+#   `--max-thinking-tokens 0`, or inline JSON `--settings` whose
+#   alwaysThinkingEnabled is false. A settings file path is not read.
+_harness_launcher_argv_disables_thinking() {
+  local -a args=("$@")
+  local i arg value
+  for (( i = 1; i <= ${#args}; i++ )); do
+    arg="${args[i]}"
+    case "$arg" in
+      --thinking|--max-thinking-tokens|--settings) value="${args[i+1]-}"; (( i++ )) ;;
+      --thinking=*|--max-thinking-tokens=*|--settings=*) value="${arg#*=}"; arg="${arg%%=*}" ;;
+      *) continue ;;
+    esac
+    case "$arg" in
+      --thinking) [[ "$value" == disabled ]] && return 0 ;;
+      --max-thinking-tokens) [[ "$value" == 0 ]] && return 0 ;;
+      --settings)
+        [[ "$value" == '{'* && "$value" =~ '"alwaysThinkingEnabled"[[:space:]]*:[[:space:]]*false' ]] && return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # _harness_launcher_passthrough_reconcile
 #   Caller-wins rules for `--passthrough`: an explicit caller --model,
 #   --permission-mode or --effort replaces the launcher default instead of
-#   duplicating or overriding it. Updates the caller's claude_args, env_effort
-#   and passthrough_force_thinking (zsh dynamic scope).
+#   duplicating or overriding it, and an explicit caller thinking disable
+#   drops the launcher's xhigh/max effort (which requires thinking). Scans
+#   claude_passthrough_opts only (the caller argv before its own `--`).
+#   Updates the caller's claude_args, env_effort and passthrough_force_thinking
+#   (zsh dynamic scope).
 _harness_launcher_passthrough_reconcile() {
   local arg caller_effort="" i
   local -a drop=() kept=()
   if [[ -n "$session_flag" ]]; then
-    for arg in "${claude_passthrough_args[@]}"; do
+    for arg in "${claude_passthrough_opts[@]}"; do
       case "$arg" in
         -c|--continue|-r|-r?*|--resume|--resume=*|--session-id|--session-id=*|--fork-session|--fork-session=*)
           echo "harness-launcher: launcher '${session_flag}' conflicts with '$arg' after --passthrough" >&2
@@ -207,8 +234,8 @@ _harness_launcher_passthrough_reconcile() {
       esac
     done
   fi
-  _harness_launcher_argv_has_option --model "${claude_passthrough_args[@]}" && drop+=(--model)
-  _harness_launcher_argv_has_option --permission-mode "${claude_passthrough_args[@]}" && drop+=(--permission-mode)
+  _harness_launcher_argv_has_option --model "${claude_passthrough_opts[@]}" && drop+=(--model)
+  _harness_launcher_argv_has_option --permission-mode "${claude_passthrough_opts[@]}" && drop+=(--permission-mode)
   if (( ${#drop} )); then
     for (( i = 1; i <= ${#claude_args}; i++ )); do
       if (( ${drop[(Ie)${claude_args[i]}]} )); then
@@ -219,20 +246,25 @@ _harness_launcher_passthrough_reconcile() {
     done
     claude_args=("${kept[@]}")
   fi
-  _harness_launcher_argv_has_option --effort "${claude_passthrough_args[@]}" || return 0
+  if ! _harness_launcher_argv_has_option --effort "${claude_passthrough_opts[@]}"; then
+    if [[ "$env_effort" == (xhigh|max) ]] && _harness_launcher_argv_disables_thinking "${claude_passthrough_opts[@]}"; then
+      env_effort=""
+    fi
+    return 0
+  fi
   env_effort=""
-  for (( i = 1; i <= ${#claude_passthrough_args}; i++ )); do
-    case "${claude_passthrough_args[i]}" in
-      --effort) caller_effort="${claude_passthrough_args[i+1]-}" ;;
-      --effort=*) caller_effort="${claude_passthrough_args[i]#--effort=}" ;;
+  for (( i = 1; i <= ${#claude_passthrough_opts}; i++ )); do
+    case "${claude_passthrough_opts[i]}" in
+      --effort) caller_effort="${claude_passthrough_opts[i+1]-}" ;;
+      --effort=*) caller_effort="${claude_passthrough_opts[i]#--effort=}" ;;
     esac
   done
   # Same API constraint as the launcher's own xhigh/max efforts, unless the
-  # caller controls thinking itself.
+  # caller sets thinking itself.
   if [[ "$caller_effort" == (xhigh|max) ]] \
-    && ! _harness_launcher_argv_has_option --thinking "${claude_passthrough_args[@]}" \
-    && ! _harness_launcher_argv_has_option --max-thinking-tokens "${claude_passthrough_args[@]}" \
-    && ! _harness_launcher_argv_has_option --settings "${claude_passthrough_args[@]}"; then
+    && ! _harness_launcher_argv_has_option --thinking "${claude_passthrough_opts[@]}" \
+    && ! _harness_launcher_argv_has_option --max-thinking-tokens "${claude_passthrough_opts[@]}" \
+    && ! _harness_launcher_argv_disables_thinking "${claude_passthrough_opts[@]}"; then
     passthrough_force_thinking=true
   fi
   return 0
@@ -327,26 +359,29 @@ _harness_launcher_auto_runtime() {
     echo "harness-launcher: missing executable: $harness_auto" >&2
     return 2
   }
+  # Plain commands keep native argv: everything goes after --passthrough, so
+  # `claude rich` is a prompt and `codex -a never` is a Codex option. Use
+  # `<prefix> <keyword>` for launcher presets.
   if [[ "$runtime" == claude ]]; then
     if _harness_launcher_is_claude_management_command "${1:-}"; then
       "$harness_auto" claude-management "$@"
     else
-      "$harness_auto" claude base "$@"
+      "$harness_auto" claude base --passthrough "$@"
     fi
+  elif [[ "$runtime" == codex && "${1:-}" == (--version|-V|--help|-h) ]]; then
+    local codex_bin
+    codex_bin="$(_harness_launcher_codex_bin)" || {
+      echo "❌ codex not found in PATH" >&2
+      return 1
+    }
+    "$codex_bin" "$@"
   else
-    "$harness_auto" "$runtime" "$@"
+    "$harness_auto" "$runtime" --passthrough "$@"
   fi
 }
 
 _harness_launcher_is_claude_management_command() {
-  case "${1:-}" in
-    agents|attach|auth|auto-mode|doctor|gateway|help|import|install|logs|mcp|plugin|plugins|project|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade|-h|--help|-v|-V|--version)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+  harness_claude_is_management_command "$@"
 }
 
 _harness_launcher_auto_claude() {
@@ -513,6 +548,9 @@ _harness_launcher_run() {
   if [[ -n "${ORCA_CODEX_HOME-}" && "${CODEX_HOME-}" == "$ORCA_CODEX_HOME" ]]; then
     unset CODEX_HOME ORCA_CODEX_HOME
   fi
+  # Production entry points run without errexit; a caller's errexit would also
+  # skip the `always` block that finishes an isolated session.
+  setopt localoptions noerrexit
   local HARNESS_DIR="$1"; shift
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
@@ -531,6 +569,27 @@ _harness_launcher_run() {
       shift 2
       ;;
   esac
+
+  # SDK hosts run diagnostics such as `auth status` through the same argv
+  # prefix (`base --passthrough auth status`); a management subcommand right
+  # after the marker runs natively. Only for direct Claude: other runtimes and
+  # gateway prefixes keep their own path.
+  local mgmt_i=1
+  case "${1:-}" in
+    --isolated|--no-isolated) mgmt_i=2 ;;
+    --isolated-session) mgmt_i=3 ;;
+  esac
+  if [[ "${@[mgmt_i]-}" != (codex|codex-smoke|checkup|kiro|kiro-cli|codex-gateway|claude-management) ]]; then
+    for (( ; mgmt_i < $#; mgmt_i++ )); do
+      [[ "${@[mgmt_i]}" == -- ]] && break
+      if [[ "${@[mgmt_i]}" == --passthrough ]]; then
+        if harness_claude_is_management_command "${@[mgmt_i+1]}"; then
+          set -- claude-management "${@[mgmt_i+1,-1]}"
+        fi
+        break
+      fi
+    done
+  fi
 
   if [[ "${1:-}" == claude-management ]]; then
     shift
@@ -642,9 +701,23 @@ _harness_launcher_run() {
       fi
     fi
   fi
-  local isolated_session_id="${HARNESS_SESSION_ID:-}"
+  local isolated_session_id="${HARNESS_SESSION_ID:-}" isolated_heartbeat_pid=""
+  # Every exit after the isolated session is acquired, including error
+  # returns, stops a started heartbeat and finishes the session once.
+  {
+    _harness_launcher_run_session "$@"
+  } always {
+    if [[ -n "$isolated_session_id" ]]; then
+      _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
+    fi
+  }
+}
 
-  local -a claude_args=() claude_passthrough_args=()
+# _harness_launcher_run_session [args...]
+#   Launch body of _harness_launcher_run after isolation is settled. Reads the
+#   caller's locals (zsh dynamic scope) and sets its isolated_heartbeat_pid.
+_harness_launcher_run_session() {
+  local -a claude_args=() claude_passthrough_args=() claude_passthrough_opts=() claude_prompt_args=()
   local session_flag="" skip_tui=false env_effort="" provider_url="" gateway_api_key="" provider_name=""
   local mode_applied=false mcp_surface="full" passthrough=false passthrough_force_thinking=false
 
@@ -664,12 +737,9 @@ _harness_launcher_run() {
       skip_tui=true; shift ;;
     codex)
       shift
-      local isolated_heartbeat_pid=""
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       _harness_launcher_run_codex_cli "$HARNESS_DIR" "$mcp_surface_policy" "$@"
-      local rc=$?
-      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
-      return $rc
+      return $?
       ;;
     checkup)
       shift
@@ -679,21 +749,15 @@ _harness_launcher_run() {
     codex-smoke)
       shift
       [[ $# -eq 0 ]] || { echo "harness-launcher: codex-smoke takes no arguments" >&2; return 2; }
-      local isolated_heartbeat_pid=""
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       _harness_launcher_codex_synthetic_smoke "$HARNESS_DIR"
-      local rc=$?
-      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
-      return $rc
+      return $?
       ;;
     kiro-cli)
       shift
-      local isolated_heartbeat_pid=""
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       _harness_launcher_run_kiro_cli "$HARNESS_DIR" "$@"
-      local rc=$?
-      [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
-      return $rc
+      return $?
       ;;
     codex-gateway)
       provider_name="codex"
@@ -718,6 +782,11 @@ _harness_launcher_run() {
         shift
         claude_passthrough_args=("$@")
         passthrough=true; skip_tui=true
+        break ;;
+      --)
+        # Everything after a launcher `--` is prompt text, forwarded last.
+        claude_prompt_args=("$@")
+        skip_tui=true
         break ;;
       fast|base|plan|opus|rich)
         harness_mode_resolve "$1" "${provider_name:-direct}"
@@ -784,6 +853,10 @@ _harness_launcher_run() {
   done
 
   if $passthrough; then
+    # Caller options end at its own `--`; later tokens are prompt text and
+    # are never scanned for options.
+    local _pt_i=${claude_passthrough_args[(ie)--]}
+    claude_passthrough_opts=("${(@)claude_passthrough_args[1,_pt_i-1]}")
     _harness_launcher_passthrough_reconcile || return $?
   fi
 
@@ -861,10 +934,11 @@ _harness_launcher_run() {
     else
       claude_args+=(--exclude-dynamic-system-prompt-sections)
     fi
+    claude_launch_tail+=("${claude_prompt_args[@]}")
     local HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID="" HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE=""
     local _claude_interactive=0
     harness_claude_stdio_is_tty && _claude_interactive=1
-    if harness_claude_bootstrap_eligible claude "${provider_name:-direct}" "$_claude_interactive" "${claude_args[@]}" "${claude_passthrough_args[@]}"; then
+    if harness_claude_bootstrap_eligible claude "${provider_name:-direct}" "$_claude_interactive" "${claude_args[@]}" "${claude_passthrough_opts[@]}"; then
       IFS=$'\t' read -r HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE \
         < <(harness_claude_bootstrap_values) || true
       if [[ -n "$HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID" ]]; then
@@ -878,21 +952,20 @@ _harness_launcher_run() {
     # --session-id, and this keeps --name.
     if $created_isolated_session && [[ "$isolation_route" == isolate ]]; then
       local _sid_arg _sid_ok=true
-      for _sid_arg in "${claude_args[@]}" "${claude_passthrough_args[@]}"; do
+      for _sid_arg in "${claude_args[@]}" "${claude_passthrough_opts[@]}"; do
         case "$_sid_arg" in
           --session-id|--session-id=*|-c|--continue|-r|-r?*|--resume|--resume=*|--fork-session|--fork-session=*) _sid_ok=false ;;
         esac
       done
       $_sid_ok && claude_args+=(--session-id "${(L)HARNESS_SESSION_ID}")
     fi
-    harness_autocompact_pct "${provider_name:-direct}" "${claude_args[@]}" "${claude_passthrough_args[@]}"
+    harness_autocompact_pct "${provider_name:-direct}" "${claude_args[@]}" "${claude_passthrough_opts[@]}"
     # Shared-table globals must not linger in the interactive shell.
     unset HARNESS_MODE_MODEL HARNESS_MODE_EFFORT
     # Plain invocation (not exec) so the user's interactive shell survives
     # the launched process — Ctrl+C returns to the prompt instead of closing
     # the terminal window.
     local claude_broker_started=false
-    local isolated_heartbeat_pid=""
     if [[ "$mcp_surface" == "light" ]]; then
       local _light_file
       _light_file="$(harness_claude_light_mcp_config "$HARNESS_DIR" "$_HARNESS_LAUNCHER_BIN")" || return $?
@@ -917,17 +990,13 @@ _harness_launcher_run() {
     fi
     local rc=$?
     $claude_broker_started && harness_claude_cmux_broker_stop
-    [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
     return $rc
   else
-    local isolated_heartbeat_pid=""
     if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
       HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
       "$_HARNESS_LAUNCHER_BIN/launcher.sh"
-    local rc=$?
-    [[ -n "$isolated_session_id" ]] && _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
-    return $rc
+    return $?
   fi
 }
 
@@ -1118,6 +1187,10 @@ PY
 #   Wrapper:  happy → `happy codex ...`
 #   Sessions: resume → `codex resume`,  continue → `codex resume --last`,
 #             fork   → `codex fork`
+#   SDK:      --passthrough → every later token is a native Codex argument;
+#             a caller -p/--profile or -C/--cd replaces the launcher's.
+#   Codex rejects -p for non-runtime subcommands, so the launcher omits it
+#   there; plain `app-server` runs behind codex-app-server-guard.py.
 _harness_launcher_run_codex_cli() {
   local HARNESS_DIR="$1" mcp_surface_policy="$2"; shift 2
   local run_dir="${HARNESS_RUN_DIR:-$HARNESS_DIR}"
@@ -1142,10 +1215,13 @@ _harness_launcher_run_codex_cli() {
   local subcmd=""
   local use_happy=false
   local freeform=false
-  local -a codex_args=()
+  local passthrough=false
+  local -a codex_args=() codex_passthrough_args=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --passthrough)
+        shift; passthrough=true; codex_passthrough_args=("$@"); break ;;
       fast|base|sol|plan|rich)
         profile="$1"; profile_explicit=true; shift ;;
       astra|luna6|sol6)
@@ -1218,6 +1294,66 @@ _harness_launcher_run_codex_cli() {
   [[ -z "$profile" ]] && profile="base"
   export HARNESS_CODEX_CONTEXT
 
+  # Caller wins after the marker. A caller -C/--cd must stay inside the
+  # harness; a relative one resolves against the directory Codex starts in.
+  local caller_profile=false caller_cd_set=false caller_cd="" caller_run_dir=""
+  if $passthrough; then
+    local i arg
+    for (( i = 1; i <= ${#codex_passthrough_args}; i++ )); do
+      arg="${codex_passthrough_args[i]}"
+      case "$arg" in
+        --) break ;;
+        -p|--profile) caller_profile=true; (( i++ )) ;;
+        -p?*|--profile=*) caller_profile=true ;;
+        -C|--cd) caller_cd_set=true; caller_cd="${codex_passthrough_args[i+1]-}"; (( i++ )) ;;
+        -C=*|--cd=*) caller_cd_set=true; caller_cd="${arg#*=}" ;;
+        -C?*) caller_cd_set=true; caller_cd="${arg#-C}" ;;
+        -*) if harness_codex_option_takes_value "$arg"; then (( i++ )); fi ;;
+      esac
+    done
+  fi
+  if $caller_cd_set; then
+    caller_run_dir="$(cd "$run_dir" 2>/dev/null && harness_resolve_run_dir "$HARNESS_DIR" "$caller_cd" 2>/dev/null)" || {
+      echo "harness-launcher: codex -C must name a directory inside the registered harness: $caller_cd" >&2
+      return 2
+    }
+  fi
+
+  local native_subcmd="" profile_arg=true guard_app_server=false
+  if [[ -z "$subcmd" ]] && ! $use_happy; then
+    native_subcmd="$(harness_codex_subcommand "${codex_args[@]}" "${codex_passthrough_args[@]}")"
+    if harness_codex_subcommand_rejects_profile "$native_subcmd"; then
+      if $profile_explicit; then
+        echo "harness-launcher: codex profile '$profile' applies only to runtime commands; '${native_subcmd% }' rejects --profile" >&2
+        return 2
+      fi
+      profile_arg=false
+    fi
+    case "$native_subcmd" in
+      remote-control|exec-server|mcp-server)
+        echo "harness-launcher: codex $native_subcmd serves clients outside the harness boundary guard; run 'command codex $native_subcmd' deliberately" >&2
+        return 2
+        ;;
+    esac
+    if [[ "$native_subcmd" == app-server ]]; then
+      local app_server_route
+      app_server_route="$(_harness_launcher_codex_app_server_route "${codex_args[@]}" "${codex_passthrough_args[@]}")"
+      case "$app_server_route" in
+        guard) guard_app_server=true ;;
+        tool) ;;
+        *)
+          echo "harness-launcher: codex app-server '$app_server_route' is not supported; only the stdio app-server runs behind the harness boundary guard" >&2
+          return 2
+          ;;
+      esac
+    fi
+  fi
+  $caller_profile && profile_arg=false
+  local guard_python=""
+  if $guard_app_server; then
+    guard_python="$(harness_python3_resolve)" || return 1
+  fi
+
   # Validate incompatible combinations BEFORE preparing the runtime home, so a
   # rejected launch leaves no work-surface residue in the generated config.
   if $use_happy; then
@@ -1256,25 +1392,68 @@ _harness_launcher_run_codex_cli() {
 
   # Plain invocation (not exec) so the user's interactive shell survives
   # codex exit — Ctrl+C returns to the prompt instead of closing the terminal.
-  local -a launch_cmd=()
+  local -a launch_cmd=() codex_head=()
   if $use_happy; then
     launch_cmd=(happy codex)
   else
     launch_cmd=("$codex_bin")
   fi
+  $caller_cd_set || codex_head+=(--cd "$run_dir")
+  $profile_arg && codex_head+=(-p "$profile")
+  if $guard_app_server; then
+    local registry="${HARNESS_PROFILE_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/harness-launcher}/profiles"
+    launch_cmd=("$guard_python" "$_HARNESS_LAUNCHER_BIN/codex-app-server-guard.py"
+      --root "$HARNESS_DIR" --server-cwd "${caller_run_dir:-$run_dir}" --prefix "$HARNESS_PREFIX"
+      --registry "$registry" -- "${launch_cmd[@]}")
+  fi
   if [[ -n "$subcmd" ]]; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && "${launch_cmd[@]}" "$subcmd" --cd "$run_dir" -p "$profile" "${codex_args[@]}")
+    (cd "$run_dir" && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   elif $use_happy; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && "${launch_cmd[@]}" "${codex_args[@]}")
+    (cd "$run_dir" && "${launch_cmd[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   else
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && "${launch_cmd[@]}" --cd "$run_dir" -p "$profile" "${codex_args[@]}")
+    (cd "$run_dir" && "${launch_cmd[@]}" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   fi
   local rc=$?
   harness_codex_cmux_broker_stop
   return $rc
+}
+
+# _harness_launcher_codex_app_server_route [codex args...]
+#   Classifies the argv around `app-server`: `guard` for the stdio server,
+#   `tool` for schema/binding generators and help, otherwise the shape that
+#   would bypass the relay (a nested daemon/proxy or a non-stdio listener).
+_harness_launcher_codex_app_server_route() {
+  while (( $# )); do
+    if [[ "$1" == app-server ]]; then
+      shift
+      break
+    fi
+    if [[ "$1" == -* ]] && harness_codex_option_takes_value "$1" && (( $# > 1 )); then
+      shift
+    fi
+    shift
+  done
+  local arg
+  while (( $# )); do
+    arg="$1"; shift
+    case "$arg" in
+      --) break ;;
+      --listen)
+        [[ "${1-}" == stdio:// ]] || { print -r -- "--listen ${1-}"; return 0; }
+        shift ;;
+      --listen=*)
+        [[ "${arg#--listen=}" == stdio:// ]] || { print -r -- "$arg"; return 0; } ;;
+      -c|--config|--enable|--disable|--code-mode-host|--ws-auth|--ws-token-file|--ws-token-sha256|--ws-shared-secret-file|--ws-issuer|--ws-audience|--ws-max-clock-skew-seconds)
+        if (( $# )); then shift; fi ;;
+      -h|--help|generate-ts|generate-json-schema|help) print -r -- tool; return 0 ;;
+      -*) ;;
+      *) print -r -- "$arg"; return 0 ;;
+    esac
+  done
+  print -r -- guard
 }
 
 # _harness_launcher_run_kiro_cli <harness-dir> [args...]
