@@ -37,17 +37,24 @@ rec "$(event SessionStart clear $NEWID)" HARNESS_SESSION_ID=$SID
 # identical line is not duplicated
 rec "$(event SessionStart resume $NEWID)" HARNESS_SESSION_ID=$SID
 [[ "$(wc -l < "$file" | tr -d ' ')" == 1 ]] || fail 'duplicate line appended'
-# every allowed source appends
-for src in startup compact fork; do
-  id="bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee0${#src}"
+# every allowed source appends its own distinct id
+n=0
+for src in startup resume clear compact fork; do
+  n=$((n+1)); id="bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee0$n"
   rec "$(event SessionStart $src $id)" HARNESS_SESSION_ID=$SID
+  [[ $RC == 0 && -z "$OUT" ]] || fail "source $src: rc=$RC out=$OUT"
   grep -qxF "claude $id" "$file" || fail "source $src not recorded"
 done
+[[ "$(wc -l < "$file" | tr -d ' ')" == 6 ]] || fail 'expected NEWID plus one line per source'
 find "$STATE" -name provider-sessions -delete
 
 rec "$(event SessionStart clear not-a-uuid)" HARNESS_SESSION_ID=$SID; expect_silent_noop 'non-UUID id'
 rec "$(event SessionStart clear $NEWID)"; expect_silent_noop 'HARNESS_SESSION_ID unset'
+mkdir -p "$STATE/evil"
 rec "$(event SessionStart clear $NEWID)" HARNESS_SESSION_ID=../evil; expect_silent_noop 'non-UUID HARNESS_SESSION_ID'
+[[ ! -e "$STATE/evil/provider-sessions" ]] || fail 'traversal id wrote outside sessions'
+rec "$(event SessionStart clear "$NEWID\\n")" HARNESS_SESSION_ID=$SID; expect_silent_noop 'session_id with trailing newline'
+rec "$(event SessionStart clear $NEWID)" HARNESS_SESSION_ID="$SID"$'\n'; expect_silent_noop 'HARNESS_SESSION_ID with trailing newline'
 rec "$(event SessionStart bogus $NEWID)" HARNESS_SESSION_ID=$SID; expect_silent_noop 'unknown source'
 rec "$(event PreToolUse clear $NEWID)" HARNESS_SESSION_ID=$SID; expect_silent_noop 'other hook event'
 rec '{not json' HARNESS_SESSION_ID=$SID; expect_silent_noop 'malformed JSON'
@@ -71,6 +78,21 @@ ln -s "$TMP/target" "$file"
 rec "$(event SessionStart clear $NEWID)" HARNESS_SESSION_ID=$SID
 [[ $RC == 0 && -z "$OUT" ]] || fail 'symlinked file not silent'
 [[ ! -s "$TMP/target" ]] || fail 'wrote through symlinked provider-sessions'
+find "$STATE/sessions/$SID" -name provider-sessions -delete
+
+# FIFO at provider-sessions: must not block, must write nothing
+mkfifo "$file"
+start=$SECONDS
+printf '%s' "$(event SessionStart clear $NEWID)" | env -i HOME="$HOME" PATH="$PATH" HARNESS_SESSION_STATE_HOME="$STATE" HARNESS_SESSION_ID=$SID \
+  python3 -c 'import subprocess,sys; sys.exit(subprocess.run([sys.argv[1]],input=sys.stdin.buffer.read(),timeout=5).returncode)' "$REC" || fail 'FIFO case blocked or failed'
+(( SECONDS - start < 4 )) || fail 'FIFO case was not prompt'
+find "$STATE/sessions/$SID" -name provider-sessions -type p -delete
+
+# non-UTF-8 bytes in an existing file do not stop later records
+printf 'junk \377\376\n' > "$file"
+rec "$(event SessionStart clear $NEWID)" HARNESS_SESSION_ID=$SID
+[[ $RC == 0 && -z "$OUT" ]] || fail 'non-UTF-8 file not silent'
+grep -aqxF "claude $NEWID" "$file" || fail 'record lost after non-UTF-8 content'
 find "$STATE/sessions/$SID" -name provider-sessions -delete
 
 echo 'PASS: test-session-provider-record'

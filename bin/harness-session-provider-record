@@ -31,19 +31,23 @@ def record():
     session_id = payload.get("session_id")
     if payload.get("source") not in SOURCES or not isinstance(session_id, str):
         return
-    if not UUID.match(session_id) or not UUID.match(owner):
+    if not UUID.fullmatch(session_id) or not UUID.fullmatch(owner):
         return
     directory = os.path.join(state_home(), "sessions", owner)
     if not stat.S_ISDIR(os.lstat(directory).st_mode):
         return
-    line = "claude %s\n" % session_id
-    fd = os.open(os.path.join(directory, "provider-sessions"),
-                 os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "r+") as handle:
-        handle.seek(0)
-        if line in handle.read().splitlines(True):
+    line = ("claude %s\n" % session_id).encode("ascii")
+    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+    fd = os.open(os.path.join(directory, "provider-sessions"), flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
             return
-        handle.write(line)
+        with os.fdopen(os.dup(fd), "rb") as handle:
+            if line in handle.read().splitlines(True):
+                return
+        os.write(fd, line)
+    finally:
+        os.close(fd)
 
 
 try:
