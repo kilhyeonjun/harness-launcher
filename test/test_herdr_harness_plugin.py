@@ -215,6 +215,62 @@ class HerdrPluginTestCase(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class InstallTest(HerdrPluginTestCase):
+    """herdr stores a linked manifest by its resolved path, so a manifest inside the
+    Homebrew Cellar would vanish on upgrade. install writes one outside it."""
+
+    def install(self, script, target):
+        if not self.h.herdr_state.exists():
+            self.h.set_state([], [], [])
+        env = self.h.env("install")
+        return subprocess.run([TARGET_PYTHON, str(SCRIPT), "install", "--dir", str(target),
+                               "--script", script], env=env, capture_output=True, text=True,
+                              timeout=60)
+
+    def calls(self):
+        return [json.loads(line) for line in self.h.herdr_calls.read_text().splitlines()]
+
+    def test_install_links_a_stable_manifest_that_runs_the_given_script(self):
+        target = self.h.root / "stable"
+        result = self.install("/opt/homebrew/opt/harness-launcher/share/x/harness_herdr_plugin.py",
+                              target)
+        self.assertRan(result)
+        text = (target / "herdr-plugin.toml").read_text(encoding="utf-8")
+        self.assertNotIn('"harness_herdr_plugin.py"', text)
+        self.assertIn('["/usr/bin/python3", '
+                      '"/opt/homebrew/opt/harness-launcher/share/x/harness_herdr_plugin.py"]', text)
+        self.assertEqual(text.count("harness_herdr_plugin.py"), MANIFEST.read_text().count(
+            "harness_herdr_plugin.py"))
+        self.assertEqual(self.calls()[-2:], [["plugin", "unlink", "harness.launcher"],
+                                             ["plugin", "link", str(target)]])
+
+    def test_install_maps_a_versioned_cellar_script_to_the_opt_path(self):
+        target = self.h.root / "stable"
+        result = self.install(
+            "/opt/homebrew/Cellar/harness-launcher/0.37.0/share/harness-launcher/"
+            "herdr-plugin/harness_herdr_plugin.py", target)
+        self.assertRan(result)
+        text = (target / "herdr-plugin.toml").read_text(encoding="utf-8")
+        self.assertIn('"/opt/homebrew/opt/harness-launcher/share/harness-launcher/'
+                      'herdr-plugin/harness_herdr_plugin.py"', text)
+        self.assertNotIn("/Cellar/", text)
+
+    @unittest.skipIf(tomllib is None, "tomllib requires Python 3.11+")
+    def test_installed_manifest_keeps_the_packaged_hooks(self):
+        target = self.h.root / "stable"
+        self.assertRan(self.install("/opt/x/harness_herdr_plugin.py", target))
+        installed = tomllib.loads((target / "herdr-plugin.toml").read_text(encoding="utf-8"))
+        packaged = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
+        self.assertEqual(installed["id"], packaged["id"])
+        self.assertEqual([hook["on"] for hook in installed["events"]],
+                         [hook["on"] for hook in packaged["events"]])
+
+    def test_install_reports_a_failed_link(self):
+        self.h.herdr_state.write_text("not json", encoding="utf-8")
+        result = self.install("/opt/x/harness_herdr_plugin.py", self.h.root / "stable")
+        self.assertNotEqual(result.returncode, 0)
+
+
 class ManifestTest(unittest.TestCase):
     @unittest.skipIf(tomllib is None, "tomllib requires Python 3.11+")
     def test_manifest_runs_system_python_on_hookable_events(self):

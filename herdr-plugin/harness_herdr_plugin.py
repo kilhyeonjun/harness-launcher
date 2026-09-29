@@ -289,7 +289,50 @@ def announce(pending):
          "-e", "end run", title, message, subtitle])
 
 
+CELLAR_PATH = re.compile(r"^(.*)/Cellar/harness-launcher/[^/]+/(.*)$")
+DEFAULT_INSTALL_DIR = "~/.local/share/harness-launcher/herdr-plugin"
+PACKAGED_SCRIPT = '"harness_herdr_plugin.py"'
+
+
+def install(argv):
+    """Link a manifest that survives upgrades.
+
+    herdr stores a linked manifest by its resolved path, so linking the packaged
+    directory would pin a versioned Homebrew Cellar path that the next upgrade
+    removes. Write the manifest outside the package instead, pointing its
+    commands at this script through the unversioned `opt` path.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="harness_herdr_plugin.py install")
+    parser.add_argument("--dir", default=os.path.expanduser(DEFAULT_INSTALL_DIR),
+                        help="where to write the linked manifest (default: %(default)s)")
+    parser.add_argument("--script", default=os.path.abspath(__file__),
+                        help="script path the manifest runs (default: this file)")
+    args = parser.parse_args(argv)
+    script = args.script
+    cellar = CELLAR_PATH.match(script)
+    if cellar:
+        script = "%s/opt/harness-launcher/%s" % cellar.groups()
+    packaged = os.path.join(os.path.dirname(os.path.abspath(__file__)), "herdr-plugin.toml")
+    with open(packaged, encoding="utf-8") as handle:
+        manifest = handle.read().replace(PACKAGED_SCRIPT, json.dumps(script))
+    os.makedirs(args.dir, exist_ok=True)
+    with open(os.path.join(args.dir, "herdr-plugin.toml"), "w", encoding="utf-8") as handle:
+        handle.write(manifest)
+    run([herdr_bin(), "plugin", "unlink", "harness.launcher"])  # absent on first install
+    if run([herdr_bin(), "plugin", "link", args.dir]) is None:
+        sys.stderr.write("herdr plugin link %s failed\n" % args.dir)
+        return 1
+    print("linked %s (runs %s)" % (args.dir, script))
+    print('set ui.toast.delivery = "off" in ~/.config/herdr/config.toml, then run '
+          "herdr server reload-config")
+    return 0
+
+
 def main():
+    if sys.argv[1:2] == ["install"]:
+        return install(sys.argv[2:])
     pending = None
     if os.environ.get("HERDR_PLUGIN_EVENT") == "pane.agent_status_changed":
         try:

@@ -309,7 +309,14 @@ wait_for_title "eventual-title | alpha" || {
   echo "FAIL: transient failure recovery made $(attempt_count) attempts instead of three"
   exit 1
 }
-STATUS_FILE="$(find "$STATE_DIR" -name '*.status.json' -type f -print -quit)"
+# The watcher writes the recovery status after the rename it waited for.
+STATUS_FILE=""
+for _ in $(seq 1 100); do
+  STATUS_FILE="$(find "$STATE_DIR" -name '*.status.json' -type f -size +0 -print -quit)"
+  [[ -n "$STATUS_FILE" ]] && break
+  sleep 0.05
+done
+[[ -n "$STATUS_FILE" ]] || { echo "FAIL: watcher never wrote its recovery status"; exit 1; }
 python3 - "$STATUS_FILE" "$OWNER_PID" <<'PY'
 import json
 import sys

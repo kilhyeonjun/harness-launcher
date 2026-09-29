@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.37.1 — 2026-09-29
+
+- herdr plugin: new `install` command. herdr records a linked manifest by its
+  resolved path, so linking the packaged directory as 0.37.0 documented pinned
+  the versioned Homebrew Cellar path, which the next upgrade removes.
+  `harness_herdr_plugin.py install` writes the manifest outside the package,
+  runs the script through the unversioned `opt` path, and links it. Re-run it
+  once if you linked the plugin under 0.37.0.
+
 ## 0.37.0 — 2026-09-29
 
 - New herdr plugin in `share/harness-launcher/herdr-plugin` (macOS, herdr
