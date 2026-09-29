@@ -204,6 +204,8 @@ harness-auto kiro-cli base
 
 This is the supported command override for Orca's built-in Claude, Codex, and Kiro agent entries. It does not infer a profile from repository names or remotes; the worktree must live below its registered harness boundary.
 
+Orca-specific behavior (v0.33.0+) is described in [Orca ADE integration](docs/orca-integration.md): `CODEX_HOME` sanitization inside Orca terminals, the opt-in `HARNESS_ORCA_AGENT_HOOKS=1` Codex status hook in a harness's `config/launcher.env`, and mapping Orca's `--resume <id>` restore to isolated sessions.
+
 Interactive Zsh users can opt plain `codex` and `claude` commands into the
 same location-based routing after every harness has been persisted once with
 `harness-profile register`:

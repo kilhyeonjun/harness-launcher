@@ -41,6 +41,16 @@ def apps_allowlist() -> str:
     return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
 
 
+def orca_agent_hooks(repo_root) -> str:
+    """Return "1" only when the harness's launcher.env opts in to Orca hooks."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import orca_hooks_optin
+    finally:
+        sys.path.pop(0)
+    return orca_hooks_optin.resolve(str(repo_root))
+
+
 def global_mcp_resolution(home: Path):
     """Resolve the opt-in global source without importing arbitrary config."""
     raw = os.environ.get("HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST", "")
@@ -1557,6 +1567,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
         "mcp_profile": mcp_profile,
         "global_mcp_digest": global_resolution.digest,
         "apps_allowlist": apps_allowlist(),
+        "orca_agent_hooks": orca_agent_hooks(repo_root),
         "bundled_marketplace_path": (
             os.path.realpath(args.bundled_marketplace)
             if args.bundled_marketplace
@@ -1892,7 +1903,8 @@ def inspection_config_signatures(codex_home: Path) -> dict[str, str]:
 
 def write_stamp(args: argparse.Namespace) -> None:
     payload = load_inline_json(args.fingerprint_json, "fingerprint")
-    if set(payload) != {
+    # orca_agent_hooks is optional so stamps written before it existed stay valid.
+    if set(payload) - {"orca_agent_hooks"} != {
         "schema_version",
         "digest",
         "skill_profile",

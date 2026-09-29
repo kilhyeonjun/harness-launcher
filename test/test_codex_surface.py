@@ -687,6 +687,7 @@ out.mkdir(parents=True, exist_ok=True)
             "HARNESS_CODEX_SKILL_PROFILE",
             "HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST",
             "HARNESS_CODEX_APPS_ALLOWLIST",
+            "HARNESS_ORCA_AGENT_HOOKS",
         ):
             env.pop(inherited, None)
         env.update(
@@ -1032,6 +1033,85 @@ out.mkdir(parents=True, exist_ok=True)
         shutil.rmtree(same); same.write_text("plain again\n", encoding="utf-8")
         self.prepare()
         self.assertEqual(self.compiler_calls(), calls + 2, "skilldir-to-file stayed warm")
+
+    def orca_command(self):
+        return (
+            "/bin/sh -c 's=\"$HOME/.orca/agent-hooks/codex-hook.sh\"; "
+            "[ -x \"$s\" ] && { /bin/sh \"$s\" >/dev/null 2>&1; exit 0; }; cat >/dev/null'"
+        )
+
+    def set_launcher_env(self, *lines):
+        path = self.repo / "config" / "launcher.env"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+
+    def test_orca_agent_hooks_opt_in_comes_only_from_launcher_env(self):
+        events = ["SessionStart", "UserPromptSubmit", "PreToolUse",
+                  "PermissionRequest", "PostToolUse", "Stop"]
+        hooks_path = self.codex_home / "hooks.json"
+        self.set_launcher_env('HARNESS_PREFIX="x"')
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        baseline = hooks_path.read_bytes()
+        self.assertNotIn(b"agent-hooks", baseline)
+
+        # Process env alone never enables it, and never invalidates the home.
+        self.prepare(HARNESS_ORCA_AGENT_HOOKS="1")
+        self.assertEqual(self.compiler_calls(), 1, "ambient env changed the fingerprint")
+        self.assertEqual(hooks_path.read_bytes(), baseline)
+
+        # launcher.env opt-in with an empty environment (direct prepare call).
+        self.set_launcher_env('HARNESS_PREFIX="x"', "export HARNESS_ORCA_AGENT_HOOKS='1'")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2, "opt-in did not invalidate the warm home")
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+        base_hooks = json.loads(baseline)["hooks"]
+        for event in events:
+            entry = {"hooks": [{"type": "command", "command": self.orca_command(), "timeout": 5}]}
+            self.assertEqual(hooks[event][-1], entry, event)
+            self.assertNotIn("matcher", hooks[event][-1])
+            self.assertEqual(hooks[event][:-1], base_hooks.get(event, []), event)
+        enabled = hooks_path.read_bytes()
+
+        # Launcher-style (env exported) and direct calls agree: no ping-pong.
+        for env in ({}, {"HARNESS_ORCA_AGENT_HOOKS": "1"}, {"HARNESS_ORCA_AGENT_HOOKS": ""}, {}):
+            self.prepare(**env)
+            self.assertEqual(self.compiler_calls(), 2, f"cold rebuild with env {env}")
+            self.assertEqual(hooks_path.read_bytes(), enabled)
+
+        # Value forms: last assignment wins; anything but 1 is off.
+        self.set_launcher_env("HARNESS_ORCA_AGENT_HOOKS=1", 'HARNESS_ORCA_AGENT_HOOKS="0"')
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3, "opt-out did not invalidate the warm home")
+        self.assertEqual(hooks_path.read_bytes(), baseline)
+        self.set_launcher_env('HARNESS_ORCA_AGENT_HOOKS="1"')
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 4)
+        self.assertEqual(hooks_path.read_bytes(), enabled)
+        (self.repo / "config" / "launcher.env").unlink()
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 5)
+        self.assertEqual(hooks_path.read_bytes(), baseline)
+
+    def test_orca_hook_wrapper_is_status_only_and_fail_open(self):
+        self.set_launcher_env("HARNESS_ORCA_AGENT_HOOKS=1")
+        self.prepare()
+        hooks = json.loads((self.codex_home / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        command = hooks["PreToolUse"][-1]["hooks"][0]["command"]
+        script_dir = self.home / ".orca" / "agent-hooks"
+        script_dir.mkdir(parents=True)
+        script = script_dir / "codex-hook.sh"
+        script.write_text('#!/bin/sh\ncat > "$HOME/stdin.seen"\necho \'{"decision":"block"}\'\nexit 2\n', encoding="utf-8")
+        script.chmod(0o755)
+        result = subprocess.run(command, shell=True, input="payload\n", text=True,
+                                capture_output=True, env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"})
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual((self.home / "stdin.seen").read_text(encoding="utf-8"), "payload\n")
+        script.unlink()
+        result = subprocess.run(command, shell=True, input="payload\n", text=True,
+                                capture_output=True, env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"})
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
 
     def test_profile_flags_and_warm_fingerprint_invalidation(self):
         # Installed plugins carry tests/docs/assets that are not copied into

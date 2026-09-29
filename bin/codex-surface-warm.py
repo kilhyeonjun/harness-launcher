@@ -55,6 +55,20 @@ def apps_allowlist():
     return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
 
 
+MANIFEST_PATH = ""
+
+
+def orca_agent_hooks():
+    # Manifest lives at <harness>/config/codex-surface.json.
+    harness_dir = os.path.dirname(os.path.dirname(os.path.abspath(MANIFEST_PATH)))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import orca_hooks_optin
+    finally:
+        sys.path.pop(0)
+    return orca_hooks_optin.resolve(harness_dir)
+
+
 def expected_apps():
     app_ids = [app_id for app_id in apps_allowlist().split(",") if app_id]
     if not app_ids:
@@ -440,6 +454,8 @@ def main():
         context_window_raw,
         auto_compact_limit_raw,
     ) = sys.argv[1:]
+    global MANIFEST_PATH
+    MANIFEST_PATH = manifest_path
     try:
         expected_context_window = int(context_window_raw)
         expected_auto_compact_limit = int(auto_compact_limit_raw)
@@ -486,6 +502,10 @@ def main():
     if fingerprint.get("global_mcp_digest") != global_mcp_digest():
         cold()
     if fingerprint.get("apps_allowlist") != apps_allowlist():
+        cold()
+    if fingerprint.get("orca_agent_hooks", "") != orca_agent_hooks():
+        cold()
+    if stamp.get("orca_agent_hooks", "") != orca_agent_hooks():
         cold()
     for path, expected in watch.items():
         if identity(path) != expected:

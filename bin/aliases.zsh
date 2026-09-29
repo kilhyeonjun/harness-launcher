@@ -46,6 +46,70 @@ _harness_launcher_isolated_session_create() {
   done <<< "$output"
 }
 
+# _harness_launcher_resolve_orca_resume <source-root> [launcher argv...]
+#   Orca restores an agent as `<override> <default args> --resume <id>` (Claude)
+#   or `<override> codex resume <id>` (Codex). Map that single UUID back to the
+#   isolated session that owns it. Prints the session directory name (uppercase
+#   UUID) and returns 0 on a unique owner; 1 when there is no owner (caller keeps
+#   its reject message); 3 when several sessions own the id (ambiguous).
+#   Only sessions recorded for this harness (source-root) count; symlinks are
+#   never followed.
+_harness_launcher_resolve_orca_resume() {
+  local source_root="$1"; shift
+  local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+  local -a candidates=()
+  local id="" is_codex=false arg prev=""
+  if [[ "${1:-}" == codex ]]; then
+    is_codex=true; shift
+    for arg in "$@"; do
+      [[ "$arg" == -- ]] && break
+      [[ "$prev" == resume ]] && candidates+=("$arg")
+      prev="$arg"
+    done
+  else
+    for arg in "$@"; do
+      [[ "$arg" == -- ]] && break
+      case "$arg" in
+        --resume=*) candidates+=("${arg#--resume=}") ;;
+        -r?*) candidates+=("${arg#-r}") ;;
+        *) [[ "$prev" == (--resume|-r) ]] && candidates+=("$arg") ;;
+      esac
+      prev="$arg"
+    done
+  fi
+  (( ${#candidates} == 1 )) || return 1
+  [[ "${candidates[1]}" =~ $uuid_re ]] || return 1
+  id="${(L)candidates[1]}"
+
+  local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  local sessions="$state_home/sessions" dir name recorded
+  local -a owners=() hits=()
+  if $is_codex; then
+    local rollout
+    for rollout in "$state_home"/worktrees/*/.harness/codex/sessions/*/*/*/rollout-*-$id.jsonl(N); do
+      [[ -f "$rollout" && ! -L "$rollout" ]] || continue
+      name="${${rollout#$state_home/worktrees/}%%/*}"
+      hits+=("$name")
+    done
+  else
+    for dir in "$sessions"/*(/N); do
+      name="${dir:t}"
+      [[ "${(L)name}" == "$id" ]] && hits+=("$name")
+    done
+  fi
+  for name in "${hits[@]}"; do
+    dir="$sessions/$name"
+    [[ "$name" =~ $uuid_re && -d "$dir" && ! -L "$dir" && -f "$dir/source-root" && ! -L "$dir/source-root" ]] || continue
+    recorded="$(<"$dir/source-root")"
+    [[ -d "$recorded" && "${recorded:A}" == "$source_root" ]] || continue
+    owners+=("$name")
+  done
+  owners=(${(u)owners})
+  (( ${#owners} <= 1 )) || return 3
+  (( ${#owners} == 1 )) || return 1
+  print -r -- "${owners[1]}"
+}
+
 _harness_launcher_isolated_heartbeat() {
   local session_id="$1" interval="${HARNESS_SESSION_HEARTBEAT_SECONDS:-30}"
   while "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" heartbeat "$session_id" 2>/dev/null; do
@@ -385,6 +449,13 @@ harness_register() {
 # _harness_launcher_run <harness-dir> [args...]
 #   Shared implementation for every registered profile function.
 _harness_launcher_run() {
+  # Orca injects its own CODEX_HOME (and re-copies ORCA_CODEX_HOME into it in
+  # interactive shells). Drop both when CODEX_HOME is exactly Orca's value so
+  # launcher-owned Claude/Codex paths never inherit it; a differing user value
+  # is left alone.
+  if [[ -n "${ORCA_CODEX_HOME-}" && "${CODEX_HOME-}" == "$ORCA_CODEX_HOME" ]]; then
+    unset CODEX_HOME ORCA_CODEX_HOME
+  fi
   local HARNESS_DIR="$1"; shift
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
@@ -426,7 +497,7 @@ _harness_launcher_run() {
   case "$HARNESS_SESSION_ISOLATION_DEFAULT" in 0|1) ;; *) echo 'harness-launcher: HARNESS_SESSION_ISOLATION_DEFAULT must be 0 or 1' >&2; return 2;; esac
   case "${HARNESS_SESSION_ISOLATION-}" in ''|0|1) ;; *) echo 'harness-launcher: HARNESS_SESSION_ISOLATION must be 0 or 1' >&2; return 2;; esac
   local isolated=false explicit_isolation_control=false created_isolated_session=false
-  local requested_session_id="" isolation_route=""
+  local requested_session_id="" isolation_route="" orca_resume=false orca_resume_id=""
   if [[ "${1:-}" == "--isolated" ]]; then
     isolated=true; explicit_isolation_control=true
     shift
@@ -448,8 +519,14 @@ _harness_launcher_run() {
       isolate) isolated=true ;;
       legacy) ;;
       reject)
-        echo "harness-launcher: this profile isolates fresh sessions; use '${HARNESS_PREFIX} --isolated-session <uuid> $*' or '${HARNESS_PREFIX} --no-isolated $*'" >&2
-        return 2
+        orca_resume_id="$(_harness_launcher_resolve_orca_resume "${HARNESS_DIR:A}" "$@")"
+        case $? in
+          0) isolated=true; requested_session_id="$orca_resume_id"; orca_resume=true ;;
+          3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
+             return 2 ;;
+          *) echo "harness-launcher: this profile isolates fresh sessions; use '${HARNESS_PREFIX} --isolated-session <uuid> $*' or '${HARNESS_PREFIX} --no-isolated $*'" >&2
+             return 2 ;;
+        esac
         ;;
       *) echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2 ;;
     esac
@@ -463,8 +540,14 @@ _harness_launcher_run() {
     isolation_route="$(harness_session_isolation_default_route 1 "$@")" || return $?
     [[ "$isolation_route" != invalid ]] || { echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2; }
     if [[ -z "$requested_session_id" && "$isolation_route" == reject ]]; then
-      echo "harness-launcher: continuation requires '${HARNESS_PREFIX} --isolated-session <uuid> $*' or intentional '${HARNESS_PREFIX} --no-isolated $*'" >&2
-      return 2
+      orca_resume_id="$(_harness_launcher_resolve_orca_resume "${HARNESS_DIR:A}" "$@")"
+      case $? in
+        0) requested_session_id="$orca_resume_id"; orca_resume=true ;;
+        3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
+           return 2 ;;
+        *) echo "harness-launcher: continuation requires '${HARNESS_PREFIX} --isolated-session <uuid> $*' or intentional '${HARNESS_PREFIX} --no-isolated $*'" >&2
+           return 2 ;;
+      esac
     fi
   elif $explicit_isolation_control; then
     isolation_route="$(harness_session_isolation_default_route 1 "$@")" || return $?
@@ -475,10 +558,15 @@ _harness_launcher_run() {
     local HARNESS_SESSION_LEASE_FD=""
     "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" gc >/dev/null 2>&1 || echo 'harness-launcher: warning: isolated-session GC failed; workspaces retained' >&2
     if [[ -n "$requested_session_id" ]]; then
-      _harness_launcher_isolated_lease_acquire "$requested_session_id" || return $?
+      _harness_launcher_isolated_lease_acquire "$requested_session_id" || {
+        local resume_rc=$?
+        $orca_resume && echo "harness-launcher: could not restore isolated session $requested_session_id" >&2
+        return "$resume_rc"
+      }
       _harness_launcher_isolated_session_create "$source_root" "$requested_session_id" || {
         local resume_rc=$?
         zsystem flock -u "$HARNESS_SESSION_LEASE_FD" 2>/dev/null || true
+        $orca_resume && echo "harness-launcher: could not restore isolated session $requested_session_id" >&2
         return "$resume_rc"
       }
     else
@@ -704,6 +792,19 @@ _harness_launcher_run() {
         claude_args+=(--name "$HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE")
       fi
     fi
+    # A fresh isolated Claude launch names its session after the isolated
+    # session so an Orca restore (`--resume <id>`) can be mapped back to it.
+    # Appended after the bootstrap decision: bootstrap eligibility rejects
+    # --session-id, and this keeps --name.
+    if $created_isolated_session && [[ "$isolation_route" == isolate ]]; then
+      local _sid_arg _sid_ok=true
+      for _sid_arg in "${claude_args[@]}"; do
+        case "$_sid_arg" in
+          --session-id|--session-id=*|-c|--continue|-r|-r?*|--resume|--resume=*|--fork-session|--fork-session=*) _sid_ok=false ;;
+        esac
+      done
+      $_sid_ok && claude_args+=(--session-id "${(L)HARNESS_SESSION_ID}")
+    fi
     harness_autocompact_pct "${provider_name:-direct}" "${claude_args[@]}"
     # Shared-table globals must not linger in the interactive shell.
     unset HARNESS_MODE_MODEL HARNESS_MODE_EFFORT
@@ -851,7 +952,7 @@ PY
       CLAUDE_CODE_EXECPATH CLAUDE_CODE_ENABLE_TELEMETRY \
       HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE \
       HARNESS_SESSION_ID HARNESS_SESSION_ROOT HARNESS_SOURCE_ROOT HARNESS_RUN_DIR
-    unset -m 'OTEL_*' 'CMUX_*'
+    unset -m 'OTEL_*' 'CMUX_*' 'ORCA_*'
     # --restricted skips project settings env; keep Glob honoring .gitignore.
     export CLAUDE_CODE_GLOB_NO_IGNORE=false CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
     umask 077

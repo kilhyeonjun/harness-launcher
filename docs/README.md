@@ -8,7 +8,7 @@ The README covers installation and the first registered project. These documents
 - [Codex integration](codex-integration.md) — profile overlays, MCP translation, skills, plugins, hooks, and compatibility behavior.
 - [Session titles in cmux](session-titles.md) — exact-session Claude/Codex title transport, native rename priority, and legacy hook coordination.
 - [Codex surface manifests](codex-surface.md) — exact skill/plugin/MCP membership, host-token resolution, and warm launches.
-- [Orca ADE integration](orca-integration.md) — executable entrypoint, profile-local worktrees, ownership boundaries, and safety gates.
+- [Orca ADE integration](orca-integration.md) — executable entrypoint, profile-local worktrees, agent status hooks, `CODEX_HOME` sanitization, resume mapping, ownership boundaries, and safety gates.
 - [Troubleshooting](troubleshooting.md) — shell resolution, stale runtime binaries, generated state, MCP conflicts, and browser-host issues.
 
 ## Project policies

@@ -2,6 +2,36 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.33.0 — 2026-09-29
+
+- Orca main-host support. When Orca injects `CODEX_HOME` (equal to
+  `ORCA_CODEX_HOME`), launcher entry points drop both variables so Claude and
+  other launcher-owned runtimes do not inherit Orca's managed Codex home;
+  a different user-set `CODEX_HOME` is kept. `checkup prompt-audit` also drops
+  `ORCA_*`.
+- The cmux title brokers no longer start inside an Orca terminal (stale
+  `CMUX_*` variables are ignored), and the Codex title hook is a no-op there.
+- Add `HARNESS_ORCA_AGENT_HOOKS=1` (in a harness's `config/launcher.env`) to
+  append Orca's status-only, fail-open Codex hook (output discarded, always
+  exit 0) for six events to the generated `hooks.json`. The prepare script
+  reads the opt-in only from that file, so launcher and direct callers agree;
+  the process environment is ignored. The opt-in is part of the warm-path
+  fingerprint; without it the output is unchanged. Rerun the harness's Codex
+  hook trust step after changing it.
+- Isolation-default profiles now accept Orca's restore argv: fresh isolated
+  Claude launches on the isolate route carry `--session-id <session UUID>`, and `--resume <id>` /
+  `codex resume <id>` map to the owning isolated session for the current
+  harness. Unknown, ambiguous, delivered, retired, and leased sessions fail
+  with specific messages. Restores after Claude `/clear` remain unsupported.
+- `docs/orca-integration.md` documents the hook policy, the recommended worktree
+  base (`<harness>/projects/<repo>/.worktrees`), profile relaunch behavior,
+  `CODEX_HOME` sanitization, and resume behavior. Package it under
+  `pkgshare/docs` in the Homebrew formula.
+- Packaging: the Homebrew formula must also install the new
+  `bin/orca_hooks_optin.py` next to `codex-surface.py`. The warm probe,
+  fingerprint, and prepare script import it, so a missing module makes every
+  Codex home preparation fail.
+
 ## Unreleased
 
 - Add `<prefix> checkup prompt-audit` to run Claude Code's `/checkup

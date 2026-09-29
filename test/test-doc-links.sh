@@ -2,6 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The Orca guide is shipped documentation: it must exist, cover the v0.33.0
+# contracts, and be linked from the README.
+for term in HARNESS_ORCA_AGENT_HOOKS 'projects/<repo-name>/.worktrees' 'CODEX_HOME sanitization' 'relaunch' '--resume <id>' '/clear'; do
+  grep -qF -- "$term" "$ROOT/docs/orca-integration.md" || { echo "FAIL: docs/orca-integration.md must cover: $term" >&2; exit 1; }
+done
+grep -qF 'docs/orca-integration.md' "$ROOT/README.md" || { echo 'FAIL: README must link docs/orca-integration.md' >&2; exit 1; }
 python3 - "$ROOT" <<'PY'
 from pathlib import Path
 import re
