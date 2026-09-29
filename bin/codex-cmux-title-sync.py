@@ -760,6 +760,8 @@ def session_start() -> int:
         return 0
     if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
         return 0
+    if os.environ.get("ORCA_TERMINAL_HANDLE"):
+        return 0
 
     session_id = payload.get("session_id")
     prefix = os.environ.get("HARNESS_PREFIX", "")

@@ -656,6 +656,9 @@ harness_codex_cmux_broker_start() {
   [ -n "${CMUX_WORKSPACE_ID:-}" ] || return 0
   [ -n "${CMUX_TAB_ID:-}" ] || return 0
   [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
+  # Stale CMUX_* inside an Orca terminal must not start a cmux title broker.
+  [ -z "${ORCA_TERMINAL_HANDLE:-}" ] || return 0
+  [ "${TERM_PROGRAM:-}" != "Orca" ] || return 0
   case "${HARNESS_PREFIX:-}" in
     ''|[0-9-]*|*[!A-Za-z0-9_-]*) return 0 ;;
   esac
@@ -700,6 +703,9 @@ harness_claude_cmux_broker_start() {
   [ -n "${CMUX_WORKSPACE_ID:-}" ] || return 0
   [ -n "${CMUX_TAB_ID:-}" ] || return 0
   [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
+  # Stale CMUX_* inside an Orca terminal must not start a cmux title broker.
+  [ -z "${ORCA_TERMINAL_HANDLE:-}" ] || return 0
+  [ "${TERM_PROGRAM:-}" != "Orca" ] || return 0
   case "${HARNESS_PREFIX:-}" in
     ''|[0-9-]*|*[!A-Za-z0-9_-]*) return 0 ;;
   esac
