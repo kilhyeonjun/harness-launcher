@@ -1605,8 +1605,6 @@ SURFACE_FIXED_OUTPUTS = (
     "fast.config.toml",
     "base.config.toml",
     "sol.config.toml",
-    "luna6.config.toml",
-    "sol6.config.toml",
     "astra.config.toml",
     "plan.config.toml",
     "rich.config.toml",

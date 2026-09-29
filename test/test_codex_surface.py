@@ -1763,25 +1763,29 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare()
         self.assertEqual(self.compiler_calls(), 2)
 
-    def test_opt_in_profiles_survive_warm_prepare_and_repair_drift(self):
+    def test_existing_gpt6_profiles_survive_warm_prepare_and_repair_drift(self):
         self.prepare()
-        luna6 = self.codex_home / "luna6.config.toml"
-        sol6 = self.codex_home / "sol6.config.toml"
-        self.assertEqual(tomllib.loads(luna6.read_text()), {"model": "gpt-6-luna", "model_reasoning_effort": "low"})
-        self.assertEqual(tomllib.loads(sol6.read_text()), {"model": "gpt-6-sol", "model_reasoning_effort": "medium"})
+        fast = self.codex_home / "fast.config.toml"
+        sol = self.codex_home / "sol.config.toml"
+        self.assertEqual(tomllib.loads(fast.read_text())["model"], "gpt-6-luna")
+        self.assertEqual(tomllib.loads(sol.read_text())["model"], "gpt-6.1-sol")
+        self.assertFalse((self.codex_home / "luna6.config.toml").exists())
+        self.assertFalse((self.codex_home / "sol6.config.toml").exists())
         profile = self.codex_home / "astra.config.toml"
         expected = {"model": "gpt-6-astra", "model_reasoning_effort": "medium"}
         self.assertEqual(tomllib.loads(profile.read_text()), expected)
-        sol = self.codex_home / "sol.config.toml"
-        self.assertEqual(tomllib.loads(sol.read_text())["model"], "gpt-5.6-sol")
         before = profile.stat().st_mtime_ns
         self.prepare()
         self.assertEqual(self.compiler_calls(), 1)
         self.assertEqual(profile.stat().st_mtime_ns, before)
-        sol6.unlink()
+        (self.codex_home / "luna6.config.toml").write_text('model = "gpt-6-luna"\n')
+        (self.codex_home / "sol6.config.toml").write_text('model = "gpt-6-sol"\n')
+        sol.unlink()
         self.prepare()
         self.assertEqual(self.compiler_calls(), 2)
-        self.assertEqual(tomllib.loads(sol6.read_text())["model"], "gpt-6-sol")
+        self.assertEqual(tomllib.loads(sol.read_text())["model"], "gpt-6.1-sol")
+        self.assertFalse((self.codex_home / "luna6.config.toml").exists())
+        self.assertFalse((self.codex_home / "sol6.config.toml").exists())
         profile.write_text('model = "wrong-model"\n')
         self.prepare()
         self.assertEqual(self.compiler_calls(), 3)
@@ -3073,7 +3077,7 @@ class SurfaceInspectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             for name in ("AGENTS.md", "hooks.json", "skill-catalog.json", "surface.config.toml",
-                         "fast.config.toml", "base.config.toml", "sol.config.toml", "luna6.config.toml", "sol6.config.toml", "astra.config.toml",
+                         "fast.config.toml", "base.config.toml", "sol.config.toml", "astra.config.toml",
                          "plan.config.toml", "rich.config.toml", "skills/.harness-managed"):
                 path = home / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -3097,7 +3101,7 @@ class SurfaceInspectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             for name in ("AGENTS.md", "hooks.json", "skill-catalog.json", "surface.config.toml",
-                         "fast.config.toml", "base.config.toml", "sol.config.toml", "luna6.config.toml", "sol6.config.toml", "astra.config.toml",
+                         "fast.config.toml", "base.config.toml", "sol.config.toml", "astra.config.toml",
                          "plan.config.toml", "rich.config.toml", "skills/.harness-managed"):
                 path = home / name
                 path.parent.mkdir(parents=True, exist_ok=True)

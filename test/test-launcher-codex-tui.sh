@@ -103,13 +103,11 @@ chmod +x "$HAPPY_BIN/happy"
 
 # Profile configs drive the drift-proof TUI labels.
 mkdir -p "$TEST_HARNESS/.harness/codex"
-printf 'model = "gpt-5.6-luna"\nmodel_reasoning_effort = "low"\n' > "$TEST_HARNESS/.harness/codex/fast.config.toml"
+printf 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n' > "$TEST_HARNESS/.harness/codex/fast.config.toml"
 printf 'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/base.config.toml"
-printf 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/sol.config.toml"
-printf 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n' > "$TEST_HARNESS/.harness/codex/luna6.config.toml"
-printf 'model = "gpt-6-sol"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/sol6.config.toml"
-printf 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/plan.config.toml"
-printf 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/rich.config.toml"
+printf 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/sol.config.toml"
+printf 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/plan.config.toml"
+printf 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/rich.config.toml"
 
 run_tui() {
   local input="$1" stub_file="$2" extra_path="${3:-}"
@@ -145,19 +143,6 @@ grep -q 'astra.*gpt-6-astra.*medium' "$STUB_ASTRA.tui.log" || {
 }
 echo 'PASS: Astra TUI selection and generated label'
 
-for profile_choice in '7 luna6 gpt-6-luna low' '8 sol6 gpt-6-sol medium'; do
-  read -r selection profile model effort <<< "$profile_choice"
-  stub_file="$TEST_TEMP/out-$profile.txt"
-  : > "$stub_file"
-  run_tui "$(printf '2\n1\n%s\n1\n1\n' "$selection")" "$stub_file"
-  grep -qE "^ARGS:.*-p $profile" "$stub_file" || {
-    echo "FAIL: $profile TUI selection must launch native -p $profile"; exit 1;
-  }
-  grep -q "$profile.*$model.*$effort" "$stub_file.tui.log" || {
-    echo "FAIL: $profile TUI label must show generated model and effort"; exit 1;
-  }
-done
-echo 'PASS: GPT-6 Luna/Sol TUI selections and generated labels'
 
 # Case 1: runtime=Codex, session=New, mode=Base, safety=Default
 STUB1="$TEST_TEMP/out1-codex-base.txt"
@@ -286,18 +271,21 @@ grep -qE "^ARGS:.*--cd $TEST_WORKTREE_REAL" "$STUB1A" || {
 }
 echo "PASS: case1a — Codex TUI uses the explicit worktree"
 for expected in \
-  "fast — Quick · shallow — gpt-5.6-luna · low" \
+  "fast — Quick · shallow — gpt-6-luna · low" \
   "base — Everyday · Recommended — gpt-5.6-terra · medium" \
-  "sol — Stronger · slower — gpt-5.6-sol · medium" \
-  "plan — Planning · deep — gpt-5.6-sol · high" \
-  "rich — Deep · slowest — gpt-5.6-sol · high"; do
+  "sol — Stronger · slower — gpt-6.1-sol · medium" \
+  "plan — Planning · deep — gpt-6.1-sol · high" \
+  "rich — Deep · slowest — gpt-6.1-sol · high"; do
   grep -Fq "$expected" "$STUB1.tui.log" || {
     echo "FAIL: Codex profile intent label missing: $expected"
     cat "$STUB1.tui.log"
     exit 1
   }
 done
-echo "PASS: Codex TUI mode labels match GPT-5.6 routing"
+if grep -Eq 'luna6|sol6' "$STUB1.tui.log"; then
+  echo "FAIL: obsolete GPT-6 choices remain in TUI"; exit 1
+fi
+echo "PASS: Codex TUI mode labels match GPT-6 routing"
 
 # Case 1b: runtime=Codex, base mode, work via the final-menu MCP surface toggle
 # (same UX as the claude/kiro light toggle). The surface must be selected

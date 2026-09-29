@@ -53,8 +53,6 @@ Before launch, `codex-home-prepare.sh` converges:
 ├── fast.config.toml
 ├── base.config.toml
 ├── sol.config.toml
-├── luna6.config.toml
-├── sol6.config.toml
 ├── astra.config.toml
 ├── plan.config.toml
 ├── rich.config.toml
@@ -92,11 +90,11 @@ model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
 
 # fast.config.toml
-model = "gpt-5.6-luna"
+model = "gpt-6-luna"
 model_reasoning_effort = "low"
 
 # plan.config.toml
-model = "gpt-5.6-sol"
+model = "gpt-6.1-sol"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 approval_policy = "on-request"
@@ -107,20 +105,18 @@ Current routing:
 | Profile | Model | Effort | Additional policy | Intent |
 | --- | --- | --- | --- | --- |
 | default | GPT-5.6 Terra | medium | Runtime defaults | Everyday work — recommended default |
-| fast | GPT-5.6 Luna | low | Runtime defaults | Quick, shallow work |
+| fast | GPT-6 Luna | low | Runtime defaults | Quick, shallow work |
 | base | GPT-5.6 Terra | medium | Runtime defaults | Everyday work — recommended default |
-| sol | GPT-5.6 Sol | medium | Runtime defaults | Stronger main model — slower |
-| luna6 | GPT-6 Luna | low | Runtime defaults | Focused tasks — opt-in evaluation |
-| sol6 | GPT-6 Sol | medium | Runtime defaults | Complex coding — opt-in evaluation |
+| sol | GPT-6.1 Sol | medium | Runtime defaults | Stronger main model — slower |
 | astra | GPT-6 Astra | medium | Runtime defaults | Explicit frontier-model selection |
-| plan | GPT-5.6 Sol | high | read-only, on-request | Deep planning — slower |
-| rich | GPT-5.6 Sol | high | Runtime defaults | Deep work — slowest normal preset |
+| plan | GPT-6.1 Sol | high | read-only, on-request | Deep planning — slower |
+| rich | GPT-6.1 Sol | high | Runtime defaults | Deep work — slowest normal preset |
 
 These profiles are task-oriented operational presets, not OpenAI default-effort claims. This launcher deliberately uses Luna/low for the speed preset and Sol/high for the deep plan and rich presets; an unscoped model picker may use a different general starting effort. Effort can still be overridden independently in native Codex. Reserve max or multi-agent ultra execution for exceptional workloads rather than normal profile defaults.
 
-`<prefix> codex astra`, `<prefix> codex luna6`, and `<prefix> codex sol6` select
-their native profiles explicitly. Luna6 and Sol6 follow Astra in the Profile
-menu, preserving existing numeric choices.
+`<prefix> codex fast`, `<prefix> codex sol`, and `<prefix> codex astra`
+select their native profiles explicitly. The Profile menu keeps its original
+six choices.
 The menu reads the generated model and effort; native `--model` and `-c` options
 still pass through. Availability is enforced by the selected Codex CLI/account;
 the launcher does not issue a paid readiness probe or silently fall back.
@@ -379,8 +375,7 @@ command through `/hooks` when Codex requests it.
 ```text
 <prefix> codex                 new session with base profile
 <prefix> codex fast            new session with fast profile
-<prefix> codex luna6           new session with GPT-6 Luna at low effort
-<prefix> codex sol6            new session with GPT-6 Sol at medium effort
+<prefix> codex sol             new session with GPT-6.1 Sol at medium effort
 <prefix> codex astra           new session with Astra at medium effort
 <prefix> codex base 1m         explicit long-context session
 <prefix> codex [profile] work   new session with the work MCP surface (any profile)
