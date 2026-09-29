@@ -366,7 +366,7 @@ ahead of account-limit meters. Before a rename, `thread-title` can
 fall back to the thread ID. Change these defaults in `codex-home-prepare.sh`,
 not in a generated project `config.toml`.
 
-Inside cmux, the launcher starts a fail-open title broker under the live
+Inside cmux (detected runtime `cmux`; other runtimes never start it), the launcher starts a fail-open title broker under the live
 launcher/Codex process ancestry. The short-lived `SessionStart` hook hands the
 broker only the exact session ID and Codex owner PID; the broker then replaces
 the native composite title with `<thread name> | <profile>`. It reads only that

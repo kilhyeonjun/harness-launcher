@@ -46,15 +46,80 @@ _harness_launcher_isolated_session_create() {
   done <<< "$output"
 }
 
-# _harness_launcher_resolve_orca_resume <source-root> [launcher argv...]
+# _harness_launcher_session_is_current <session-dir> <source-root>
+#   True for a UUID-named, non-symlink session directory whose source-root is a
+#   regular non-symlink file that resolves to the current harness.
+_harness_launcher_session_is_current() {
+  local dir="$1" source_root="$2" recorded
+  local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+  [[ "${dir:t}" =~ $uuid_re && -d "$dir" && ! -L "$dir" && -f "$dir/source-root" && ! -L "$dir/source-root" ]] || return 1
+  recorded="$(<"$dir/source-root")"
+  [[ -d "$recorded" && "${recorded:A}" == "$source_root" ]]
+}
+
+# _harness_launcher_session_records_claude <provider-sessions file> <lowercase id>
+#   True when the regular non-symlink file has a line exactly `claude <id>`
+#   (id compared case-insensitively); every other line is ignored.
+_harness_launcher_session_records_claude() {
+  local file="$1" id="$2" line
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "${(L)line}" == "claude $id" && "$line" == "claude "* ]] && return 0
+  done < "$file"
+  return 1
+}
+
+# _harness_launcher_claude_transcript_exists <state-home> <session name> <lowercase id>
+#   Claude stores transcripts at <config>/projects/<cwd with non-alnum -> ->/<id>.jsonl.
+#   The cwd is the session root or one of the run directories the launcher
+#   recorded in the session's run-dirs. run-dirs counts only as a regular
+#   non-symlink file; a line counts only when it is canonical (an absolute path
+#   without control characters that equals its own resolved form, as the
+#   launcher writes it) and lies inside the session's recorded source root or
+#   its session root. The session itself has already passed
+#   _harness_launcher_session_is_current.
+_harness_launcher_claude_transcript_exists() {
+  local state_home="$1" name="$2" id="$3"
+  local dir="$state_home/sessions/$name" root candidate enc line resolved base source_root
+  local config="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  local -a candidates=() bases=()
+  root="$state_home/worktrees/$name"
+  [[ -f "$dir/session-root" && ! -L "$dir/session-root" ]] && root="$(<"$dir/session-root")"
+  candidates=("$root" "${root:A}")
+  if [[ -f "$dir/run-dirs" && ! -L "$dir/run-dirs" && -f "$dir/source-root" && ! -L "$dir/source-root" ]]; then
+    source_root="$(<"$dir/source-root")"
+    bases=("${source_root:A}" "${root:A}")
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" == /* && "$line" != *[[:cntrl:]]* ]] || continue
+      resolved="${line:A}"
+      [[ "$line" == "$resolved" ]] || continue
+      for base in "${bases[@]}"; do
+        if [[ "$base" == /?* && ( "$resolved" == "$base" || "$resolved" == "$base"/* ) ]]; then
+          candidates+=("$resolved")
+          break
+        fi
+      done
+    done < "$dir/run-dirs"
+  fi
+  for candidate in "${(u)candidates[@]}"; do
+    enc="${candidate//[^A-Za-z0-9]/-}"
+    [[ -f "$config/projects/$enc/$id.jsonl" && ! -L "$config/projects/$enc/$id.jsonl" ]] && return 0
+  done
+  return 1
+}
+
+# _harness_launcher_resolve_restore <source-root> [launcher argv...]
 #   Orca restores an agent as `<override> <default args> --resume <id>` (Claude)
 #   or `<override> codex resume <id>` (Codex). Map that single UUID back to the
 #   isolated session that owns it. Prints the session directory name (uppercase
 #   UUID) and returns 0 on a unique owner; 1 when there is no owner (caller keeps
 #   its reject message); 3 when several sessions own the id (ambiguous).
 #   Only sessions recorded for this harness (source-root) count; symlinks are
-#   never followed.
-_harness_launcher_resolve_orca_resume() {
+#   never followed. For Claude, a session also owns ids listed as exactly
+#   `claude <uuid>` in its provider-sessions (written by
+#   harness-session-provider-record, e.g. after /clear); such a record-only
+#   owner maps only when the id's transcript exists under its Claude project dir.
+_harness_launcher_resolve_restore() {
   local source_root="$1"; shift
   local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
   local -a candidates=()
@@ -83,7 +148,7 @@ _harness_launcher_resolve_orca_resume() {
 
   local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
   local sessions="$state_home/sessions" dir name recorded
-  local -a owners=() hits=()
+  local -a owners=() hits=() recorders=() record_only=()
   if $is_codex; then
     local rollout
     for rollout in "$state_home"/worktrees/*/.harness/codex/sessions/*/*/*/rollout-*-$id.jsonl(N); do
@@ -95,19 +160,65 @@ _harness_launcher_resolve_orca_resume() {
     for dir in "$sessions"/*(/N); do
       name="${dir:t}"
       [[ "${(L)name}" == "$id" ]] && hits+=("$name")
+      _harness_launcher_session_records_claude "$dir/provider-sessions" "$id" && recorders+=("$name")
     done
   fi
   for name in "${hits[@]}"; do
-    dir="$sessions/$name"
-    [[ "$name" =~ $uuid_re && -d "$dir" && ! -L "$dir" && -f "$dir/source-root" && ! -L "$dir/source-root" ]] || continue
-    recorded="$(<"$dir/source-root")"
-    [[ -d "$recorded" && "${recorded:A}" == "$source_root" ]] || continue
-    owners+=("$name")
+    _harness_launcher_session_is_current "$sessions/$name" "$source_root" && owners+=("$name")
+  done
+  for name in "${recorders[@]}"; do
+    (( ${owners[(Ie)$name]} )) && continue
+    _harness_launcher_session_is_current "$sessions/$name" "$source_root" || continue
+    owners+=("$name"); record_only+=("$name")
   done
   owners=(${(u)owners})
   (( ${#owners} <= 1 )) || return 3
   (( ${#owners} == 1 )) || return 1
+  if (( ${record_only[(Ie)${owners[1]}]} )); then
+    _harness_launcher_claude_transcript_exists "$state_home" "${owners[1]}" "$id" || return 1
+  fi
   print -r -- "${owners[1]}"
+}
+
+_harness_launcher_resolve_orca_resume() { _harness_launcher_resolve_restore "$@"; }
+
+# _harness_launcher_isolated_record_run_dir
+#   Appends the isolated session's resolved run directory (HARNESS_RUN_DIR) to
+#   <state>/sessions/<HARNESS_SESSION_ID>/run-dirs, one path per line, so the
+#   restore resolver can find Claude transcripts filed under that directory.
+#   Only a directory inside the session's source root or session root is
+#   recorded; an identical line is not repeated; the file is opened without
+#   following a symlink and must be regular. Silent, and never fails a launch.
+_harness_launcher_isolated_record_run_dir() {
+  local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+  local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  local id="${HARNESS_SESSION_ID:-}" run="${HARNESS_RUN_DIR:-}" dir file resolved base line fd
+  local -a bases=()
+  [[ "$id" =~ $uuid_re && "$run" == /* && -d "$run" ]] || return 0
+  dir="$state_home/sessions/$id"
+  [[ -d "$dir" && ! -L "$dir" ]] || return 0
+  resolved="${run:A}"
+  [[ -n "${HARNESS_SOURCE_ROOT:-}" ]] && bases+=("${HARNESS_SOURCE_ROOT:A}")
+  [[ -n "${HARNESS_SESSION_ROOT:-}" ]] && bases+=("${HARNESS_SESSION_ROOT:A}")
+  for base in "${bases[@]}"; do
+    [[ "$resolved" == "$base" || "$resolved" == "$base"/* ]] && break
+    base=""
+  done
+  [[ -n "$base" ]] || return 0
+  file="$dir/run-dirs"
+  [[ -L "$file" ]] && return 0
+  {
+    zmodload zsh/system || return 0
+    sysopen -r -w -a -o nofollow,creat,nonblock,cloexec -m 600 -u fd "$file" || return 0
+    if [[ -f /dev/fd/$fd ]]; then
+      while IFS= read -r -u $fd line || [[ -n "$line" ]]; do
+        [[ "$line" == "$resolved" ]] && { exec {fd}>&-; return 0; }
+      done
+      print -r -u $fd -- "$resolved"
+    fi
+    exec {fd}>&-
+  } 2>/dev/null
+  return 0
 }
 
 _harness_launcher_isolated_heartbeat() {
@@ -424,13 +535,30 @@ codex() {
       fi
       harness_mcp_surface_policy_is_single_full "$mcp_surface_policy" && unset HARNESS_CODEX_MCP_PROFILE
       _harness_launcher_export_codex_runtime_env "$harness_dir" || return $?
+      # This wrapper runs in the user's interactive shell and skips
+      # _harness_launcher_run, so it applies the same scrub, but only in the
+      # subshell that runs Codex: the shell keeps its own markers. The broker
+      # (started here, in the shell, still holding them) reads the launch
+      # runtime through this function-local variable.
+      local HARNESS_TERMINAL_RUNTIME
+      harness_terminal_launch_runtime HARNESS_TERMINAL_RUNTIME
       harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
       broker_started=true
     fi
   fi
 
-  "$codex_bin" "$@"
+  if $broker_started; then
+    (
+      harness_terminal_scrub_env "$HARNESS_TERMINAL_RUNTIME"
+      harness_terminal_announce_cwd "$harness_dir"
+      "$codex_bin" "$@"
+    )
+  else
+    "$codex_bin" "$@"
+  fi
   local rc=$?
+  # herdr keeps the last reported cwd: hand the shell's directory back.
+  $broker_started && harness_terminal_announce_cwd "$PWD"
   $broker_started && harness_codex_cmux_broker_stop
   return $rc
 }
@@ -538,16 +666,31 @@ harness_register() {
   $exists || _HARNESS_LAUNCHER_REGISTERED_DIRS+=("$dir")
 }
 
+# _harness_launcher_announce_run_dir <dir>
+#   Announces the agent's run directory to herdr (OSC 7) and marks it, so
+#   _harness_launcher_run re-announces the caller's directory once the agent
+#   (or the TUI) returns: herdr keeps the last reported cwd.
+_harness_launcher_announce_run_dir() {
+  _harness_launcher_cwd_announced=1
+  harness_terminal_announce_cwd "$1"
+}
+
 # _harness_launcher_run <harness-dir> [args...]
 #   Shared implementation for every registered profile function.
 _harness_launcher_run() {
-  # Orca injects its own CODEX_HOME (and re-copies ORCA_CODEX_HOME into it in
-  # interactive shells). Drop both when CODEX_HOME is exactly Orca's value so
-  # launcher-owned Claude/Codex paths never inherit it; a differing user value
-  # is left alone.
-  if [[ -n "${ORCA_CODEX_HOME-}" && "${CODEX_HOME-}" == "$ORCA_CODEX_HOME" ]]; then
-    unset CODEX_HOME ORCA_CODEX_HOME
-  fi
+  # The invoking shell's directory (harness-exec inherits the caller's $PWD);
+  # announced again to herdr after the agent returns.
+  local _harness_launcher_caller_dir="$PWD" _harness_launcher_cwd_announced=0
+  # Every launched agent sees one terminal runtime: the launch runtime (`plain`
+  # without a TTY, else the marker runtime) is exported as
+  # HARNESS_TERMINAL_RUNTIME and every other runtime's variables are removed.
+  # Its first step is the Orca CODEX_HOME rule: drop CODEX_HOME and
+  # ORCA_CODEX_HOME when CODEX_HOME is exactly Orca's value, so launcher-owned
+  # Claude/Codex paths never inherit it; a differing user value is left alone.
+  # This runs in the launcher process (harness-exec), not the user's shell.
+  local _terminal_runtime
+  harness_terminal_launch_runtime _terminal_runtime
+  harness_terminal_scrub_env "$_terminal_runtime"
   # Production entry points run without errexit; a caller's errexit would also
   # skip the `always` block that finishes an isolated session.
   setopt localoptions noerrexit
@@ -635,7 +778,7 @@ _harness_launcher_run() {
       isolate) isolated=true ;;
       legacy) ;;
       reject)
-        orca_resume_id="$(_harness_launcher_resolve_orca_resume "${HARNESS_DIR:A}" "$@")"
+        orca_resume_id="$(_harness_launcher_resolve_restore "${HARNESS_DIR:A}" "$@")"
         case $? in
           0) isolated=true; requested_session_id="$orca_resume_id"; orca_resume=true ;;
           3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
@@ -656,7 +799,7 @@ _harness_launcher_run() {
     isolation_route="$(harness_session_isolation_default_route 1 "$@")" || return $?
     [[ "$isolation_route" != invalid ]] || { echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2; }
     if [[ -z "$requested_session_id" && "$isolation_route" == reject ]]; then
-      orca_resume_id="$(_harness_launcher_resolve_orca_resume "${HARNESS_DIR:A}" "$@")"
+      orca_resume_id="$(_harness_launcher_resolve_restore "${HARNESS_DIR:A}" "$@")"
       case $? in
         0) requested_session_id="$orca_resume_id"; orca_resume=true ;;
         3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
@@ -693,6 +836,9 @@ _harness_launcher_run() {
     HARNESS_DIR="$HARNESS_SESSION_ROOT"
     [[ -n "$HARNESS_RUN_DIR" ]] || HARNESS_RUN_DIR="$HARNESS_SESSION_ROOT"
     export HARNESS_RUN_DIR
+    # Claude files transcripts under its cwd's project directory, which is the
+    # caller's run directory (harness-exec passes --cwd), not the session root.
+    _harness_launcher_isolated_record_run_dir
     if $created_isolated_session; then
       if [[ "${1:-}" == codex ]]; then
         echo "harness-launcher: isolated session $HARNESS_SESSION_ID; continue: ${HARNESS_PREFIX} --isolated-session $HARNESS_SESSION_ID codex resume" >&2
@@ -707,6 +853,7 @@ _harness_launcher_run() {
   {
     _harness_launcher_run_session "$@"
   } always {
+    (( _harness_launcher_cwd_announced )) && harness_terminal_announce_cwd "$_harness_launcher_caller_dir"
     if [[ -n "$isolated_session_id" ]]; then
       _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
     fi
@@ -972,6 +1119,7 @@ _harness_launcher_run_session() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
+      _harness_launcher_announce_run_dir "${HARNESS_RUN_DIR:-$PWD}"
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
@@ -981,6 +1129,7 @@ _harness_launcher_run_session() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
+      _harness_launcher_announce_run_dir "${HARNESS_RUN_DIR:-$PWD}"
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
@@ -993,6 +1142,7 @@ _harness_launcher_run_session() {
     return $rc
   else
     if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
+    _harness_launcher_announce_run_dir "${HARNESS_RUN_DIR:-$HARNESS_DIR}"
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
       HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
       "$_HARNESS_LAUNCHER_BIN/launcher.sh"
@@ -1102,7 +1252,7 @@ PY
       CLAUDE_CODE_EXECPATH CLAUDE_CODE_ENABLE_TELEMETRY \
       HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE \
       HARNESS_SESSION_ID HARNESS_SESSION_ROOT HARNESS_SOURCE_ROOT HARNESS_RUN_DIR
-    unset -m 'OTEL_*' 'CMUX_*' 'ORCA_*'
+    unset -m 'OTEL_*' 'CMUX_*' 'ORCA_*' 'HERDR_*'
     # --restricted skips project settings env; keep Glob honoring .gitignore.
     export CLAUDE_CODE_GLOB_NO_IGNORE=false CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
     umask 077
@@ -1406,6 +1556,8 @@ _harness_launcher_run_codex_cli() {
       --root "$HARNESS_DIR" --server-cwd "${caller_run_dir:-$run_dir}" --prefix "$HARNESS_PREFIX"
       --registry "$registry" -- "${launch_cmd[@]}")
   fi
+  # The directory Codex starts in: a caller -C wins over the run directory.
+  _harness_launcher_announce_run_dir "${caller_run_dir:-$run_dir}"
   if [[ -n "$subcmd" ]]; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
     (cd "$run_dir" && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
@@ -1534,6 +1686,7 @@ _harness_launcher_run_kiro_cli() {
   [[ ${#kiro_args[@]} -gt 0 ]] && launch_cmd+=("${kiro_args[@]}")
   unset HARNESS_KIRO_MODEL HARNESS_KIRO_EFFORT
 
+  _harness_launcher_announce_run_dir "$run_dir"
   (cd "$run_dir" && "${launch_cmd[@]}")
   local rc=$?
   unset HARNESS_KIRO_MCP_PROFILE

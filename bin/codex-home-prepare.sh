@@ -260,7 +260,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --launcher-file "$0"
     --launcher-file "$SCRIPT_DIR/harness-common.sh"
     --launcher-file "$SCRIPT_DIR/mcp_paths.py"
-    --launcher-file "$SCRIPT_DIR/orca_hooks_optin.py"
+    --launcher-file "$SCRIPT_DIR/runtime_hooks_optin.py"
     --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
     --launcher-file "$SCRIPT_DIR/codex-pretool-adapter.py"
     --launcher-file "$TITLE_SYNC_PATH"
@@ -1615,14 +1615,18 @@ hooks_file="$CODEX_HOME/hooks.json"
 tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
 ADAPTER_PATH="$SCRIPT_DIR/codex-hook-adapter.sh"
 PRETOOL_ADAPTER_PATH="$SCRIPT_DIR/codex-pretool-adapter.py"
-python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$PRETOOL_ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" "$(python3 "$SCRIPT_DIR/orca_hooks_optin.py" "$HARNESS_DIR")" > "$tmp_hooks" <<'PY'
+python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$PRETOOL_ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" "$(python3 "$SCRIPT_DIR/runtime_hooks_optin.py" "$HARNESS_DIR")" > "$tmp_hooks" <<'PY'
 import json, os, re, shlex, sys
 harness = sys.argv[1]
 adapter = sys.argv[2]
 pretool_adapter = sys.argv[3]
 title_sync = sys.argv[4]
 python_bin = sys.argv[5]
-orca_agent_hooks = sys.argv[6] == "1"
+# One line, "orca=<0|1> herdr=<0|1>", from runtime_hooks_optin.py.
+runtime_optins = {
+    name: value == "1"
+    for name, _, value in (pair.partition("=") for pair in sys.argv[6].split())
+}
 hooks_dir = os.path.join(harness, "core", "hooks")
 settings_path = os.path.join(harness, ".claude", "settings.json")
 hooks_policy_path = os.path.join(harness, ".claude", "source", "hooks.yaml")
@@ -1803,21 +1807,54 @@ if os.path.isfile(title_sync):
         {"hooks": [{"type": "command", "command": command, "timeout": 3000}]}
     )
 
-# Opt-in Orca agent status hook (HARNESS_ORCA_AGENT_HOOKS=1 in launcher.env,
-# resolved by orca_hooks_optin.py; the process environment is ignored).
-# One matcher-less entry per event, appended after every existing entry so the
-# harness-owned hooks keep their order. Status only and fail-open: it runs
-# Orca's script with output discarded and always exits 0 (no exec), and
-# otherwise just drains stdin.
-if orca_agent_hooks:
-    orca_command = (
-        "/bin/sh -c 's=\"$HOME/.orca/agent-hooks/codex-hook.sh\"; "
-        "[ -x \"$s\" ] && { /bin/sh \"$s\" >/dev/null 2>&1; exit 0; }; cat >/dev/null'"
+# Runtime hook registry. Each row is enabled per harness by a literal
+# assignment in launcher.env (HARNESS_ORCA_AGENT_HOOKS=1,
+# HARNESS_HERDR_AGENT_HOOKS=1), resolved by runtime_hooks_optin.py; the process
+# environment is ignored. An opted-in row appends one matcher-less entry per
+# listed event after every existing entry, in registry order, so the
+# harness-owned hooks keep their order. Rows are emitted whether or not the
+# script exists at prepare time: the warm path returns on a fingerprint match
+# before this generator runs, so an existence-dependent row would never appear
+# once a runtime integration was installed after a prepare.
+# Every row shares one status-only, fail-open command: it runs the script (with
+# its optional argument) only when executable, discards its stdout and stderr,
+# and always exits 0 (no exec), so a runtime script can never block a tool,
+# decide a permission or surface a failure in a Codex session; otherwise it only
+# drains stdin. Rows differ only in script path, argument, events and timeout.
+# The "$HOME" inside each command stays literal; the shell expands it at hook
+# run time.
+RUNTIME_HOOK_REGISTRY = (
+    {
+        "name": "orca",
+        "script": "$HOME/.orca/agent-hooks/codex-hook.sh",
+        "argument": "",
+        "events": ("SessionStart", "UserPromptSubmit", "PreToolUse",
+                   "PermissionRequest", "PostToolUse", "Stop"),
+        "timeout": 5,
+    },
+    {
+        "name": "herdr",
+        "script": "$HOME/.codex/herdr-agent-state.sh",
+        "argument": "session",
+        "events": ("SessionStart",),
+        "timeout": 10,
+    },
+)
+
+def runtime_hook_command(script, argument):
+    invoke = '/bin/sh "$s"' + (" " + argument if argument else "")
+    return (
+        f"/bin/sh -c 's=\"{script}\"; "
+        f"[ -x \"$s\" ] && {{ {invoke} >/dev/null 2>&1; exit 0; }}; cat >/dev/null'"
     )
-    for event in ("SessionStart", "UserPromptSubmit", "PreToolUse",
-                  "PermissionRequest", "PostToolUse", "Stop"):
+
+for row in RUNTIME_HOOK_REGISTRY:
+    if not runtime_optins.get(row["name"], False):
+        continue
+    row_command = runtime_hook_command(row["script"], row["argument"])
+    for event in row["events"]:
         config["hooks"].setdefault(event, []).append(
-            {"hooks": [{"type": "command", "command": orca_command, "timeout": 5}]}
+            {"hooks": [{"type": "command", "command": row_command, "timeout": row["timeout"]}]}
         )
 
 json.dump(config, sys.stdout, indent=2)

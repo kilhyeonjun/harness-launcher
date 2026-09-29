@@ -12,7 +12,7 @@ use the same display path. Profile suffixes identify the launching harness.
 
 ## Claude
 
-Claude launches now start a broker before the interactive runtime. Each launch
+Claude launches in a cmux terminal (runtime `cmux`; see [Terminal runtimes](terminal-runtimes.md)) start a broker before the interactive runtime. Each launch
 gets a separate private `launch.*` directory under
 `<harness>/.harness/claude/.cmux-title-sync/`.
 

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Tests never inherit the developer's terminal runtime (herdr, Orca, cmux).
+unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM
+for _rt_var in $(compgen -e); do case "$_rt_var" in HERDR_*|ORCA_*|CMUX_*) unset "$_rt_var" ;; esac; done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYNC="$ROOT/bin/codex-cmux-title-sync.py"

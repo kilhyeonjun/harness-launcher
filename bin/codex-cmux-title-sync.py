@@ -760,6 +760,11 @@ def session_start() -> int:
         return 0
     if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
         return 0
+    # The launcher exports its verdict on the hosting runtime; a stale CMUX_*
+    # left in herdr, Orca or a terminal-less launch must not start a rename.
+    runtime = os.environ.get("HARNESS_TERMINAL_RUNTIME", "")
+    if runtime and runtime != "cmux":
+        return 0
     if os.environ.get("ORCA_TERMINAL_HANDLE") or os.environ.get("TERM_PROGRAM") == "Orca":
         return 0
 

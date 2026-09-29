@@ -2,7 +2,8 @@
 # test-orca-env.sh — Orca terminal environment handling in the launcher:
 # CODEX_HOME sanitization (L1) and checkup ORCA_* scrub (L5).
 set -e
-unset CMUX_WORKSPACE_ID CMUX_TAB_ID CMUX_SURFACE_ID
+# Tests never inherit the developer's terminal runtime (herdr, Orca, cmux).
+unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM; unset -m 'HERDR_*' 'ORCA_*' 'CMUX_*' || true
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
@@ -19,8 +20,8 @@ git -C "$HARNESS" add -A && git -C "$HARNESS" commit -qm initial
 
 cat > "$TMP/bin/claude" <<'STUB'
 #!/usr/bin/env bash
-printf 'CODEX_HOME=%s\nORCA_CODEX_HOME=%s\nORCA_TERMINAL_HANDLE=%s\nORCA_OTHER=%s\n' \
-  "${CODEX_HOME-unset}" "${ORCA_CODEX_HOME-unset}" "${ORCA_TERMINAL_HANDLE-unset}" "${ORCA_OTHER-unset}" >> "$STUB_LOG"
+printf 'CODEX_HOME=%s\nORCA_CODEX_HOME=%s\nORCA_TERMINAL_HANDLE=%s\nORCA_OTHER=%s\nHERDR_PANE_ID=%s\n' \
+  "${CODEX_HOME-unset}" "${ORCA_CODEX_HOME-unset}" "${ORCA_TERMINAL_HANDLE-unset}" "${ORCA_OTHER-unset}" "${HERDR_PANE_ID-unset}" >> "$STUB_LOG"
 STUB
 cat > "$TMP/bin/codex" <<'STUB'
 #!/usr/bin/env bash
@@ -36,6 +37,9 @@ run() { # <log> <env assignments...> -- <args...>
   (
     export PATH="$TMP/bin:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" STUB_LOG="$log" "${envs[@]}"
     source "$ROOT/bin/aliases.zsh"
+    # A launch without a terminal is runtime `plain` (no Orca variables reach
+    # the agent). TEST_ASSUME_TTY=1 stands in for a real terminal on stdio.
+    [[ -z "${TEST_ASSUME_TTY-}" ]] || harness_claude_stdio_is_tty() { return 0; }
     _harness_launcher_run "$HARNESS" "$@"
   ) >/dev/null 2>"${log}.err" || true
 }
@@ -45,20 +49,38 @@ run "$TMP/a.log" CODEX_HOME=/orca/codex-home ORCA_CODEX_HOME=/orca/codex-home --
 grep -qx 'CODEX_HOME=unset' "$TMP/a.log" || fail 'Orca-owned CODEX_HOME must be unset for Claude'
 grep -qx 'ORCA_CODEX_HOME=unset' "$TMP/a.log" || fail 'ORCA_CODEX_HOME must be unset for Claude'
 
-# (b) A user-set CODEX_HOME that differs is preserved.
-run "$TMP/b.log" CODEX_HOME=/user/codex ORCA_CODEX_HOME=/orca/codex-home -- base
+# (b) A user-set CODEX_HOME that differs is preserved, and inside an Orca
+# terminal (handle plus a terminal) the differing ORCA_CODEX_HOME is too.
+run "$TMP/b.log" CODEX_HOME=/user/codex ORCA_CODEX_HOME=/orca/codex-home ORCA_TERMINAL_HANDLE=term_1 TEST_ASSUME_TTY=1 -- base
 grep -qx 'CODEX_HOME=/user/codex' "$TMP/b.log" || fail 'user CODEX_HOME must be preserved'
 grep -qx 'ORCA_CODEX_HOME=/orca/codex-home' "$TMP/b.log" || fail 'ORCA_CODEX_HOME must be preserved when differing'
+
+# (b') Outside an Orca terminal (no marker, or no terminal) ORCA_CODEX_HOME goes
+# with the other ORCA_* variables; the user's CODEX_HOME still stays.
+run "$TMP/b1.log" CODEX_HOME=/user/codex ORCA_CODEX_HOME=/orca/codex-home TEST_ASSUME_TTY=1 -- base
+grep -qx 'CODEX_HOME=/user/codex' "$TMP/b1.log" || fail 'user CODEX_HOME must be preserved without an Orca marker'
+grep -qx 'ORCA_CODEX_HOME=unset' "$TMP/b1.log" || fail 'ORCA_CODEX_HOME must be scrubbed without an Orca marker'
+run "$TMP/b3.log" CODEX_HOME=/user/codex ORCA_CODEX_HOME=/orca/codex-home ORCA_TERMINAL_HANDLE=term_1 -- base
+grep -qx 'ORCA_CODEX_HOME=unset' "$TMP/b3.log" || fail 'ORCA_CODEX_HOME must be scrubbed for a launch without a terminal'
+grep -qx 'ORCA_TERMINAL_HANDLE=unset' "$TMP/b3.log" || fail 'ORCA_TERMINAL_HANDLE must be scrubbed for a launch without a terminal'
 
 # Empty ORCA_CODEX_HOME never triggers.
 run "$TMP/b2.log" CODEX_HOME= ORCA_CODEX_HOME= -- base
 grep -qx 'CODEX_HOME=' "$TMP/b2.log" || fail 'empty ORCA_CODEX_HOME must not trigger sanitization'
 
-# L5: checkup prompt-audit child has no ORCA_* variables.
-run "$TMP/e.log" ORCA_TERMINAL_HANDLE=term_1 ORCA_OTHER=x -- checkup prompt-audit
+# L5: checkup prompt-audit child has no ORCA_* variables. Run under the orca
+# runtime (handle plus a terminal): the launch scrub keeps ORCA_* there, so the
+# checkup's own unset is the only thing under test. Without a terminal the launch
+# runtime is plain and the scrub alone would make this case pass.
+run "$TMP/e.log" ORCA_TERMINAL_HANDLE=term_1 ORCA_OTHER=x TEST_ASSUME_TTY=1 -- checkup prompt-audit
 [[ -s "$TMP/e.log" ]] || { cat "$TMP/e.log.err" >&2; fail 'checkup stub was not invoked'; }
 grep -qx 'ORCA_TERMINAL_HANDLE=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_TERMINAL_HANDLE'
 grep -qx 'ORCA_OTHER=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_*'
+# The same for HERDR_* under the herdr runtime (the launch scrub keeps them).
+python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMP/herdr.sock"
+run "$TMP/h.log" HERDR_ENV=1 HERDR_PANE_ID=w1:p1 HERDR_SOCKET_PATH="$TMP/herdr.sock" TEST_ASSUME_TTY=1 -- checkup prompt-audit
+[[ -s "$TMP/h.log" ]] || { cat "$TMP/h.log.err" >&2; fail 'herdr checkup stub was not invoked'; }
+grep -qx 'HERDR_PANE_ID=unset' "$TMP/h.log" || fail 'checkup child must not see HERDR_*'
 
 # The remaining cases run the real codex-home-prepare.sh, which requires the
 # macOS /usr/bin/lockf kernel lock (see run-all.sh). Hosted images without it
