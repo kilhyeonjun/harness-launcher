@@ -42,7 +42,9 @@ Do not create a Git worktree of the harness repository. The harness is the confi
 
 ## Orca profile mapping
 
-Use one Orca profile per trust boundary. Do not mix personal and company repositories in one Orca profile.
+An Orca profile separates the visible projects and the per-profile browser, SSH, and account state. It is not a security boundary on one macOS account: every profile's terminals run in one shared PTY daemon, and every profile's terminal history is readable by the same user (verified on Orca 1.4.147). Keeping personal and company harnesses in one profile is supported; tell them apart with project badges, and use a separate macOS account or machine when they must not be able to read each other.
+
+If you do split profiles, repeat every step below in each profile. A new profile starts from Orca's defaults: no agent command overrides and every agent enabled.
 
 For each profile:
 
@@ -88,7 +90,7 @@ Orca sets `CODEX_HOME` for terminals and its interactive shell wrappers copy `OR
 
 ## Profiles and relaunch
 
-Orca profile switching and moving a project between profiles relaunch the Orca app. Do it in a window with no live agent sessions, and only when you intend to change the trust boundary; the launcher does not switch Orca profiles for you.
+Orca profile switching and moving a project between profiles relaunch the Orca app into the target profile. In Orca 1.4.147 the multi-profile UI appears only when Orca starts with `ORCA_MULTI_PROFILE_UI=1`, and no CLI command manages profiles. Terminals from the previous profile keep running in the shared PTY daemon but disappear from view, so stop their agents before switching. The launcher does not switch Orca profiles for you.
 
 ## Resuming agents for isolated profiles
 

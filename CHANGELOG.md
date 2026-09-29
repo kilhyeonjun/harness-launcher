@@ -47,6 +47,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- `docs/orca-integration.md` no longer recommends one Orca profile per trust
+  boundary. Orca profiles share one PTY daemon and readable terminal history on
+  a macOS account, so they are not a security boundary. The guide now documents
+  the hidden multi-profile UI flag, profile defaults, and relaunch behavior.
 - Add `<prefix> checkup prompt-audit` to run Claude Code's `/checkup
   prompt-audit` headless at the harness root in restricted, read-only mode with
   a budget cap, and `harness-profile checkup prompt-audit (--all | <prefix>...)`
