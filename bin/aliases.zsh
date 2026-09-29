@@ -385,6 +385,13 @@ harness_register() {
 # _harness_launcher_run <harness-dir> [args...]
 #   Shared implementation for every registered profile function.
 _harness_launcher_run() {
+  # Orca injects its own CODEX_HOME (and re-copies ORCA_CODEX_HOME into it in
+  # interactive shells). Drop both when CODEX_HOME is exactly Orca's value so
+  # launcher-owned Claude/Codex paths never inherit it; a differing user value
+  # is left alone.
+  if [[ -n "${ORCA_CODEX_HOME-}" && "${CODEX_HOME-}" == "$ORCA_CODEX_HOME" ]]; then
+    unset CODEX_HOME ORCA_CODEX_HOME
+  fi
   local HARNESS_DIR="$1"; shift
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
@@ -851,7 +858,7 @@ PY
       CLAUDE_CODE_EXECPATH CLAUDE_CODE_ENABLE_TELEMETRY \
       HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE \
       HARNESS_SESSION_ID HARNESS_SESSION_ROOT HARNESS_SOURCE_ROOT HARNESS_RUN_DIR
-    unset -m 'OTEL_*' 'CMUX_*'
+    unset -m 'OTEL_*' 'CMUX_*' 'ORCA_*'
     # --restricted skips project settings env; keep Glob honoring .gitignore.
     export CLAUDE_CODE_GLOB_NO_IGNORE=false CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
     umask 077
