@@ -111,7 +111,8 @@ are counted together:
   v0.33.0).
 - For Claude, every current-harness session whose `provider-sessions` file has a
   line `claude <id>`. This owner maps only when the transcript `<id>.jsonl`
-  exists under that session's Claude project directory.
+  exists under the Claude project directory of that session's root or of one of
+  its recorded run directories (below).
 - For Codex, the one session whose Codex home holds the matching rollout file.
 
 A session both named by the id and recording it counts as one owner. The
@@ -126,16 +127,36 @@ message. The session must belong to the current harness.
 is silent and exits 0 in every other case. The launcher only ships the command;
 each harness registers the recorder through its own `SessionStart` hook shim,
 which is a separate change in that harness.
-Until a harness registers it, `/clear` ids stay unmapped.
+Until a harness registers it, `/clear` ids stay unmapped. The recorder cannot
+tell a Codex `SessionStart` payload from a Claude one, so each harness excludes
+its shim from Codex through `codex_exclusions`; the transcript check is the
+backstop.
+
+Claude files a transcript under the project directory of its working
+directory. An isolated session runs in the caller's directory when that is
+inside the harness (`harness-exec` passes `--cwd`), else in the session root.
+Before the agent starts, the launcher appends that resolved run directory to
+`<state>/sessions/<HARNESS_SESSION_ID>/run-dirs`, one path per line. It skips an
+identical line, never writes through a symlink, writes only a regular file, and
+records only a directory inside the session's source root or session root.
+The resolver reads `run-dirs` only as a regular non-symlink file and uses a line
+only when it is an absolute path without `.` or `..` components whose resolved
+form lies inside that session's source root or session root. It checks the
+session root and each such line, both as written and resolved. A forged line
+cannot point the check at another session's workspace, and the owner count is
+unchanged.
 
 Limits:
 
 - Restore fails closed before v0.36.0: earlier launchers cannot map ids created
   after `/clear`.
-- The transcript lookup assumes Claude runs in the session root. A session
-  started with `--cwd <subdir>` keeps its transcripts under a different project
-  directory, so its `/clear` ids stay unmapped and fail closed with the usual
-  reject message. Recover with `<prefix> --isolated-session <uuid> resume`.
+- The transcript check cannot tell a nested `claude -p` (same project
+  directory, inherited `HARNESS_SESSION_ID`) from the session itself: the
+  nested run's id is recorded and its transcript exists. Such an id maps to the
+  same session. The owner count still prevents mapping into another session.
+- Sessions of the same harness that ran in the same directory share one Claude
+  project directory, so the transcript check alone does not tell them apart;
+  the `provider-sessions` owner count does.
 - An isolated Codex session is not covered by the herdr or Orca status
   hooks, because its Codex home clone lacks hook trust.
 - A plain `<prefix>` launch that opens the interactive picker has no session id

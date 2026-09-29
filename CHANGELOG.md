@@ -22,8 +22,12 @@ Notable changes are recorded here. This project follows semantic versioning for 
   for harnesses that register it as a `SessionStart` hook.
 - Restore routing counts the session directory and `provider-sessions` owners
   together. A recorded id maps only when its transcript exists; two or more
-  owners is ambiguous. Sessions started with `--cwd <subdir>` keep unmapped
-  `/clear` ids.
+  owners is ambiguous. The launcher records each isolated session's run
+  directory (the caller's directory inside the harness that `harness-exec`
+  passes as `--cwd`) in the session's `run-dirs`, and the transcript check
+  looks under the session root and every recorded run directory inside the
+  session's source or session root, so `/clear` ids map from the harness root
+  and its subdirectories.
 - Documentation: new `docs/terminal-runtimes.md` (also installed with the
   package) with host prerequisites for herdr and Oh My Zsh.
 

@@ -70,14 +70,36 @@ _harness_launcher_session_records_claude() {
 }
 
 # _harness_launcher_claude_transcript_exists <state-home> <session name> <lowercase id>
-#   Claude stores transcripts at <config>/projects/<root with non-alnum -> ->/<id>.jsonl.
+#   Claude stores transcripts at <config>/projects/<cwd with non-alnum -> ->/<id>.jsonl.
+#   The cwd is the session root or one of the run directories the launcher
+#   recorded in the session's run-dirs. run-dirs counts only as a regular
+#   non-symlink file; a line counts only when it is an absolute path without
+#   `.`/`..` components or `//` whose resolved form lies inside the session's
+#   recorded source root or its session root. The session itself has already
+#   passed _harness_launcher_session_is_current.
 _harness_launcher_claude_transcript_exists() {
   local state_home="$1" name="$2" id="$3"
-  local dir="$state_home/sessions/$name" root candidate enc
+  local dir="$state_home/sessions/$name" root candidate enc line resolved base source_root
   local config="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  local -a candidates=() bases=()
   root="$state_home/worktrees/$name"
   [[ -f "$dir/session-root" && ! -L "$dir/session-root" ]] && root="$(<"$dir/session-root")"
-  for candidate in "$root" "${root:A}"; do
+  candidates=("$root" "${root:A}")
+  if [[ -f "$dir/run-dirs" && ! -L "$dir/run-dirs" && -f "$dir/source-root" && ! -L "$dir/source-root" ]]; then
+    source_root="$(<"$dir/source-root")"
+    bases=("${source_root:A}" "${root:A}")
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" == /* && "$line" != (*/./*|*/../*|*/.|*/..|*//*) ]] || continue
+      resolved="${line:A}"
+      for base in "${bases[@]}"; do
+        if [[ "$base" == /?* && ( "$resolved" == "$base" || "$resolved" == "$base"/* ) ]]; then
+          candidates+=("$line" "$resolved")
+          break
+        fi
+      done
+    done < "$dir/run-dirs"
+  fi
+  for candidate in "${(u)candidates[@]}"; do
     enc="${candidate//[^A-Za-z0-9]/-}"
     [[ -f "$config/projects/$enc/$id.jsonl" && ! -L "$config/projects/$enc/$id.jsonl" ]] && return 0
   done
@@ -157,6 +179,45 @@ _harness_launcher_resolve_restore() {
 }
 
 _harness_launcher_resolve_orca_resume() { _harness_launcher_resolve_restore "$@"; }
+
+# _harness_launcher_isolated_record_run_dir
+#   Appends the isolated session's resolved run directory (HARNESS_RUN_DIR) to
+#   <state>/sessions/<HARNESS_SESSION_ID>/run-dirs, one path per line, so the
+#   restore resolver can find Claude transcripts filed under that directory.
+#   Only a directory inside the session's source root or session root is
+#   recorded; an identical line is not repeated; the file is opened without
+#   following a symlink and must be regular. Silent, and never fails a launch.
+_harness_launcher_isolated_record_run_dir() {
+  local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+  local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  local id="${HARNESS_SESSION_ID:-}" run="${HARNESS_RUN_DIR:-}" dir file resolved base line fd
+  local -a bases=()
+  [[ "$id" =~ $uuid_re && "$run" == /* && -d "$run" ]] || return 0
+  dir="$state_home/sessions/$id"
+  [[ -d "$dir" && ! -L "$dir" ]] || return 0
+  resolved="${run:A}"
+  [[ -n "${HARNESS_SOURCE_ROOT:-}" ]] && bases+=("${HARNESS_SOURCE_ROOT:A}")
+  [[ -n "${HARNESS_SESSION_ROOT:-}" ]] && bases+=("${HARNESS_SESSION_ROOT:A}")
+  for base in "${bases[@]}"; do
+    [[ "$resolved" == "$base" || "$resolved" == "$base"/* ]] && break
+    base=""
+  done
+  [[ -n "$base" ]] || return 0
+  file="$dir/run-dirs"
+  [[ -L "$file" ]] && return 0
+  {
+    zmodload zsh/system || return 0
+    sysopen -r -w -a -o nofollow,creat,nonblock,cloexec -m 600 -u fd "$file" || return 0
+    if [[ -f /dev/fd/$fd ]]; then
+      while IFS= read -r -u $fd line || [[ -n "$line" ]]; do
+        [[ "$line" == "$resolved" ]] && { exec {fd}>&-; return 0; }
+      done
+      print -r -u $fd -- "$resolved"
+    fi
+    exec {fd}>&-
+  } 2>/dev/null
+  return 0
+}
 
 _harness_launcher_isolated_heartbeat() {
   local session_id="$1" interval="${HARNESS_SESSION_HEARTBEAT_SECONDS:-30}"
@@ -759,6 +820,9 @@ _harness_launcher_run() {
     HARNESS_DIR="$HARNESS_SESSION_ROOT"
     [[ -n "$HARNESS_RUN_DIR" ]] || HARNESS_RUN_DIR="$HARNESS_SESSION_ROOT"
     export HARNESS_RUN_DIR
+    # Claude files transcripts under its cwd's project directory, which is the
+    # caller's run directory (harness-exec passes --cwd), not the session root.
+    _harness_launcher_isolated_record_run_dir
     if $created_isolated_session; then
       if [[ "${1:-}" == codex ]]; then
         echo "harness-launcher: isolated session $HARNESS_SESSION_ID; continue: ${HARNESS_PREFIX} --isolated-session $HARNESS_SESSION_ID codex resume" >&2
