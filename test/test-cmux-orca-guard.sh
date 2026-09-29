@@ -16,7 +16,9 @@ cleanup() {
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-unset ORCA_TERMINAL_HANDLE TERM_PROGRAM
+# Tests never inherit the developer's terminal runtime (herdr, Orca, cmux).
+unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM
+for _rt_var in $(compgen -e); do case "$_rt_var" in HERDR_*|ORCA_*|CMUX_*) unset "$_rt_var" ;; esac; done
 # shellcheck source=../bin/harness-common.sh
 source "$ROOT/bin/harness-common.sh"
 

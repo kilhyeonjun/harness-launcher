@@ -5,7 +5,8 @@
 # launch a session id it can map back, and (b) map that restore argv to the
 # owning isolated session instead of rejecting it.
 set -e
-unset CMUX_WORKSPACE_ID CMUX_TAB_ID CMUX_SURFACE_ID
+# Tests never inherit the developer's terminal runtime (herdr, Orca, cmux).
+unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM; unset -m 'HERDR_*' 'ORCA_*' 'CMUX_*' || true
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
