@@ -41,9 +41,14 @@ def apps_allowlist() -> str:
     return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
 
 
-def orca_agent_hooks() -> str:
-    """Return "1" only when the harness opted in to Orca agent status hooks."""
-    return "1" if os.environ.get("HARNESS_ORCA_AGENT_HOOKS") == "1" else ""
+def orca_agent_hooks(repo_root) -> str:
+    """Return "1" only when the harness's launcher.env opts in to Orca hooks."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import orca_hooks_optin
+    finally:
+        sys.path.pop(0)
+    return orca_hooks_optin.resolve(str(repo_root))
 
 
 def global_mcp_resolution(home: Path):
@@ -1562,7 +1567,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
         "mcp_profile": mcp_profile,
         "global_mcp_digest": global_resolution.digest,
         "apps_allowlist": apps_allowlist(),
-        "orca_agent_hooks": orca_agent_hooks(),
+        "orca_agent_hooks": orca_agent_hooks(repo_root),
         "bundled_marketplace_path": (
             os.path.realpath(args.bundled_marketplace)
             if args.bundled_marketplace
