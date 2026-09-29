@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Record a Claude provider session id for an isolated harness session.
+
+Reads a Claude SessionStart hook payload on stdin and appends
+`claude <session_id>` to <state>/sessions/<HARNESS_SESSION_ID>/provider-sessions.
+Always exits 0 and prints nothing.
+"""
+import json
+import os
+import re
+import stat
+import sys
+
+UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+SOURCES = {"startup", "resume", "clear", "compact", "fork"}
+
+
+def state_home():
+    explicit = os.environ.get("HARNESS_SESSION_STATE_HOME")
+    if explicit:
+        return explicit
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "harness-launcher")
+
+
+def record():
+    owner = os.environ.get("HARNESS_SESSION_ID", "")
+    payload = json.loads(sys.stdin.read())
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
+        return
+    session_id = payload.get("session_id")
+    if payload.get("source") not in SOURCES or not isinstance(session_id, str):
+        return
+    if not UUID.match(session_id) or not UUID.match(owner):
+        return
+    directory = os.path.join(state_home(), "sessions", owner)
+    if not stat.S_ISDIR(os.lstat(directory).st_mode):
+        return
+    line = "claude %s\n" % session_id
+    fd = os.open(os.path.join(directory, "provider-sessions"),
+                 os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+") as handle:
+        handle.seek(0)
+        if line in handle.read().splitlines(True):
+            return
+        handle.write(line)
+
+
+try:
+    record()
+except BaseException:
+    pass
+sys.exit(0)

@@ -213,4 +213,97 @@ grep -q 'missing or retired' "$TMP/gc.log.err" || fail 'retired workspace needs 
 grep -q 'could not restore isolated session' "$TMP/gc.log.err" || fail 'mapped restore failure must be reported'
 [[ ! -e "$TMP/gc.log" ]] || fail 'retired workspace must not launch'
 
+
+# --- Claude provider-session records (/clear ids) ----------------------------
+# A resume id created by /clear is recorded in the owning session's
+# provider-sessions by harness-session-provider-record. It maps back only when
+# exactly one current-harness session owns it and, for a record-only owner,
+# its transcript exists.
+CLAUDE_CFG="$TMP/claude-config"
+run "$TMP/pa.log" HARNESS_SESSION_ISOLATION=1 -- base || fail 'fresh session A failed'
+run "$TMP/pb.log" HARNESS_SESSION_ISOLATION=1 -- base || fail 'fresh session B failed'
+SA="$(basename "$(sed -n 's/^SESSION=//p' "$TMP/pa.log")")"
+SB="$(basename "$(sed -n 's/^SESSION=//p' "$TMP/pb.log")")"
+root_of() { cat "$STATE/sessions/$1/session-root"; }
+enc_of() { local r="${1:A}"; print -r -- "${r//[^A-Za-z0-9]/-}"; }
+transcript_for() { # <session> <id> : create the transcript at Claude's project path
+  local enc
+  enc="$(enc_of "$(root_of "$1")")"
+  mkdir -p "$CLAUDE_CFG/projects/$enc"; : > "$CLAUDE_CFG/projects/$enc/$2.jsonl"
+}
+record() { print -r -- "claude $2" >> "$STATE/sessions/$1/provider-sessions"; }
+resume_in() { # <log> <id> : ambient isolated resume with the Claude config dir
+  run "$1" HARNESS_SESSION_ISOLATION=1 CLAUDE_CONFIG_DIR="$CLAUDE_CFG" -- base --resume "$2"
+}
+CL1=aaaaaaaa-0000-4000-8000-000000000001
+CL2=aaaaaaaa-0000-4000-8000-000000000002
+CL3=aaaaaaaa-0000-4000-8000-000000000003
+
+# (a) the launch id still maps (no transcript needed, no record needed)
+resume_in "$TMP/ra.log" "${(L)SA}" || { cat "$TMP/ra.log.err" >&2; fail 'launch id no longer maps'; }
+[[ "$(sed -n 's/^SESSION=//p' "$TMP/ra.log")" == "$(root_of $SA)" ]] || fail 'launch id landed in the wrong session'
+# its own launch id recorded at startup is still one owner
+record $SA "${(L)SA}"
+resume_in "$TMP/ra2.log" "${(L)SA}" || fail 'own recorded launch id must map as one owner'
+
+# (b) an id recorded by /clear maps to the recording session when its transcript exists
+record $SA $CL1; transcript_for $SA $CL1
+resume_in "$TMP/rb.log" ${(U)CL1} || { cat "$TMP/rb.log.err" >&2; fail 'recorded /clear id with transcript was not mapped'; }
+[[ "$(sed -n 's/^SESSION=//p' "$TMP/rb.log")" == "$(root_of $SA)" ]] || fail 'recorded id landed in the wrong session'
+# default (profile) route maps it too
+CLAUDE_CONFIG_DIR="$CLAUDE_CFG" run_tty "$TMP/rb-tty.log" base --resume $CL1 || fail 'profile-default recorded id was rejected'
+[[ "$(sed -n 's/^SESSION=//p' "$TMP/rb-tty.log")" == "$(root_of $SA)" ]] || fail 'profile-default recorded id used the wrong root'
+
+# (c) recorded without a transcript keeps the unchanged reject message
+record $SA $CL2
+if resume_in "$TMP/rc.log" $CL2; then fail 'recorded id without transcript must be rejected'; fi
+grep -q 'continuation requires' "$TMP/rc.log.err" || fail 'no-transcript reject must keep the unchanged message'
+[[ ! -e "$TMP/rc.log" ]] || fail 'no-transcript reject must not launch'
+# a transcript stored under another session's project dir does not count
+transcript_for $SB $CL2
+if resume_in "$TMP/rc2.log" $CL2; then fail 'transcript of another session must not count'; fi
+# a transcript that is a symlink does not count
+enc_a="$(enc_of "$(root_of $SA)")"
+: > "$TMP/real.jsonl"; ln -s "$TMP/real.jsonl" "$CLAUDE_CFG/projects/$enc_a/$CL2.jsonl"
+if resume_in "$TMP/rc3.log" $CL2; then fail 'symlinked transcript must not count'; fi
+grep -q 'continuation requires' "$TMP/rc3.log.err" || fail 'symlinked transcript must keep the reject message'
+
+# (d) an id naming session A's directory that is also recorded in B is ambiguous
+record $SB "${(L)SA}"
+if resume_in "$TMP/rd.log" "${(L)SA}"; then fail 'directory owner plus recorder must be invalid'; fi
+grep -q 'ambiguous' "$TMP/rd.log.err" || fail 'directory plus recorder must say ambiguous'
+[[ ! -e "$TMP/rd.log" ]] || fail 'ambiguous id must not launch'
+
+# (e) an id recorded in two sessions is ambiguous
+record $SA $CL3; record $SB $CL3; transcript_for $SA $CL3
+if resume_in "$TMP/re.log" $CL3; then fail 'id recorded in two sessions must be invalid'; fi
+grep -q 'ambiguous' "$TMP/re.log.err" || fail 'two recorders must say ambiguous'
+
+# (f) a record in another harness's session is ignored
+CL4=aaaaaaaa-0000-4000-8000-000000000004
+record $SB $CL4; transcript_for $SB $CL4
+resume_in "$TMP/rf0.log" $CL4 || fail 'control: recorded id in B must map before source-root change'
+cp "$STATE/sessions/$SB/source-root" "$TMP/sb-source-root.bak"
+print -r -- "$OTHER" > "$STATE/sessions/$SB/source-root"
+if resume_in "$TMP/rf.log" $CL4; then fail 'record in a foreign-harness session must be ignored'; fi
+grep -q 'continuation requires' "$TMP/rf.log.err" || fail 'foreign record must keep the reject message'
+# a foreign record does not make an otherwise unique owner ambiguous
+CL5=aaaaaaaa-0000-4000-8000-000000000005
+record $SA $CL5; record $SB $CL5; transcript_for $SA $CL5
+resume_in "$TMP/rf2.log" $CL5 || fail 'foreign record must not add an owner'
+cp "$TMP/sb-source-root.bak" "$STATE/sessions/$SB/source-root"
+
+# Untrusted records: other lines, wrong provider, symlinked file are ignored.
+CL6=aaaaaaaa-0000-4000-8000-000000000006
+print -r -- "codex $CL6" > "$STATE/sessions/$SA/provider-sessions.tmp"
+{ print -r -- "codex $CL6"; print -r -- "claude $CL6 extra"; print -r -- "junk"; } >> "$STATE/sessions/$SA/provider-sessions"
+transcript_for $SA $CL6
+if resume_in "$TMP/rg.log" $CL6; then fail 'non-exact record lines must be ignored'; fi
+find "$STATE/sessions/$SA" -name 'provider-sessions.tmp' -delete
+cp "$STATE/sessions/$SA/provider-sessions" "$TMP/pslinktarget"
+find "$STATE/sessions/$SA" -name provider-sessions -delete
+print -r -- "claude $CL6" > "$TMP/pslinktarget"
+ln -s "$TMP/pslinktarget" "$STATE/sessions/$SA/provider-sessions"
+if resume_in "$TMP/rh.log" $CL6; then fail 'symlinked provider-sessions must be ignored'; fi
+
 echo 'PASS: test-orca-resume'

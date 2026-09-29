@@ -46,15 +46,56 @@ _harness_launcher_isolated_session_create() {
   done <<< "$output"
 }
 
-# _harness_launcher_resolve_orca_resume <source-root> [launcher argv...]
+# _harness_launcher_session_is_current <session-dir> <source-root>
+#   True for a UUID-named, non-symlink session directory whose source-root is a
+#   regular non-symlink file that resolves to the current harness.
+_harness_launcher_session_is_current() {
+  local dir="$1" source_root="$2" recorded
+  local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+  [[ "${dir:t}" =~ $uuid_re && -d "$dir" && ! -L "$dir" && -f "$dir/source-root" && ! -L "$dir/source-root" ]] || return 1
+  recorded="$(<"$dir/source-root")"
+  [[ -d "$recorded" && "${recorded:A}" == "$source_root" ]]
+}
+
+# _harness_launcher_session_records_claude <provider-sessions file> <lowercase id>
+#   True when the regular non-symlink file has a line exactly `claude <id>`
+#   (id compared case-insensitively); every other line is ignored.
+_harness_launcher_session_records_claude() {
+  local file="$1" id="$2" line
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "${(L)line}" == "claude $id" && "$line" == "claude "* ]] && return 0
+  done < "$file"
+  return 1
+}
+
+# _harness_launcher_claude_transcript_exists <state-home> <session name> <lowercase id>
+#   Claude stores transcripts at <config>/projects/<root with non-alnum -> ->/<id>.jsonl.
+_harness_launcher_claude_transcript_exists() {
+  local state_home="$1" name="$2" id="$3"
+  local dir="$state_home/sessions/$name" root candidate enc
+  local config="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  root="$state_home/worktrees/$name"
+  [[ -f "$dir/session-root" && ! -L "$dir/session-root" ]] && root="$(<"$dir/session-root")"
+  for candidate in "$root" "${root:A}"; do
+    enc="${candidate//[^A-Za-z0-9]/-}"
+    [[ -f "$config/projects/$enc/$id.jsonl" && ! -L "$config/projects/$enc/$id.jsonl" ]] && return 0
+  done
+  return 1
+}
+
+# _harness_launcher_resolve_restore <source-root> [launcher argv...]
 #   Orca restores an agent as `<override> <default args> --resume <id>` (Claude)
 #   or `<override> codex resume <id>` (Codex). Map that single UUID back to the
 #   isolated session that owns it. Prints the session directory name (uppercase
 #   UUID) and returns 0 on a unique owner; 1 when there is no owner (caller keeps
 #   its reject message); 3 when several sessions own the id (ambiguous).
 #   Only sessions recorded for this harness (source-root) count; symlinks are
-#   never followed.
-_harness_launcher_resolve_orca_resume() {
+#   never followed. For Claude, a session also owns ids listed as exactly
+#   `claude <uuid>` in its provider-sessions (written by
+#   harness-session-provider-record, e.g. after /clear); such a record-only
+#   owner maps only when the id's transcript exists under its Claude project dir.
+_harness_launcher_resolve_restore() {
   local source_root="$1"; shift
   local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
   local -a candidates=()
@@ -83,7 +124,7 @@ _harness_launcher_resolve_orca_resume() {
 
   local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
   local sessions="$state_home/sessions" dir name recorded
-  local -a owners=() hits=()
+  local -a owners=() hits=() recorders=() record_only=()
   if $is_codex; then
     local rollout
     for rollout in "$state_home"/worktrees/*/.harness/codex/sessions/*/*/*/rollout-*-$id.jsonl(N); do
@@ -95,20 +136,27 @@ _harness_launcher_resolve_orca_resume() {
     for dir in "$sessions"/*(/N); do
       name="${dir:t}"
       [[ "${(L)name}" == "$id" ]] && hits+=("$name")
+      _harness_launcher_session_records_claude "$dir/provider-sessions" "$id" && recorders+=("$name")
     done
   fi
   for name in "${hits[@]}"; do
-    dir="$sessions/$name"
-    [[ "$name" =~ $uuid_re && -d "$dir" && ! -L "$dir" && -f "$dir/source-root" && ! -L "$dir/source-root" ]] || continue
-    recorded="$(<"$dir/source-root")"
-    [[ -d "$recorded" && "${recorded:A}" == "$source_root" ]] || continue
-    owners+=("$name")
+    _harness_launcher_session_is_current "$sessions/$name" "$source_root" && owners+=("$name")
+  done
+  for name in "${recorders[@]}"; do
+    (( ${owners[(Ie)$name]} )) && continue
+    _harness_launcher_session_is_current "$sessions/$name" "$source_root" || continue
+    owners+=("$name"); record_only+=("$name")
   done
   owners=(${(u)owners})
   (( ${#owners} <= 1 )) || return 3
   (( ${#owners} == 1 )) || return 1
+  if (( ${record_only[(Ie)${owners[1]}]} )); then
+    _harness_launcher_claude_transcript_exists "$state_home" "${owners[1]}" "$id" || return 1
+  fi
   print -r -- "${owners[1]}"
 }
+
+_harness_launcher_resolve_orca_resume() { _harness_launcher_resolve_restore "$@"; }
 
 _harness_launcher_isolated_heartbeat() {
   local session_id="$1" interval="${HARNESS_SESSION_HEARTBEAT_SECONDS:-30}"
@@ -653,7 +701,7 @@ _harness_launcher_run() {
       isolate) isolated=true ;;
       legacy) ;;
       reject)
-        orca_resume_id="$(_harness_launcher_resolve_orca_resume "${HARNESS_DIR:A}" "$@")"
+        orca_resume_id="$(_harness_launcher_resolve_restore "${HARNESS_DIR:A}" "$@")"
         case $? in
           0) isolated=true; requested_session_id="$orca_resume_id"; orca_resume=true ;;
           3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
@@ -674,7 +722,7 @@ _harness_launcher_run() {
     isolation_route="$(harness_session_isolation_default_route 1 "$@")" || return $?
     [[ "$isolation_route" != invalid ]] || { echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2; }
     if [[ -z "$requested_session_id" && "$isolation_route" == reject ]]; then
-      orca_resume_id="$(_harness_launcher_resolve_orca_resume "${HARNESS_DIR:A}" "$@")"
+      orca_resume_id="$(_harness_launcher_resolve_restore "${HARNESS_DIR:A}" "$@")"
       case $? in
         0) requested_session_id="$orca_resume_id"; orca_resume=true ;;
         3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
