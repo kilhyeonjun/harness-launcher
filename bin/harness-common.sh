@@ -13,6 +13,8 @@
 #   harness_autocompact_pct <provider> <arg>...
 #   harness_mcp_local_configs / harness_validate_mcp_local_configs <harness-dir>
 #   harness_ultracode_hint
+#   harness_terminal_runtime / harness_terminal_launch_runtime
+#   harness_terminal_scrub_env [runtime] / harness_terminal_announce_cwd <dir>
 
 HARNESS_CODEX_APP_BIN_DEFAULT="/Applications/Codex.app/Contents/Resources/codex"
 
@@ -733,13 +735,39 @@ harness_terminal_runtime() {
   fi
 }
 
+# The runtime an agent launch belongs to: `plain` when the launch has no
+# terminal (stdin or stdout is not a TTY; SDK hosts such as Paseo inherit their
+# daemon's terminal markers but host no terminal), otherwise the marker runtime.
+# It tests this process's own stdin and stdout, so capturing it with
+# `x="$(harness_terminal_launch_runtime)"` always reports `plain`: the capture
+# pipe is stdout. A caller that has a terminal passes a variable name instead
+# (`harness_terminal_launch_runtime rt`) and gets the value assigned to it.
+harness_terminal_launch_runtime() {
+  local _htlr_rt
+  if harness_claude_stdio_is_tty; then
+    _htlr_rt="$(harness_terminal_runtime)"
+  else
+    _htlr_rt="plain"
+  fi
+  case "${1:-}" in
+    "") printf '%s\n' "$_htlr_rt" ;;
+    [0-9]*|*[!A-Za-z0-9_]*) return 2 ;;
+    *) eval "$1=\$_htlr_rt" ;;
+  esac
+}
+
 # Strip every foreign runtime's variables from the current shell so an agent
 # sees exactly one terminal runtime. Run it in the agent's subshell or process,
 # never the user's interactive shell. The runtime is computed once up front, so
-# each step judges the original environment, not one it already trimmed.
+# each step judges the original environment, not one it already trimmed. An
+# optional argument (herdr, orca, cmux or plain) is used as the runtime instead
+# of detecting one; any other value, or none, detects from the markers.
 harness_terminal_scrub_env() {
   local rt line name
-  rt="$(harness_terminal_runtime)"
+  case "${1:-}" in
+    herdr|orca|cmux|plain) rt="$1" ;;
+    *) rt="$(harness_terminal_runtime)" ;;
+  esac
   # L1: Orca points CODEX_HOME at its own managed home; drop the pair when it
   # is only Orca's value.
   if [ -n "${ORCA_CODEX_HOME:-}" ] && [ "${CODEX_HOME:-}" = "$ORCA_CODEX_HOME" ]; then
@@ -808,9 +836,10 @@ harness_codex_cmux_broker_start() {
   [ -n "${CMUX_WORKSPACE_ID:-}" ] || return 0
   [ -n "${CMUX_TAB_ID:-}" ] || return 0
   [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
-  # Stale CMUX_* inside an Orca terminal must not start a cmux title broker.
-  [ -z "${ORCA_TERMINAL_HANDLE:-}" ] || return 0
-  [ "${TERM_PROGRAM:-}" != "Orca" ] || return 0
+  # Stale CMUX_* inside another runtime's terminal (Orca, herdr) or without a
+  # terminal must not start a cmux title broker. The launcher exports its
+  # verdict; without one, detect from the markers.
+  [ "${HARNESS_TERMINAL_RUNTIME:-$(harness_terminal_runtime)}" = "cmux" ] || return 0
   case "${HARNESS_PREFIX:-}" in
     ''|[0-9-]*|*[!A-Za-z0-9_-]*) return 0 ;;
   esac
@@ -855,9 +884,10 @@ harness_claude_cmux_broker_start() {
   [ -n "${CMUX_WORKSPACE_ID:-}" ] || return 0
   [ -n "${CMUX_TAB_ID:-}" ] || return 0
   [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
-  # Stale CMUX_* inside an Orca terminal must not start a cmux title broker.
-  [ -z "${ORCA_TERMINAL_HANDLE:-}" ] || return 0
-  [ "${TERM_PROGRAM:-}" != "Orca" ] || return 0
+  # Stale CMUX_* inside another runtime's terminal (Orca, herdr) or without a
+  # terminal must not start a cmux title broker. The launcher exports its
+  # verdict; without one, detect from the markers.
+  [ "${HARNESS_TERMINAL_RUNTIME:-$(harness_terminal_runtime)}" = "cmux" ] || return 0
   case "${HARNESS_PREFIX:-}" in
     ''|[0-9-]*|*[!A-Za-z0-9_-]*) return 0 ;;
   esac

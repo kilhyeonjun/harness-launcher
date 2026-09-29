@@ -36,6 +36,9 @@ run() { # <log> <env assignments...> -- <args...>
   (
     export PATH="$TMP/bin:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" STUB_LOG="$log" "${envs[@]}"
     source "$ROOT/bin/aliases.zsh"
+    # A launch without a terminal is runtime `plain` (no Orca variables reach
+    # the agent). TEST_ASSUME_TTY=1 stands in for a real terminal on stdio.
+    [[ -z "${TEST_ASSUME_TTY-}" ]] || harness_claude_stdio_is_tty() { return 0; }
     _harness_launcher_run "$HARNESS" "$@"
   ) >/dev/null 2>"${log}.err" || true
 }
@@ -45,10 +48,20 @@ run "$TMP/a.log" CODEX_HOME=/orca/codex-home ORCA_CODEX_HOME=/orca/codex-home --
 grep -qx 'CODEX_HOME=unset' "$TMP/a.log" || fail 'Orca-owned CODEX_HOME must be unset for Claude'
 grep -qx 'ORCA_CODEX_HOME=unset' "$TMP/a.log" || fail 'ORCA_CODEX_HOME must be unset for Claude'
 
-# (b) A user-set CODEX_HOME that differs is preserved.
-run "$TMP/b.log" CODEX_HOME=/user/codex ORCA_CODEX_HOME=/orca/codex-home -- base
+# (b) A user-set CODEX_HOME that differs is preserved, and inside an Orca
+# terminal (handle plus a terminal) the differing ORCA_CODEX_HOME is too.
+run "$TMP/b.log" CODEX_HOME=/user/codex ORCA_CODEX_HOME=/orca/codex-home ORCA_TERMINAL_HANDLE=term_1 TEST_ASSUME_TTY=1 -- base
 grep -qx 'CODEX_HOME=/user/codex' "$TMP/b.log" || fail 'user CODEX_HOME must be preserved'
 grep -qx 'ORCA_CODEX_HOME=/orca/codex-home' "$TMP/b.log" || fail 'ORCA_CODEX_HOME must be preserved when differing'
+
+# (b') Outside an Orca terminal (no marker, or no terminal) ORCA_CODEX_HOME goes
+# with the other ORCA_* variables; the user's CODEX_HOME still stays.
+run "$TMP/b1.log" CODEX_HOME=/user/codex ORCA_CODEX_HOME=/orca/codex-home TEST_ASSUME_TTY=1 -- base
+grep -qx 'CODEX_HOME=/user/codex' "$TMP/b1.log" || fail 'user CODEX_HOME must be preserved without an Orca marker'
+grep -qx 'ORCA_CODEX_HOME=unset' "$TMP/b1.log" || fail 'ORCA_CODEX_HOME must be scrubbed without an Orca marker'
+run "$TMP/b3.log" CODEX_HOME=/user/codex ORCA_CODEX_HOME=/orca/codex-home ORCA_TERMINAL_HANDLE=term_1 -- base
+grep -qx 'ORCA_CODEX_HOME=unset' "$TMP/b3.log" || fail 'ORCA_CODEX_HOME must be scrubbed for a launch without a terminal'
+grep -qx 'ORCA_TERMINAL_HANDLE=unset' "$TMP/b3.log" || fail 'ORCA_TERMINAL_HANDLE must be scrubbed for a launch without a terminal'
 
 # Empty ORCA_CODEX_HOME never triggers.
 run "$TMP/b2.log" CODEX_HOME= ORCA_CODEX_HOME= -- base

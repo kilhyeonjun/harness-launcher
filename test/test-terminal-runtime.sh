@@ -274,6 +274,144 @@ CMUX_INJECT=[UNSET]
 ORCA_TERMINAL_HANDLE=[t]"
 finish "$before" "multi-line values do not confuse the scrub"
 
+# --- harness_terminal_scrub_env RUNTIME argument -----------------------------
+
+# The launcher passes its launch runtime (plain without a terminal) as the
+# argument. A valid value replaces detection; anything else detects as before.
+SNAPSHOT_ARG='
+. "$1"
+harness_terminal_scrub_env "$4"
+scrub_rc=$?
+printf "scrub_rc=%s\nruntime=%s\n" "$scrub_rc" "$HARNESS_TERMINAL_RUNTIME"
+env | grep -E "$3" | LC_ALL=C sort
+'
+
+# check_scrub_arg LABEL ARG EXPECTED_RUNTIME EXPECTED_ENV_LINES [ENV=value ...]
+# EXPECTED_ENV_LINES lists every surviving variable that matches ENV_FILTER,
+# HARNESS_TERMINAL_RUNTIME included.
+check_scrub_arg() {
+  local label="$1" arg="$2" want_rt="$3" want_lines="$4" before="$failures"
+  shift 4
+  run_shells "$SNAPSHOT_ARG" "$arg" "$@"
+  expect_results "$label" "scrub_rc=0
+runtime=$want_rt
+$(printf '%s\n' "$want_lines" | LC_ALL=C sort)"
+  finish "$before" "$label"
+}
+
+ALL_MARKERS=(HERDR_ENV=1 HERDR_PANE_ID=w1:p1 "HERDR_SOCKET_PATH=$SOCK"
+  ORCA_TERMINAL_HANDLE=t ORCA_PANE_KEY=k TERM_PROGRAM=Orca
+  CMUX_WORKSPACE_ID=a CMUX_TAB_ID=b CMUX_SURFACE_ID=c CMUX_SOCKET_PATH=/s)
+
+check_scrub_arg "argument plain removes every runtime's variables" plain plain \
+  "HARNESS_TERMINAL_RUNTIME=plain" "${ALL_MARKERS[@]}"
+check_scrub_arg "argument herdr keeps only HERDR_* (markers say herdr)" herdr herdr \
+  "HARNESS_TERMINAL_RUNTIME=herdr
+HERDR_ENV=1
+HERDR_PANE_ID=w1:p1
+HERDR_SOCKET_PATH=$SOCK" "${ALL_MARKERS[@]}"
+check_scrub_arg "argument orca overrides herdr markers" orca orca \
+  "HARNESS_TERMINAL_RUNTIME=orca
+ORCA_PANE_KEY=k
+ORCA_TERMINAL_HANDLE=t
+TERM_PROGRAM=Orca" "${ALL_MARKERS[@]}"
+check_scrub_arg "argument cmux overrides herdr and Orca markers" cmux cmux \
+  "HARNESS_TERMINAL_RUNTIME=cmux
+CMUX_SOCKET_PATH=/s
+CMUX_SURFACE_ID=c
+CMUX_TAB_ID=b
+CMUX_WORKSPACE_ID=a" "${ALL_MARKERS[@]}"
+check_scrub_arg "argument orca with cmux-only markers removes CMUX_*" orca orca \
+  "HARNESS_TERMINAL_RUNTIME=orca" CMUX_WORKSPACE_ID=a CMUX_TAB_ID=b CMUX_SURFACE_ID=c
+check_scrub_arg "argument plain still applies the L1 rule" plain plain \
+  "HARNESS_TERMINAL_RUNTIME=plain" ORCA_CODEX_HOME=/o CODEX_HOME=/o
+check_scrub_arg "an unknown argument detects from the markers" bogus cmux \
+  "HARNESS_TERMINAL_RUNTIME=cmux
+CMUX_WORKSPACE_ID=a
+CMUX_TAB_ID=b
+CMUX_SURFACE_ID=c" CMUX_WORKSPACE_ID=a CMUX_TAB_ID=b CMUX_SURFACE_ID=c
+check_scrub_arg "an empty argument detects from the markers" "" orca \
+  "HARNESS_TERMINAL_RUNTIME=orca
+ORCA_TERMINAL_HANDLE=t" ORCA_TERMINAL_HANDLE=t CMUX_WORKSPACE_ID=a CMUX_TAB_ID=b CMUX_SURFACE_ID=c
+check_scrub_arg "an argument with different case is not a runtime" PLAIN cmux \
+  "HARNESS_TERMINAL_RUNTIME=cmux
+CMUX_WORKSPACE_ID=a
+CMUX_TAB_ID=b
+CMUX_SURFACE_ID=c" CMUX_WORKSPACE_ID=a CMUX_TAB_ID=b CMUX_SURFACE_ID=c
+
+# --- harness_terminal_launch_runtime ------------------------------------------
+
+# Without a terminal (run_shells detaches stdin and stdout) the runtime is
+# plain whatever the markers say.
+LAUNCH_RT='
+. "$1"
+harness_terminal_launch_runtime
+printf "rc=%s\n" "$?"
+harness_terminal_launch_runtime rt
+printf "assigned=%s rc=%s\n" "$rt" "$?"
+'
+before="$failures"
+run_shells "$LAUNCH_RT" "" HERDR_ENV=1 HERDR_PANE_ID=w1:p1 "HERDR_SOCKET_PATH=$SOCK" \
+  ORCA_TERMINAL_HANDLE=t CMUX_WORKSPACE_ID=a CMUX_TAB_ID=b CMUX_SURFACE_ID=c
+expect_results "launch runtime without a terminal is plain despite markers" \
+  $'plain\nrc=0\nassigned=plain rc=0'
+finish "$before" "launch runtime without a terminal is plain despite markers"
+
+# With a terminal, run each shell on a pty (stdin and stdout are terminals)
+# through run-bounded.py: a hard time limit, a silent pty stdin, and a
+# transcript with CRLF normalized to LF.
+BOUNDED="$ROOT/test/lib/run-bounded.py"
+# run_shells_tty SCRIPT ARG [ENV=value ...]: like run_shells, on a pty.
+run_shells_tty() {
+  local script="$1" arg="$2" i
+  shift 2
+  for i in 0 1; do
+    mkdir -p "$TMP/scratch.$i"
+    python3 "$BOUNDED" tty 60 "$TMP/scratch.$i/result" \
+      env -i HOME="$HOME" PATH="$PATH" TERM=xterm-256color LANG=en_US.UTF-8 "$@" \
+      "${SHELLS[$i]}" -c "$script" _ "$COMMON" "$TMP/scratch.$i" "$ENV_FILTER" "$arg" \
+      </dev/null &
+  done
+  wait
+  RESULT_0="$(cat "$TMP/scratch.0/result")"
+  RESULT_1="$(cat "$TMP/scratch.1/result")"
+}
+
+# check_launch_tty LABEL EXPECTED_RUNTIME [ENV=value ...]
+check_launch_tty() {
+  local label="$1" want="$2" before="$failures"
+  shift 2
+  run_shells_tty "$LAUNCH_RT" "" "$@"
+  expect_results "$label" "$want"$'\nrc=0\nassigned='"$want"' rc=0'
+  finish "$before" "$label"
+}
+check_launch_tty "launch runtime on a terminal: herdr" herdr \
+  HERDR_ENV=1 HERDR_PANE_ID=w1:p1 "HERDR_SOCKET_PATH=$SOCK" ORCA_TERMINAL_HANDLE=t CMUX_WORKSPACE_ID=a CMUX_TAB_ID=b CMUX_SURFACE_ID=c
+check_launch_tty "launch runtime on a terminal: orca" orca \
+  ORCA_TERMINAL_HANDLE=t CMUX_WORKSPACE_ID=a CMUX_TAB_ID=b CMUX_SURFACE_ID=c
+check_launch_tty "launch runtime on a terminal: cmux" cmux \
+  CMUX_WORKSPACE_ID=a CMUX_TAB_ID=b CMUX_SURFACE_ID=c
+check_launch_tty "launch runtime on a terminal: plain" plain NOT_A_MARKER=1
+
+# Either stream not being a terminal is enough for plain, and the value can only
+# be captured through the variable-name form: `$(...)` makes stdout a pipe.
+PARTIAL='
+. "$1"
+harness_terminal_launch_runtime | cat
+printf "captured=%s\n" "$(harness_terminal_launch_runtime)"
+harness_terminal_launch_runtime rt
+printf "assigned=%s\n" "$rt"
+</dev/null harness_terminal_launch_runtime rt
+printf "stdin-detached=%s\n" "$rt"
+harness_terminal_launch_runtime "not a name"
+printf "bad-name-rc=%s\n" "$?"
+'
+before="$failures"
+run_shells_tty "$PARTIAL" "" ORCA_TERMINAL_HANDLE=t
+expect_results "launch runtime: stdout pipe, capture, detached stdin, bad name" \
+  $'plain\ncaptured=plain\nassigned=orca\nstdin-detached=plain\nbad-name-rc=2'
+finish "$before" "launch runtime: stdout pipe, capture, detached stdin, bad name"
+
 # --- harness_terminal_runtime contract ---------------------------------------
 
 # Exactly one line and exit 0, with PATH pointing nowhere: only builtins and the

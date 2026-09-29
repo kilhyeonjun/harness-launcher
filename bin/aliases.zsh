@@ -424,12 +424,27 @@ codex() {
       fi
       harness_mcp_surface_policy_is_single_full "$mcp_surface_policy" && unset HARNESS_CODEX_MCP_PROFILE
       _harness_launcher_export_codex_runtime_env "$harness_dir" || return $?
+      # This wrapper runs in the user's interactive shell and skips
+      # _harness_launcher_run, so it applies the same scrub, but only in the
+      # subshell that runs Codex: the shell keeps its own markers. The broker
+      # (started here, in the shell, still holding them) reads the launch
+      # runtime through this function-local variable.
+      local HARNESS_TERMINAL_RUNTIME
+      harness_terminal_launch_runtime HARNESS_TERMINAL_RUNTIME
       harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
       broker_started=true
     fi
   fi
 
-  "$codex_bin" "$@"
+  if $broker_started; then
+    (
+      harness_terminal_scrub_env "$HARNESS_TERMINAL_RUNTIME"
+      harness_terminal_announce_cwd "$harness_dir"
+      "$codex_bin" "$@"
+    )
+  else
+    "$codex_bin" "$@"
+  fi
   local rc=$?
   $broker_started && harness_codex_cmux_broker_stop
   return $rc
@@ -541,13 +556,16 @@ harness_register() {
 # _harness_launcher_run <harness-dir> [args...]
 #   Shared implementation for every registered profile function.
 _harness_launcher_run() {
-  # Orca injects its own CODEX_HOME (and re-copies ORCA_CODEX_HOME into it in
-  # interactive shells). Drop both when CODEX_HOME is exactly Orca's value so
-  # launcher-owned Claude/Codex paths never inherit it; a differing user value
-  # is left alone.
-  if [[ -n "${ORCA_CODEX_HOME-}" && "${CODEX_HOME-}" == "$ORCA_CODEX_HOME" ]]; then
-    unset CODEX_HOME ORCA_CODEX_HOME
-  fi
+  # Every launched agent sees one terminal runtime: the launch runtime (`plain`
+  # without a TTY, else the marker runtime) is exported as
+  # HARNESS_TERMINAL_RUNTIME and every other runtime's variables are removed.
+  # Its first step is the Orca CODEX_HOME rule: drop CODEX_HOME and
+  # ORCA_CODEX_HOME when CODEX_HOME is exactly Orca's value, so launcher-owned
+  # Claude/Codex paths never inherit it; a differing user value is left alone.
+  # This runs in the launcher process (harness-exec), not the user's shell.
+  local _terminal_runtime
+  harness_terminal_launch_runtime _terminal_runtime
+  harness_terminal_scrub_env "$_terminal_runtime"
   # Production entry points run without errexit; a caller's errexit would also
   # skip the `always` block that finishes an isolated session.
   setopt localoptions noerrexit
@@ -972,6 +990,7 @@ _harness_launcher_run_session() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
+      harness_terminal_announce_cwd "${HARNESS_RUN_DIR:-$PWD}"
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
@@ -981,6 +1000,7 @@ _harness_launcher_run_session() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
+      harness_terminal_announce_cwd "${HARNESS_RUN_DIR:-$PWD}"
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
@@ -993,6 +1013,7 @@ _harness_launcher_run_session() {
     return $rc
   else
     if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
+    harness_terminal_announce_cwd "${HARNESS_RUN_DIR:-$HARNESS_DIR}"
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
       HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
       "$_HARNESS_LAUNCHER_BIN/launcher.sh"
@@ -1406,6 +1427,8 @@ _harness_launcher_run_codex_cli() {
       --root "$HARNESS_DIR" --server-cwd "${caller_run_dir:-$run_dir}" --prefix "$HARNESS_PREFIX"
       --registry "$registry" -- "${launch_cmd[@]}")
   fi
+  # The directory Codex starts in: a caller -C wins over the run directory.
+  harness_terminal_announce_cwd "${caller_run_dir:-$run_dir}"
   if [[ -n "$subcmd" ]]; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
     (cd "$run_dir" && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
@@ -1534,6 +1557,7 @@ _harness_launcher_run_kiro_cli() {
   [[ ${#kiro_args[@]} -gt 0 ]] && launch_cmd+=("${kiro_args[@]}")
   unset HARNESS_KIRO_MODEL HARNESS_KIRO_EFFORT
 
+  harness_terminal_announce_cwd "$run_dir"
   (cd "$run_dir" && "${launch_cmd[@]}")
   local rc=$?
   unset HARNESS_KIRO_MCP_PROFILE
