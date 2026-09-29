@@ -254,8 +254,10 @@ process ancestry, so cmux, Ghostty or another app) and runs
 the older one. The visible tab stays silent while its host app is frontmost,
 as herdr's own toasts do. If the plugin cannot find the host app, the visible
 tab always stays silent. Notifications need `terminal-notifier`
-(`brew install terminal-notifier`); without it the plugin falls back to
-`osascript`, which cannot focus the pane. Set
+(`brew install terminal-notifier`). herdr runs plugins with only the system
+`PATH`, so the plugin also looks in the Homebrew prefix that holds herdr.
+Without it the plugin falls back to `osascript`: the notification shows as
+Script Editor, and clicking it opens Script Editor instead of the pane. Set
 `HARNESS_HERDR_NOTIFY_DELAY_SECONDS` in the herdr server environment to change
 the one-second delay.
 
