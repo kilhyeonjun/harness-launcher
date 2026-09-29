@@ -77,5 +77,8 @@ run_hook "$TMP/state/req-cmux" FOO=1
 : > "$TMP/state/req-orca"; chmod 600 "$TMP/state/req-orca"
 run_hook "$TMP/state/req-orca" ORCA_TERMINAL_HANDLE=term_1
 [[ ! -s "$TMP/state/req-orca" ]] || fail 'session_start must return 0 without acting under Orca'
+: > "$TMP/state/req-term"; chmod 600 "$TMP/state/req-term"
+run_hook "$TMP/state/req-term" TERM_PROGRAM=Orca
+[[ ! -s "$TMP/state/req-term" ]] || fail 'session_start must return 0 when TERM_PROGRAM=Orca'
 
 echo 'PASS: test-cmux-orca-guard'

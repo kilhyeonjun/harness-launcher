@@ -87,6 +87,12 @@ sid_line="$(grep -n '^ARG=--session-id$' "$TMP/fresh.log" | cut -d: -f1)"
 run "$TMP/own.log" HARNESS_SESSION_ISOLATION=1 -- base --session-id 11111111-2222-4333-8444-555555555555 || fail 'explicit --session-id launch failed'
 [[ "$(grep -c '^ARG=--session-id$' "$TMP/own.log")" == 1 ]] || fail 'must not add a second --session-id'
 
+# Session-selecting flags outside the isolate route get no --session-id.
+for flags in "--from-pr 12" "--teleport abc" "--bg" "--remote-control"; do
+  run "$TMP/legacyflag.log" HARNESS_SESSION_ISOLATION=1 -- base ${=flags} || { cat "$TMP/legacyflag.log.err" >&2; fail "launch with $flags failed"; }
+  ! grep -q '^ARG=--session-id$' "$TMP/legacyflag.log" || fail "--session-id must not be added next to $flags"
+done
+
 # --- Claude resume mapping ---------------------------------------------------
 before="$(session_count)"
 for form in "--resume $lower" "--resume=$lower" "-r $lower" "-r$lower" "--resume ${(U)lower}"; do

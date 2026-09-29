@@ -76,7 +76,7 @@ Before the first agent launch:
 Orca can install status hooks that report agent activity (working, waiting, done) in its sidebar.
 
 - **Claude**: Orca writes its hooks into the user-global Claude settings file. Harness-owned hooks in project settings continue to run; the two sets are additive. This needs no launcher change.
-- **Codex**: the launcher owns `CODEX_HOME`, so Orca's own Codex hook installation never reaches a launcher-generated home. Opt in per harness by adding `HARNESS_ORCA_AGENT_HOOKS=1` to that harness's `config/launcher.env` (v0.33.0+). `codex-home-prepare.sh` then appends one matcher-less entry per event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop`) after every existing entry, with a 5 second timeout. Each entry is a fixed fail-open command: it runs `~/.orca/agent-hooks/codex-hook.sh` when that script is executable and otherwise only drains stdin. Without the opt-in, `hooks.json` is identical to earlier releases. Only the value `1` enables it, and only from `launcher.env`; an ambient environment variable is ignored.
+- **Codex**: the launcher owns `CODEX_HOME`, so Orca's own Codex hook installation never reaches a launcher-generated home. Opt in per harness by adding `HARNESS_ORCA_AGENT_HOOKS=1` to that harness's `config/launcher.env` (v0.33.0+). `codex-home-prepare.sh` then appends one matcher-less entry per event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop`) after every existing entry, with a 5 second timeout. Each entry is a fixed status-only, fail-open command: it runs `~/.orca/agent-hooks/codex-hook.sh` (when executable) with its output discarded and always exits 0, so Orca's script can never block a tool or decide a permission; otherwise it only drains stdin. Without the opt-in, `hooks.json` is identical to earlier releases. The opt-in is read only from the literal `HARNESS_ORCA_AGENT_HOOKS` line in the harness's `config/launcher.env` (`=1`, `="1"` or `='1'`, optional `export`, last assignment wins) by the prepare script itself, and the process environment is ignored. Every caller, including harness-side resyncs that run the prepare script directly without launcher state, therefore generates the same `hooks.json` and keeps its trust.
 - **Trust**: Codex only runs hooks the harness has trusted. After enabling or disabling the opt-in, rerun the harness's Codex hook trust step. Trusting the wrapper trusts whatever Orca's script contains later, so later Orca script updates run without another review. Isolated sessions use fresh Codex home clones without that trust, so Orca status for isolated Codex sessions is not provided.
 - **Rollback**: remove the opt-in line (or downgrade the launcher) and rerun the trust step; the next launch regenerates `hooks.json` without the Orca entries.
 
@@ -106,12 +106,12 @@ Orca's worktree isolation is not a security sandbox. Runtime approval and sandbo
 
 Use a disposable repository before registering production or company code.
 
-1. Create a worktree under `<harness>/.worktrees/<repo-name>/`.
+1. Create a worktree under `<harness>/projects/<repo>/.worktrees/<task>`.
 2. Launch Claude, Codex, and Kiro through `harness-auto` and verify the selected harness prefix.
 3. Verify the process working directory is the worktree.
 4. Verify `CODEX_HOME` and `KIRO_HOME` remain rooted in the owning harness.
 5. Verify no other harness's skills, MCP servers, account state, or generated files appear.
-6. Verify Orca did not add danger/bypass arguments, and that only the status hook described below was added.
+6. Verify Orca did not add danger/bypass arguments, and that only the status hook described in [Agent status hooks](#agent-status-hooks) was added.
 7. Quit and reopen Orca, resume the agent, then remove only the disposable worktree.
 
 Rollback is removal of the Orca project/profile and its disposable worktree. The canonical harness and runtime homes stay unchanged.
