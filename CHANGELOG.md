@@ -27,6 +27,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
   base (`<harness>/projects/<repo>/.worktrees`), profile relaunch behavior,
   `CODEX_HOME` sanitization, and resume behavior. Package it under
   `pkgshare/docs` in the Homebrew formula.
+- Packaging: the Homebrew formula must also install the new
+  `bin/orca_hooks_optin.py` next to `codex-surface.py`. The warm probe,
+  fingerprint, and prepare script import it, so a missing module makes every
+  Codex home preparation fail.
 
 ## Unreleased
 
