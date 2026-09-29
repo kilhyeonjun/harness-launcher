@@ -37,6 +37,8 @@ import json, os, sys
 state_path = os.environ["FAKE_HERDR_STATE"]
 with open(os.environ["FAKE_HERDR_CALLS"], "a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\n")
+with open(os.environ["FAKE_HERDR_CALLS"] + ".socket", "a") as log:
+    log.write(os.environ.get("HERDR_SOCKET_PATH", "") + "\n")
 state = json.load(open(state_path))
 args = sys.argv[1:]
 def out(result):
@@ -48,6 +50,8 @@ elif args[:2] == ["tab", "list"]:
 elif args[:2] == ["pane", "list"]:
     out({"panes": state["panes"], "type": "pane_list"})
 elif args[:2] == ["tab", "rename"]:
+    if args[2] == os.environ.get("FAKE_RENAME_FAIL"):
+        sys.exit(1)
     for tab in state["tabs"]:
         if tab["tab_id"] == args[2]:
             tab["label"] = args[3]
@@ -88,9 +92,10 @@ def tab(tab_id, number, label=None, pane_count=1):
             "focused": False, "agent_status": "idle"}
 
 
-def pane(pane_id, tab_id, agent="claude", title=FIRST_TITLE):
+def pane(pane_id, tab_id, agent="claude", title=FIRST_TITLE, status="idle"):
     return {"pane_id": pane_id, "tab_id": tab_id, "workspace_id": tab_id.split(":")[0],
-            "agent": agent, "terminal_title_stripped": title, "focused": False}
+            "agent": agent, "agent_status": status, "terminal_title_stripped": title,
+            "focused": False}
 
 
 class PluginHarness:
@@ -126,6 +131,7 @@ class PluginHarness:
             encoding="utf-8",
         )
         self.front_bundle = "com.example.other"
+        self.rename_fail = ""
 
     def _stub(self, name, body):
         path = self.stubs / name
@@ -152,6 +158,8 @@ class PluginHarness:
             "FAKE_FRONT_BUNDLE": self.front_bundle,
             "FAKE_PS_TABLE": str(self.ps_table),
             "HARNESS_HERDR_NOTIFY_DELAY_SECONDS": delay,
+            "HERDR_SOCKET_PATH": str(self.root / "herdr test.sock"),
+            "FAKE_RENAME_FAIL": self.rename_fail,
         }
         if payload is not None:
             env["HERDR_PLUGIN_EVENT_JSON"] = json.dumps(payload)
@@ -166,7 +174,12 @@ class PluginHarness:
             capture_output=True, text=True, timeout=30,
         )
 
-    def status(self, pane_id, status, agent="claude", delay="0"):
+    def status(self, pane_id, status, agent="claude", delay="0", live=None):
+        state = self.state()
+        for item in state["panes"]:
+            if item["pane_id"] == pane_id:
+                item["agent_status"] = live or status
+        self.set_state(state["workspaces"], state["tabs"], state["panes"])
         payload = {"event": "pane_agent_status_changed",
                    "data": {"type": "pane_agent_status_changed", "pane_id": pane_id,
                             "workspace_id": pane_id.split(":")[0],
@@ -210,6 +223,7 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("macos", manifest["platforms"])
         hooks = [hook["on"] for hook in manifest["events"]]
         self.assertIn("pane.agent_status_changed", hooks)
+        self.assertIn("tab.renamed", hooks)  # renaming a tab back to its number
         self.assertTrue(set(hooks) <= HOOKABLE, set(hooks) - HOOKABLE)
         commands = [hook["command"] for hook in manifest["events"]] + [
             entry["command"] for entry in manifest["startup"]]
@@ -264,6 +278,48 @@ class TabLabelTest(HerdrPluginTestCase):
         self.assertRan(self.h.run("pane.focused"))
         self.assertEqual(self.h.renames(), [["w2:t1", "same"]])
 
+    def test_user_rename_of_a_plugin_label_is_kept_when_the_title_changes(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [pane("w2:p1", "w2:t1", title="first task")])
+        self.assertRan(self.h.run("startup"))
+        state = self.h.state()
+        state["tabs"][0]["label"] = "mine"
+        state["panes"][0]["terminal_title_stripped"] = "second task"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "first task"]])
+
+    def test_renaming_a_tab_back_to_its_number_returns_it_to_the_plugin(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1, label="mine")],
+                         [pane("w2:p1", "w2:t1", title="task")])
+        self.assertRan(self.h.run("startup"))
+        state = self.h.state()
+        state["tabs"][0]["label"] = "1"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("tab.renamed"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "task"]])
+
+    def test_failed_rename_keeps_ownership_of_tabs_renamed_before_it(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1), tab("w2:t2", 2)],
+                         [pane("w2:p1", "w2:t1", title="one"),
+                          pane("w2:p2", "w2:t2", title="two")])
+        self.h.rename_fail = "w2:t2"
+        self.assertRan(self.h.run("startup"))
+        self.h.rename_fail = ""
+        state = self.h.state()
+        state["panes"][0]["terminal_title_stripped"] = "one again"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertIn(["w2:t1", "one again"], self.h.renames())
+        self.assertIn(["w2:t2", "two"], self.h.renames())
+
+    def test_state_file_that_is_not_an_object_is_reset(self):
+        (self.h.state_dir / "state.json").write_text("[]", encoding="utf-8")
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [pane("w2:p1", "w2:t1", title="task")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "task"]])
+
     def test_split_tab_and_plain_shell_tab_are_left_alone(self):
         self.h.set_state(
             [workspace("w2", "alpha")],
@@ -294,11 +350,35 @@ class NotificationTest(HerdrPluginTestCase):
         self.assertEqual(flag(argv, "-message"), LONG_TITLE)
         self.assertEqual(flag(argv, "-group"), "herdr-harness.w5:p4")
         self.assertEqual(flag(argv, "-activate"), "com.example.host")
+        # terminal-notifier runs the click command without herdr's environment.
+        click_env = {key: value for key, value in self.h.env("click").items()
+                     if not key.startswith("HERDR_")}
         click = subprocess.run(["/bin/sh", "-c", flag(argv, "-execute")],
-                               env=self.h.env("click"), capture_output=True, text=True)
+                               env=click_env, capture_output=True, text=True)
         self.assertEqual(click.returncode, 0, click.stderr)
         calls = [json.loads(line) for line in self.h.herdr_calls.read_text().splitlines()]
         self.assertEqual(calls[-1], ["agent", "focus", "w5:p4"])
+        sockets = Path(str(self.h.herdr_calls) + ".socket").read_text().splitlines()
+        self.assertEqual(sockets[-1], str(self.h.root / "herdr test.sock"))
+
+    def test_idle_event_processed_after_the_agent_resumed_work_is_silent(self):
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle", live="working"))
+        self.assertEqual(self.h.notifications(), [])
+
+    def test_host_is_the_outermost_app_bundle(self):
+        helper = self.h.root / "Host.app" / "Contents" / "Frameworks" / "Helper.app" / "Contents"
+        (helper / "MacOS").mkdir(parents=True)
+        with open(helper / "Info.plist", "wb") as handle:
+            plistlib.dump({"CFBundleIdentifier": "com.example.host.helper"}, handle)
+        self.h.ps_table.write_text(
+            "  140     1 %s/Host.app/Contents/MacOS/host\n"
+            "  145   140 %s/MacOS/helper\n"
+            "  160   145 /bin/zsh\n"
+            "  200   160 herdr\n" % (self.h.root, helper), encoding="utf-8")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertEqual(flag(self.h.notifications()[0], "-activate"), "com.example.host")
 
     def test_blocked_sends_needs_input_notification(self):
         self.assertRan(self.h.status("w5:p4", "blocked", agent="codex"))
@@ -326,7 +406,7 @@ class NotificationTest(HerdrPluginTestCase):
         env = self.h.env("pane.agent_status_changed", {
             "event": "pane_agent_status_changed",
             "data": {"pane_id": "w5:p4", "workspace_id": "w5",
-                     "agent_status": "idle", "agent": "claude"}}, "w5:p4", delay="1.5")
+                     "agent_status": "idle", "agent": "claude"}}, "w5:p4", delay="4")
         pending = subprocess.Popen([TARGET_PYTHON, str(SCRIPT)], cwd=PLUGIN_DIR, env=env,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         time.sleep(0.4)
@@ -346,7 +426,9 @@ class NotificationTest(HerdrPluginTestCase):
 
     def test_herdr_failure_does_not_fail_the_hook(self):
         self.h.herdr_state.write_text("not json", encoding="utf-8")
-        result = self.h.status("w5:p4", "idle")
+        result = self.h.run("pane.agent_status_changed", {
+            "event": "pane_agent_status_changed",
+            "data": {"pane_id": "w5:p4", "agent_status": "blocked", "agent": "claude"}}, "w5:p4")
         self.assertEqual(result.returncode, 0, result.stderr)
 
 

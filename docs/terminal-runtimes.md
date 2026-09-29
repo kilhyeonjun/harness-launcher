@@ -237,7 +237,8 @@ to its title is dropped. The plugin renames a tab only while its label is the
 default tab number or the label the plugin set last; a name you give a tab
 stays. Rename a tab back to its number to hand it back to the plugin. herdr
 has no plugin event for title changes, so a new title shows up on the next
-agent status change, agent detection, focus change, or pane or tab change.
+agent status change, agent detection, pane focus change, pane creation, close
+or move, or tab creation or rename.
 
 Notifications. When an agent goes from `working` to `idle`, or to `blocked`,
 the plugin waits one second and, if the state still holds, posts a desktop
@@ -247,7 +248,8 @@ activates the terminal app that hosts the herdr client (found from the client's
 process ancestry, so cmux, Ghostty or another app) and runs
 `herdr agent focus <pane>`. A newer notification for the same pane replaces
 the older one. The visible tab stays silent while its host app is frontmost,
-as herdr's own toasts do. Notifications need `terminal-notifier`
+as herdr's own toasts do. If the plugin cannot find the host app, the visible
+tab always stays silent. Notifications need `terminal-notifier`
 (`brew install terminal-notifier`); without it the plugin falls back to
 `osascript`, which cannot focus the pane. Set
 `HARNESS_HERDR_NOTIFY_DELAY_SECONDS` in the herdr server environment to change

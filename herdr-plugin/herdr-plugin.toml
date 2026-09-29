@@ -35,3 +35,7 @@ command = ["/usr/bin/python3", "harness_herdr_plugin.py"]
 [[events]]
 on = "tab.created"
 command = ["/usr/bin/python3", "harness_herdr_plugin.py"]
+
+[[events]]
+on = "tab.renamed"
+command = ["/usr/bin/python3", "harness_herdr_plugin.py"]

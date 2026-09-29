@@ -32,9 +32,12 @@ from contextlib import contextmanager
 
 TAB_LABEL_CELLS = 20
 DEFAULT_NOTIFY_DELAY_SECONDS = 1.0
+MAX_NOTIFY_DELAY_SECONDS = 30.0
 CODEX_HARNESS_SUFFIX = re.compile(r"\s+\|\s+[\w.-]*harness\s*$")
 HOMEBREW_HERDR = re.compile(r"^(.*)/opt/herdr/bin/herdr$")
-APP_EXECUTABLE = re.compile(r"^(.*?\.app)/Contents/MacOS/")
+# The outermost bundle, so an app's nested helper (…/Frameworks/X Helper.app) maps to the app.
+APP_BUNDLE = re.compile(r"^(.*?\.app)/")
+EXPECTED_LIVE_STATUS = {"finished": "idle", "attention": "blocked"}
 
 
 def log(message):
@@ -77,13 +80,19 @@ def locked_state():
                 state = json.load(handle)
         except (OSError, ValueError):
             state = {}
-        state.setdefault("tabs", {})
-        state.setdefault("panes", {})
-        yield state
-        temporary = path + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, ensure_ascii=False)
-        os.replace(temporary, path)
+        if not isinstance(state, dict):
+            state = {}
+        for key in ("tabs", "panes"):
+            if not isinstance(state.get(key), dict):
+                state[key] = {}
+        try:
+            yield state
+        finally:
+            # Save even after a failure so work already done (a rename) keeps its record.
+            temporary = path + ".tmp"
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(state, handle, ensure_ascii=False)
+            os.replace(temporary, path)
 
 
 def cells(char):
@@ -104,12 +113,13 @@ def tab_label(title):
 
 
 def sync_tabs():
-    tabs = herdr("tab", "list")["tabs"]
-    panes = herdr("pane", "list")["panes"]
-    panes_by_tab = {}
-    for pane in panes:
-        panes_by_tab.setdefault(pane.get("tab_id"), []).append(pane)
+    # Read herdr's lists under the lock so a concurrent run cannot act on an older snapshot.
     with locked_state() as state:
+        tabs = herdr("tab", "list")["tabs"]
+        panes = herdr("pane", "list")["panes"]
+        panes_by_tab = {}
+        for pane in panes:
+            panes_by_tab.setdefault(pane.get("tab_id"), []).append(pane)
         owned = state["tabs"]
         live_tabs = {tab["tab_id"] for tab in tabs}
         for tab_id in [tab_id for tab_id in owned if tab_id not in live_tabs]:
@@ -130,8 +140,13 @@ def sync_tabs():
                 continue
             wanted = tab_label(title)
             if wanted and wanted != current:
-                herdr("tab", "rename", tab["tab_id"], wanted)
+                # Record first: if the rename fails the label stays the number, which the
+                # plugin still owns, so the next run retries.
                 owned[tab["tab_id"]] = wanted
+                try:
+                    herdr("tab", "rename", tab["tab_id"], wanted)
+                except Exception as error:  # noqa: BLE001 - one tab must not stop the rest
+                    log("rename %s: %s" % (tab["tab_id"], error))
 
 
 def record_status(payload):
@@ -161,9 +176,10 @@ def still_current(pending):
 
 def notify_delay():
     try:
-        return max(0.0, float(os.environ.get("HARNESS_HERDR_NOTIFY_DELAY_SECONDS", "")))
+        delay = float(os.environ.get("HARNESS_HERDR_NOTIFY_DELAY_SECONDS", ""))
     except ValueError:
         return DEFAULT_NOTIFY_DELAY_SECONDS
+    return min(max(0.0, delay), MAX_NOTIFY_DELAY_SECONDS)
 
 
 def host_bundle_ids():
@@ -181,7 +197,7 @@ def host_bundle_ids():
         while current in processes and current not in seen:
             seen.add(current)
             parent, name = processes[current]
-            match = APP_EXECUTABLE.match(name)
+            match = APP_BUNDLE.match(name)
             if match:
                 bundle = app_bundle_id(match.group(1))
                 if bundle and bundle not in hosts:
@@ -221,7 +237,9 @@ def announce(pending):
     pane_id = pending["pane_id"]
     pane = next((item for item in herdr("pane", "list")["panes"]
                  if item.get("pane_id") == pane_id), None)
-    if pane is None:
+    # Events run in separate processes and can take the lock out of order; announce only
+    # what herdr still reports for the pane.
+    if pane is None or pane.get("agent_status") != EXPECTED_LIVE_STATUS[pending["kind"]]:
         return
     workspace = next((item for item in herdr("workspace", "list")["workspaces"]
                       if item.get("workspace_id") == pane.get("workspace_id")), {})
@@ -237,9 +255,14 @@ def announce(pending):
     message = (pane.get("terminal_title_stripped") or "").strip() or pane_id
     notifier = terminal_notifier()
     if notifier:
+        # terminal-notifier runs the click command without herdr's environment, so carry
+        # the socket of this herdr session (named sessions use a non-default one).
+        click = "%s agent focus %s" % (shlex.quote(herdr_bin()), shlex.quote(pane_id))
+        socket = os.environ.get("HERDR_SOCKET_PATH")
+        if socket:
+            click = "HERDR_SOCKET_PATH=%s %s" % (shlex.quote(socket), click)
         argv = [notifier, "-title", title, "-subtitle", subtitle, "-message", message,
-                "-group", "herdr-harness." + pane_id,
-                "-execute", "%s agent focus %s" % (shlex.quote(herdr_bin()), shlex.quote(pane_id))]
+                "-group", "herdr-harness." + pane_id, "-execute", click]
         if host:
             argv += ["-activate", host]
         run(argv)
