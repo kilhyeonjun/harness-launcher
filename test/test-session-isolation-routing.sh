@@ -53,4 +53,15 @@ assert_route reject 1 --settings '{}' --continue
 assert_route isolate 1 base -- --isolated
 assert_route isolate 1 codex base -- --isolated-session
 
+# After --passthrough, launcher keywords are ordinary Claude arguments while
+# Claude options keep their classification.
+assert_route legacy 0 base --passthrough --permission-mode plan
+assert_route isolate 1 base --passthrough --permission-mode plan
+assert_route isolate 1 base --passthrough continue
+assert_route isolate 1 --passthrough resume
+assert_route reject 1 base --passthrough --resume=session-id
+assert_route legacy 1 base --passthrough -p 'batch task'
+assert_route invalid 1 base --passthrough --mcp-config '{}'
+assert_route isolate 1 base --passthrough -- --resume
+
 echo 'PASS: default-isolation route matrix is explicit and bounded'

@@ -34,6 +34,15 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- Add the `--passthrough` launcher marker for SDK hosts such as Paseo. Claude
+  arguments after it are forwarded verbatim instead of being read as launcher
+  keywords (`--permission-mode plan` no longer becomes the `opusplan` preset),
+  and an explicit caller `--model`, `--effort`, or `--permission-mode` replaces
+  the launcher default. Launcher-owned flags stay ahead of the caller argv, and
+  a launcher `continue`/`resume` keyword combined with a caller session flag
+  fails with exit 2. Invocations without the marker are unchanged. See
+  `docs/paseo-integration.md`.
+
 - Add `<prefix> checkup prompt-audit` to run Claude Code's `/checkup
   prompt-audit` headless at the harness root in restricted, read-only mode with
   a budget cap, and `harness-profile checkup prompt-audit (--all | <prefix>...)`

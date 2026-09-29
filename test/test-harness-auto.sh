@@ -68,6 +68,20 @@ grep -Fqx 'ARGV: <codex> <base>' "$LOG" || {
 echo "PASS: harness-auto selects alpha from a nested worktree"
 
 : > "$LOG"
+(
+  cd "$ALPHA_WORKTREE"
+  HOME="$HOME_DIR" HARNESS_AUTO_TEST_LOG="$LOG" \
+    "$PREFIX/bin/harness-auto" claude base --passthrough --permission-mode plan --effort high
+)
+grep -Fqx 'ARGV: <base> <--passthrough> <--permission-mode> <plan> <--effort> <high>' "$LOG" || {
+  echo "FAIL: harness-auto changed SDK passthrough arguments" >&2
+  cat "$LOG" >&2
+  exit 1
+}
+
+echo "PASS: harness-auto forwards --passthrough arguments unchanged"
+
+: > "$LOG"
 EXPLAIN="$(
   cd "$ALPHA_WORKTREE"
   HOME="$HOME_DIR" "$PREFIX/bin/harness-auto" --explain codex
