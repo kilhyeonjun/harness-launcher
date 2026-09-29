@@ -56,7 +56,7 @@ grep -qx 'CODEX_HOME=' "$TMP/b2.log" || fail 'empty ORCA_CODEX_HOME must not tri
 
 # (c) The Codex path still exports the harness-owned home.
 run "$TMP/c.log" CODEX_HOME=/orca/codex-home ORCA_CODEX_HOME=/orca/codex-home -- codex
-grep -qx "CODEX_HOME=$HARNESS/.harness/codex" "$TMP/c.log" || { cat "$TMP/c.log" >&2; fail 'codex path must export harness CODEX_HOME'; }
+grep -qx "CODEX_HOME=$HARNESS/.harness/codex" "$TMP/c.log" || { cat "$TMP/c.log" "$TMP/c.log.err" >&2; fail 'codex path must export harness CODEX_HOME'; }
 grep -qx 'ORCA_CODEX_HOME=unset' "$TMP/c.log" || fail 'codex path must not see ORCA_CODEX_HOME'
 
 # L5: checkup prompt-audit child has no ORCA_* variables.
