@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.37.2 — 2026-09-30
+
+- herdr plugin: notifications now use `terminal-notifier` when it is installed
+  with Homebrew. herdr runs plugins with only the system `PATH`, and the
+  plugin's Homebrew lookup never matched the resolved Cellar path of herdr, so
+  every notification fell back to `osascript`. It showed as Script Editor, and
+  clicking it opened Script Editor instead of focusing the agent pane.
+
 ## 0.37.1 — 2026-09-29
 
 - herdr plugin: new `install` command. herdr records a linked manifest by its

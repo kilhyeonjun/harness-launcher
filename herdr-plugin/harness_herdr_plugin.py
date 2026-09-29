@@ -38,7 +38,7 @@ MAX_NOTIFY_DELAY_SECONDS = 30.0
 CODEX_HARNESS_SUFFIX = re.compile(r"\s+\|\s+[\w.-]*harness\s*$")
 # Codex titles a session without a task by its thread id, which names nothing.
 THREAD_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
-HOMEBREW_HERDR = re.compile(r"^(.*)/opt/herdr/bin/herdr$")
+HOMEBREW_HERDR = re.compile(r"^(.*)/Cellar/herdr/[^/]+/bin/herdr$")
 # The outermost bundle, so an app's nested helper (…/Frameworks/X Helper.app) maps to the app.
 APP_BUNDLE = re.compile(r"^(.*?\.app)/")
 EXPECTED_LIVE_STATUS = {"finished": "idle", "attention": "blocked"}

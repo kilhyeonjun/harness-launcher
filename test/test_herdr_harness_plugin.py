@@ -520,6 +520,33 @@ class NotificationTest(HerdrPluginTestCase):
         self.assertEqual(len(fallback), 1)
         self.assertIn(LONG_TITLE, fallback[0])
 
+    def test_terminal_notifier_is_found_next_to_a_homebrew_herdr(self):
+        # herdr runs plugins with PATH=/usr/bin:/bin:/usr/sbin:/sbin, and Homebrew links
+        # both opt/herdr and bin/herdr to the versioned Cellar directory.
+        (self.h.stubs / "terminal-notifier").unlink()
+        prefix = self.h.root / "homebrew"
+        cellar_bin = prefix / "Cellar" / "herdr" / "0.9.1" / "bin"
+        cellar_bin.mkdir(parents=True)
+        self.h.herdr_bin.rename(cellar_bin / "herdr")
+        (prefix / "opt").mkdir()
+        (prefix / "opt" / "herdr").symlink_to("../Cellar/herdr/0.9.1")
+        (prefix / "bin").mkdir()
+        (prefix / "bin" / "herdr").symlink_to("../Cellar/herdr/0.9.1/bin/herdr")
+        notifier = prefix / "bin" / "terminal-notifier"
+        notifier.write_text(LOG_ARGV.format(log=self.h.notify_log), encoding="utf-8")
+        notifier.chmod(0o755)
+        for herdr_path in (prefix / "opt" / "herdr" / "bin" / "herdr",
+                           prefix / "bin" / "herdr",
+                           cellar_bin / "herdr"):
+            with self.subTest(herdr_path=str(herdr_path.relative_to(prefix))):
+                self.h.notify_log.unlink(missing_ok=True)
+                self.h.osascript_log.unlink(missing_ok=True)
+                self.h.herdr_bin = herdr_path
+                self.assertRan(self.h.status("w5:p4", "working"))
+                self.assertRan(self.h.status("w5:p4", "idle"))
+                self.assertEqual(len(self.h.notifications()), 1)
+                self.assertEqual(self.h.notifications(self.h.osascript_log), [])
+
     def test_herdr_failure_does_not_fail_the_hook(self):
         self.h.herdr_state.write_text("not json", encoding="utf-8")
         result = self.h.run("pane.agent_status_changed", {
