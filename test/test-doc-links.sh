@@ -8,6 +8,12 @@ for term in HARNESS_ORCA_AGENT_HOOKS 'projects/<repo-name>/.worktrees' 'CODEX_HO
   grep -qF -- "$term" "$ROOT/docs/orca-integration.md" || { echo "FAIL: docs/orca-integration.md must cover: $term" >&2; exit 1; }
 done
 grep -qF 'docs/orca-integration.md' "$ROOT/README.md" || { echo 'FAIL: README must link docs/orca-integration.md' >&2; exit 1; }
+# The terminal runtime guide is shipped documentation: it must exist, cover the
+# runtime-parity contracts, and be linked from the README.
+for term in 'herdr > orca > cmux > plain' HERDR_ENV HARNESS_TERMINAL_RUNTIME 'OSC 7' HARNESS_HERDR_AGENT_HOOKS HARNESS_ORCA_AGENT_HOOKS harness-session-provider-record provider-sessions PROCESS_LAUNCHED_BY_Q reminder; do
+  grep -qF -- "$term" "$ROOT/docs/terminal-runtimes.md" || { echo "FAIL: docs/terminal-runtimes.md must cover: $term" >&2; exit 1; }
+done
+grep -qF 'docs/terminal-runtimes.md' "$ROOT/README.md" || { echo 'FAIL: README must link docs/terminal-runtimes.md' >&2; exit 1; }
 python3 - "$ROOT" <<'PY'
 from pathlib import Path
 import re

@@ -2,6 +2,31 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.36.0 — 2026-09-29
+
+- Terminal runtime parity. Each launch detects one runtime, in the order
+  `herdr > orca > cmux > plain`, and a launch without a terminal (stdin or
+  stdout not a TTY) is `plain`. It removes every other runtime's variables
+  (`CMUX_*`, `ORCA_*`, `TERM_PROGRAM=Orca`, `HERDR_*`, and Orca's `CODEX_HOME`)
+  and exports `HARNESS_TERMINAL_RUNTIME`. cmux title brokers now start only in
+  cmux. See `docs/terminal-runtimes.md`.
+- herdr: the launcher reports its run directory to herdr as an `OSC 7`
+  sequence so a pane restore is typed in the right directory.
+- Codex runtime hook registry: the Orca-only hook is now one row of a registry.
+  New opt-in `HARNESS_HERDR_AGENT_HOOKS=1` in `config/launcher.env` adds a
+  `SessionStart` status row for herdr. Both rows are status-only and fail-open
+  (output discarded, always exit 0). `orca_hooks_optin.py` remains as a
+  compatibility wrapper for the new `runtime_hooks_optin.py`.
+- New `harness-session-provider-record` records Claude session ids (including
+  `/clear`, `compact` and `fork` ids) in a session's `provider-sessions` file,
+  for harnesses that register it as a `SessionStart` hook.
+- Restore routing counts the session directory and `provider-sessions` owners
+  together. A recorded id maps only when its transcript exists; two or more
+  owners is ambiguous. Sessions started with `--cwd <subdir>` keep unmapped
+  `/clear` ids.
+- Documentation: new `docs/terminal-runtimes.md` (also installed with the
+  package) with host prerequisites for herdr and Oh My Zsh.
+
 ## 0.35.0 — 2026-09-29
 
 - Codex through SDK hosts. New `harness-codex` executable: `--version`/`-V`

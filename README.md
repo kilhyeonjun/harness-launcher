@@ -206,6 +206,8 @@ This is the supported command override for Orca's built-in Claude, Codex, and Ki
 
 Orca-specific behavior (v0.33.0+) is described in [Orca ADE integration](docs/orca-integration.md): `CODEX_HOME` sanitization inside Orca terminals, the opt-in `HARNESS_ORCA_AGENT_HOOKS=1` Codex status hook in a harness's `config/launcher.env`, and mapping Orca's `--resume <id>` restore to isolated sessions.
 
+Terminal-runtime behavior (v0.36.0+) is described in [Terminal runtimes](docs/terminal-runtimes.md): the `herdr > orca > cmux > plain` detection order, per-launch environment scrubbing, herdr `OSC 7` directory reports, the Codex status-hook registry, and restore routing for `/clear`ed Claude sessions.
+
 Interactive Zsh users can opt plain `codex` and `claude` commands into the
 same location-based routing after every harness has been persisted once with
 `harness-profile register`:
@@ -560,6 +562,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for project scope, test expectations, por
 - [Documentation index](docs/README.md)
 - [Architecture and trust boundaries](docs/architecture.md)
 - [Codex integration](docs/codex-integration.md)
+- [Terminal runtimes](docs/terminal-runtimes.md)
 - [Paseo integration](docs/paseo-integration.md)
 - [Session titles in cmux](docs/session-titles.md)
 - [Troubleshooting](docs/troubleshooting.md)
