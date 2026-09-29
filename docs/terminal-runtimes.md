@@ -259,12 +259,20 @@ tab always stays silent. Notifications need `terminal-notifier`
 `HARNESS_HERDR_NOTIFY_DELAY_SECONDS` in the herdr server environment to change
 the one-second delay.
 
-Install once. Link the stable `opt` path so upgrades keep working, and turn
-off herdr's own popups so each event notifies once:
+Install once with the plugin's `install` command, and turn off herdr's own
+popups so each event notifies once. Do not `herdr plugin link` the packaged
+directory: herdr records a linked manifest by its resolved path, which is the
+versioned Homebrew Cellar directory that the next upgrade removes. `install`
+writes the manifest to `~/.local/share/harness-launcher/herdr-plugin` (change it
+with `--dir`), points its commands at the script through the unversioned `opt`
+path, and links that directory, so upgrades keep working:
 
 ```bash
-herdr plugin link "$(brew --prefix)/opt/harness-launcher/share/harness-launcher/herdr-plugin"
+/usr/bin/python3 "$(brew --prefix)/opt/harness-launcher/share/harness-launcher/herdr-plugin/harness_herdr_plugin.py" install
 ```
+
+Run `install` again after an upgrade whose changelog mentions new plugin
+events.
 
 ```toml
 # ~/.config/herdr/config.toml

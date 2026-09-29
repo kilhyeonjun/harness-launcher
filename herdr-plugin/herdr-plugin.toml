@@ -1,6 +1,6 @@
 id = "harness.launcher"
 name = "harness-launcher"
-version = "0.37.0"
+version = "0.37.1"
 min_herdr_version = "0.9.1"
 description = "Tab labels from agent session titles and notifications that focus the agent pane"
 platforms = ["macos"]
