@@ -58,6 +58,11 @@ ALLOWLIST = [
     ('PrepareIntegrationTests.test_symlinked_skill_store_retarget_invalidates', 2),
     ('PrepareIntegrationTests.test_manifest_skill_wins_command_collision_without_source_write', 1),
     ('PrepareIntegrationTests.test_manifest_explicit_command_remains_callable_without_prompt_exposure', 1),
+    ('PrepareIntegrationTests.test_herdr_opt_in_comes_only_from_launcher_env', 3),
+    ('PrepareIntegrationTests.test_herdr_opt_in_appends_one_fail_open_session_start_entry', 5),
+    ('PrepareIntegrationTests.test_orca_and_herdr_rows_are_ordered_after_harness_entries', 2),
+    ('PrepareIntegrationTests.test_herdr_opt_in_flip_regenerates_and_unchanged_run_stays_warm', 6),
+    ('PrepareIntegrationTests.test_herdr_hook_command_is_fail_open_and_passes_session_argument', 1),
 ]
 
 # Exact reviewed serial set: no new test can overlap shards without a review.

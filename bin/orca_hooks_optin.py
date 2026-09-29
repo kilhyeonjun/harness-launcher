@@ -1,36 +1,29 @@
 #!/usr/bin/env python3
-"""Resolve the per-harness Orca agent hook opt-in.
+"""Compatibility wrapper for the per-harness Orca agent hook opt-in.
 
-The single source is the literal ``HARNESS_ORCA_AGENT_HOOKS`` assignment in
-``<harness>/config/launcher.env``. The process environment is ignored on
-purpose: Claude-side resyncs call the prepare script without launcher state,
-and every caller must resolve the same value.
+The opt-in is now one row of the runtime hook registry, resolved by
+``runtime_hooks_optin.py`` from the literal ``HARNESS_ORCA_AGENT_HOOKS``
+assignment in ``<harness>/config/launcher.env``. This wrapper keeps the
+``v0.34.0`` interface for existing callers: ``resolve`` returns ``"1"`` when
+opted in, else ``""``, and the command line writes that bare value with no
+newline.
 """
 
 import os
-import re
 import sys
 
-KEY = "HARNESS_ORCA_AGENT_HOOKS"
-_LINE = re.compile(r"^\s*(?:export\s+)?" + KEY + r"=(.*?)\s*$")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import runtime_hooks_optin
+finally:
+    sys.path.pop(0)
+
+KEY = runtime_hooks_optin.KEYS["orca"]
 
 
 def resolve(harness_dir):
     """Return "1" when opted in, else ""."""
-    value = ""
-    try:
-        with open(os.path.join(harness_dir, "config", "launcher.env"), encoding="utf-8") as stream:
-            for line in stream:
-                match = _LINE.match(line.rstrip("\n"))
-                if not match:
-                    continue
-                raw = match.group(1)
-                if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-                    raw = raw[1:-1]
-                value = raw
-    except (OSError, UnicodeDecodeError):
-        return ""
-    return "1" if value == "1" else ""
+    return "1" if runtime_hooks_optin.resolve(harness_dir)["orca"] else ""
 
 
 if __name__ == "__main__":

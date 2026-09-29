@@ -58,15 +58,17 @@ def apps_allowlist():
 MANIFEST_PATH = ""
 
 
-def orca_agent_hooks():
-    # Manifest lives at <harness>/config/codex-surface.json.
+def runtime_agent_hooks():
+    # Manifest lives at <harness>/config/codex-surface.json. Keys are the
+    # fingerprint field names: orca_agent_hooks and herdr_agent_hooks.
     harness_dir = os.path.dirname(os.path.dirname(os.path.abspath(MANIFEST_PATH)))
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
-        import orca_hooks_optin
+        import runtime_hooks_optin
     finally:
         sys.path.pop(0)
-    return orca_hooks_optin.resolve(harness_dir)
+    resolved = runtime_hooks_optin.resolve(harness_dir)
+    return {f"{name}_agent_hooks": "1" if resolved[name] else "" for name in runtime_hooks_optin.KEYS}
 
 
 def expected_apps():
@@ -503,10 +505,9 @@ def main():
         cold()
     if fingerprint.get("apps_allowlist") != apps_allowlist():
         cold()
-    if fingerprint.get("orca_agent_hooks", "") != orca_agent_hooks():
-        cold()
-    if stamp.get("orca_agent_hooks", "") != orca_agent_hooks():
-        cold()
+    for key, expected in runtime_agent_hooks().items():
+        if fingerprint.get(key, "") != expected or stamp.get(key, "") != expected:
+            cold()
     for path, expected in watch.items():
         if identity(path) != expected:
             cold()

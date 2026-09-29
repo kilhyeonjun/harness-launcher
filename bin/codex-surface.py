@@ -41,14 +41,18 @@ def apps_allowlist() -> str:
     return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
 
 
-def orca_agent_hooks(repo_root) -> str:
-    """Return "1" only when the harness's launcher.env opts in to Orca hooks."""
+def runtime_agent_hooks(repo_root) -> dict:
+    """Return each runtime hook registry opt-in as "1" or "" for the fingerprint.
+
+    Keys are the fingerprint field names: orca_agent_hooks and herdr_agent_hooks.
+    """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
-        import orca_hooks_optin
+        import runtime_hooks_optin
     finally:
         sys.path.pop(0)
-    return orca_hooks_optin.resolve(str(repo_root))
+    resolved = runtime_hooks_optin.resolve(str(repo_root))
+    return {f"{name}_agent_hooks": "1" if resolved[name] else "" for name in runtime_hooks_optin.KEYS}
 
 
 def global_mcp_resolution(home: Path):
@@ -1567,7 +1571,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
         "mcp_profile": mcp_profile,
         "global_mcp_digest": global_resolution.digest,
         "apps_allowlist": apps_allowlist(),
-        "orca_agent_hooks": orca_agent_hooks(repo_root),
+        **runtime_agent_hooks(repo_root),
         "bundled_marketplace_path": (
             os.path.realpath(args.bundled_marketplace)
             if args.bundled_marketplace
@@ -1903,8 +1907,9 @@ def inspection_config_signatures(codex_home: Path) -> dict[str, str]:
 
 def write_stamp(args: argparse.Namespace) -> None:
     payload = load_inline_json(args.fingerprint_json, "fingerprint")
-    # orca_agent_hooks is optional so stamps written before it existed stay valid.
-    if set(payload) - {"orca_agent_hooks"} != {
+    # The runtime hook opt-ins are optional so stamps written before they
+    # existed stay valid.
+    if set(payload) - {"orca_agent_hooks", "herdr_agent_hooks"} != {
         "schema_version",
         "digest",
         "skill_profile",

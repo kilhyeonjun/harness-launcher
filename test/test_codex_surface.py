@@ -688,6 +688,7 @@ out.mkdir(parents=True, exist_ok=True)
             "HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST",
             "HARNESS_CODEX_APPS_ALLOWLIST",
             "HARNESS_ORCA_AGENT_HOOKS",
+            "HARNESS_HERDR_AGENT_HOOKS",
         ):
             env.pop(inherited, None)
         env.update(
@@ -1112,6 +1113,159 @@ out.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(command, shell=True, input="payload\n", text=True,
                                 capture_output=True, env={"HOME": str(self.home), "PATH": "/usr/bin:/bin"})
         self.assertEqual((result.returncode, result.stdout), (0, ""))
+
+    HERDR_COMMAND = (
+        "/bin/sh -c 's=\"$HOME/.codex/herdr-agent-state.sh\"; "
+        "[ -x \"$s\" ] && exec /bin/sh \"$s\" session; cat >/dev/null'"
+    )
+
+    def herdr_entry(self):
+        return {"hooks": [{"type": "command", "command": self.HERDR_COMMAND, "timeout": 10}]}
+
+    def install_herdr_script(self, body='#!/bin/sh\nexit 0\n'):
+        script = self.home / ".codex" / "herdr-agent-state.sh"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(body, encoding="utf-8")
+        script.chmod(0o755)
+        return script
+
+    def read_hooks(self):
+        return json.loads((self.codex_home / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+
+    def test_herdr_opt_in_comes_only_from_launcher_env(self):
+        # Case 1 (no opt-in, script present) and case 7 (process env only).
+        self.install_herdr_script()
+        hooks_path = self.codex_home / "hooks.json"
+        self.set_launcher_env('HARNESS_PREFIX="x"')
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        baseline = hooks_path.read_bytes()
+        self.assertNotIn(b"herdr", baseline)
+        self.assertNotIn(b"agent-hooks", baseline)
+        self.prepare(HARNESS_HERDR_AGENT_HOOKS="1")
+        self.assertEqual(self.compiler_calls(), 1, "ambient env changed the fingerprint")
+        self.assertEqual(hooks_path.read_bytes(), baseline)
+        # An explicit off value and a missing launcher.env both stay off.
+        self.set_launcher_env("HARNESS_HERDR_AGENT_HOOKS=0")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1, "an off value must not change the fingerprint")
+        self.assertEqual(hooks_path.read_bytes(), baseline)
+
+    def test_herdr_opt_in_appends_one_fail_open_session_start_entry(self):
+        # Cases 2 and 3: identical output with and without the script.
+        hooks_path = self.codex_home / "hooks.json"
+        self.set_launcher_env('HARNESS_PREFIX="x"')
+        self.prepare()
+        baseline = hooks_path.read_bytes()
+        base_hooks = json.loads(baseline)["hooks"]
+
+        self.set_launcher_env('HARNESS_PREFIX="x"', "HARNESS_HERDR_AGENT_HOOKS=1")
+        self.assertFalse((self.home / ".codex" / "herdr-agent-state.sh").exists())
+        self.prepare()
+        absent = hooks_path.read_bytes()
+        hooks = self.read_hooks()
+        self.assertEqual(hooks["SessionStart"][-1], self.herdr_entry())
+        self.assertNotIn("matcher", hooks["SessionStart"][-1])
+        self.assertEqual(hooks["SessionStart"][:-1], base_hooks.get("SessionStart", []))
+        for event in set(base_hooks) | set(hooks):
+            if event != "SessionStart":
+                self.assertEqual(hooks.get(event), base_hooks.get(event), event)
+        self.assertEqual(absent.count(b"herdr-agent-state.sh"), 1)
+        self.assertNotIn(b"agent-hooks", absent)
+
+        self.set_launcher_env('HARNESS_PREFIX="x"')
+        self.prepare()
+        self.assertEqual(hooks_path.read_bytes(), baseline)
+        self.install_herdr_script()
+        self.set_launcher_env('HARNESS_PREFIX="x"', "export HARNESS_HERDR_AGENT_HOOKS='1'")
+        self.prepare()
+        self.assertEqual(hooks_path.read_bytes(), absent, "script presence must not change hooks.json")
+
+    def test_orca_and_herdr_rows_are_ordered_after_harness_entries(self):
+        # Case 4: six Orca entries first, then the herdr entry.
+        events = ["SessionStart", "UserPromptSubmit", "PreToolUse",
+                  "PermissionRequest", "PostToolUse", "Stop"]
+        self.install_herdr_script()
+        self.set_launcher_env('HARNESS_PREFIX="x"')
+        self.prepare()
+        base_hooks = json.loads((self.codex_home / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        self.set_launcher_env("HARNESS_ORCA_AGENT_HOOKS=1", "HARNESS_HERDR_AGENT_HOOKS=1")
+        self.prepare()
+        hooks = self.read_hooks()
+        orca_entry = {"hooks": [{"type": "command", "command": self.orca_command(), "timeout": 5}]}
+        for event in events:
+            expected_tail = [orca_entry] + ([self.herdr_entry()] if event == "SessionStart" else [])
+            base = base_hooks.get(event, [])
+            self.assertEqual(hooks[event], base + expected_tail, event)
+        self.assertEqual(sum(1 for event in hooks for entry in hooks[event]
+                             if "agent-hooks" in json.dumps(entry)), 6)
+        self.assertEqual(sum(1 for event in hooks for entry in hooks[event]
+                             if "herdr-agent-state" in json.dumps(entry)), 1)
+
+    def test_herdr_opt_in_flip_regenerates_and_unchanged_run_stays_warm(self):
+        # Case 5.
+        hooks_path = self.codex_home / "hooks.json"
+        self.set_launcher_env("HARNESS_HERDR_AGENT_HOOKS=0")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        off = hooks_path.read_bytes()
+        self.set_launcher_env("HARNESS_HERDR_AGENT_HOOKS=1")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 2, "flipping the herdr opt-in did not regenerate")
+        on = hooks_path.read_bytes()
+        self.assertNotEqual(on, off)
+        self.assertEqual(on.count(b"herdr-agent-state.sh"), 1)
+        stamp_before = (self.codex_home / ".surface-success.json").read_bytes()
+        for _ in range(2):
+            self.prepare()
+            self.assertEqual(self.compiler_calls(), 2, "unchanged run was not warm")
+            self.assertEqual(hooks_path.read_bytes(), on)
+        self.assertEqual((self.codex_home / ".surface-success.json").read_bytes(), stamp_before)
+        # Each opt-in is independent: adding Orca on top regenerates once more.
+        self.set_launcher_env("HARNESS_HERDR_AGENT_HOOKS=1", "HARNESS_ORCA_AGENT_HOOKS=1")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3)
+        both = hooks_path.read_bytes()
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3)
+        self.assertEqual(hooks_path.read_bytes(), both)
+        self.set_launcher_env("HARNESS_ORCA_AGENT_HOOKS=1")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 4)
+        self.assertNotIn(b"herdr-agent-state.sh", hooks_path.read_bytes())
+        self.set_launcher_env("HARNESS_HERDR_AGENT_HOOKS=0")
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 5)
+        self.assertEqual(hooks_path.read_bytes(), off)
+
+    def test_herdr_hook_command_is_fail_open_and_passes_session_argument(self):
+        # Case 6: run the exact generated command with a fixture HOME.
+        self.set_launcher_env("HARNESS_HERDR_AGENT_HOOKS=1")
+        self.prepare()
+        command = self.read_hooks()["SessionStart"][-1]["hooks"][0]["command"]
+        self.assertEqual(command, self.HERDR_COMMAND)
+        env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin"}
+        script = self.home / ".codex" / "herdr-agent-state.sh"
+        self.assertFalse(script.exists())
+        result = subprocess.run(command, shell=True, input="{}", text=True,
+                                capture_output=True, env=env)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        # Present and executable: it is exec'd with `session` and receives stdin.
+        self.install_herdr_script(
+            '#!/bin/sh\nprintf "%s\\n" "$*" > "$HOME/args.seen"\ncat > "$HOME/stdin.seen"\n'
+        )
+        result = subprocess.run(command, shell=True, input="{}", text=True,
+                                capture_output=True, env=env)
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
+        self.assertEqual((self.home / "args.seen").read_text(encoding="utf-8"), "session\n")
+        self.assertEqual((self.home / "stdin.seen").read_text(encoding="utf-8"), "{}")
+        # Present but not executable: it is skipped and stdin is drained.
+        script.chmod(0o644)
+        (self.home / "args.seen").unlink()
+        result = subprocess.run(command, shell=True, input="{}", text=True,
+                                capture_output=True, env=env)
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
+        self.assertFalse((self.home / "args.seen").exists())
 
     def test_profile_flags_and_warm_fingerprint_invalidation(self):
         # Installed plugins carry tests/docs/assets that are not copied into
@@ -2731,6 +2885,102 @@ out.mkdir(parents=True, exist_ok=True)
 
         self.assertTrue(outside.is_dir())
         self.assertTrue((outside / "SKILL.md").is_file())
+
+
+class RuntimeHooksOptinTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="runtime-hooks-optin."))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        sys.path.insert(0, str(ROOT / "bin"))
+        try:
+            import runtime_hooks_optin
+            import orca_hooks_optin
+        finally:
+            sys.path.pop(0)
+        self.runtime = runtime_hooks_optin
+        self.orca = orca_hooks_optin
+
+    def launcher_env(self, *lines):
+        (self.tmp / "config").mkdir(exist_ok=True)
+        (self.tmp / "config" / "launcher.env").write_text(
+            "".join(line + "\n" for line in lines), encoding="utf-8"
+        )
+
+    def cli(self, script, *args, env=None):
+        return subprocess.run(
+            [sys.executable, str(ROOT / "bin" / script), *args],
+            capture_output=True, text=True,
+            env={"PATH": os.environ.get("PATH", ""), **(env or {})},
+        )
+
+    def test_resolve_returns_exactly_the_two_registry_keys(self):
+        self.assertEqual(self.runtime.resolve(str(self.tmp)), {"orca": False, "herdr": False})
+        self.launcher_env("HARNESS_ORCA_AGENT_HOOKS=1")
+        self.assertEqual(self.runtime.resolve(str(self.tmp)), {"orca": True, "herdr": False})
+        self.launcher_env("HARNESS_HERDR_AGENT_HOOKS=1")
+        self.assertEqual(self.runtime.resolve(str(self.tmp)), {"orca": False, "herdr": True})
+        self.launcher_env("HARNESS_ORCA_AGENT_HOOKS=1", "HARNESS_HERDR_AGENT_HOOKS=1")
+        self.assertEqual(self.runtime.resolve(str(self.tmp)), {"orca": True, "herdr": True})
+
+    def test_both_keys_share_the_l3_parsing_rule_and_ignore_the_environment(self):
+        with mock.patch.dict(os.environ, {"HARNESS_ORCA_AGENT_HOOKS": "1", "HARNESS_HERDR_AGENT_HOOKS": "1"}):
+            self.assertEqual(self.runtime.resolve(str(self.tmp)), {"orca": False, "herdr": False})
+        for key, name in (("HARNESS_ORCA_AGENT_HOOKS", "orca"), ("HARNESS_HERDR_AGENT_HOOKS", "herdr")):
+            for lines, expected in (
+                ([f"{key}=1"], True),
+                ([f'{key}="1"'], True),
+                ([f"export {key}='1'"], True),
+                ([f"  {key}=1  "], True),
+                ([f"{key}=1", f'{key}="0"'], False),
+                ([f"{key}=0", f"{key}=1"], True),
+                ([f"{key}=true"], False),
+                ([f"{key}=yes"], False),
+                ([f"{key}="], False),
+                ([f'{key}="1\''], False),
+                ([f"#{key}=1"], False),
+                ([f"X{key}=1"], False),
+                ([f"{key}_EXTRA=1"], False),
+            ):
+                with self.subTest(key=key, lines=lines):
+                    self.launcher_env(*lines)
+                    result = self.runtime.resolve(str(self.tmp))
+                    self.assertEqual(result[name], expected)
+                    self.assertFalse(result["herdr" if name == "orca" else "orca"])
+
+    def test_unreadable_launcher_env_resolves_off(self):
+        (self.tmp / "config").mkdir()
+        (self.tmp / "config" / "launcher.env").write_bytes(b"\xff\xfeHARNESS_HERDR_AGENT_HOOKS=1\n")
+        self.assertEqual(self.runtime.resolve(str(self.tmp)), {"orca": False, "herdr": False})
+        self.assertEqual(self.runtime.resolve(str(self.tmp / "missing")), {"orca": False, "herdr": False})
+
+    def test_cli_prints_one_stable_line(self):
+        self.assertEqual(self.cli("runtime_hooks_optin.py", str(self.tmp)).stdout, "orca=0 herdr=0\n")
+        self.launcher_env("HARNESS_HERDR_AGENT_HOOKS=1")
+        self.assertEqual(self.cli("runtime_hooks_optin.py", str(self.tmp)).stdout, "orca=0 herdr=1\n")
+        self.launcher_env("HARNESS_ORCA_AGENT_HOOKS=1")
+        self.assertEqual(self.cli("runtime_hooks_optin.py", str(self.tmp)).stdout, "orca=1 herdr=0\n")
+        self.launcher_env("HARNESS_ORCA_AGENT_HOOKS=1", "HARNESS_HERDR_AGENT_HOOKS=1")
+        result = self.cli("runtime_hooks_optin.py", str(self.tmp),
+                          env={"HARNESS_ORCA_AGENT_HOOKS": "0", "HARNESS_HERDR_AGENT_HOOKS": "0"})
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "orca=1 herdr=1\n", ""))
+        usage = self.cli("runtime_hooks_optin.py")
+        self.assertNotEqual(usage.returncode, 0)
+        self.assertEqual(usage.stdout, "")
+
+    def test_orca_wrapper_keeps_the_v0_34_0_interface(self):
+        self.assertEqual(self.orca.KEY, "HARNESS_ORCA_AGENT_HOOKS")
+        self.assertEqual(self.orca.resolve(str(self.tmp)), "")
+        self.launcher_env("HARNESS_HERDR_AGENT_HOOKS=1")
+        self.assertEqual(self.orca.resolve(str(self.tmp)), "", "herdr must not enable the Orca wrapper")
+        self.launcher_env("HARNESS_ORCA_AGENT_HOOKS=1")
+        self.assertEqual(self.orca.resolve(str(self.tmp)), "1")
+        # The CLI writes the bare value with no newline, exactly as before.
+        self.assertEqual(self.cli("orca_hooks_optin.py", str(self.tmp)).stdout, "1")
+        self.launcher_env('HARNESS_ORCA_AGENT_HOOKS="0"')
+        self.assertEqual(self.cli("orca_hooks_optin.py", str(self.tmp)).stdout, "")
+        usage = self.cli("orca_hooks_optin.py")
+        self.assertNotEqual(usage.returncode, 0)
+        self.assertIn("usage: orca_hooks_optin.py HARNESS_DIR", usage.stderr)
 
 
 class SurfaceInspectionTests(unittest.TestCase):
