@@ -54,16 +54,25 @@ grep -qx 'ORCA_CODEX_HOME=/orca/codex-home' "$TMP/b.log" || fail 'ORCA_CODEX_HOM
 run "$TMP/b2.log" CODEX_HOME= ORCA_CODEX_HOME= -- base
 grep -qx 'CODEX_HOME=' "$TMP/b2.log" || fail 'empty ORCA_CODEX_HOME must not trigger sanitization'
 
-# (c) The Codex path still exports the harness-owned home.
-run "$TMP/c.log" CODEX_HOME=/orca/codex-home ORCA_CODEX_HOME=/orca/codex-home -- codex
-grep -qx "CODEX_HOME=$HARNESS/.harness/codex" "$TMP/c.log" || { cat "$TMP/c.log" "$TMP/c.log.err" >&2; fail 'codex path must export harness CODEX_HOME'; }
-grep -qx 'ORCA_CODEX_HOME=unset' "$TMP/c.log" || fail 'codex path must not see ORCA_CODEX_HOME'
-
 # L5: checkup prompt-audit child has no ORCA_* variables.
 run "$TMP/e.log" ORCA_TERMINAL_HANDLE=term_1 ORCA_OTHER=x -- checkup prompt-audit
 [[ -s "$TMP/e.log" ]] || { cat "$TMP/e.log.err" >&2; fail 'checkup stub was not invoked'; }
 grep -qx 'ORCA_TERMINAL_HANDLE=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_TERMINAL_HANDLE'
 grep -qx 'ORCA_OTHER=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_*'
+
+# The remaining cases run the real codex-home-prepare.sh, which requires the
+# macOS /usr/bin/lockf kernel lock (see run-all.sh). Hosted images without it
+# skip only these cases; L1 and L5 above still run.
+if [[ ! -x /usr/bin/lockf || "${HARNESS_TEST_FORCE_NO_LOCKF:-0}" == 1 ]]; then
+  echo 'SKIP: codex prepare cases (/usr/bin/lockf unavailable)'
+  echo 'PASS: test-orca-env'
+  exit 0
+fi
+
+# (c) The Codex path still exports the harness-owned home.
+run "$TMP/c.log" CODEX_HOME=/orca/codex-home ORCA_CODEX_HOME=/orca/codex-home -- codex
+grep -qx "CODEX_HOME=$HARNESS/.harness/codex" "$TMP/c.log" || { cat "$TMP/c.log" "$TMP/c.log.err" >&2; fail 'codex path must export harness CODEX_HOME'; }
+grep -qx 'ORCA_CODEX_HOME=unset' "$TMP/c.log" || fail 'codex path must not see ORCA_CODEX_HOME'
 
 # L3 wiring: HARNESS_ORCA_AGENT_HOOKS from launcher.env reaches codex-home-prepare;
 # an ambient value without the launcher.env opt-in does not.
