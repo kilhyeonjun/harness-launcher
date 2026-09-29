@@ -687,6 +687,7 @@ out.mkdir(parents=True, exist_ok=True)
             "HARNESS_CODEX_SKILL_PROFILE",
             "HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST",
             "HARNESS_CODEX_APPS_ALLOWLIST",
+            "HARNESS_ORCA_AGENT_HOOKS",
         ):
             env.pop(inherited, None)
         env.update(
@@ -1032,6 +1033,38 @@ out.mkdir(parents=True, exist_ok=True)
         shutil.rmtree(same); same.write_text("plain again\n", encoding="utf-8")
         self.prepare()
         self.assertEqual(self.compiler_calls(), calls + 2, "skilldir-to-file stayed warm")
+
+    def test_orca_agent_hooks_opt_in_appends_entries_and_invalidates_warm_home(self):
+        events = ["SessionStart", "UserPromptSubmit", "PreToolUse",
+                  "PermissionRequest", "PostToolUse", "Stop"]
+        orca_command = (
+            "/bin/sh -c 's=\"$HOME/.orca/agent-hooks/codex-hook.sh\"; "
+            "[ -x \"$s\" ] && exec /bin/sh \"$s\"; cat >/dev/null'"
+        )
+        hooks_path = self.codex_home / "hooks.json"
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1)
+        baseline = hooks_path.read_bytes()
+        self.assertNotIn(b"agent-hooks", baseline)
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1, "unchanged home was not warm")
+
+        self.prepare(HARNESS_ORCA_AGENT_HOOKS="1")
+        self.assertEqual(self.compiler_calls(), 2, "opt-in did not invalidate the warm home")
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+        base_hooks = json.loads(baseline)["hooks"]
+        for event in events:
+            entry = {"hooks": [{"type": "command", "command": orca_command, "timeout": 5}]}
+            self.assertEqual(hooks[event][-1], entry, event)
+            self.assertNotIn("matcher", hooks[event][-1])
+            self.assertEqual(hooks[event][:-1], base_hooks.get(event, []), event)
+        self.assertEqual(set(hooks) - set(base_hooks), set(events) - set(base_hooks))
+        self.prepare(HARNESS_ORCA_AGENT_HOOKS="1")
+        self.assertEqual(self.compiler_calls(), 2, "unchanged opt-in was not warm")
+
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 3, "opt-out did not invalidate the warm home")
+        self.assertEqual(hooks_path.read_bytes(), baseline)
 
     def test_profile_flags_and_warm_fingerprint_invalidation(self):
         # Installed plugins carry tests/docs/assets that are not copied into

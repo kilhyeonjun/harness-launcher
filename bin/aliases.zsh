@@ -122,6 +122,12 @@ _harness_launcher_export_codex_runtime_env() {
   local prepare="$_HARNESS_LAUNCHER_BIN/codex-home-prepare.sh"
   _harness_launcher_prepare_codex_global_mcp_allowlist || return $?
   _harness_launcher_prepare_codex_apps_allowlist || return $?
+  # Opt-in comes only from the harness's launcher.env (sourced by the caller).
+  if [[ "${HARNESS_ORCA_AGENT_HOOKS-}" == 1 ]]; then
+    export HARNESS_ORCA_AGENT_HOOKS=1
+  else
+    unset HARNESS_ORCA_AGENT_HOOKS
+  fi
   if [[ -x "$prepare" ]]; then
     "$prepare" "$HARNESS_DIR" || return $?
   fi
@@ -251,8 +257,8 @@ codex() {
 
   if [[ "${HARNESS_LAUNCHER_DISABLE_CODEX_WRAPPER:-}" != "1" ]]; then
     if harness_dir="$(_harness_launcher_codex_harness_for_args "$@")"; then
-      local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
-      unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST
+      local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_ORCA_AGENT_HOOKS HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
+      unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_ORCA_AGENT_HOOKS
       source "$harness_dir/config/launcher.env"
       mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
       export HARNESS_PREFIX
@@ -393,11 +399,11 @@ _harness_launcher_run() {
     unset CODEX_HOME ORCA_CODEX_HOME
   fi
   local HARNESS_DIR="$1"; shift
-  local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
+  local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_ORCA_AGENT_HOOKS HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
   local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
   local config_root="$HARNESS_DIR"
-  unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST
+  unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_ORCA_AGENT_HOOKS
   source "$HARNESS_DIR/config/launcher.env"
   mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
   export HARNESS_PREFIX

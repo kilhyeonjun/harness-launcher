@@ -1614,13 +1614,14 @@ hooks_file="$CODEX_HOME/hooks.json"
 tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
 ADAPTER_PATH="$SCRIPT_DIR/codex-hook-adapter.sh"
 PRETOOL_ADAPTER_PATH="$SCRIPT_DIR/codex-pretool-adapter.py"
-python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$PRETOOL_ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" > "$tmp_hooks" <<'PY'
+python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$PRETOOL_ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" "${HARNESS_ORCA_AGENT_HOOKS:-}" > "$tmp_hooks" <<'PY'
 import json, os, re, shlex, sys
 harness = sys.argv[1]
 adapter = sys.argv[2]
 pretool_adapter = sys.argv[3]
 title_sync = sys.argv[4]
 python_bin = sys.argv[5]
+orca_agent_hooks = sys.argv[6] == "1"
 hooks_dir = os.path.join(harness, "core", "hooks")
 settings_path = os.path.join(harness, ".claude", "settings.json")
 hooks_policy_path = os.path.join(harness, ".claude", "source", "hooks.yaml")
@@ -1800,6 +1801,21 @@ if os.path.isfile(title_sync):
     config["hooks"].setdefault("SessionStart", []).append(
         {"hooks": [{"type": "command", "command": command, "timeout": 3000}]}
     )
+
+# Opt-in Orca agent status hook (HARNESS_ORCA_AGENT_HOOKS=1 in launcher.env).
+# One matcher-less fail-open entry per event, appended after every existing
+# entry so the harness-owned hooks keep their order. It runs Orca's own script
+# when installed and otherwise just drains stdin.
+if orca_agent_hooks:
+    orca_command = (
+        "/bin/sh -c 's=\"$HOME/.orca/agent-hooks/codex-hook.sh\"; "
+        "[ -x \"$s\" ] && exec /bin/sh \"$s\"; cat >/dev/null'"
+    )
+    for event in ("SessionStart", "UserPromptSubmit", "PreToolUse",
+                  "PermissionRequest", "PostToolUse", "Stop"):
+        config["hooks"].setdefault(event, []).append(
+            {"hooks": [{"type": "command", "command": orca_command, "timeout": 5}]}
+        )
 
 json.dump(config, sys.stdout, indent=2)
 sys.stdout.write("\n")

@@ -55,6 +55,10 @@ def apps_allowlist():
     return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
 
 
+def orca_agent_hooks():
+    return "1" if os.environ.get("HARNESS_ORCA_AGENT_HOOKS") == "1" else ""
+
+
 def expected_apps():
     app_ids = [app_id for app_id in apps_allowlist().split(",") if app_id]
     if not app_ids:
@@ -486,6 +490,10 @@ def main():
     if fingerprint.get("global_mcp_digest") != global_mcp_digest():
         cold()
     if fingerprint.get("apps_allowlist") != apps_allowlist():
+        cold()
+    if fingerprint.get("orca_agent_hooks", "") != orca_agent_hooks():
+        cold()
+    if stamp.get("orca_agent_hooks", "") != orca_agent_hooks():
         cold()
     for path, expected in watch.items():
         if identity(path) != expected:

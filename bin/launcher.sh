@@ -22,7 +22,7 @@ HARNESS_NAME="${HARNESS_NAME:?HARNESS_NAME required}"
 # The launcher is a native Codex entrypoint as well as a TUI. Load only its
 # trusted harness configuration so global MCP selection cannot inherit from the
 # caller when the config omits it.
-unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY
+unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY HARNESS_ORCA_AGENT_HOOKS
 # shellcheck source=/dev/null
 . "$HARNESS_DIR/config/launcher.env"
 
@@ -1116,6 +1116,11 @@ launch_codex() {
   fi
   prepare_codex_global_mcp_allowlist || return $?
   prepare_codex_apps_allowlist || return $?
+  if [ "${HARNESS_ORCA_AGENT_HOOKS:-}" = 1 ]; then
+    export HARNESS_ORCA_AGENT_HOOKS=1
+  else
+    unset HARNESS_ORCA_AGENT_HOOKS
+  fi
   if [ -x "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" ]; then
     echo "⏳ Codex 홈 준비 중…" >&2
     "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" "$HARNESS_DIR" || return $?

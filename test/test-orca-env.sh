@@ -65,4 +65,16 @@ run "$TMP/e.log" ORCA_TERMINAL_HANDLE=term_1 ORCA_OTHER=x -- checkup prompt-audi
 grep -qx 'ORCA_TERMINAL_HANDLE=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_TERMINAL_HANDLE'
 grep -qx 'ORCA_OTHER=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_*'
 
+# L3 wiring: HARNESS_ORCA_AGENT_HOOKS from launcher.env reaches codex-home-prepare;
+# an ambient value without the launcher.env opt-in does not.
+hooks_json="$HARNESS/.harness/codex/hooks.json"
+run "$TMP/f.log" HARNESS_ORCA_AGENT_HOOKS=1 -- codex
+grep -q 'agent-hooks/codex-hook.sh' "$hooks_json" 2>/dev/null && fail 'ambient HARNESS_ORCA_AGENT_HOOKS must not enable hooks'
+print -r -- 'HARNESS_ORCA_AGENT_HOOKS=1' >> "$HARNESS/config/launcher.env"
+run "$TMP/g.log" -- codex
+grep -q 'agent-hooks/codex-hook.sh' "$hooks_json" || fail 'launcher.env opt-in must generate the Orca Codex hook'
+sed -i '' '/HARNESS_ORCA_AGENT_HOOKS/d' "$HARNESS/config/launcher.env"
+run "$TMP/h.log" HARNESS_ORCA_AGENT_HOOKS=1 -- codex
+grep -q 'agent-hooks/codex-hook.sh' "$hooks_json" && fail 'removing the opt-in must regenerate hooks without the Orca entry'
+
 echo 'PASS: test-orca-env'
