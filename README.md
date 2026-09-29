@@ -244,6 +244,14 @@ harness-exec "$HOME/work-harness" codex base
 
 When the external terminal starts inside the harness, no `--cwd .` is needed. If supplied, `--cwd` must resolve inside the registered harness. This is the supported boundary for Orca and similar worktree managers; see [Orca ADE integration](docs/orca-integration.md).
 
+SDK hosts that append their own Claude argv to a command prefix put it after `--passthrough`, which ends launcher keyword parsing and lets explicit `--model`, `--effort`, and `--permission-mode` values override the launcher defaults:
+
+```bash
+harness-auto claude base --passthrough --permission-mode plan --effort high
+```
+
+See [Paseo integration](docs/paseo-integration.md).
+
 > [!WARNING]
 > `config/launcher.env` is sourced as shell code. Only register project directories you trust.
 
@@ -546,6 +554,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for project scope, test expectations, por
 - [Documentation index](docs/README.md)
 - [Architecture and trust boundaries](docs/architecture.md)
 - [Codex integration](docs/codex-integration.md)
+- [Paseo integration](docs/paseo-integration.md)
 - [Session titles in cmux](docs/session-titles.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Changelog](CHANGELOG.md)

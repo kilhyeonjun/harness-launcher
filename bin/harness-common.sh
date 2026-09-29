@@ -148,16 +148,27 @@ harness_session_isolation_default_route() {
       ;;
   esac
 
+  # After --passthrough, bare launcher keywords are Claude arguments (prompt
+  # text), while Claude options keep their classification.
+  local passthrough=0
   while [ "$#" -gt 0 ]; do
     arg="$1"; shift
     case "$arg" in
       --) break ;;
+      --passthrough)
+        [ "$passthrough" = 0 ] || { printf '%s\n' invalid; return 0; }
+        passthrough=1 ;;
       --isolated|--no-isolated|--isolated-session) printf '%s\n' invalid; return 0 ;;
-      continue|resume|-c|--continue|-r|-r?*|--resume|--resume=*|--fork-session|--fork-session=*)
+      continue|resume)
+        [ "$passthrough" = 0 ] || break
+        printf '%s\n' reject; return 0 ;;
+      -c|--continue|-r|-r?*|--resume|--resume=*|--fork-session|--fork-session=*)
         printf '%s\n' reject; return 0 ;;
       -h|--help|-V|--version|-p|-p?*|--print|--print=*|--background|--bg|--cloud|--cloud=*|--remote-control|--remote-control=*|--teleport|--teleport=*|attach|respawn|--bare|--safe-mode|--restricted|--from-pr|--from-pr=*|--session-id|--session-id=*|-w|-w?*|--worktree|--worktree=*|--tmux|--tmux=*|--environment|--environment=*)
         printf '%s\n' legacy; return 0 ;;
-      fast|base|plan|opus|rich|fable|ultracode|low|medium|high|xhigh|max|light|bypass|acceptEdits|dontAsk|--chrome|--no-chrome) ;;
+      fast|base|plan|opus|rich|fable|ultracode|low|medium|high|xhigh|max|light|bypass|acceptEdits|dontAsk)
+        [ "$passthrough" = 0 ] || break ;;
+      --chrome|--no-chrome) ;;
       --agent|--agents|--append-system-prompt|--autocompact|--debug-file|--effort|--fallback-model|--input-format|--json-schema|--max-budget-usd|--model|-n|--name|--output-format|--permission-mode|--permission-prompts|--plugin-dir|--plugin-url|--remote-control-session-name-prefix|--setting-sources|--settings|--system-prompt|--system-prompt-snapshot)
         [ "$#" -gt 0 ] && shift || { printf '%s\n' invalid; return 0; }
         ;;

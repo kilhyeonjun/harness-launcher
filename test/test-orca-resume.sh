@@ -100,6 +100,28 @@ for form in "--resume $lower" "--resume=$lower" "-r $lower" "-r$lower" "--resume
   [[ "$(sed -n 's/^SESSION=//p' "$TMP/resume.log")" == "$root" ]] || fail "resume form '$form' did not land in the owning session root"
 done
 [[ "$(session_count)" == "$before" ]] || fail 'resume must not create a session'
+# A caller resume after --passthrough maps to the owning session too.
+run "$TMP/resume-pt.log" HARNESS_SESSION_ISOLATION=1 -- base --passthrough --resume=$lower \
+  || { cat "$TMP/resume-pt.log.err" >&2; fail 'passthrough resume was not mapped'; }
+[[ "$(sed -n 's/^SESSION=//p' "$TMP/resume-pt.log")" == "$root" ]] || fail 'passthrough resume used the wrong root'
+! grep -q '^ARG=--session-id$' "$TMP/resume-pt.log" || fail 'passthrough resume must not get --session-id'
+[[ "$(session_count)" == "$before" ]] || fail 'passthrough resume must not create a session'
+# A fresh isolated passthrough launch gets exactly one launcher --session-id,
+# ahead of the caller argv.
+run "$TMP/fresh-pt.log" HARNESS_SESSION_ISOLATION=1 -- base --passthrough --permission-mode plan \
+  || { cat "$TMP/fresh-pt.log.err" >&2; fail 'fresh isolated passthrough launch failed'; }
+[[ "$(grep -c '^ARG=--session-id$' "$TMP/fresh-pt.log")" == 1 ]] || fail 'fresh passthrough launch needs one --session-id'
+sid_line="$(grep -n '^ARG=--session-id$' "$TMP/fresh-pt.log" | cut -d: -f1)"
+pm_line="$(grep -n '^ARG=--permission-mode$' "$TMP/fresh-pt.log" | cut -d: -f1)"
+(( sid_line < pm_line )) || fail '--session-id must precede the passthrough argv'
+[[ "$(arg_after "$TMP/fresh-pt.log" --permission-mode)" == 'ARG=plan' ]] || fail 'passthrough permission mode rewritten'
+# Routing stops at the first bare word, so a caller session flag after it
+# still reaches a fresh isolated launch; the launcher must not add its own.
+run "$TMP/fresh-pt-own.log" HARNESS_SESSION_ISOLATION=1 -- base --passthrough 'prompt text' --session-id=11111111-2222-4333-8444-555555555555 \
+  || { cat "$TMP/fresh-pt-own.log.err" >&2; fail 'fresh passthrough launch with caller session id failed'; }
+! grep -q '^ARG=--session-id$' "$TMP/fresh-pt-own.log" || fail 'launcher --session-id added next to a caller session flag'
+grep -qxF 'ARG=--session-id=11111111-2222-4333-8444-555555555555' "$TMP/fresh-pt-own.log" || fail 'caller session id lost'
+before="$(session_count)"
 # default (profile) route, two consecutive restores
 for n in 1 2; do
   run_tty "$TMP/resume-tty.log" base --resume "$lower" || fail "profile-default restore $n was rejected"

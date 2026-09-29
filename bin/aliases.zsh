@@ -170,15 +170,72 @@ _harness_launcher_prepare_codex_apps_allowlist() {
     || unset HARNESS_CODEX_APPS_ALLOWLIST
 }
 
-_harness_launcher_add_claude_mcp_local_args() {
-  local HARNESS_DIR="$1"; shift
+# _harness_launcher_claude_mcp_local_args <harness-dir>
+#   Sets reply to the harness MCP flags (`--mcp-config <rendered>`), or to an
+#   empty array when the harness has no local MCP config.
+_harness_launcher_claude_mcp_local_args() {
   local rendered
-  rendered="$(harness_claude_mcp_runtime_config "$HARNESS_DIR" "$_HARNESS_LAUNCHER_BIN")" || return $?
-  if [[ -n "$rendered" ]]; then
-    "$@" --mcp-config "$rendered"
-  else
-    "$@"
+  reply=()
+  rendered="$(harness_claude_mcp_runtime_config "$1" "$_HARNESS_LAUNCHER_BIN")" || return $?
+  [[ -z "$rendered" ]] || reply=(--mcp-config "$rendered")
+}
+
+# _harness_launcher_argv_has_option <option> [args...]
+#   True when args contain `<option>` or `<option>=value`.
+_harness_launcher_argv_has_option() {
+  local option="$1" arg; shift
+  for arg in "$@"; do
+    [[ "$arg" == "$option" || "$arg" == "$option="* ]] && return 0
+  done
+  return 1
+}
+
+# _harness_launcher_passthrough_reconcile
+#   Caller-wins rules for `--passthrough`: an explicit caller --model,
+#   --permission-mode or --effort replaces the launcher default instead of
+#   duplicating or overriding it. Updates the caller's claude_args, env_effort
+#   and passthrough_force_thinking (zsh dynamic scope).
+_harness_launcher_passthrough_reconcile() {
+  local arg caller_effort="" i
+  local -a drop=() kept=()
+  if [[ -n "$session_flag" ]]; then
+    for arg in "${claude_passthrough_args[@]}"; do
+      case "$arg" in
+        -c|--continue|-r|-r?*|--resume|--resume=*|--session-id|--session-id=*|--fork-session|--fork-session=*)
+          echo "harness-launcher: launcher '${session_flag}' conflicts with '$arg' after --passthrough" >&2
+          return 2 ;;
+      esac
+    done
   fi
+  _harness_launcher_argv_has_option --model "${claude_passthrough_args[@]}" && drop+=(--model)
+  _harness_launcher_argv_has_option --permission-mode "${claude_passthrough_args[@]}" && drop+=(--permission-mode)
+  if (( ${#drop} )); then
+    for (( i = 1; i <= ${#claude_args}; i++ )); do
+      if (( ${drop[(Ie)${claude_args[i]}]} )); then
+        (( i++ ))  # skip the option value as well
+        continue
+      fi
+      kept+=("${claude_args[i]}")
+    done
+    claude_args=("${kept[@]}")
+  fi
+  _harness_launcher_argv_has_option --effort "${claude_passthrough_args[@]}" || return 0
+  env_effort=""
+  for (( i = 1; i <= ${#claude_passthrough_args}; i++ )); do
+    case "${claude_passthrough_args[i]}" in
+      --effort) caller_effort="${claude_passthrough_args[i+1]-}" ;;
+      --effort=*) caller_effort="${claude_passthrough_args[i]#--effort=}" ;;
+    esac
+  done
+  # Same API constraint as the launcher's own xhigh/max efforts, unless the
+  # caller controls thinking itself.
+  if [[ "$caller_effort" == (xhigh|max) ]] \
+    && ! _harness_launcher_argv_has_option --thinking "${claude_passthrough_args[@]}" \
+    && ! _harness_launcher_argv_has_option --max-thinking-tokens "${claude_passthrough_args[@]}" \
+    && ! _harness_launcher_argv_has_option --settings "${claude_passthrough_args[@]}"; then
+    passthrough_force_thinking=true
+  fi
+  return 0
 }
 
 _harness_launcher_export_codex_runtime_env() {
@@ -587,9 +644,9 @@ _harness_launcher_run() {
   fi
   local isolated_session_id="${HARNESS_SESSION_ID:-}"
 
-  local -a claude_args=()
+  local -a claude_args=() claude_passthrough_args=()
   local session_flag="" skip_tui=false env_effort="" provider_url="" gateway_api_key="" provider_name=""
-  local mode_applied=false mcp_surface="full"
+  local mode_applied=false mcp_surface="full" passthrough=false passthrough_force_thinking=false
 
   # Optional provider prefix (must be first arg)
   case "${1:-}" in
@@ -654,6 +711,14 @@ _harness_launcher_run() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --passthrough)
+        # SDK hosts (e.g. Paseo) append their own Claude argv after this
+        # marker. Forward it verbatim: option values such as
+        # `--permission-mode plan` or `--effort high` are not launcher keywords.
+        shift
+        claude_passthrough_args=("$@")
+        passthrough=true; skip_tui=true
+        break ;;
       fast|base|plan|opus|rich)
         harness_mode_resolve "$1" "${provider_name:-direct}"
         claude_args+=(--model "$HARNESS_MODE_MODEL")
@@ -718,6 +783,10 @@ _harness_launcher_run() {
     esac
   done
 
+  if $passthrough; then
+    _harness_launcher_passthrough_reconcile || return $?
+  fi
+
   if $skip_tui; then
     # Shortcut/gateway paths below launch Claude directly. Native Codex/Kiro
     # returned above; no-argument TUI selection is handled inside launcher.sh.
@@ -779,12 +848,23 @@ _harness_launcher_run() {
       # unaffected and keep the user's own choice.
       [[ "$env_effort" == (xhigh|max) ]] \
         && claude_args+=(--settings '{"alwaysThinkingEnabled":true}')
+    elif $passthrough_force_thinking; then
+      claude_args+=(--settings '{"alwaysThinkingEnabled":true}')
     fi
-    claude_args+=(--exclude-dynamic-system-prompt-sections)
+    # Passthrough argv goes last, after the launcher-owned flags. The boolean
+    # --exclude-dynamic-system-prompt-sections then closes the variadic
+    # --mcp-config value list, so neither a caller prompt nor a caller `--`
+    # can swallow or displace launcher flags.
+    local -a claude_launch_tail=()
+    if $passthrough; then
+      claude_launch_tail=(--exclude-dynamic-system-prompt-sections "${claude_passthrough_args[@]}")
+    else
+      claude_args+=(--exclude-dynamic-system-prompt-sections)
+    fi
     local HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID="" HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE=""
     local _claude_interactive=0
     harness_claude_stdio_is_tty && _claude_interactive=1
-    if harness_claude_bootstrap_eligible claude "${provider_name:-direct}" "$_claude_interactive" "${claude_args[@]}"; then
+    if harness_claude_bootstrap_eligible claude "${provider_name:-direct}" "$_claude_interactive" "${claude_args[@]}" "${claude_passthrough_args[@]}"; then
       IFS=$'\t' read -r HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE \
         < <(harness_claude_bootstrap_values) || true
       if [[ -n "$HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID" ]]; then
@@ -798,14 +878,14 @@ _harness_launcher_run() {
     # --session-id, and this keeps --name.
     if $created_isolated_session && [[ "$isolation_route" == isolate ]]; then
       local _sid_arg _sid_ok=true
-      for _sid_arg in "${claude_args[@]}"; do
+      for _sid_arg in "${claude_args[@]}" "${claude_passthrough_args[@]}"; do
         case "$_sid_arg" in
           --session-id|--session-id=*|-c|--continue|-r|-r?*|--resume|--resume=*|--fork-session|--fork-session=*) _sid_ok=false ;;
         esac
       done
       $_sid_ok && claude_args+=(--session-id "${(L)HARNESS_SESSION_ID}")
     fi
-    harness_autocompact_pct "${provider_name:-direct}" "${claude_args[@]}"
+    harness_autocompact_pct "${provider_name:-direct}" "${claude_args[@]}" "${claude_passthrough_args[@]}"
     # Shared-table globals must not linger in the interactive shell.
     unset HARNESS_MODE_MODEL HARNESS_MODE_EFFORT
     # Plain invocation (not exec) so the user's interactive shell survives
@@ -822,7 +902,7 @@ _harness_launcher_run() {
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
-        claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}"
+        claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}" "${claude_launch_tail[@]}"
       )
     else
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
@@ -831,7 +911,8 @@ _harness_launcher_run() {
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
-        _harness_launcher_add_claude_mcp_local_args "$HARNESS_DIR" claude "${claude_args[@]}"
+        _harness_launcher_claude_mcp_local_args "$HARNESS_DIR" || exit $?
+        claude "${claude_args[@]}" "${reply[@]}" "${claude_launch_tail[@]}"
       )
     fi
     local rc=$?
