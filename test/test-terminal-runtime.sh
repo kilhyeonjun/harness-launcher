@@ -405,12 +405,14 @@ printf "assigned=%s\n" "$rt"
 printf "stdin-detached=%s\n" "$rt"
 harness_terminal_launch_runtime "not a name"
 printf "bad-name-rc=%s\n" "$?"
+harness_terminal_launch_runtime _htlr_rt
+printf "own-name-rc=%s\n" "$?"
 '
 before="$failures"
 run_shells_tty "$PARTIAL" "" ORCA_TERMINAL_HANDLE=t
-expect_results "launch runtime: stdout pipe, capture, detached stdin, bad name" \
-  $'plain\ncaptured=plain\nassigned=orca\nstdin-detached=plain\nbad-name-rc=2'
-finish "$before" "launch runtime: stdout pipe, capture, detached stdin, bad name"
+expect_results "launch runtime: stdout pipe, capture, detached stdin, bad and own names" \
+  $'plain\ncaptured=plain\nassigned=orca\nstdin-detached=plain\nbad-name-rc=2\nown-name-rc=2'
+finish "$before" "launch runtime: stdout pipe, capture, detached stdin, bad and own names"
 
 # --- harness_terminal_runtime contract ---------------------------------------
 

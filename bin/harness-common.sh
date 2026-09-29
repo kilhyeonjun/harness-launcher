@@ -751,7 +751,7 @@ harness_terminal_launch_runtime() {
   fi
   case "${1:-}" in
     "") printf '%s\n' "$_htlr_rt" ;;
-    [0-9]*|*[!A-Za-z0-9_]*) return 2 ;;
+    [0-9]*|*[!A-Za-z0-9_]*|_htlr_rt) return 2 ;;
     *) eval "$1=\$_htlr_rt" ;;
   esac
 }

@@ -67,8 +67,11 @@ grep -qx 'ORCA_TERMINAL_HANDLE=unset' "$TMP/b3.log" || fail 'ORCA_TERMINAL_HANDL
 run "$TMP/b2.log" CODEX_HOME= ORCA_CODEX_HOME= -- base
 grep -qx 'CODEX_HOME=' "$TMP/b2.log" || fail 'empty ORCA_CODEX_HOME must not trigger sanitization'
 
-# L5: checkup prompt-audit child has no ORCA_* variables.
-run "$TMP/e.log" ORCA_TERMINAL_HANDLE=term_1 ORCA_OTHER=x -- checkup prompt-audit
+# L5: checkup prompt-audit child has no ORCA_* variables. Run under the orca
+# runtime (handle plus a terminal): the launch scrub keeps ORCA_* there, so the
+# checkup's own unset is the only thing under test. Without a terminal the launch
+# runtime is plain and the scrub alone would make this case pass.
+run "$TMP/e.log" ORCA_TERMINAL_HANDLE=term_1 ORCA_OTHER=x TEST_ASSUME_TTY=1 -- checkup prompt-audit
 [[ -s "$TMP/e.log" ]] || { cat "$TMP/e.log.err" >&2; fail 'checkup stub was not invoked'; }
 grep -qx 'ORCA_TERMINAL_HANDLE=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_TERMINAL_HANDLE'
 grep -qx 'ORCA_OTHER=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_*'
