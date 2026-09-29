@@ -213,6 +213,8 @@ herdr:
   ```
 
   and add `HARNESS_HERDR_AGENT_HOOKS=1` to the harness `config/launcher.env`.
+- Optional: link the [herdr plugin](#herdr-plugin) for tab labels and
+  notifications that focus the agent pane.
 
 Oh My Zsh:
 
@@ -221,3 +223,49 @@ Oh My Zsh:
   pane.
 
 Orca setup is in [Orca ADE integration](orca-integration.md).
+
+## herdr plugin
+
+The package ships a herdr plugin in `share/harness-launcher/herdr-plugin`
+(macOS, herdr 0.9.1 or later). herdr runs it with `/usr/bin/python3` at
+startup and on pane and tab events. It does two things.
+
+Tab labels. A tab with exactly one pane that runs a detected agent takes the
+agent's terminal title as its label, cut to 20 display cells (a wide character
+counts as two) with a trailing `…`. A trailing `| <name>harness` that Codex adds
+to its title is dropped. The plugin renames a tab only while its label is the
+default tab number or the label the plugin set last; a name you give a tab
+stays. Rename a tab back to its number to hand it back to the plugin. herdr
+has no plugin event for title changes, so a new title shows up on the next
+agent status change, agent detection, focus change, or pane or tab change.
+
+Notifications. When an agent goes from `working` to `idle`, or to `blocked`,
+the plugin waits one second and, if the state still holds, posts a desktop
+notification. The title is `✅ <agent> 완료` or `⏳ <agent> 입력 필요`, the subtitle
+is the workspace label, and the body is the agent's session title. Clicking it
+activates the terminal app that hosts the herdr client (found from the client's
+process ancestry, so cmux, Ghostty or another app) and runs
+`herdr agent focus <pane>`. A newer notification for the same pane replaces
+the older one. The visible tab stays silent while its host app is frontmost,
+as herdr's own toasts do. Notifications need `terminal-notifier`
+(`brew install terminal-notifier`); without it the plugin falls back to
+`osascript`, which cannot focus the pane. Set
+`HARNESS_HERDR_NOTIFY_DELAY_SECONDS` in the herdr server environment to change
+the one-second delay.
+
+Install once. Link the stable `opt` path so upgrades keep working, and turn
+off herdr's own popups so each event notifies once:
+
+```bash
+herdr plugin link "$(brew --prefix)/opt/harness-launcher/share/harness-launcher/herdr-plugin"
+```
+
+```toml
+# ~/.config/herdr/config.toml
+[ui.toast]
+delivery = "off"
+```
+
+Then run `herdr server reload-config`. The plugin keeps its state in herdr's
+plugin state directory, and `herdr plugin log list --plugin harness.launcher`
+shows its runs. Remove it with `herdr plugin unlink harness.launcher`.

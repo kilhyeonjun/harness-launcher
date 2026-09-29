@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""herdr plugin: tab labels from agent session titles and desktop notifications.
+
+herdr runs this with /usr/bin/python3 (3.9) on startup and on the pane/tab
+events listed in herdr-plugin.toml. The hook never fails: errors go to stderr,
+which herdr keeps in the plugin log, and the exit code stays 0.
+
+Tab labels: a tab with exactly one pane that runs a detected agent takes that
+agent's terminal title, cut to TAB_LABEL_CELLS display cells. A tab keeps its
+label when the user named it (the label is neither the default tab number nor
+the label this plugin set last).
+
+Notifications: working -> idle announces completion and a switch to blocked
+announces a request for input, after the state held for the notify delay. The
+visible tab stays silent while its host terminal app is frontmost, as herdr's
+own toasts do. Clicking the notification activates the host terminal app and
+focuses the agent pane.
+"""
+
+import fcntl
+import json
+import os
+import plistlib
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import unicodedata
+from contextlib import contextmanager
+
+TAB_LABEL_CELLS = 20
+DEFAULT_NOTIFY_DELAY_SECONDS = 1.0
+CODEX_HARNESS_SUFFIX = re.compile(r"\s+\|\s+[\w.-]*harness\s*$")
+HOMEBREW_HERDR = re.compile(r"^(.*)/opt/herdr/bin/herdr$")
+APP_EXECUTABLE = re.compile(r"^(.*?\.app)/Contents/MacOS/")
+
+
+def log(message):
+    sys.stderr.write("harness-herdr-plugin: %s\n" % message)
+
+
+def run(argv):
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        log("%s failed: %s" % (argv[0], error))
+        return None
+    if done.returncode != 0:
+        log("%s exited %s: %s" % (argv[0], done.returncode, done.stderr.strip()[:200]))
+        return None
+    return done.stdout
+
+
+def herdr_bin():
+    return os.environ.get("HERDR_BIN_PATH") or shutil.which("herdr") or "herdr"
+
+
+def herdr(*args):
+    out = run([herdr_bin()] + list(args))
+    if out is None:
+        raise RuntimeError("herdr %s failed" % " ".join(args))
+    return json.loads(out)["result"]
+
+
+@contextmanager
+def locked_state():
+    state_dir = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser(
+        "~/.local/state/harness-herdr-plugin")
+    os.makedirs(state_dir, exist_ok=True)
+    path = os.path.join(state_dir, "state.json")
+    with open(os.path.join(state_dir, "state.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                state = json.load(handle)
+        except (OSError, ValueError):
+            state = {}
+        state.setdefault("tabs", {})
+        state.setdefault("panes", {})
+        yield state
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False)
+        os.replace(temporary, path)
+
+
+def cells(char):
+    return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+
+
+def tab_label(title):
+    text = CODEX_HARNESS_SUFFIX.sub("", title).strip()
+    if sum(cells(char) for char in text) <= TAB_LABEL_CELLS:
+        return text
+    kept, used = "", 0
+    for char in text:
+        if used + cells(char) > TAB_LABEL_CELLS - 1:
+            break
+        kept += char
+        used += cells(char)
+    return kept.rstrip() + "…"
+
+
+def sync_tabs():
+    tabs = herdr("tab", "list")["tabs"]
+    panes = herdr("pane", "list")["panes"]
+    panes_by_tab = {}
+    for pane in panes:
+        panes_by_tab.setdefault(pane.get("tab_id"), []).append(pane)
+    with locked_state() as state:
+        owned = state["tabs"]
+        live_tabs = {tab["tab_id"] for tab in tabs}
+        for tab_id in [tab_id for tab_id in owned if tab_id not in live_tabs]:
+            del owned[tab_id]
+        live_panes = {pane.get("pane_id") for pane in panes}
+        for pane_id in [pane_id for pane_id in state["panes"] if pane_id not in live_panes]:
+            del state["panes"][pane_id]
+        for tab in tabs:
+            members = panes_by_tab.get(tab["tab_id"], [])
+            if tab.get("pane_count") != 1 or len(members) != 1:
+                continue
+            pane = members[0]
+            title = (pane.get("terminal_title_stripped") or "").strip()
+            if not pane.get("agent") or not title:
+                continue
+            current = tab.get("label") or ""
+            if current != str(tab.get("number")) and current != owned.get(tab["tab_id"]):
+                continue
+            wanted = tab_label(title)
+            if wanted and wanted != current:
+                herdr("tab", "rename", tab["tab_id"], wanted)
+                owned[tab["tab_id"]] = wanted
+
+
+def record_status(payload):
+    data = payload.get("data") or {}
+    pane_id = data.get("pane_id") or os.environ.get("HERDR_PANE_ID")
+    status = data.get("agent_status")
+    if not pane_id or not status:
+        return None
+    with locked_state() as state:
+        entry = state["panes"].get(pane_id) or {}
+        previous = entry.get("status")
+        seq = int(entry.get("seq", 0)) + 1
+        state["panes"][pane_id] = {"status": status, "seq": seq}
+    if status == "blocked" and previous != "blocked":
+        kind = "attention"
+    elif status == "idle" and previous == "working":
+        kind = "finished"
+    else:
+        return None
+    return {"kind": kind, "pane_id": pane_id, "seq": seq, "agent": data.get("agent") or "agent"}
+
+
+def still_current(pending):
+    with locked_state() as state:
+        return (state["panes"].get(pending["pane_id"]) or {}).get("seq") == pending["seq"]
+
+
+def notify_delay():
+    try:
+        return max(0.0, float(os.environ.get("HARNESS_HERDR_NOTIFY_DELAY_SECONDS", "")))
+    except ValueError:
+        return DEFAULT_NOTIFY_DELAY_SECONDS
+
+
+def host_bundle_ids():
+    out = run(["ps", "-Ao", "pid=,ppid=,comm="]) or ""
+    processes = {}
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3:
+            processes[parts[0]] = (parts[1], parts[2])
+    hosts = []
+    for ppid, command in processes.values():
+        if os.path.basename(command) != "herdr" or ppid == "1":
+            continue
+        current, seen = ppid, set()
+        while current in processes and current not in seen:
+            seen.add(current)
+            parent, name = processes[current]
+            match = APP_EXECUTABLE.match(name)
+            if match:
+                bundle = app_bundle_id(match.group(1))
+                if bundle and bundle not in hosts:
+                    hosts.append(bundle)
+                break
+            current = parent
+    return hosts
+
+
+def app_bundle_id(app_path):
+    try:
+        with open(os.path.join(app_path, "Contents", "Info.plist"), "rb") as handle:
+            return plistlib.load(handle).get("CFBundleIdentifier")
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+
+
+def front_bundle_id():
+    asn = (run(["lsappinfo", "front"]) or "").strip()
+    if not asn:
+        return None
+    match = re.search(r'"CFBundleIdentifier"="([^"]*)"',
+                      run(["lsappinfo", "info", "-only", "bundleid", asn]) or "")
+    return match.group(1) if match else None
+
+
+def terminal_notifier():
+    found = shutil.which("terminal-notifier")
+    if found:
+        return found
+    homebrew = HOMEBREW_HERDR.match(os.path.realpath(herdr_bin()))
+    candidate = homebrew and os.path.join(homebrew.group(1), "bin", "terminal-notifier")
+    return candidate if candidate and os.access(candidate, os.X_OK) else None
+
+
+def announce(pending):
+    pane_id = pending["pane_id"]
+    pane = next((item for item in herdr("pane", "list")["panes"]
+                 if item.get("pane_id") == pane_id), None)
+    if pane is None:
+        return
+    workspace = next((item for item in herdr("workspace", "list")["workspaces"]
+                      if item.get("workspace_id") == pane.get("workspace_id")), {})
+    hosts = host_bundle_ids()
+    front = front_bundle_id()
+    visible = workspace.get("focused") and workspace.get("active_tab_id") == pane.get("tab_id")
+    if visible and (not hosts or front in hosts):
+        return
+    host = front if front in hosts else (hosts[0] if hosts else None)
+    template = "✅ %s 완료" if pending["kind"] == "finished" else "⏳ %s 입력 필요"
+    title = template % pending["agent"]
+    subtitle = workspace.get("label") or pane.get("workspace_id") or ""
+    message = (pane.get("terminal_title_stripped") or "").strip() or pane_id
+    notifier = terminal_notifier()
+    if notifier:
+        argv = [notifier, "-title", title, "-subtitle", subtitle, "-message", message,
+                "-group", "herdr-harness." + pane_id,
+                "-execute", "%s agent focus %s" % (shlex.quote(herdr_bin()), shlex.quote(pane_id))]
+        if host:
+            argv += ["-activate", host]
+        run(argv)
+        return
+    run(["osascript", "-e", "on run argv",
+         "-e", "display notification (item 2 of argv) with title (item 1 of argv) "
+               "subtitle (item 3 of argv)",
+         "-e", "end run", title, message, subtitle])
+
+
+def main():
+    pending = None
+    if os.environ.get("HERDR_PLUGIN_EVENT") == "pane.agent_status_changed":
+        try:
+            pending = record_status(json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON") or "{}"))
+        except Exception as error:  # noqa: BLE001 - a hook must never fail
+            log("status: %s" % error)
+    try:
+        sync_tabs()
+    except Exception as error:  # noqa: BLE001
+        log("tabs: %s" % error)
+    if pending:
+        try:
+            time.sleep(notify_delay())
+            if still_current(pending):
+                announce(pending)
+        except Exception as error:  # noqa: BLE001
+            log("notify: %s" % error)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
