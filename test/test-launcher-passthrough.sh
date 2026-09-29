@@ -214,4 +214,65 @@ run_claude "$OUT" base --passthrough --passthrough
 [[ "$(count_arg "$OUT" --passthrough)" == 1 ]] || fail 'C12 second marker not forwarded' "$OUT"
 echo 'PASS: C12 only the first marker is consumed'
 
+# C13: a management subcommand after the marker (Paseo's `auth status`
+# diagnostic) runs natively without launcher flags.
+OUT="$TEST_TEMP/c13"
+run_claude "$OUT" base --passthrough auth status || fail 'C13 management path failed' "$OUT.err"
+[[ "$(argv_of "$OUT" | tr '\n' ' ')" == 'auth status ' ]] || fail 'C13 management argv' "$OUT"
+echo 'PASS: C13 management subcommands after the marker run natively'
+
+# C14: only an explicit caller thinking disable drops the launcher xhigh/max.
+assert_thinking_disabled() {  # <caller args...>
+  OUT="$TEST_TEMP/c14"
+  run_claude "$OUT" rich --passthrough "$@"
+  [[ "$(count_arg "$OUT" --effort)" == 0 ]] || fail "C14 '$*' kept launcher effort" "$OUT"
+  has_arg "$OUT" '{"alwaysThinkingEnabled":true}' && fail "C14 '$*' kept forced thinking" "$OUT"
+  return 0
+}
+assert_thinking_disabled --thinking disabled
+assert_thinking_disabled --thinking=disabled
+assert_thinking_disabled --max-thinking-tokens 0
+assert_thinking_disabled --max-thinking-tokens=0
+assert_thinking_disabled --settings '{"alwaysThinkingEnabled":false}'
+assert_thinking_disabled '--settings={"fastMode":true,"alwaysThinkingEnabled": false}'
+for keep in '--settings {"fastMode":true}' '--thinking adaptive' '--max-thinking-tokens 1024'; do
+  OUT="$TEST_TEMP/c14"
+  run_claude "$OUT" rich --passthrough ${=keep}
+  [[ "$(value_after "$OUT" --effort)" == xhigh ]] || fail "C14 '$keep' dropped launcher effort" "$OUT"
+  has_arg "$OUT" '{"alwaysThinkingEnabled":true}' || fail "C14 '$keep' lost forced thinking" "$OUT"
+done
+OUT="$TEST_TEMP/c14"
+run_claude "$OUT" rich --passthrough --thinking disabled --effort high
+[[ "$(count_arg "$OUT" --effort)" == 1 && "$(value_after "$OUT" --effort)" == high ]] \
+  || fail 'C14 caller effort with thinking disabled' "$OUT"
+has_arg "$OUT" '{"alwaysThinkingEnabled":true}' && fail 'C14 forced thinking over a caller disable' "$OUT"
+echo 'PASS: C14 only explicit thinking disables drop the launcher xhigh/max'
+
+# C15: a launcher `--` ends keyword parsing and stays after launcher flags.
+OUT="$TEST_TEMP/c15"
+run_claude "$OUT" base -- continue
+argv=("${(@f)$(argv_of "$OUT")}")
+[[ "${argv[-2]}" == -- && "${argv[-1]}" == continue ]] || fail 'C15 -- continue is not last' "$OUT"
+has_arg "$OUT" --continue && fail 'C15 continue after -- became a session flag' "$OUT"
+[[ "$(value_after "$OUT" --effort)" == high ]] || fail 'C15 launcher effort lost' "$OUT"
+echo 'PASS: C15 tokens after a launcher -- are prompt text after launcher flags'
+
+# C16: `--` alone implies a direct launch.
+OUT="$TEST_TEMP/c16"
+run_claude "$OUT" -- 'prompt text'
+[[ -s "$OUT" ]] || fail 'C16 -- prompt did not launch claude directly' "$OUT.err"
+argv=("${(@f)$(argv_of "$OUT")}")
+[[ "${argv[-2]}" == -- && "${argv[-1]}" == 'prompt text' ]] || fail 'C16 prompt is not last' "$OUT"
+echo 'PASS: C16 -- implies a direct launch'
+
+# C17: passthrough scans stop at a caller `--`.
+OUT="$TEST_TEMP/c17"
+run_claude "$OUT" base --passthrough -- --model x --effort max
+[[ "$(argv_of "$OUT" | grep -Fx -A1 -- --model | sed -n 2p)" == sonnet ]] || fail 'C17 launcher model dropped' "$OUT"
+[[ "$(value_after "$OUT" --effort)" == high ]] || fail 'C17 launcher effort dropped' "$OUT"
+has_arg "$OUT" '{"alwaysThinkingEnabled":true}' && fail 'C17 prompt text forced thinking' "$OUT"
+argv=("${(@f)$(argv_of "$OUT")}")
+[[ "${argv[-5]}" == -- && "${argv[-1]}" == max ]] || fail 'C17 caller prompt is not last' "$OUT"
+echo 'PASS: C17 caller -- hides later tokens from passthrough scans'
+
 echo 'PASS: launcher --passthrough contract'

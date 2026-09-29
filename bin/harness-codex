@@ -1,0 +1,52 @@
+#!/usr/bin/env zsh
+# harness-codex — Codex executable for SDK hosts (Paseo custom providers).
+#
+#   harness-codex --version | -V              native `codex --version`
+#   harness-codex --profile <name> [args...]  harness-profile <name> codex --passthrough [args...]
+#   harness-codex [args...]                   harness-auto codex --passthrough [args...]
+#
+# Hosts probe `<command[0]> --version` for feature gates and start
+# `<command...> app-server`, so every argument after the profile selection is
+# a native Codex argument.
+set -u
+
+SELF_PATH="${0:A}"
+SCRIPT_DIR="${SELF_PATH:h}"
+source "$SCRIPT_DIR/harness-common.sh"
+
+usage() {
+  echo 'usage: harness-codex [--profile <name>] [codex arguments...] | --version' >&2
+  exit 2
+}
+
+case "${1:-}" in
+  --version|-V)
+    codex_bin="$(harness_codex_bin_resolve)" || {
+      echo 'harness-codex: codex not found in PATH' >&2
+      exit 1
+    }
+    exec "$codex_bin" "$@"
+    ;;
+  --profile|--profile=*)
+    if [[ "$1" == --profile ]]; then
+      [[ $# -ge 2 ]] || usage
+      profile="$2"
+      shift 2
+    else
+      profile="${1#--profile=}"
+      shift
+    fi
+    [[ "$profile" =~ '^[A-Za-z_][A-Za-z0-9_-]*$' ]] || {
+      echo "harness-codex: invalid profile name: $profile" >&2
+      exit 2
+    }
+    case "$profile" in
+      register|checkup)
+        echo "harness-codex: '$profile' is a harness-profile command, not a profile" >&2
+        exit 2
+        ;;
+    esac
+    exec "$SCRIPT_DIR/harness-profile" "$profile" codex --passthrough "$@"
+    ;;
+esac
+exec "$SCRIPT_DIR/harness-auto" codex --passthrough "$@"

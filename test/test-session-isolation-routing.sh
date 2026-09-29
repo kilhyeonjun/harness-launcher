@@ -63,5 +63,20 @@ assert_route reject 1 base --passthrough --resume=session-id
 assert_route legacy 1 base --passthrough -p 'batch task'
 assert_route invalid 1 base --passthrough --mcp-config '{}'
 assert_route isolate 1 base --passthrough -- --resume
+# A management subcommand right after the marker runs natively (no clone).
+assert_route legacy 1 base --passthrough auth status
+assert_route legacy 1 --passthrough mcp list
+assert_route isolate 1 base --passthrough 'auth status'
+# Codex after the marker: subcommands stay legacy, resume/fork reject, bare
+# launcher keywords (including `continue`) are prompt text.
+assert_route legacy 1 codex --passthrough app-server --enable goals
+assert_route legacy 1 codex base --passthrough exec x
+assert_route reject 1 codex --passthrough resume --last
+assert_route reject 1 codex --passthrough fork
+assert_route isolate 1 codex --passthrough continue
+assert_route isolate 1 codex --passthrough fast 'fresh task'
+assert_route reject 1 codex continue
+assert_route isolate 1 codex --passthrough -C/tmp -pbase 'fresh task'
+assert_route invalid 1 codex --passthrough --passthrough
 
 echo 'PASS: default-isolation route matrix is explicit and bounded'

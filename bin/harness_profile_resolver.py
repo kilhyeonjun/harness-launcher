@@ -42,6 +42,11 @@ def _registered_roots(registry: Path):
             yield entry.name, root
 
 
+def registered_profiles(registry: Path):
+    """Return sorted (profile, root) pairs for every valid registration."""
+    return sorted(_registered_roots(Path(registry)))
+
+
 def resolve(cwd: Path, registry: Path, explicit_profile: Optional[str] = None) -> Selection:
     """Select exactly one registered ancestor or fail closed."""
     try:
