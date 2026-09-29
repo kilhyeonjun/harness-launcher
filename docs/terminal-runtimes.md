@@ -2,7 +2,7 @@
 
 The launcher runs inside several terminal hosts: herdr, Orca, cmux, or a plain
 terminal. Each host exports its own variables and expects its own behavior from
-an agent. Since 0.36.0 the launcher detects exactly one host per launch, removes
+an agent. Since v0.36.0 the launcher detects exactly one host per launch, removes
 every other host's variables, and enables host-specific features only for the
 detected host. This guide is the runtime-generic reference; Orca-only material
 stays in [Orca ADE integration](orca-integration.md).
@@ -51,13 +51,26 @@ receives the sequence.
 
 ## Ownership
 
-| Concern | Owner |
-| --- | --- |
-| Runtime detection, scrub, `OSC 7`, Codex hook rows, resume mapping | launcher |
-| Provider-session recorder command (`harness-session-provider-record`) | launcher |
-| Registering the recorder as a Claude hook | each harness, through its own hook shim |
-| Workspace UI, panes, status display | the terminal host |
-| Policy hooks, auth, MCP, skills, model presets | launcher and harness, never the host |
+Who supplies each capability, per runtime:
+
+| Capability | herdr | Orca | cmux |
+| --- | --- | --- | --- |
+| Title | Runtime-native: OSC title from the agent (Claude `sessionTitle`, Codex `[tui] terminal_title`) | Runtime-native: OSC title | Launcher: the existing title brokers, cmux runtime only |
+| Claude state and notify | Runtime-native screen detection and toasts; `herdr integration install claude` reports session identity | Runtime-native: Orca hooks | Runtime-native: cmux `claude` wrapper |
+| Codex state and notify | Runtime-native screen detection; launcher registry row for the identity hook | Launcher registry row calling the Orca hook (`HARNESS_ORCA_AGENT_HOOKS=1`) | Launcher: the existing cmux adapters |
+| Kiro | Not detected (known limit) | Runtime-native: Orca | Unchanged |
+
+Harness-side adapters exist only for a runtime that fails acceptance for a
+capability; the harness owns the policy hooks, auth, MCP, skills and model
+presets in every runtime, and the launcher owns detection, scrub, `OSC 7`, the
+Codex hook rows, resume mapping and the recorder command
+(`harness-session-provider-record`).
+
+Exclusivity: each native hook exits without its own runtime's variables (herdr
+needs `HERDR_SOCKET_PATH`, Orca needs `ORCA_AGENT_HOOK_PORT`, cmux needs
+`CMUX_SURFACE_ID`). The scrub leaves only the current runtime's variables, so
+only that runtime's native hooks act, even though all three may be registered
+in the user-global `~/.claude/settings.json`.
 
 ## Codex hook registry
 
@@ -95,33 +108,35 @@ the launcher maps that single UUID to the isolated session that owns it. Owners
 are counted together:
 
 - For Claude, the session directory whose name equals the id (the mapping from
-  0.33.0).
+  v0.33.0).
 - For Claude, every current-harness session whose `provider-sessions` file has a
   line `claude <id>`. This owner maps only when the transcript `<id>.jsonl`
   exists under that session's Claude project directory.
 - For Codex, the one session whose Codex home holds the matching rollout file.
 
-Exactly one owner maps. Two or more owners is rejected as ambiguous. No owner
-keeps the usual reject message. The session must belong to the current harness.
+A session both named by the id and recording it counts as one owner. The
+directory owner maps without the transcript check. Exactly one owner maps; two
+or more owners is rejected as ambiguous; no owner keeps the usual reject
+message. The session must belong to the current harness.
 
 `harness-session-provider-record` is the recorder. It reads a Claude
 `SessionStart` hook payload on stdin, handles the sources
 `startup|resume|clear|compact|fork`, and appends `claude <uuid>` to
 `<state>/sessions/<HARNESS_SESSION_ID>/provider-sessions` for UUID ids only. It
 is silent and exits 0 in every other case. The launcher only ships the command;
-the kh, gp and gd harnesses register it through their own hook shim
-(`core/hooks/session-provider-record.sh`), which is a separate harness change.
+each harness registers the recorder through its own `SessionStart` hook shim,
+which is a separate change in that harness.
 Until a harness registers it, `/clear` ids stay unmapped.
 
 Limits:
 
-- Restore fails closed before 0.36.0: earlier launchers cannot map ids created
+- Restore fails closed before v0.36.0: earlier launchers cannot map ids created
   after `/clear`.
 - The transcript lookup assumes Claude runs in the session root. A session
   started with `--cwd <subdir>` keeps its transcripts under a different project
   directory, so its `/clear` ids stay unmapped and fail closed with the usual
   reject message. Recover with `<prefix> --isolated-session <uuid> resume`.
-- A kh isolated Codex session is not covered by the herdr or Orca status
+- An isolated Codex session is not covered by the herdr or Orca status
   hooks, because its Codex home clone lacks hook trust.
 - A plain `<prefix>` launch that opens the interactive picker has no session id
   to map.
