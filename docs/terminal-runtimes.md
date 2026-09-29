@@ -57,12 +57,12 @@ Who supplies each capability, per runtime:
 | --- | --- | --- | --- |
 | Title | Runtime-native: OSC title from the agent (Claude `sessionTitle`, Codex `[tui] terminal_title`) | Runtime-native: OSC title | Launcher: the existing title brokers, cmux runtime only |
 | Claude state and notify | Runtime-native screen detection and toasts; `herdr integration install claude` reports session identity | Runtime-native: Orca hooks | Runtime-native: cmux `claude` wrapper |
-| Codex state and notify | Runtime-native screen detection; launcher registry row for the identity hook | Launcher registry row calling the Orca hook (`HARNESS_ORCA_AGENT_HOOKS=1`) | Launcher: the existing cmux adapters |
+| Codex state and notify | Runtime-native screen detection; opt-in (`HARNESS_HERDR_AGENT_HOOKS=1`) launcher registry row for the identity hook | Launcher registry row calling the Orca hook (`HARNESS_ORCA_AGENT_HOOKS=1`) | Harness: the existing harness cmux adapters (`codex-subagent-status.sh`) |
 | Kiro | Not detected (known limit) | Runtime-native: Orca | Unchanged |
 
 Harness-side adapters exist only for a runtime that fails acceptance for a
-capability; the harness owns the policy hooks, auth, MCP, skills and model
-presets in every runtime, and the launcher owns detection, scrub, `OSC 7`, the
+capability; the launcher and the harness own the policy hooks, auth, MCP, skills
+and model presets in every runtime, never the host; the launcher owns detection, scrub, `OSC 7`, the
 Codex hook rows, resume mapping and the recorder command
 (`harness-session-provider-record`).
 
