@@ -18,6 +18,14 @@
 #   harness-codex harness-codex exec x             (SDK-host Codex executable)
 #   exec-kiro     harness-exec <harness> kiro-cli
 #   exec-tui      harness-exec <harness>           (launcher.sh TUI, stubbed)
+#   exec-claude-cwd  harness-exec <harness> --cwd <harness> base (run dir differs
+#                 from the caller's directory)
+#   exec-tui-cwd  harness-exec <harness> --cwd <harness> (TUI quit without a
+#                 launch: the stub returns)
+#
+# In herdr the launcher announces the run directory before the agent starts
+# (the stubs snapshot the capture on start) and the caller's directory once the
+# agent or TUI returns: two OSC 7 sequences in total.
 #
 # Each path runs against four environments (herdr + stale cmux/Orca markers,
 # Orca + stale cmux, cmux only, no markers). A launch with a terminal (a pty on
@@ -74,6 +82,7 @@ EOF
 # The TUI is stubbed: the launcher only has to reach it with the right env.
 cat > "$SHARE/launcher.sh" <<'EOF'
 #!/usr/bin/env bash
+cat "$HARNESS_TERMINAL_TTY" > "$STUB_DUMP.osc0" 2>/dev/null || true
 env | LC_ALL=C sort > "$STUB_DUMP"
 EOF
 # Fake broker: the same first two effects as the real one (a log line, then a
@@ -90,10 +99,12 @@ chmod 755 "$SHARE/codex-home-prepare.sh" "$SHARE/kiro-home-prepare.sh" \
 for agent in claude codex kiro-cli; do
   cat > "$STUB_BIN/$agent" <<'EOF'
 #!/usr/bin/env bash
+cat "$HARNESS_TERMINAL_TTY" > "$STUB_DUMP.osc0" 2>/dev/null || true
 env | LC_ALL=C sort > "$STUB_DUMP"
-# A broker is started asynchronously; hold the agent until its rename lands.
+# A broker is started asynchronously; hold the agent until its rename lands
+# (up to 30 s; the loop ends as soon as it does).
 if [ -n "${CLAUDE_CMUX_TITLE_REQUEST_FILE:-}${CODEX_CMUX_TITLE_REQUEST_FILE:-}" ]; then
-  for _ in $(seq 1 60); do [ -s "$STUB_CMUX_LOG" ] && break; sleep 0.05; done
+  for _ in $(seq 1 600); do [ -s "$STUB_CMUX_LOG" ] && break; sleep 0.05; done
 fi
 exit 0
 EOF
@@ -165,10 +176,12 @@ CMUX_WORKSPACE_ID=workspace:7" ;;
 }
 
 # path_cmd PATH sets PATH_CMD (argv), PATH_CWD, OSC_DIR (the directory the
-# agent starts in) and HAS_BROKER (1 when the path starts a cmux title broker).
+# agent starts in), CALLER_DIR (the caller's directory, announced again after
+# the agent returns) and HAS_BROKER (1 when the path starts a cmux title broker).
 path_cmd() {
   PATH_CWD="$APP"
   OSC_DIR="$APP_REAL"
+  CALLER_DIR="$APP_REAL"
   HAS_BROKER=1
   case "$1" in
     exec-claude)   PATH_CMD=("$PREFIX/bin/harness-exec" "$HARNESS" base) ;;
@@ -180,6 +193,10 @@ path_cmd() {
     harness-codex) PATH_CMD=("$PREFIX/bin/harness-codex" exec x) ;;
     exec-kiro)     PATH_CMD=("$PREFIX/bin/harness-exec" "$HARNESS" kiro-cli); HAS_BROKER=0 ;;
     exec-tui)      PATH_CMD=("$PREFIX/bin/harness-exec" "$HARNESS"); HAS_BROKER=0 ;;
+    exec-claude-cwd) PATH_CMD=("$PREFIX/bin/harness-exec" "$HARNESS" --cwd "$HARNESS" base)
+                   OSC_DIR="$HARNESS_REAL" ;;
+    exec-tui-cwd)  PATH_CMD=("$PREFIX/bin/harness-exec" "$HARNESS" --cwd "$HARNESS"); HAS_BROKER=0
+                   OSC_DIR="$HARNESS_REAL" ;;
   esac
 }
 
@@ -233,10 +250,15 @@ check_case() {
   if [[ "$actual" != "$EXP_LINES" ]]; then
     fail "$label: surviving runtime variables differ" "--- expected" "$EXP_LINES" "--- actual" "$actual"
   fi
-  # OSC 7: exactly one sequence naming the run directory, herdr only.
+  # OSC 7, herdr only: exactly one sequence naming the run directory when the
+  # agent starts, then one naming the caller's directory after it returns.
   if [[ "$EXP_RT" == herdr ]]; then
-    if ! seq7 "$(enc "$OSC_DIR")" | cmp -s - "$CASE_DIR/osc" 2>/dev/null; then
-      fail "$label: OSC 7 capture is not exactly one sequence for $OSC_DIR" \
+    if ! seq7 "$(enc "$OSC_DIR")" | cmp -s - "$CASE_DIR/agent.env.osc0" 2>/dev/null; then
+      fail "$label: OSC 7 at agent start is not exactly one sequence for $OSC_DIR" \
+        "$(od -An -c "$CASE_DIR/agent.env.osc0" 2>&1 | head -20)"
+    fi
+    if ! { seq7 "$(enc "$OSC_DIR")"; seq7 "$(enc "$CALLER_DIR")"; } | cmp -s - "$CASE_DIR/osc" 2>/dev/null; then
+      fail "$label: OSC 7 capture is not the run directory $OSC_DIR then the caller directory $CALLER_DIR" \
         "$(od -An -c "$CASE_DIR/osc" 2>&1 | head -20)"
     fi
   elif [[ -s "$CASE_DIR/osc" ]]; then
@@ -266,7 +288,7 @@ check_case() {
   return 0
 }
 
-PATHS="exec-claude auto-claude shell-claude shell-codex exec-codex harness-codex exec-kiro exec-tui"
+PATHS="exec-claude auto-claude shell-claude shell-codex exec-codex harness-codex exec-kiro exec-tui exec-claude-cwd exec-tui-cwd"
 for path in $PATHS; do
   before="$failures"
   for input in a b c; do

@@ -555,6 +555,8 @@ codex() {
     "$codex_bin" "$@"
   fi
   local rc=$?
+  # herdr keeps the last reported cwd: hand the shell's directory back.
+  $broker_started && harness_terminal_announce_cwd "$PWD"
   $broker_started && harness_codex_cmux_broker_stop
   return $rc
 }
@@ -662,9 +664,21 @@ harness_register() {
   $exists || _HARNESS_LAUNCHER_REGISTERED_DIRS+=("$dir")
 }
 
+# _harness_launcher_announce_run_dir <dir>
+#   Announces the agent's run directory to herdr (OSC 7) and marks it, so
+#   _harness_launcher_run re-announces the caller's directory once the agent
+#   (or the TUI) returns: herdr keeps the last reported cwd.
+_harness_launcher_announce_run_dir() {
+  _harness_launcher_cwd_announced=1
+  harness_terminal_announce_cwd "$1"
+}
+
 # _harness_launcher_run <harness-dir> [args...]
 #   Shared implementation for every registered profile function.
 _harness_launcher_run() {
+  # The invoking shell's directory (harness-exec inherits the caller's $PWD);
+  # announced again to herdr after the agent returns.
+  local _harness_launcher_caller_dir="$PWD" _harness_launcher_cwd_announced=0
   # Every launched agent sees one terminal runtime: the launch runtime (`plain`
   # without a TTY, else the marker runtime) is exported as
   # HARNESS_TERMINAL_RUNTIME and every other runtime's variables are removed.
@@ -837,6 +851,7 @@ _harness_launcher_run() {
   {
     _harness_launcher_run_session "$@"
   } always {
+    (( _harness_launcher_cwd_announced )) && harness_terminal_announce_cwd "$_harness_launcher_caller_dir"
     if [[ -n "$isolated_session_id" ]]; then
       _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
     fi
@@ -1102,7 +1117,7 @@ _harness_launcher_run_session() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
-      harness_terminal_announce_cwd "${HARNESS_RUN_DIR:-$PWD}"
+      _harness_launcher_announce_run_dir "${HARNESS_RUN_DIR:-$PWD}"
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
@@ -1112,7 +1127,7 @@ _harness_launcher_run_session() {
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
       harness_claude_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py" "$HARNESS_DIR"
       claude_broker_started=true
-      harness_terminal_announce_cwd "${HARNESS_RUN_DIR:-$PWD}"
+      _harness_launcher_announce_run_dir "${HARNESS_RUN_DIR:-$PWD}"
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
@@ -1125,7 +1140,7 @@ _harness_launcher_run_session() {
     return $rc
   else
     if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
-    harness_terminal_announce_cwd "${HARNESS_RUN_DIR:-$HARNESS_DIR}"
+    _harness_launcher_announce_run_dir "${HARNESS_RUN_DIR:-$HARNESS_DIR}"
     HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
       HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
       "$_HARNESS_LAUNCHER_BIN/launcher.sh"
@@ -1540,7 +1555,7 @@ _harness_launcher_run_codex_cli() {
       --registry "$registry" -- "${launch_cmd[@]}")
   fi
   # The directory Codex starts in: a caller -C wins over the run directory.
-  harness_terminal_announce_cwd "${caller_run_dir:-$run_dir}"
+  _harness_launcher_announce_run_dir "${caller_run_dir:-$run_dir}"
   if [[ -n "$subcmd" ]]; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
     (cd "$run_dir" && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
@@ -1669,7 +1684,7 @@ _harness_launcher_run_kiro_cli() {
   [[ ${#kiro_args[@]} -gt 0 ]] && launch_cmd+=("${kiro_args[@]}")
   unset HARNESS_KIRO_MODEL HARNESS_KIRO_EFFORT
 
-  harness_terminal_announce_cwd "$run_dir"
+  _harness_launcher_announce_run_dir "$run_dir"
   (cd "$run_dir" && "${launch_cmd[@]}")
   local rc=$?
   unset HARNESS_KIRO_MCP_PROFILE

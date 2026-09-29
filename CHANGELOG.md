@@ -11,7 +11,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
   and exports `HARNESS_TERMINAL_RUNTIME`. cmux title brokers now start only in
   cmux. See `docs/terminal-runtimes.md`.
 - herdr: the launcher reports its run directory to herdr as an `OSC 7`
-  sequence so a pane restore is typed in the right directory.
+  sequence so a pane restore is typed in the right directory, and reports the
+  caller's directory again once the agent or the interactive launcher returns.
 - Codex runtime hook registry: the Orca-only hook is now one row of a registry.
   New opt-in `HARNESS_HERDR_AGENT_HOOKS=1` in `config/launcher.env` adds a
   `SessionStart` status row for herdr. Both rows are status-only and fail-open

@@ -46,8 +46,14 @@ cmux title brokers start only when the runtime is `cmux`.
 When the runtime is herdr, the launcher writes the run directory to the
 controlling terminal as an `OSC 7` sequence: ESC `]7;file://` followed by the
 percent-encoded absolute directory (empty host, so `file:///...`) and BEL. herdr
-uses it to type a pane restore in the right directory. No other runtime
-receives the sequence.
+uses it to type a pane restore in the right directory. herdr keeps the last
+reported directory, so when the agent (or the interactive launcher, even after a
+quit without a launch) returns, the launcher sends a second `OSC 7` naming the
+caller's working directory: for `harness-exec` and the entry points built on it,
+the directory it was started in; for the in-shell `codex` wrapper, the shell's
+`$PWD`. A process that replaces the launcher with `exec` never returns to it, so
+nothing re-announces the caller's directory after such an agent exits. No other
+runtime receives the sequence.
 
 ## Ownership
 
@@ -175,6 +181,26 @@ herdr:
   if [[ -n "$HERDR_ENV" ]]; then export PROCESS_LAUNCHED_BY_Q=1; fi
   ```
 
+- Report ordinary `cd` to herdr. Oh My Zsh's own `OSC 7` carries a hostname,
+  which herdr drops, so add an empty-host report to `~/.zshrc` for herdr panes:
+
+  ```zsh
+  if [[ -n $HERDR_ENV ]]; then
+    _herdr_osc7() {
+      local LC_ALL=C c enc=
+      for c in ${(s::)PWD}; do
+        [[ $c == [A-Za-z0-9/._~-] ]] && enc+=$c || enc+=$(printf '%%%02X' "'$c")
+      done
+      printf '\e]7;file://%s\a' "$enc"
+    }
+    autoload -Uz add-zsh-hook && add-zsh-hook precmd _herdr_osc7
+  fi
+  ```
+
+- Enable shell routing (`harness_shell_enable`) in the shell herdr panes start.
+  herdr restores a pane by typing a plain `claude --resume <id>` or
+  `codex resume <id>`; without routing those commands bypass the launcher, so
+  they run without the profile environment and outside the isolated session.
 - Install the Claude integration with `herdr integration install claude`.
 - For Codex, install with a pinned `CODEX_HOME` so herdr writes to the user's
   own home, then opt the harness in:
