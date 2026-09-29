@@ -712,6 +712,91 @@ harness_codex_bin_resolve() {
   return 1
 }
 
+# Which terminal runtime hosts this launch: herdr, orca, cmux or plain. Prints
+# one value and reads only the environment plus one socket test, so it is safe
+# in any shell and changes nothing. First match wins. herdr ranks first because
+# a herdr pane inherits the variables of whatever started its server (Orca or
+# cmux markers), yet the pane belongs to herdr; its socket test rejects
+# HERDR_* left exported after the pane is gone. orca outranks cmux because
+# cmux variables linger inside Orca terminals.
+harness_terminal_runtime() {
+  if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ] \
+     && [ -n "${HERDR_SOCKET_PATH:-}" ] && [ -S "$HERDR_SOCKET_PATH" ]; then
+    printf 'herdr\n'
+  elif [ -n "${ORCA_TERMINAL_HANDLE:-}" ] || [ "${TERM_PROGRAM:-}" = "Orca" ]; then
+    printf 'orca\n'
+  elif [ -n "${CMUX_WORKSPACE_ID:-}" ] && [ -n "${CMUX_TAB_ID:-}" ] \
+       && [ -n "${CMUX_SURFACE_ID:-}" ]; then
+    printf 'cmux\n'
+  else
+    printf 'plain\n'
+  fi
+}
+
+# Strip every foreign runtime's variables from the current shell so an agent
+# sees exactly one terminal runtime. Run it in the agent's subshell or process,
+# never the user's interactive shell. The runtime is computed once up front, so
+# each step judges the original environment, not one it already trimmed.
+harness_terminal_scrub_env() {
+  local rt line name
+  rt="$(harness_terminal_runtime)"
+  # L1: Orca points CODEX_HOME at its own managed home; drop the pair when it
+  # is only Orca's value.
+  if [ -n "${ORCA_CODEX_HOME:-}" ] && [ "${CODEX_HOME:-}" = "$ORCA_CODEX_HOME" ]; then
+    unset CODEX_HOME ORCA_CODEX_HOME
+  fi
+  if [ "$rt" != "orca" ] && [ "${TERM_PROGRAM:-}" = "Orca" ]; then
+    unset TERM_PROGRAM
+  fi
+  # Names come from `env` lines. A value that spans lines contributes lines
+  # that are not NAME=..., so only lines whose text before the first "=" is a
+  # bare identifier count. The heredoc keeps the loop, and its unsets, in this
+  # shell (a pipe would run them in a subshell).
+  while IFS= read -r line; do
+    name="${line%%=*}"
+    [ "$name" != "$line" ] || continue
+    case "$name" in
+      *[!A-Za-z0-9_]*) continue ;;
+      CMUX_*) [ "$rt" != "cmux" ] || continue ;;
+      ORCA_*) [ "$rt" != "orca" ] || continue ;;
+      HERDR_*) [ "$rt" != "herdr" ] || continue ;;
+      *) continue ;;
+    esac
+    unset "$name" 2>/dev/null || true
+  done <<EOF_HARNESS_ENV
+$(env)
+EOF_HARNESS_ENV
+  export HARNESS_TERMINAL_RUNTIME="$rt"
+  return 0
+}
+
+# Tell herdr the launcher's run directory as an OSC 7 cwd report so a pane
+# restore is typed there. herdr accepts a file:// URI only with an empty host
+# (or localhost) and an existing absolute directory, hence file:///... with the
+# path percent-encoded byte by byte (everything but A-Za-z0-9 - . _ ~ / becomes
+# %XX). It goes to the controlling terminal because stdout may be captured;
+# HARNESS_TERMINAL_TTY redirects it for tests. Appends one sequence, prints
+# nothing, and returns 0 even when the target cannot be opened.
+harness_terminal_announce_cwd() {
+  local dir="${1:-}" target="${HARNESS_TERMINAL_TTY:-/dev/tty}" hex pair enc=""
+  [ "${HARNESS_TERMINAL_RUNTIME:-}" = "herdr" ] || return 0
+  case "$dir" in /*) ;; *) return 0 ;; esac
+  [ -d "$dir" ] || return 0
+  # Hex bytes (uppercase) keep multibyte paths and every locale on one code path.
+  hex="$(printf '%s' "$dir" | LC_ALL=C od -An -v -tx1 | LC_ALL=C tr -d ' \n' | LC_ALL=C tr 'a-f' 'A-F')" || return 0
+  [ -n "$hex" ] || return 0
+  while [ -n "$hex" ]; do
+    pair="${hex%"${hex#??}"}"
+    hex="${hex#??}"
+    case "$pair" in
+      2[DEF]|3[0-9]|4[1-9A-F]|5[0-9AF]|6[1-9A-F]|7[0-9AE]) enc="$enc\\x$pair" ;;
+      *) enc="$enc%$pair" ;;
+    esac
+  done
+  { printf '\033]7;file://%b\007' "$enc" >>"$target"; } 2>/dev/null || true
+  return 0
+}
+
 # Keep the title watcher below a live launcher/Codex ancestor. cmux authorizes
 # terminal callers through process ancestry, so a watcher orphaned by a
 # short-lived SessionStart hook cannot rename the target tab.
