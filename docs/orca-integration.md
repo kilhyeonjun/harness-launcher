@@ -28,13 +28,13 @@ Orca starts project terminals in the selected worktree. `harness-auto` resolves 
 
 ## Project and worktree layout
 
-Register the actual code repository in Orca, not the harness repository itself. Set that project's Orca worktree base path inside the owning harness:
+Register the actual code repository in Orca, not the harness repository itself. Set that project's Orca worktree base path to a `.worktrees` directory inside the repository's checkout under the owning harness (v0.33.0+ recommendation):
 
 ```text
-<registered-harness>/.worktrees/<repo-name>/
+<registered-harness>/projects/<repo-name>/.worktrees/<task>
 ```
 
-Add `.worktrees/` to the harness `.gitignore`. Keeping worktrees below the harness keeps the launcher boundary and Claude's ancestor path available, while the launcher keeps Codex and Kiro runtime homes under the harness root. Codex discovers project instructions from the Git root toward the working directory, plus its configured `CODEX_HOME`; do not assume a harness-level `AGENTS.md` above a nested code repository is loaded solely because the worktree is under the harness ([official OpenAI Docs](https://learn.chatgpt.com/docs/agent-configuration/agents-md)). A repository under `<harness>/projects/` and a worktree nested anywhere under that harness already use the same **profile selection**; verify effective runtime instructions separately. An external linked worktree remains unsupported: Git ownership alone does not prove equivalent instruction loading, and `harness-exec` rejects outside `--cwd`.
+Ignore `.worktrees/` in that code repository (for example in its `.git/info/exclude`). Keeping worktrees below the harness keeps the launcher boundary and Claude's ancestor path available, while the launcher keeps Codex and Kiro runtime homes under the harness root. Codex discovers project instructions from the Git root toward the working directory, plus its configured `CODEX_HOME`; do not assume a harness-level `AGENTS.md` above a nested code repository is loaded solely because the worktree is under the harness ([official OpenAI Docs](https://learn.chatgpt.com/docs/agent-configuration/agents-md)). A repository under `<harness>/projects/` and a worktree nested anywhere under that harness already use the same **profile selection**; verify effective runtime instructions separately. Worktrees at `<registered-harness>/.worktrees/<repo-name>/` resolve to the same profile and remain supported. An external linked worktree remains unsupported: Git ownership alone does not prove equivalent instruction loading, and `harness-exec` rejects outside `--cwd`.
 
 Orca exposes `worktreeBasePath` in project setup. In the UI, set the project's worktree base path to the absolute profile-local directory above. The CLI also accepts `--worktree-base-path` on `orca project setup-create` and `orca project setup-update`.
 
@@ -57,7 +57,7 @@ For each profile:
    ```
 
 4. Select one reviewed default runtime; **Codex** is the conservative default for mixed-profile projects. Do not select Orca's **Auto** mode unless every agent it may choose is either mapped through `harness-auto` or disabled.
-5. Keep Agent Permissions on **Manual** and keep Orca-managed hooks off.
+5. Keep Agent Permissions on **Manual**. Orca-managed agent status hooks are allowed under the policy in [Agent status hooks](#agent-status-hooks).
 
 Do not replace the native binaries with same-name recursive PATH shims. `harness-auto` is a separate launcher-owned command: the first fixed argument names the real runtime, and Orca's remaining prompt, resume, and permission arguments stay in order. It fails closed when a worktree is outside every registered boundary or matches more than one equally specific registration.
 
@@ -66,10 +66,39 @@ Do not replace the native binaries with same-name recursive PATH shims. `harness
 Before the first agent launch:
 
 - Set **Agent Permissions** to **Manual**.
-- Disable Orca-managed agent hooks. The launcher owns runtime hooks.
-- Do not use Orca Codex account switching or managed Codex homes. The launcher owns `CODEX_HOME` and native auth selection.
+- Orca-managed agent status hooks are allowed, but only as status reporters and only as described in [Agent status hooks](#agent-status-hooks). The launcher still owns policy hooks.
+- Do not use Orca Codex account switching or managed Codex homes. The launcher owns `CODEX_HOME` and native auth selection; see [CODEX_HOME sanitization](#codex_home-sanitization).
 - Disable telemetry when repository metadata must remain local: `DO_NOT_TRACK=1` and `ORCA_TELEMETRY_DISABLED=1` in the Orca launch environment.
 - Keep Computer Use, mobile relay, SSH, and cloud integrations off until each boundary is reviewed separately.
+
+## Agent status hooks
+
+Orca can install status hooks that report agent activity (working, waiting, done) in its sidebar.
+
+- **Claude**: Orca writes its hooks into the user-global Claude settings file. Harness-owned hooks in project settings continue to run; the two sets are additive. This needs no launcher change.
+- **Codex**: the launcher owns `CODEX_HOME`, so Orca's own Codex hook installation never reaches a launcher-generated home. Opt in per harness by adding `HARNESS_ORCA_AGENT_HOOKS=1` to that harness's `config/launcher.env` (v0.33.0+). `codex-home-prepare.sh` then appends one matcher-less entry per event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop`) after every existing entry, with a 5 second timeout. Each entry is a fixed fail-open command: it runs `~/.orca/agent-hooks/codex-hook.sh` when that script is executable and otherwise only drains stdin. Without the opt-in, `hooks.json` is identical to earlier releases. Only the value `1` enables it, and only from `launcher.env`; an ambient environment variable is ignored.
+- **Trust**: Codex only runs hooks the harness has trusted. After enabling or disabling the opt-in, rerun the harness's Codex hook trust step. Trusting the wrapper trusts whatever Orca's script contains later, so later Orca script updates run without another review. Isolated sessions use fresh Codex home clones without that trust, so Orca status for isolated Codex sessions is not provided.
+- **Rollback**: remove the opt-in line (or downgrade the launcher) and rerun the trust step; the next launch regenerates `hooks.json` without the Orca entries.
+
+The cmux title brokers are not ported to Orca. Inside an Orca terminal, stale `CMUX_*` variables never start a broker (v0.33.0+).
+
+## CODEX_HOME sanitization
+
+Orca sets `CODEX_HOME` for terminals and its interactive shell wrappers copy `ORCA_CODEX_HOME` back into it. When `ORCA_CODEX_HOME` is non-empty and `CODEX_HOME` equals it, every launcher entry point (`harness-exec`, `harness-auto`, plain `claude` after `harness_shell_enable`, `claude-management`, `checkup`, and the interactive launcher) unsets both variables before doing anything else, so Claude and other launcher-owned runtimes never inherit Orca's managed home. The `codex` path then exports the harness's own `CODEX_HOME`. A `CODEX_HOME` you set yourself that differs from Orca's value is left untouched. `checkup prompt-audit` additionally drops every `ORCA_*` variable from the audit process.
+
+## Profiles and relaunch
+
+Orca profile switching and moving a project between profiles relaunch the Orca app. Do it in a window with no live agent sessions, and only when you intend to change the trust boundary; the launcher does not switch Orca profiles for you.
+
+## Resuming agents for isolated profiles
+
+Orca restores an agent by re-running its command with `--resume <id>` (Claude) or `codex resume <id>` (Codex). Profiles that default to isolated sessions used to answer that with exit 2. From v0.33.0:
+
+- A fresh isolated Claude launch adds `--session-id <lowercase session UUID>` (after the title `--name`), unless the arguments already name or resume a session.
+- A restore with exactly one UUID (`--resume <id>`, `--resume=<id>`, `-r <id>`, `-r<id>`, or `codex resume <id>`) is mapped to the isolated session that owns it: for Claude the session directory whose name equals the id, for Codex the one session whose Codex home holds the matching rollout file. The session must belong to the current harness. Unknown ids, non-UUID ids and other harnesses' sessions keep the original rejection message; several owners is reported as ambiguous; delivered sessions, retired workspaces and sessions held by another launcher each fail with their own message and exit 2.
+- `--no-isolated` still opts out, and profiles with the isolation default off are unaffected.
+
+Known limit: after Claude's `/clear` the conversation gets a new id that is no longer the session UUID, so its restore is rejected; recover with `<prefix> --isolated-session <uuid> resume`. A plain `<prefix>` launch that opens the interactive picker has no session id to map either.
 
 Orca's worktree isolation is not a security sandbox. Runtime approval and sandbox settings still come from the launcher and selected agent.
 
@@ -82,7 +111,7 @@ Use a disposable repository before registering production or company code.
 3. Verify the process working directory is the worktree.
 4. Verify `CODEX_HOME` and `KIRO_HOME` remain rooted in the owning harness.
 5. Verify no other harness's skills, MCP servers, account state, or generated files appear.
-6. Verify Orca did not add danger/bypass arguments or managed hooks.
+6. Verify Orca did not add danger/bypass arguments, and that only the status hook described below was added.
 7. Quit and reopen Orca, resume the agent, then remove only the disposable worktree.
 
 Rollback is removal of the Orca project/profile and its disposable worktree. The canonical harness and runtime homes stay unchanged.
