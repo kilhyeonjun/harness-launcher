@@ -2,6 +2,16 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.37.0 — 2026-09-29
+
+- New herdr plugin in `share/harness-launcher/herdr-plugin` (macOS, herdr
+  0.9.1+). It labels each single-agent tab with the agent's session title, cut
+  to 20 display cells, and leaves tabs you named alone. It replaces herdr's
+  popups with notifications that carry the session title and workspace, and
+  clicking one activates the host terminal app and focuses the agent pane.
+  Link it with `herdr plugin link` and set `ui.toast.delivery = "off"`. See
+  `docs/terminal-runtimes.md`.
+
 ## 0.36.0 — 2026-09-29
 
 - Terminal runtime parity. Each launch detects one runtime, in the order
