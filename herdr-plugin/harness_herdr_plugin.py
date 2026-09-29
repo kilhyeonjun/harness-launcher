@@ -7,8 +7,10 @@ which herdr keeps in the plugin log, and the exit code stays 0.
 
 Tab labels: a tab with exactly one pane that runs a detected agent takes that
 agent's terminal title, cut to TAB_LABEL_CELLS display cells. A tab keeps its
-label when the user named it (the label is neither the default tab number nor
-the label this plugin set last).
+label when the user named it (the label is neither the default label, the tab's
+position in its workspace, nor the label this plugin set last). A tab the
+plugin labeled goes back to its position label once it no longer holds one
+agent with a usable title.
 
 Notifications: working -> idle announces completion and a switch to blocked
 announces a request for input, after the state held for the notify delay. The
@@ -34,6 +36,8 @@ TAB_LABEL_CELLS = 20
 DEFAULT_NOTIFY_DELAY_SECONDS = 1.0
 MAX_NOTIFY_DELAY_SECONDS = 30.0
 CODEX_HARNESS_SUFFIX = re.compile(r"\s+\|\s+[\w.-]*harness\s*$")
+# Codex titles a session without a task by its thread id, which names nothing.
+THREAD_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 HOMEBREW_HERDR = re.compile(r"^(.*)/opt/herdr/bin/herdr$")
 # The outermost bundle, so an app's nested helper (…/Frameworks/X Helper.app) maps to the app.
 APP_BUNDLE = re.compile(r"^(.*?\.app)/")
@@ -101,6 +105,8 @@ def cells(char):
 
 def tab_label(title):
     text = CODEX_HARNESS_SUFFIX.sub("", title).strip()
+    if THREAD_ID.match(text):
+        return ""
     if sum(cells(char) for char in text) <= TAB_LABEL_CELLS:
         return text
     kept, used = "", 0
@@ -127,26 +133,36 @@ def sync_tabs():
         live_panes = {pane.get("pane_id") for pane in panes}
         for pane_id in [pane_id for pane_id in state["panes"] if pane_id not in live_panes]:
             del state["panes"][pane_id]
+        # An unnamed tab shows its position in the workspace, not its `number`, which
+        # keeps counting after a tab closes.
+        positions, seen_in_workspace = {}, {}
         for tab in tabs:
-            members = panes_by_tab.get(tab["tab_id"], [])
-            if tab.get("pane_count") != 1 or len(members) != 1:
-                continue
-            pane = members[0]
-            title = (pane.get("terminal_title_stripped") or "").strip()
-            if not pane.get("agent") or not title:
-                continue
+            workspace_id = tab.get("workspace_id")
+            seen_in_workspace[workspace_id] = seen_in_workspace.get(workspace_id, 0) + 1
+            positions[tab["tab_id"]] = str(seen_in_workspace[workspace_id])
+        for tab in tabs:
+            tab_id = tab["tab_id"]
+            position = positions[tab_id]
             current = tab.get("label") or ""
-            if current != str(tab.get("number")) and current != owned.get(tab["tab_id"]):
-                continue
-            wanted = tab_label(title)
-            if wanted and wanted != current:
-                # Record first: if the rename fails the label stays the number, which the
-                # plugin still owns, so the next run retries.
-                owned[tab["tab_id"]] = wanted
+            if current != position and current != owned.get(tab_id):
+                continue  # the user named this tab
+            members = panes_by_tab.get(tab_id, [])
+            wanted = ""
+            if tab.get("pane_count") == 1 and len(members) == 1 and members[0].get("agent"):
+                wanted = tab_label((members[0].get("terminal_title_stripped") or "").strip())
+            if not wanted:
+                # No single agent title any more (agent exited, tab split, thread-id title):
+                # hand the tab back its position label. herdr cannot clear a tab name, so
+                # the plugin keeps owning that label.
+                wanted = position
+            if wanted != current:
+                # Record first: if the rename fails the old label is still the plugin's
+                # or the position, so the next run retries.
+                owned[tab_id] = wanted
                 try:
-                    herdr("tab", "rename", tab["tab_id"], wanted)
+                    herdr("tab", "rename", tab_id, wanted)
                 except Exception as error:  # noqa: BLE001 - one tab must not stop the rest
-                    log("rename %s: %s" % (tab["tab_id"], error))
+                    log("rename %s: %s" % (tab_id, error))
 
 
 def record_status(payload):

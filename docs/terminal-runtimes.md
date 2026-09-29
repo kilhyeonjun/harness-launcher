@@ -233,9 +233,13 @@ startup and on pane and tab events. It does two things.
 Tab labels. A tab with exactly one pane that runs a detected agent takes the
 agent's terminal title as its label, cut to 20 display cells (a wide character
 counts as two) with a trailing `…`. A trailing `| <name>harness` that Codex adds
-to its title is dropped. The plugin renames a tab only while its label is the
-default tab number or the label the plugin set last; a name you give a tab
-stays. Rename a tab back to its number to hand it back to the plugin. herdr
+to its title is dropped. The plugin renames a tab only while its label is
+herdr's default (the tab's position in its workspace, such as `4`) or the
+label the plugin set last; a name you give a tab stays. Rename a tab back to
+its position number to hand it back to the plugin. When a tab it labeled no
+longer holds one agent with a usable title (the agent exited, the tab was
+split, or Codex titled a session by its thread id), the plugin renames it back
+to its position. herdr
 has no plugin event for title changes, so a new title shows up on the next
 agent status change, agent detection, pane focus change, pane creation, close
 or move, or tab creation or rename.

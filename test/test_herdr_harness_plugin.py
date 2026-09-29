@@ -223,7 +223,7 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("macos", manifest["platforms"])
         hooks = [hook["on"] for hook in manifest["events"]]
         self.assertIn("pane.agent_status_changed", hooks)
-        self.assertIn("tab.renamed", hooks)  # renaming a tab back to its number
+        self.assertIn("tab.renamed", hooks)  # renaming a tab back to its position
         self.assertTrue(set(hooks) <= HOOKABLE, set(hooks) - HOOKABLE)
         commands = [hook["command"] for hook in manifest["events"]] + [
             entry["command"] for entry in manifest["startup"]]
@@ -243,17 +243,57 @@ class TabLabelTest(HerdrPluginTestCase):
         self.assertRan(self.h.run("startup"))
         self.assertEqual(self.h.renames(), [["w2:t1", "mkt 스킬"]])
 
+    def test_default_label_is_the_tab_position_not_its_number(self):
+        # herdr 0.9.1 keeps numbering after a tab closes (t1, t5) but labels unnamed
+        # tabs by position ("1", "2").
+        self.h.set_state([workspace("w5", "beta")],
+                         [tab("w5:t1", 1), dict(tab("w5:t5", 5), label="2")],
+                         [pane("w5:p1", "w5:t1", title="one"),
+                          pane("w5:p5", "w5:t5", title="five")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w5:t1", "one"], ["w5:t5", "five"]])
+
     def test_long_title_is_cut_to_twenty_display_cells(self):
-        self.h.set_state([workspace("w5", "beta")], [tab("w5:t4", 4)],
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t4", 4, label="1")],
                          [pane("w5:p4", "w5:t4", title=LONG_TITLE)])
         self.assertRan(self.h.run("pane.focused"))
         self.assertEqual(self.h.renames(), [["w5:t4", "TASK-2545 relay 2단…"]])
 
     def test_codex_harness_suffix_is_dropped(self):
-        self.h.set_state([workspace("w5", "beta")], [tab("w5:t7", 7)],
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t7", 7, label="1")],
                          [pane("w5:p7", "w5:t7", agent="codex", title=CODEX_TITLE)])
         self.assertRan(self.h.run("tab.created"))
         self.assertEqual(self.h.renames(), [["w5:t7", "TASK-2578 런타임 CI…"]])
+
+    def test_codex_thread_id_title_is_not_a_label(self):
+        # Codex titles a session without a task by its thread id.
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t9", 9, label="1")],
+                         [pane("w5:p9", "w5:t9", agent="codex",
+                               title="01a0ed4e-e2cc-7213-91d9-6fe5bf1017e0 | acme-platform-harness")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [])
+
+    def test_plugin_label_returns_to_the_position_when_the_agent_leaves(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [pane("w2:p1", "w2:t1", title="task")])
+        self.assertRan(self.h.run("startup"))
+        state = self.h.state()
+        state["panes"][0]["agent"] = None
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "task"], ["w2:t1", "1"]])
+
+    def test_split_of_a_plugin_labeled_tab_returns_it_to_the_position(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [pane("w2:p1", "w2:t1", title="task")])
+        self.assertRan(self.h.run("startup"))
+        state = self.h.state()
+        state["tabs"][0]["pane_count"] = 2
+        state["panes"].append(pane("w2:p2", "w2:t1", title="other"))
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.created"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "task"], ["w2:t1", "1"]])
 
     def test_user_named_tab_is_left_alone(self):
         self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1, label="logs")],
