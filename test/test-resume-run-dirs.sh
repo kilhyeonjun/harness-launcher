@@ -158,6 +158,43 @@ print -r -- "${HARNESS:A}/sub4/link-to-a" >> "$STATE/sessions/$SB/run-dirs"
 if restore "$TMP/n3b.log" "$N3"; then fail 'a run-dirs line through a symlink out of the harness must not count'; fi
 find "$HARNESS/sub4" -name link-to-a -delete
 
+# --- only canonical lines count ------------------------------------------------
+# A line must equal its own resolved absolute form. A trailing slash or a
+# trailing carriage return encodes to <dir>- and a symlinked alias to the
+# alias's own project directory, none of which is the directory Claude used.
+mkdir -p "$HARNESS/sub5"
+D5="${HARNESS:A}/sub5"
+ln -s "$D5" "$HARNESS/alias5"
+N5=cccccccc-0000-4000-8000-000000000005
+record "$SA" "$N5"
+for bad in "$D5/" "$D5"$'\r' "${HARNESS:A}/alias5"; do
+  transcript_in_raw() { local enc="${1//[^A-Za-z0-9]/-}"; mkdir -p "$CFG/projects/$enc"; : > "$CFG/projects/$enc/$2.jsonl"; }
+  transcript_in_raw "$bad" "$N5"
+  print -r -- "$bad" >> "$STATE/sessions/$SA/run-dirs"
+  if restore "$TMP/n5.log" "$N5"; then fail "a non-canonical run-dirs line must not count: ${(q+)bad}"; fi
+  grep -q -- "$reject_msg" "$TMP/n5.log.err" || fail "non-canonical line ${(q+)bad} must keep the reject message"
+  find "$CFG/projects" -name "$N5.jsonl" -delete
+done
+find "$HARNESS" -maxdepth 1 -name alias5 -delete
+
+# --- a forged source-tree line only confirms ids its session owns --------------
+# harness-exec launches file transcripts under source-tree project directories.
+# Session B's transcript lives under $D5; session A forges a canonical line for
+# it. The owner count decides: an id recorded only by B is not A's (and B never
+# ran in $D5, so it is rejected); recorded by both it is ambiguous; recorded by
+# nobody it is rejected.
+N6=cccccccc-0000-4000-8000-000000000006
+N7=cccccccc-0000-4000-8000-000000000007
+record "$SB" "$N6"; transcript_in "$D5" "$N6"; transcript_in "$D5" "$N7"
+print -r -- "$D5" >> "$STATE/sessions/$SA/run-dirs"
+if restore "$TMP/n6.log" "$N6"; then fail "a forged line in A must not map B's id (landed in $(session_of "$TMP/n6.log"))"; fi
+grep -q -- "$reject_msg" "$TMP/n6.log.err" || fail "B-only id with a forged A line must keep the reject message"
+record "$SA" "$N6"
+if restore "$TMP/n6b.log" "$N6"; then fail 'an id recorded by A and B must not map'; fi
+grep -q 'ambiguous' "$TMP/n6b.log.err" || fail 'an id recorded by A and B must be ambiguous'
+if restore "$TMP/n7.log" "$N7"; then fail 'a forged line must not map an id with no owner'; fi
+grep -q -- "$reject_msg" "$TMP/n7.log.err" || fail 'an unowned id must keep the reject message'
+
 # --- the launcher never writes through a symlinked run-dirs -------------------
 : > "$TMP/rd-victim"
 find "$STATE/sessions/$SA" -name run-dirs -delete

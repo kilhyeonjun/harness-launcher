@@ -73,10 +73,11 @@ _harness_launcher_session_records_claude() {
 #   Claude stores transcripts at <config>/projects/<cwd with non-alnum -> ->/<id>.jsonl.
 #   The cwd is the session root or one of the run directories the launcher
 #   recorded in the session's run-dirs. run-dirs counts only as a regular
-#   non-symlink file; a line counts only when it is an absolute path without
-#   `.`/`..` components or `//` whose resolved form lies inside the session's
-#   recorded source root or its session root. The session itself has already
-#   passed _harness_launcher_session_is_current.
+#   non-symlink file; a line counts only when it is canonical (an absolute path
+#   without control characters that equals its own resolved form, as the
+#   launcher writes it) and lies inside the session's recorded source root or
+#   its session root. The session itself has already passed
+#   _harness_launcher_session_is_current.
 _harness_launcher_claude_transcript_exists() {
   local state_home="$1" name="$2" id="$3"
   local dir="$state_home/sessions/$name" root candidate enc line resolved base source_root
@@ -89,11 +90,12 @@ _harness_launcher_claude_transcript_exists() {
     source_root="$(<"$dir/source-root")"
     bases=("${source_root:A}" "${root:A}")
     while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ "$line" == /* && "$line" != (*/./*|*/../*|*/.|*/..|*//*) ]] || continue
+      [[ "$line" == /* && "$line" != *[[:cntrl:]]* ]] || continue
       resolved="${line:A}"
+      [[ "$line" == "$resolved" ]] || continue
       for base in "${bases[@]}"; do
         if [[ "$base" == /?* && ( "$resolved" == "$base" || "$resolved" == "$base"/* ) ]]; then
-          candidates+=("$line" "$resolved")
+          candidates+=("$resolved")
           break
         fi
       done

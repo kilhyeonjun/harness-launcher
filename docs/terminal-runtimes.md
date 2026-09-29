@@ -139,18 +139,21 @@ its shim from Codex through `codex_exclusions`; the transcript check is the
 backstop.
 
 Claude files a transcript under the project directory of its working
-directory. An isolated session runs in the caller's directory when that is
-inside the harness (`harness-exec` passes `--cwd`), else in the session root.
-Before the agent starts, the launcher appends that resolved run directory to
+directory. Through `harness-exec` (and so `harness-auto`, shell routing, Orca and
+herdr restores) an isolated agent runs in the caller's directory when that is
+inside the harness, else in the source harness root: `harness-exec` always
+passes `--cwd`. Only a launch without `--cwd` runs in the session root. Before
+the agent starts, the launcher appends that resolved run directory to
 `<state>/sessions/<HARNESS_SESSION_ID>/run-dirs`, one path per line. It skips an
 identical line, never writes through a symlink, writes only a regular file, and
 records only a directory inside the session's source root or session root.
 The resolver reads `run-dirs` only as a regular non-symlink file and uses a line
-only when it is an absolute path without `.` or `..` components whose resolved
-form lies inside that session's source root or session root. It checks the
-session root and each such line, both as written and resolved. A forged line
-cannot point the check at another session's workspace, and the owner count is
-unchanged.
+only when it is canonical (an absolute path that equals its own resolved form,
+as the launcher writes it) and lies inside that session's source root or session
+root. It checks the session root and each such line. The owner count is
+unchanged, so a forged line can only confirm a transcript for an id its session
+already owns by record; an id another session also owns is ambiguous and
+rejected, and an id no session owns stays rejected.
 
 Limits:
 
