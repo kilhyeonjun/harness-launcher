@@ -20,8 +20,8 @@ git -C "$HARNESS" add -A && git -C "$HARNESS" commit -qm initial
 
 cat > "$TMP/bin/claude" <<'STUB'
 #!/usr/bin/env bash
-printf 'CODEX_HOME=%s\nORCA_CODEX_HOME=%s\nORCA_TERMINAL_HANDLE=%s\nORCA_OTHER=%s\n' \
-  "${CODEX_HOME-unset}" "${ORCA_CODEX_HOME-unset}" "${ORCA_TERMINAL_HANDLE-unset}" "${ORCA_OTHER-unset}" >> "$STUB_LOG"
+printf 'CODEX_HOME=%s\nORCA_CODEX_HOME=%s\nORCA_TERMINAL_HANDLE=%s\nORCA_OTHER=%s\nHERDR_PANE_ID=%s\n' \
+  "${CODEX_HOME-unset}" "${ORCA_CODEX_HOME-unset}" "${ORCA_TERMINAL_HANDLE-unset}" "${ORCA_OTHER-unset}" "${HERDR_PANE_ID-unset}" >> "$STUB_LOG"
 STUB
 cat > "$TMP/bin/codex" <<'STUB'
 #!/usr/bin/env bash
@@ -76,6 +76,11 @@ run "$TMP/e.log" ORCA_TERMINAL_HANDLE=term_1 ORCA_OTHER=x TEST_ASSUME_TTY=1 -- c
 [[ -s "$TMP/e.log" ]] || { cat "$TMP/e.log.err" >&2; fail 'checkup stub was not invoked'; }
 grep -qx 'ORCA_TERMINAL_HANDLE=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_TERMINAL_HANDLE'
 grep -qx 'ORCA_OTHER=unset' "$TMP/e.log" || fail 'checkup child must not see ORCA_*'
+# The same for HERDR_* under the herdr runtime (the launch scrub keeps them).
+python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMP/herdr.sock"
+run "$TMP/h.log" HERDR_ENV=1 HERDR_PANE_ID=w1:p1 HERDR_SOCKET_PATH="$TMP/herdr.sock" TEST_ASSUME_TTY=1 -- checkup prompt-audit
+[[ -s "$TMP/h.log" ]] || { cat "$TMP/h.log.err" >&2; fail 'herdr checkup stub was not invoked'; }
+grep -qx 'HERDR_PANE_ID=unset' "$TMP/h.log" || fail 'checkup child must not see HERDR_*'
 
 # The remaining cases run the real codex-home-prepare.sh, which requires the
 # macOS /usr/bin/lockf kernel lock (see run-all.sh). Hosted images without it

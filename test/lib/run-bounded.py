@@ -85,10 +85,13 @@ def run_tty(argv, limit, out_path):
             status = st
     if timed_out:
         kill_group(pid)
+        # Close the master first: a process still holding the pty open can
+        # then not keep the runner waiting past its limit.
+        os.close(fd)
         _, status = os.waitpid(pid, 0)
     else:
         drain(0.2)  # whatever the command wrote just before it exited
-    os.close(fd)
+        os.close(fd)
     text = b"".join(chunks).replace(b"\r\n", b"\n")
     if timed_out:
         text += b"TIMEOUT after %g s\n" % limit
