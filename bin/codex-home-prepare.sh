@@ -1815,36 +1815,43 @@ if os.path.isfile(title_sync):
 # harness-owned hooks keep their order. Rows are emitted whether or not the
 # script exists at prepare time: the warm path returns on a fingerprint match
 # before this generator runs, so an existence-dependent row would never appear
-# once a runtime integration was installed after a prepare. Every command is
-# fail-open: it runs the script only when executable and otherwise drains stdin.
+# once a runtime integration was installed after a prepare.
+# Every row shares one status-only, fail-open command: it runs the script (with
+# its optional argument) only when executable, discards its stdout and stderr,
+# and always exits 0 (no exec), so a runtime script can never block a tool,
+# decide a permission or surface a failure in a Codex session; otherwise it only
+# drains stdin. Rows differ only in script path, argument, events and timeout.
 # The "$HOME" inside each command stays literal; the shell expands it at hook
 # run time.
 RUNTIME_HOOK_REGISTRY = (
-    # Orca status hook: status only, output discarded, always exits 0 (no exec).
     {
         "name": "orca",
         "script": "$HOME/.orca/agent-hooks/codex-hook.sh",
+        "argument": "",
         "events": ("SessionStart", "UserPromptSubmit", "PreToolUse",
                    "PermissionRequest", "PostToolUse", "Stop"),
-        "run": "{ /bin/sh \"$s\" >/dev/null 2>&1; exit 0; }",
         "timeout": 5,
     },
-    # herdr agent state: exec'd with its `session` argument.
     {
         "name": "herdr",
         "script": "$HOME/.codex/herdr-agent-state.sh",
+        "argument": "session",
         "events": ("SessionStart",),
-        "run": "exec /bin/sh \"$s\" session",
         "timeout": 10,
     },
 )
+
+def runtime_hook_command(script, argument):
+    invoke = '/bin/sh "$s"' + (" " + argument if argument else "")
+    return (
+        f"/bin/sh -c 's=\"{script}\"; "
+        f"[ -x \"$s\" ] && {{ {invoke} >/dev/null 2>&1; exit 0; }}; cat >/dev/null'"
+    )
+
 for row in RUNTIME_HOOK_REGISTRY:
     if not runtime_optins.get(row["name"], False):
         continue
-    row_command = (
-        f"/bin/sh -c 's=\"{row['script']}\"; "
-        f"[ -x \"$s\" ] && {row['run']}; cat >/dev/null'"
-    )
+    row_command = runtime_hook_command(row["script"], row["argument"])
     for event in row["events"]:
         config["hooks"].setdefault(event, []).append(
             {"hooks": [{"type": "command", "command": row_command, "timeout": row["timeout"]}]}

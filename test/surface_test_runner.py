@@ -62,7 +62,8 @@ ALLOWLIST = [
     ('PrepareIntegrationTests.test_herdr_opt_in_appends_one_fail_open_session_start_entry', 5),
     ('PrepareIntegrationTests.test_orca_and_herdr_rows_are_ordered_after_harness_entries', 2),
     ('PrepareIntegrationTests.test_herdr_opt_in_flip_regenerates_and_unchanged_run_stays_warm', 6),
-    ('PrepareIntegrationTests.test_herdr_hook_command_is_fail_open_and_passes_session_argument', 1),
+    ('PrepareIntegrationTests.test_herdr_hook_command_is_status_only_and_fail_open', 1),
+    ('PrepareIntegrationTests.test_no_opt_in_hooks_json_matches_the_80cc12a_golden_output', 2),
 ]
 
 # Exact reviewed serial set: no new test can overlap shards without a review.

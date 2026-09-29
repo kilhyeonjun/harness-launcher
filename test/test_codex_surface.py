@@ -1116,7 +1116,7 @@ out.mkdir(parents=True, exist_ok=True)
 
     HERDR_COMMAND = (
         "/bin/sh -c 's=\"$HOME/.codex/herdr-agent-state.sh\"; "
-        "[ -x \"$s\" ] && exec /bin/sh \"$s\" session; cat >/dev/null'"
+        "[ -x \"$s\" ] && { /bin/sh \"$s\" session >/dev/null 2>&1; exit 0; }; cat >/dev/null'"
     )
 
     def herdr_entry(self):
@@ -1145,10 +1145,15 @@ out.mkdir(parents=True, exist_ok=True)
         self.prepare(HARNESS_HERDR_AGENT_HOOKS="1")
         self.assertEqual(self.compiler_calls(), 1, "ambient env changed the fingerprint")
         self.assertEqual(hooks_path.read_bytes(), baseline)
-        # An explicit off value and a missing launcher.env both stay off.
+        # An explicit off value stays off and does not change the fingerprint.
         self.set_launcher_env("HARNESS_HERDR_AGENT_HOOKS=0")
         self.prepare()
         self.assertEqual(self.compiler_calls(), 1, "an off value must not change the fingerprint")
+        self.assertEqual(hooks_path.read_bytes(), baseline)
+        # A missing launcher.env resolves off the same way at prepare level.
+        (self.repo / "config" / "launcher.env").unlink()
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1, "a missing launcher.env must resolve off")
         self.assertEqual(hooks_path.read_bytes(), baseline)
 
     def test_herdr_opt_in_appends_one_fail_open_session_start_entry(self):
@@ -1238,34 +1243,97 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertEqual(self.compiler_calls(), 5)
         self.assertEqual(hooks_path.read_bytes(), off)
 
-    def test_herdr_hook_command_is_fail_open_and_passes_session_argument(self):
+    def test_herdr_hook_command_is_status_only_and_fail_open(self):
         # Case 6: run the exact generated command with a fixture HOME.
-        self.set_launcher_env("HARNESS_HERDR_AGENT_HOOKS=1")
+        self.set_launcher_env("HARNESS_ORCA_AGENT_HOOKS=1", "HARNESS_HERDR_AGENT_HOOKS=1")
         self.prepare()
-        command = self.read_hooks()["SessionStart"][-1]["hooks"][0]["command"]
+        hooks = self.read_hooks()
+        command = hooks["SessionStart"][-1]["hooks"][0]["command"]
         self.assertEqual(command, self.HERDR_COMMAND)
+        # Status-only like the Orca row: the two commands differ only in the
+        # script path and the argument.
+        orca = hooks["SessionStart"][-2]["hooks"][0]["command"]
+        self.assertEqual(orca, self.orca_command())
+        self.assertEqual(
+            orca.replace(".orca/agent-hooks/codex-hook.sh", ".codex/herdr-agent-state.sh")
+                .replace('"$s" >/dev/null', '"$s" session >/dev/null'),
+            command,
+        )
         env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin"}
         script = self.home / ".codex" / "herdr-agent-state.sh"
+        args_seen = self.home / "args.seen"
+        stdin_seen = self.home / "stdin.seen"
+
+        def run():
+            return subprocess.run(command, shell=True, input="{}", text=True,
+                                  capture_output=True, env=env)
+
+        # (a) script absent: exit 0, no stdout, no stderr.
         self.assertFalse(script.exists())
-        result = subprocess.run(command, shell=True, input="{}", text=True,
-                                capture_output=True, env=env)
+        result = run()
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-        # Present and executable: it is exec'd with `session` and receives stdin.
+        # (b) script prints to stdout and stderr: exit 0 and nothing surfaces.
+        # It is invoked with `session` as its only argument and receives stdin.
         self.install_herdr_script(
-            '#!/bin/sh\nprintf "%s\\n" "$*" > "$HOME/args.seen"\ncat > "$HOME/stdin.seen"\n'
+            '#!/bin/sh\nprintf "%s\\n" "$#:$*" > "$HOME/args.seen"\ncat > "$HOME/stdin.seen"\n'
+            'echo herdr-out\necho herdr-err >&2\n'
         )
-        result = subprocess.run(command, shell=True, input="{}", text=True,
-                                capture_output=True, env=env)
-        self.assertEqual((result.returncode, result.stdout), (0, ""))
-        self.assertEqual((self.home / "args.seen").read_text(encoding="utf-8"), "session\n")
-        self.assertEqual((self.home / "stdin.seen").read_text(encoding="utf-8"), "{}")
-        # Present but not executable: it is skipped and stdin is drained.
+        result = run()
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        self.assertEqual(args_seen.read_text(encoding="utf-8"), "1:session\n")
+        self.assertEqual(stdin_seen.read_text(encoding="utf-8"), "{}")
+        # (c) script exits 3: the failure never surfaces.
+        args_seen.unlink()
+        self.install_herdr_script('#!/bin/sh\nprintf "%s\\n" "$*" > "$HOME/args.seen"\necho oops >&2\nexit 3\n')
+        result = run()
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        self.assertEqual(args_seen.read_text(encoding="utf-8"), "session\n")
+        # (d) script present but not executable: skipped, exit 0, no output.
         script.chmod(0o644)
-        (self.home / "args.seen").unlink()
-        result = subprocess.run(command, shell=True, input="{}", text=True,
-                                capture_output=True, env=env)
-        self.assertEqual((result.returncode, result.stdout), (0, ""))
-        self.assertFalse((self.home / "args.seen").exists())
+        args_seen.unlink()
+        result = run()
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        self.assertFalse(args_seen.exists(), "a non-executable script must not run")
+
+    def test_no_opt_in_hooks_json_matches_the_80cc12a_golden_output(self):
+        # Independent oracle: the text below was captured from the generator at
+        # 80cc12a (before the registry) for this fixture, with the machine
+        # specific python path and bin directory replaced by placeholders. Any
+        # formatting, ordering or content change to the no-opt-in output fails.
+        golden = (
+            '{\n'
+            '  "hooks": {\n'
+            '    "SessionStart": [\n'
+            '      {\n'
+            '        "hooks": [\n'
+            '          {\n'
+            '            "type": "command",\n'
+            '            "command": "@PYTHON@ @BIN@/codex-cmux-title-sync.py",\n'
+            '            "timeout": 3000\n'
+            '          }\n'
+            '        ]\n'
+            '      }\n'
+            '    ]\n'
+            '  }\n'
+            '}\n'
+        )
+        python_bin = subprocess.run(
+            ["/bin/bash", "-c", 'source "$1"; harness_python3_resolve', "_", str(ROOT / "bin" / "harness-common.sh")],
+            env=self.environment(), text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        expected = golden.replace("@PYTHON@", python_bin).replace("@BIN@", str(ROOT / "bin"))
+        self.install_herdr_script()
+        hooks_path = self.codex_home / "hooks.json"
+        # No launcher.env at all, then explicit off values for both runtimes.
+        self.prepare()
+        self.assertEqual(hooks_path.read_text(encoding="utf-8"), expected)
+        self.set_launcher_env("HARNESS_ORCA_AGENT_HOOKS=0", "HARNESS_HERDR_AGENT_HOOKS=0")
+        self.prepare()
+        self.assertEqual(hooks_path.read_text(encoding="utf-8"), expected)
+        # Process environment alone never changes it, even on a cold rebuild.
+        (self.codex_home / ".surface-success.json").unlink()
+        self.prepare(HARNESS_ORCA_AGENT_HOOKS="1", HARNESS_HERDR_AGENT_HOOKS="1")
+        self.assertEqual(hooks_path.read_text(encoding="utf-8"), expected)
 
     def test_profile_flags_and_warm_fingerprint_invalidation(self):
         # Installed plugins carry tests/docs/assets that are not copied into
