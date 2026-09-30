@@ -468,3 +468,41 @@ checkout to a different installed package.
 The Codex hook adapter sets `HARNESS_HOOK_RUNTIME=codex` for its child hook only.
 Shared hooks should prefer an explicit runtime identity over a stale
 `CODEX_HOME` inherited by a Claude session.
+
+### Slack user approval across launch modes
+
+An enabled Slack connector must be explicitly identified with
+`HARNESS_CODEX_SLACK_APPS="asdk_app_<id>"`; every named id must also be in
+`HARNESS_CODEX_APPS_ALLOWLIST`. Other connectors do not inherit this policy.
+The managed home and final native launch both set exact public mutation tools
+(`send_message`, `schedule_message`, `edit_message`, `delete_message`, file
+upload completion, and canvas mutations) to `prompt`, with
+`approvals_reviewer="user"`. Raw, `slack_`, and `slack_slack_` tool names are
+covered; reads, reactions, and message drafts are excluded.
+
+Caller flags, profiles, and resumed grants cannot disable those prompts. A
+Slack-enabled `bypass` launch retains `danger-full-access` but changes approval
+to `on-request`; a plain `never` launch keeps its sandbox. Per-account `links`
+policy overrides are cleared only in the final runtime configuration, forcing
+every connected account through the app's user reviewer. This does not modify
+saved connector credentials or account metadata. The existing stdio app-server
+guard also clamps thread/turn grants and rejects protected config writes.
+
+The private Slack opt-in participates in the warm-home identity. Removing it
+restores ordinary launcher policy. Native `prompt` approval is not remembered
+for later calls, so a changed channel, text, mention, or attachment requires a
+new decision. Conversational full-message preview remains the harness skill's
+responsibility; the native prompt protects the actual operation. Managed
+enterprise policy that requires an automatic reviewer must be reconciled by
+its administrator before this user-only contract can be used.
+
+Claude caller settings are merged into one final settings source, retaining
+existing fields and hooks while adding mandatory Slack ask rules. When the
+caller supplied a settings file, the merge is written to a private `0600`
+temporary file and removed when the runtime exits; file-contained environment
+secrets are never expanded into command-line arguments.
+
+Happy wrappers are rejected when `HARNESS_CODEX_SLACK_APPS` is nonempty: their
+internal settings and approval overrides do not preserve this policy. Use the
+native Claude or Codex launcher. Harnesses without this opt-in keep existing
+Happy behavior.

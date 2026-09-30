@@ -1582,6 +1582,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
         "mcp_profile": mcp_profile,
         "global_mcp_digest": global_resolution.digest,
         "apps_allowlist": apps_allowlist(),
+        "slack_apps": os.environ.get("HARNESS_CODEX_SLACK_APPS", ""),
         **runtime_agent_hooks(repo_root),
         "bundled_marketplace_path": (
             os.path.realpath(args.bundled_marketplace)
@@ -1927,6 +1928,7 @@ def inspection_config_signatures(codex_home: Path) -> dict[str, str]:
 
 def write_stamp(args: argparse.Namespace) -> None:
     payload = load_inline_json(args.fingerprint_json, "fingerprint")
+    payload.setdefault("slack_apps", "")
     # The runtime hook opt-ins are optional so stamps written before they
     # existed stay valid.
     if set(payload) - runtime_hook_fields() != {
@@ -1936,6 +1938,7 @@ def write_stamp(args: argparse.Namespace) -> None:
         "mcp_profile",
         "global_mcp_digest",
         "apps_allowlist",
+        "slack_apps",
         "bundled_marketplace_path",
     }:
         fail("fingerprint payload has unexpected fields")

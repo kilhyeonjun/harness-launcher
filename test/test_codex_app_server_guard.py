@@ -322,5 +322,42 @@ class SchemaDriftTest(unittest.TestCase):
                              "regenerate test/fixtures/codex-app-server-path-fields.json and classify new fields")
 
 
+
+class SlackApprovalBoundaryTest(unittest.TestCase):
+    def test_thread_and_turn_cannot_override_user_approval(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"HARNESS_CODEX_SLACK_APPS": "asdk_app_slacktest", "HARNESS_CODEX_APPS_ALLOWLIST": "asdk_app_slacktest"}):
+            guard = guard_module.Guard(root, root, "alpha")
+            for method in ("thread/start", "thread/resume", "thread/fork", "turn/start"):
+                message = {"id": 1, "method": method, "params": {"cwd": root, "approvalPolicy": "never", "approvalsReviewer": "auto_review"}}
+                raw, error = guard.filter_line(json.dumps(message).encode())
+                self.assertIsNone(error)
+                params = json.loads(raw)["params"]
+                self.assertEqual(params["approvalPolicy"], "on-request")
+                self.assertEqual(params["approvalsReviewer"], "user")
+
+    def test_nested_ancestor_config_override_is_rejected(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"HARNESS_CODEX_SLACK_APPS": "asdk_app_slacktest", "HARNESS_CODEX_APPS_ALLOWLIST": "asdk_app_slacktest"}):
+            guard = guard_module.Guard(root, root, "alpha")
+            for config in ({"apps": {"asdk_app_slacktest": {"approvals_reviewer": "auto_review"}}}, {"features": {"apps": False}}, {'apps."asdk_app_slacktest"': {"links": {"account": {"approvals_reviewer": "auto_review"}}}}, {'apps.asdk_app_slacktest.links.account.approvals_reviewer': 'auto_review'}, {'"approvals_reviewer"': 'auto_review'}):
+                message = {"id": 3, "method": "thread/start", "params": {"cwd": root, "config": config}}
+                raw, error = guard.filter_line(json.dumps(message).encode())
+                self.assertIsNone(raw)
+                self.assertIsNotNone(error)
+            message = {"id": 4, "method": "thread/start", "params": {"cwd": root, "config": {"apps.asdk_app_other.enabled": True, "model_reasoning_effort": "high"}}}
+            raw, error = guard.filter_line(json.dumps(message).encode())
+            self.assertIsNone(error)
+            self.assertEqual(json.loads(raw)["params"]["config"]["model_reasoning_effort"], "high")
+
+    def test_protected_config_write_is_rejected(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"HARNESS_CODEX_SLACK_APPS": "asdk_app_slacktest", "HARNESS_CODEX_APPS_ALLOWLIST": "asdk_app_slacktest"}):
+            guard = guard_module.Guard(root, root, "beta")
+            message = {"id": 2, "method": "config/value/write", "params": {"keyPath": "apps.asdk_app_slacktest.links.account.approvals_reviewer", "value": "auto_review"}}
+            raw, error = guard.filter_line(json.dumps(message).encode())
+            self.assertIsNone(raw)
+            self.assertIsNotNone(error)
+
 if __name__ == "__main__":
     unittest.main()

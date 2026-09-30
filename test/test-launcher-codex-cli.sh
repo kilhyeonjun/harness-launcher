@@ -888,3 +888,28 @@ fi
 echo "PASS: codex CLI happy continue blocked (Happy Codex cannot map codex resume --last)"
 
 echo "✓ All codex CLI native tests passed"
+
+# Explicit Slack app opt-ins demand native user approval across every prefix.
+for slack_prefix in alpha beta gamma; do
+  for safety in base bypass never; do
+    cat > "$TEST_HARNESS/config/launcher.env" <<EOF
+HARNESS_NAME="test harness"
+HARNESS_PREFIX="$slack_prefix"
+HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_slacktest"
+HARNESS_CODEX_SLACK_APPS="asdk_app_slacktest"
+EOF
+    output="$TEST_TEMP/slack-$slack_prefix-$safety.txt"
+    run_codex "$output" "$safety" --passthrough resume test-session -a never -c 'apps.asdk_app_slacktest.links.account.approvals_reviewer="auto_review"'
+    argv="$(get_field ARGV "$output")"
+    [[ "$argv" == *'apps.asdk_app_slacktest.tools.slack_slack_send_message.approval_mode="prompt"'* && "$argv" == *'apps.asdk_app_slacktest.approvals_reviewer="user"'* && "$argv" == *'apps.asdk_app_slacktest.links={}'* ]] || { echo "FAIL: Slack $slack_prefix/$safety missing exact-tool approval: $argv"; exit 1; }
+    [[ "$argv" != *'--dangerously-bypass-approvals-and-sandbox'* && "$argv" != *'-a never'* && "$argv" == *'-a on-request'* ]] || { echo "FAIL: Slack approval disabled: $argv"; exit 1; }
+    [[ "$argv" != *'reaction.approval_mode'* && "$argv" != *'draft.approval_mode'* && "$argv" != *'read_thread.approval_mode'* ]] || { echo "FAIL: read/draft/reaction gained prompts"; exit 1; }
+  done
+done
+echo "PASS: three-profile Slack normal/bypass/never resume and caller overrides retain user approval"
+
+output="$TEST_TEMP/slack-happy-rejected.txt"
+if run_codex_failure "$output" happy; then echo 'FAIL: opted-in Slack Happy succeeded'; exit 1; fi
+if grep -q '^HAPPY_ARGV:' "$TEST_TEMP/output-codex-cli-failure-stub.txt"; then echo 'FAIL: opted-in Slack Happy executed'; exit 1; fi
+grep -q 'Happy.*Slack.*native' "$output" || { echo 'FAIL: Happy rejection lacks native-runtime guidance'; exit 1; }
+echo 'PASS: Slack Happy shortcut is rejected'

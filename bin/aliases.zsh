@@ -5,6 +5,7 @@
 #   harness_register /path/to/some-harness
 
 _HARNESS_LAUNCHER_BIN="$(cd "$(dirname "${(%):-%x}")" 2>/dev/null && pwd)"
+_HARNESS_SLACK_POLICY="$_HARNESS_LAUNCHER_BIN/slack-approval-policy.py"
 typeset -ga _HARNESS_LAUNCHER_REGISTERED_DIRS=()
 if (( ${+parameters[_HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED]} )) && \
     [[ "${(t)_HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED}" == *-export* ]]; then
@@ -504,6 +505,7 @@ _harness_launcher_prepare_codex_global_mcp_allowlist() {
 }
 
 _harness_launcher_prepare_codex_apps_allowlist() {
+  export HARNESS_CODEX_SLACK_APPS="${HARNESS_CODEX_SLACK_APPS:-}"
   local raw="${HARNESS_CODEX_APPS_ALLOWLIST:-}" normalized
   [[ -n "$raw" ]] || { unset HARNESS_CODEX_APPS_ALLOWLIST; return 0; }
   normalized="$(harness_codex_apps_allowlist_normalize "$raw")" || return $?
@@ -750,8 +752,8 @@ codex() {
 
   if [[ "${HARNESS_LAUNCHER_DISABLE_CODEX_WRAPPER:-}" != "1" ]]; then
     if harness_dir="$(_harness_launcher_codex_harness_for_args "$@")"; then
-      local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
-      unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST
+      local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
+      unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS
       source "$harness_dir/config/launcher.env"
       mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
       export HARNESS_PREFIX
@@ -931,11 +933,11 @@ _harness_launcher_run() {
   # so it never reaches the agent or a nested launch.
   local host_default_mode="${HARNESS_HOST_DEFAULT_MODE-}"
   unset HARNESS_HOST_DEFAULT_MODE
-  local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
+  local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
   local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
   local config_root="$HARNESS_DIR"
-  unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST
+  unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS
   source "$HARNESS_DIR/config/launcher.env"
   mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
   export HARNESS_PREFIX
@@ -1317,7 +1319,7 @@ _harness_launcher_run_session() {
     local launch_grant launch_settings launch_context
     launch_grant="$(_harness_launcher_claude_launch_grant)"
     launch_context="$(_harness_launcher_claude_launch_context)"
-    launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant" "$launch_context")"
+    launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant" "$launch_context")" || return $?
     [[ -z "$launch_settings" ]] || claude_args+=(--settings "$launch_settings")
     # Passthrough argv goes last, after the launcher-owned flags. The boolean
     # --exclude-dynamic-system-prompt-sections then closes the variadic
@@ -1371,7 +1373,10 @@ _harness_launcher_run_session() {
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
-        claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}" "${claude_launch_tail[@]}"
+        local -a HARNESS_SLACK_ARGV=()
+        harness_slack_claude_argv "$_HARNESS_SLACK_POLICY" --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}" "${claude_launch_tail[@]}" || exit $?
+        trap 'harness_slack_settings_cleanup' EXIT
+        claude "${HARNESS_SLACK_ARGV[@]}"
       )
     else
       if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
@@ -1382,7 +1387,10 @@ _harness_launcher_run_session() {
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
         _harness_launcher_claude_mcp_local_args "$HARNESS_DIR" || exit $?
-        claude "${claude_args[@]}" "${reply[@]}" "${claude_launch_tail[@]}"
+        local -a HARNESS_SLACK_ARGV=()
+        harness_slack_claude_argv "$_HARNESS_SLACK_POLICY" "${claude_args[@]}" "${reply[@]}" "${claude_launch_tail[@]}" || exit $?
+        trap 'harness_slack_settings_cleanup' EXIT
+        claude "${HARNESS_SLACK_ARGV[@]}"
       )
     fi
     local rc=$?
@@ -1766,7 +1774,7 @@ _harness_launcher_run_codex_cli() {
   done
 
   HARNESS_CODEX_APPS_ALLOWLIST="$(harness_codex_apps_allowlist_normalize "$HARNESS_CODEX_APPS_ALLOWLIST")" || return $?
-  export HARNESS_CODEX_APPS_ALLOWLIST
+  export HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS
 
   [[ -z "$profile" ]] && profile="base"
   # A pure `resume <id>` restores the session's model, effort, context and
@@ -1842,6 +1850,7 @@ _harness_launcher_run_codex_cli() {
   # Validate incompatible combinations BEFORE preparing the runtime home, so a
   # rejected launch leaves no work-surface residue in the generated config.
   if $use_happy; then
+    harness_slack_happy_guard || return $?
     command -v happy >/dev/null 2>&1 || {
       echo "❌ happy not found in PATH" >&2
       return 1
@@ -1874,6 +1883,12 @@ _harness_launcher_run_codex_cli() {
   else
     _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
   fi
+
+  local -a HARNESS_SLACK_ARGV=()
+  harness_slack_codex_argv "$_HARNESS_SLACK_POLICY" "${codex_restore_args[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}" || return $?
+  codex_restore_args=() codex_passthrough_args=()
+  codex_args=("${HARNESS_SLACK_ARGV[@]}")
+  _harness_launcher_codex_launch_grant "${codex_args[@]}"
 
   # Plain invocation (not exec) so the user's interactive shell survives
   # codex exit — Ctrl+C returns to the prompt instead of closing the terminal.

@@ -22,7 +22,7 @@ HARNESS_NAME="${HARNESS_NAME:?HARNESS_NAME required}"
 # The launcher is a native Codex entrypoint as well as a TUI. Load only its
 # trusted harness configuration so global MCP selection cannot inherit from the
 # caller when the config omits it.
-unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY
+unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS HARNESS_MCP_SURFACE_POLICY
 # shellcheck source=/dev/null
 . "$HARNESS_DIR/config/launcher.env"
 
@@ -41,6 +41,7 @@ prepare_codex_global_mcp_allowlist() {
 }
 
 prepare_codex_apps_allowlist() {
+  export HARNESS_CODEX_SLACK_APPS="${HARNESS_CODEX_SLACK_APPS:-}"
   local raw="${HARNESS_CODEX_APPS_ALLOWLIST:-}" normalized
   [ -n "$raw" ] || { unset HARNESS_CODEX_APPS_ALLOWLIST; return 0; }
   normalized="$(harness_codex_apps_allowlist_normalize "$raw")" || return $?
@@ -1051,6 +1052,7 @@ launch_claude() {
 
   local exe="claude"
   [ "$CHOICE_HAPPY" = 1 ] && exe="happy"
+  [ "$exe" != "happy" ] || harness_slack_happy_guard || return $?
   command -v "$exe" >/dev/null 2>&1 || { echo "Error: $exe not found in PATH" >&2; return 1; }
 
   # The launch-record hook, as on the shortcut path (harness_claude_launch_settings).
@@ -1114,10 +1116,21 @@ launch_claude() {
   done
   launch_banner "$PLAN_SUMMARY" "$exe" "${banner_args[@]}"
   harness_claude_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py" "$HARNESS_DIR"
+  local HARNESS_SLACK_ARGV=()
+  if [ "$exe" = "claude" ]; then
+    harness_slack_claude_argv "$LAUNCHER_BIN_DIR/slack-approval-policy.py" "${args[@]}" || return $?
+    args=("${HARNESS_SLACK_ARGV[@]}")
+  fi
+  if [ -n "${HARNESS_SLACK_SETTINGS_FILE:-}" ]; then
+    trap 'harness_slack_settings_cleanup; rm -rf "$PROBE_DIR"' EXIT
+    "$exe" "${args[@]}"
+    exit $?
+  fi
   exec "$exe" "${args[@]}"
 }
 
 launch_codex() {
+  [ "$CHOICE_HAPPY" != 1 ] || harness_slack_happy_guard || return $?
   export HARNESS_CODEX_CONTEXT="$CHOICE_CODEX_CONTEXT"
   if harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY"; then
     unset HARNESS_CODEX_MCP_PROFILE
@@ -1172,8 +1185,16 @@ launch_codex() {
   case "$CHOICE_CODEX_PROFILE" in
     fast|base|sol|astra|plan|rich) rec_profile="$CHOICE_CODEX_PROFILE" ;;
   esac
-  harness_launch_record_export_codex "$source_root" "$rec_approval" "$rec_sandbox" "$rec_bypass" "$rec_profile"
 
+  local HARNESS_SLACK_ARGV=()
+  harness_slack_codex_argv "$LAUNCHER_BIN_DIR/slack-approval-policy.py" "${cmd[@]}" || return $?
+  cmd=("${HARNESS_SLACK_ARGV[@]}")
+  if [ -n "${HARNESS_CODEX_SLACK_APPS:-}" ]; then
+    rec_approval=on-request
+    rec_bypass=""
+    [ "$CHOICE_CODEX_SAFETY" != bypass ] || rec_sandbox=danger-full-access
+  fi
+  harness_launch_record_export_codex "$source_root" "$rec_approval" "$rec_sandbox" "$rec_bypass" "$rec_profile"
   history_save
   launch_banner "$PLAN_SUMMARY" "${cmd[@]}"
   harness_codex_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py"

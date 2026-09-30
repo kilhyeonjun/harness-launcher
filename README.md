@@ -465,6 +465,8 @@ To expose selected user-global MCP definitions, set `HARNESS_CODEX_GLOBAL_MCP_AL
 
 ChatGPT Apps and connectors follow the same shape but stay off unless requested: `HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_<id>"` turns on `[features].apps` and enables only the named ids, while `[apps._default]` keeps every other app disabled. Omitting the variable leaves `[features].apps = false`, so no connector tool reaches a session. Changing or removing the list regenerates the managed home before the next native Codex launch.
 
+For an enabled Slack connector, also set `HARNESS_CODEX_SLACK_APPS="asdk_app_<id>"` in that harness's `config/launcher.env`. Slack message sending, scheduling, editing, deletion, file sharing, and public canvas changes then require native **user** approval of the exact tool arguments on every call. Reads, reactions, and drafts keep their existing behavior. The launcher enforces this after resume, profiles, and caller overrides: Codex `bypass` keeps unrestricted filesystem access but uses `on-request`; `never` becomes `on-request` without widening its sandbox. Claude launches add explicit Slack `permissions.ask` rules even in `bypassPermissions`, preserving supplied settings and hooks. No private app ids are bundled in this package. Slack-enabled harnesses reject Happy wrappers because they cannot preserve the native approval policy; use native Claude or Codex instead.
+
 For a one-shot opt-in, use `<prefix> codex --app asdk_app_<id> [profile]`. The
 validated id is merged with that harness's trusted default allowlist for this
 launch only; it is not written to `config/launcher.env` and is absent again on

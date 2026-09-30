@@ -39,6 +39,7 @@ mkdir -p "$TEST_WORKTREE"
 TEST_WORKTREE_REAL="$(cd -P "$TEST_WORKTREE" && pwd -P)"
 cp "$LAUNCHER_DIR/bin/launcher.sh" "$TEST_LAUNCHER_BIN/launcher.sh"
 cp "$LAUNCHER_DIR/bin/harness-common.sh" "$TEST_LAUNCHER_BIN/harness-common.sh"
+cp "$LAUNCHER_DIR/bin/slack-approval-policy.py" "$TEST_LAUNCHER_BIN/slack-approval-policy.py"
 cp "$LAUNCHER_DIR/bin/mcp_paths.py" "$TEST_LAUNCHER_BIN/mcp_paths.py"
 cat > "$TEST_LAUNCHER_BIN/codex-home-prepare.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -398,6 +399,18 @@ grep -q '^HARNESS_PREFIX:test$' "$STUB3B" || {
   echo "FAIL: case3b — HARNESS_PREFIX was not exported through Happy"; cat "$STUB3B"; exit 1;
 }
 echo "PASS: case3b — runtime=Codex + Happy=yes → exec happy codex"
+cat >> "$TEST_HARNESS/config/launcher.env" <<'EOF'
+HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_slacktest"
+HARNESS_CODEX_SLACK_APPS="asdk_app_slacktest"
+EOF
+STUB_SLACK_HAPPY="$TEST_TEMP/out-slack-happy.txt"
+: > "$STUB_SLACK_HAPPY"
+run_tui $'2\n1\n2\n1\n3\n1\n' "$STUB_SLACK_HAPPY" "$HAPPY_BIN" || true
+! grep -q '^EXEC:' "$STUB_SLACK_HAPPY" || { echo 'FAIL: Slack Happy TUI executed'; exit 1; }
+grep -q 'Happy.*Slack.*native' "$STUB_SLACK_HAPPY.tui.log" || { echo 'FAIL: Slack Happy TUI missing guidance'; cat "$STUB_SLACK_HAPPY.tui.log"; exit 1; }
+printf 'HARNESS_NAME="test harness"\nHARNESS_PREFIX="test"\n' > "$TEST_HARNESS/config/launcher.env"
+echo 'PASS: Slack Happy TUI is rejected'
+
 
 # Case 3c: Happy installed, but non-base Codex mode must not offer Happy prompt
 STUB3C="$TEST_TEMP/out3c-codex-rich-happy-installed.txt"
@@ -613,4 +626,12 @@ launch_env_is "$STUB_LR5" lr5 PROFILE:'<UNSET>' BYPASS:'<UNSET>' APPROVAL:'<UNSE
   "SOURCE_ROOT:$TEST_HARNESS_REAL" ISOLATED:0
 echo "PASS: launch record — the picker exports the Codex grant, profile, root and isolation"
 
+# Slack opt-in must record the effective native user-approval grant, including bypass.
+printf '%s\n' 'HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_slack"' 'HARNESS_CODEX_SLACK_APPS="asdk_app_slack"' >> "$TEST_HARNESS/config/launcher.env"
+STUB_SLACK="$TEST_TEMP/out-slack-record.txt"; : > "$STUB_SLACK"
+run_tui $'2\n1\n5\n4\n1\n' "$STUB_SLACK"
+launch_env_is "$STUB_SLACK" slack APPROVAL:on-request SANDBOX:danger-full-access BYPASS:'<UNSET>' PROFILE:rich
+STUB_SLACK_NEVER="$TEST_TEMP/out-slack-never-record.txt"; : > "$STUB_SLACK_NEVER"
+run_tui $'2\n1\n5\n3\n1\n' "$STUB_SLACK_NEVER"
+launch_env_is "$STUB_SLACK_NEVER" slack-never APPROVAL:on-request SANDBOX:'<UNSET>' BYPASS:'<UNSET>' PROFILE:rich
 echo "✓ All codex TUI tests passed"
