@@ -89,8 +89,9 @@ generates the same `hooks.json`.
 | --- | --- | --- | --- | --- | --- |
 | orca | `HARNESS_ORCA_AGENT_HOOKS=1` | `$HOME/.orca/agent-hooks/codex-hook.sh` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop` | none | 5 |
 | herdr | `HARNESS_HERDR_AGENT_HOOKS=1` | `$HOME/.codex/herdr-agent-state.sh` | `SessionStart` | `session` | 10 |
+| launch_record | `HARNESS_LAUNCH_RECORD_HOOKS=1` | `harness-launch-record codex` (launcher-owned) | `SessionStart` | none | 5 |
 
-Both rows run the same status-only, fail-open command:
+The `orca` and `herdr` rows run the same status-only, fail-open command:
 
 ```text
 /bin/sh -c 's="<script>"; [ -x "$s" ] && { /bin/sh "$s" [argument] >/dev/null 2>&1; exit 0; }; cat >/dev/null'
@@ -105,6 +106,12 @@ Without an opt-in, `hooks.json` is identical to earlier releases. After
 enabling or disabling an opt-in, rerun the harness's Codex hook trust step.
 Isolated sessions use fresh Codex home clones without that trust, so host status
 for isolated Codex sessions is not provided.
+
+The `launch_record` row is not a host script. It runs the launcher's own
+`harness-launch-record codex` (Python, no output, exit 0) and is described under
+[Restore fidelity](#restore-fidelity). Enabling it changes `hooks.json`, so rerun
+the harness's Codex hook trust step afterwards; Codex will not run an untrusted
+hook.
 
 ## Resume routing
 
@@ -170,6 +177,129 @@ Limits:
   hooks, because its Codex home clone lacks hook trust.
 - A plain `<prefix>` launch that opens the interactive picker has no session id
   to map.
+
+## Restore fidelity
+
+A host restore carries no model, effort or permission, so the launcher would
+apply its `base` defaults and lose what the session had. For a **pure resume**
+the launcher instead restores the session's own settings.
+
+Detection (Claude and Codex):
+
+- Shell routing marks the `base` it adds to a typed `claude` with
+  `HARNESS_HOST_DEFAULT_MODE=base`, only for that `harness-auto` call. The
+  launcher reads the marker at the start of `_harness_launcher_run` and unsets it
+  before any agent starts, so the marker never reaches an agent or a nested
+  launch. A user-typed `<prefix> base --passthrough --resume <id>` has no marker
+  and keeps `base`.
+- A pure resume is exactly one resume of exactly one UUID and nothing else:
+  Claude `--resume <id>`, `--resume=<id>` or `-r <id>`; Codex `resume <id>`. Any
+  caller `--model`, `--effort`, `--permission-mode` (Claude) or `-m`, `-p`,
+  `--profile`, `-a`, `-s`, `--full-auto`,
+  `--dangerously-bypass-approvals-and-sandbox` (Codex), any other argument, or an
+  explicit launcher keyword (`rich`, `sol`, `bypass`, ...) makes it not a
+  restore, and the caller's choice stands. Orca's `<override> <default args>
+  --resume <id>` with keyword defaults is therefore left alone; without them
+  (`<prefix> --resume <id>`) it restores.
+- A detected Claude restore always launches directly, so `<prefix> --resume
+  <id>` no longer drops the id into the interactive picker.
+
+Model and effort come from the session file, through `harness-restore-probe`
+(run with the resolved Python 3.11+):
+
+- Claude: the last main-thread (non-sidechain) assistant `message.model` that is
+  a Claude model (`<synthetic>` and gateway names are skipped), and the `effort`
+  of the same entries. `[1m]` is added only when the latest `cost-state`
+  `modelUsage` has `<model>[1m]`; that map accumulates over the session, so this is
+  a known imprecision.
+- Codex: the last `turn_context` `model` and `effort`, and `context=1m` when the
+  rollout recorded a context window of at least 500000 tokens (otherwise
+  `272k`). An explicit `272k`/`1m` keyword wins.
+- The values become `--model`/`--effort` in the passthrough argv before caller-wins
+  reconciliation, so a restored `xhigh` or `max` turns thinking on the same way a
+  caller effort does. For Codex they are `-m <model> -c
+  model_reasoning_effort="<effort>"` after the profile flags.
+- The helper opens the file with `O_NOFOLLOW|O_NONBLOCK`, requires a regular file
+  (no symlink, FIFO or directory), reads only the last 8 MiB and drops the first
+  partial line, stops after 5 seconds, prints `key=value` lines and always exits
+  0. The launcher matches each line as data (never `eval` or word splitting) and
+  re-validates: model `^[A-Za-z0-9][A-Za-z0-9._-]*(\[1m\])?$` (Claude models also
+  start with `claude-`), effort `low|medium|high|xhigh|max` (`minimal` for Codex).
+  No file or an invalid value keeps the launcher default.
+
+Permission and sandbox never come from a transcript or rollout, which the agent
+can write. They come only from the **launch record**:
+
+- The launcher records what it launched the agent with: for Claude the
+  `--permission-mode`; for Codex `-a`, `-s`, `--full-auto` or the bypass flag, and
+  the launcher-owned profile (`fast|base|sol|astra|plan|rich`, not a caller `-p`),
+  plus the source root and isolation.
+- A `SessionStart` hook the launcher injects runs `harness-launch-record`, which
+  writes `<state>/launch-records/<agent>-<session_id>` (mode 0600). It opens the
+  `launch-records` directory with `O_DIRECTORY|O_NOFOLLOW`, writes a private temp
+  file and renames it through that descriptor, so a symlink at the path is
+  replaced, never followed and a symlinked directory is refused. The reader
+  opens the same way and also requires a regular file owned by the current user
+  with a single link. Keys: `permission`, `approval`, `sandbox`, `bypass`,
+  `profile=<name>`, `source_root`, `isolated=0|1`, `harness_session_id`; each value
+  is checked against a fixed vocabulary before it is written or read.
+- Claude: the hook rides the launcher's own `--settings`, merged with the forced
+  thinking setting into one JSON (`{"alwaysThinkingEnabled":true,"hooks":{...}}`).
+  The grant, source root and isolation are arguments of the hook command
+  (`--permission`, `--source-root`, `--isolated`, `--harness-session-id`), and the hook
+  ignores `HARNESS_LAUNCH_*` for Claude: Claude applies the `env` block of
+  `.claude/settings.local.json`, which an agent can write. A caller `--settings`
+  after `--passthrough` is passed last and may replace it; the launch then simply
+  has no record.
+- Codex: the `launch_record` registry row above (opt in with
+  `HARNESS_LAUNCH_RECORD_HOOKS=1`). Its `hooks.json` row is static, so the hook
+  reads the launcher's environment (`HARNESS_LAUNCH_APPROVAL`, `_SANDBOX`,
+  `_BYPASS`, `HARNESS_LAUNCH_PROFILE`, `_SOURCE_ROOT`, `_ISOLATED`),
+  exported around the agent process only, inherited values cleared first.
+  Isolated Codex homes lack hook trust, so isolated Codex sessions have no record.
+- Nested launches. The hook decides from process ancestry, not from the
+  environment: starting at the `claude` or `codex` process that ran the hook, if
+  any further ancestor's executable basename is exactly `claude` or `codex`
+  (at most 64 hops, stopping at pid 1), the launch is nested; an unreadable
+  process table also counts as nested. A nested launch keeps or lowers an existing
+  record's grant, never raises it, keeps the record's source root and isolation,
+  and creates a record without a grant when none exists. Grants rank
+  `plan` < `dontAsk` < `default` < `acceptEdits` < `auto` < `bypassPermissions`;
+  Codex approval `untrusted` < `on-failure` < `on-request` < `never` and sandbox
+  `read-only` < `workspace-write` < `danger-full-access`. A top-level launch (your
+  terminal, or a herdr-typed restore from a pane shell whose ancestors are only
+  herdr, shells and init) sets or raises, so the relaunch command the hint prints
+  does record its grant. A stale agent environment in a pane shell does not make it
+  nested, and `env -u CLAUDECODE` does not make a nested launch top-level.
+- On restore the launcher reapplies the recorded grant, only if the record names
+  this harness root. For Codex it first reapplies the recorded `-p <profile>`,
+  because a profile can carry a grant of its own (`plan` is read-only), and only
+  while `$CODEX_HOME/<profile>.config.toml` still exists as a regular file;
+  otherwise it keeps `base`. Model and effort from the rollout follow the profile.
+  The launcher keeps the default and prints one line with the exact command that
+  relaunches with bypass when there is no record at all (every session started
+  before this feature), or the recorded Codex profile is gone. A record without a
+  grant means the user chose the default mode, so it stays quiet. For example `<prefix> rich bypass --passthrough --resume <id>` or
+  `<prefix> codex sol bypass --passthrough resume <id>` (the keyword follows the
+  restored model). Claude modes carry no permission, so there is no Claude profile
+  to restore. It never escalates from a session file.
+- Sessions started from the interactive picker (`launcher.sh`) write no record.
+
+Canonical owner. `harness-launcher` maps a restore id to the isolated session that
+owns it (above). When no isolated session owns the id, `_harness_launcher_resolve_restore`
+returns 4 in two cases, and an isolation-default profile then takes the legacy
+(non-isolated) route instead of rejecting:
+
+- Codex: the rollout `<harness>/.harness/codex/sessions/*/*/*/rollout-*-<id>.jsonl`
+  exists (regular, not a symlink) in the source harness `CODEX_HOME`.
+- Claude: a launch record says `isolated=0` for that id and this harness root.
+  Isolated sessions file their transcripts in the same project directory, so a
+  transcript alone is never proof.
+
+An isolated owner always wins. `HARNESS_SESSION_ISOLATION=1` (forced) and every
+other case keep the reject message. A Claude session started before launch
+records exists still rejects in an isolation-default profile; relaunch it once
+with `--no-isolated` to start recording.
 
 ## Host prerequisites
 

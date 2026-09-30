@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Launcher-owned launch record: the only source of a restored grant.
+
+  harness-launch-record claude [--source-root R] [--isolated 0|1] [--permission P]
+                               [--harness-session-id U]
+  harness-launch-record codex                     (settings from the environment)
+  harness-launch-record read <claude|codex> <id>  print the validated record
+
+As a SessionStart hook this command reads the payload on stdin and writes
+<state>/launch-records/<agent>-<session_id> (0600, key=value). It never reads a
+transcript or rollout, and prints nothing (a hook's stdout becomes session
+context). It always exits 0.
+
+Where the grant comes from:
+  claude  arguments of the hook command inside the launcher's own --settings
+          JSON. The environment is ignored: Claude applies the `env` block of
+          .claude/settings.local.json, which an agent can write.
+  codex   the launcher's HARNESS_LAUNCH_* environment (APPROVAL, SANDBOX,
+          BYPASS, PROFILE, SOURCE_ROOT, ISOLATED), because the hooks.json
+          row is static.
+
+A nested launch (one that runs inside an agent) may keep or lower an existing
+record's grant but never raise it, and creates a record without a grant when
+none exists. A top-level launch replaces the record. Nesting is decided here,
+from process ancestry, never from the environment: from the agent process that
+ran this hook, any further ancestor whose executable basename is exactly
+`claude` or `codex` makes the launch nested (at most 64 hops). A process table
+that cannot be read counts as nested (it can only withhold a grant).
+`--pstable FILE --start-pid N` replace the live process table in tests.
+"""
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import uuid
+
+UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+SOURCES = {"startup", "resume", "clear", "compact", "fork"}
+AGENTS = {"claude", "codex"}
+MAX_RECORD = 64 * 1024
+# Lowest privilege first; a nested launch may only move a field toward the front.
+RANKS = {
+    # dontAsk denies every tool that is not pre-approved, so it is barely above plan.
+    "permission": ["plan", "dontAsk", "default", "acceptEdits", "auto", "bypassPermissions"],
+    "approval": ["untrusted", "on-failure", "on-request", "never"],
+    "sandbox": ["read-only", "workspace-write", "danger-full-access"],
+}
+PROFILES = {"fast", "base", "sol", "astra", "plan", "rich"}
+GRANT_KEYS = ("permission", "approval", "sandbox", "bypass", "profile")
+CHECKS = {
+    "permission": lambda v: v in RANKS["permission"],
+    "approval": lambda v: v in RANKS["approval"],
+    "sandbox": lambda v: v in RANKS["sandbox"],
+    "bypass": lambda v: v == "1",
+    "profile": lambda v: v in PROFILES,
+    "source_root": lambda v: v.startswith("/") and not re.search(r"[\x00-\x1f\x7f]", v),
+    "isolated": lambda v: v in {"0", "1"},
+    "harness_session_id": lambda v: UUID.fullmatch(v) is not None,
+}
+ORDER = ("permission", "approval", "sandbox", "bypass", "profile",
+         "source_root", "isolated", "harness_session_id")
+ENV_KEYS = {
+    "approval": "HARNESS_LAUNCH_APPROVAL", "sandbox": "HARNESS_LAUNCH_SANDBOX",
+    "bypass": "HARNESS_LAUNCH_BYPASS", "profile": "HARNESS_LAUNCH_PROFILE",
+    "source_root": "HARNESS_LAUNCH_SOURCE_ROOT", "isolated": "HARNESS_LAUNCH_ISOLATED",
+    "harness_session_id": "HARNESS_SESSION_ID",
+}
+CLAUDE_FLAGS = {
+    "--permission": "permission", "--source-root": "source_root",
+    "--isolated": "isolated", "--harness-session-id": "harness_session_id",
+}
+AGENT_NAMES = {"claude", "codex"}
+MAX_HOPS = 64
+
+
+def state_home():
+    explicit = os.environ.get("HARNESS_SESSION_STATE_HOME")
+    if explicit:
+        return explicit
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "harness-launcher")
+
+
+def record_name(agent, session_id):
+    if agent not in AGENTS or not UUID.fullmatch(session_id):
+        return None
+    return "%s-%s" % (agent, session_id.lower())
+
+
+def open_records_dir(create):
+    """O_DIRECTORY|O_NOFOLLOW descriptor of <state>/launch-records, or None."""
+    path = os.path.join(state_home(), "launch-records")
+    if create:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            pass
+    try:
+        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+
+
+def read_fields(dir_fd, name):
+    """Validated fields of one record: regular, ours, single link, no symlink."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid() or meta.st_nlink != 1:
+            return None
+        data = os.read(fd, MAX_RECORD)
+    finally:
+        os.close(fd)
+    found = {}
+    for raw in data.decode("utf-8", "replace").split("\n"):
+        key, sep, value = raw.partition("=")
+        if sep and key in CHECKS and CHECKS[key](value):
+            found[key] = value
+    return found
+
+
+def rank_lower(key, new, old):
+    order = RANKS[key]
+    return order.index(new) < order.index(old)
+
+
+def merge_nested(existing, new):
+    """A nested launch may keep or lower an existing grant, never raise it."""
+    if existing is None:
+        return {k: v for k, v in new.items() if k not in GRANT_KEYS}
+    merged = dict(existing)
+    for key in RANKS:
+        if key in new and key in existing and rank_lower(key, new[key], existing[key]):
+            merged[key] = new[key]
+    return merged
+
+
+def ancestry_nested(table, start_pid, max_hops=MAX_HOPS):
+    """True when a second agent process sits above the one that ran the hook.
+
+    table maps pid -> (ppid, command). Walking up from start_pid, the first
+    executable whose basename is exactly claude or codex is the agent that ran
+    the hook; any further one above it makes this launch nested. Stops at pid 1,
+    an unknown pid, or max_hops.
+    """
+    pid, owner_seen = start_pid, False
+    for _ in range(max_hops):
+        if pid <= 1 or pid not in table:
+            return False
+        ppid, command = table[pid]
+        if os.path.basename(command) in AGENT_NAMES:
+            if owner_seen:
+                return True
+            owner_seen = True
+        pid = ppid
+    return False
+
+
+def process_table(path=None):
+    """pid -> (ppid, command) from a fixture file or the live `ps`; None if unreadable."""
+    try:
+        if path:
+            with open(path, encoding="utf-8") as stream:
+                text = stream.read()
+        else:
+            text = subprocess.run(["ps", "-axo", "pid=,ppid=,comm="], capture_output=True,
+                                  text=True, timeout=5, check=True).stdout
+        table = {}
+        for line in text.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+                table[int(parts[0])] = (int(parts[1]), parts[2].strip())
+        return table
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def launch_nested(pstable, start_pid):
+    table = process_table(pstable)
+    if table is None:
+        return True
+    return ancestry_nested(table, start_pid)
+
+
+def launch_settings(agent):
+    """(fields, pstable, start_pid) for this launch: arguments (claude) or environment (codex)."""
+    raw, pstable, start_pid = {}, None, os.getpid()
+    args = sys.argv[2:]
+    if len(args) % 2:
+        return None, None, start_pid
+    for flag, value in zip(args[0::2], args[1::2]):
+        if flag == "--pstable":
+            pstable = value
+        elif flag == "--start-pid" and value.isdigit():
+            start_pid = int(value)
+        elif agent == "claude" and flag in CLAUDE_FLAGS:
+            raw[CLAUDE_FLAGS[flag]] = value
+        else:
+            return None, None, start_pid
+    if agent == "codex":
+        raw = {key: os.environ.get(var, "") for key, var in ENV_KEYS.items()}
+    fields = {k: v for k, v in raw.items() if v and CHECKS[k](v)}
+    return fields, pstable, start_pid
+
+
+def write(agent):
+    payload = json.loads(sys.stdin.read())
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
+        return
+    session_id = payload.get("session_id")
+    if payload.get("source") not in SOURCES or not isinstance(session_id, str):
+        return
+    name = record_name(agent, session_id)
+    if name is None:
+        return
+    fields, pstable, start_pid = launch_settings(agent)
+    if fields is None or "source_root" not in fields or "isolated" not in fields:
+        return
+    dir_fd = open_records_dir(create=True)
+    if dir_fd is None:
+        return
+    try:
+        if launch_nested(pstable, start_pid):
+            fields = merge_nested(read_fields(dir_fd, name), fields)
+        text = "".join("%s=%s\n" % (k, fields[k]) for k in ORDER if k in fields)
+        temp = ".tmp-%s" % uuid.uuid4().hex
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+        try:
+            try:
+                os.write(fd, text.encode("utf-8"))
+            finally:
+                os.close(fd)
+            os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            try:
+                os.unlink(temp, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(dir_fd)
+
+
+def read(agent, session_id):
+    name = record_name(agent, session_id)
+    dir_fd = open_records_dir(create=False) if name else None
+    if dir_fd is None:
+        return []
+    try:
+        found = read_fields(dir_fd, name)
+    finally:
+        os.close(dir_fd)
+    if not found:
+        return []
+    return ["%s=%s" % (key, found[key]) for key in ORDER if key in found]
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == "read":
+        lines = read(argv[2], argv[3])
+        if lines:
+            sys.stdout.write("\n".join(lines) + "\n")
+    elif len(argv) >= 2 and argv[1] in AGENTS:
+        write(argv[1])
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv)
+    except BaseException:
+        pass
+    sys.exit(0)

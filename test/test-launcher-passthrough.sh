@@ -60,6 +60,9 @@ argv_of() { sed -n 's/^ARG://p' "$1"; }
 count_arg() { argv_of "$1" | grep -Fxc -- "$2" || true; }
 value_after() { argv_of "$1" | grep -Fx -A1 -- "$2" | sed -n 2p; }
 has_arg() { argv_of "$1" | grep -Fxq -- "$2"; }
+# The launcher's one --settings merges forced thinking with its launch-record
+# hook, so forced thinking is a member of that JSON, not the whole argument.
+has_forced_thinking() { argv_of "$1" | grep -Fq -- '"alwaysThinkingEnabled":true,'; }
 
 # Exact subsequence check: the passthrough tokens appear contiguously and in order.
 has_sequence() {  # <stub-file> <tokens...>
@@ -96,7 +99,7 @@ has_sequence "$OUT" "${SDK_ARGS[@]}" || fail 'C1 passthrough tokens changed or r
 [[ "$(value_after "$OUT" --permission-mode)" == plan ]] || fail 'C1 permission mode rewritten' "$OUT"
 has_arg "$OUT" opusplan && fail 'C1 plan was captured as a launcher keyword' "$OUT"
 has_arg "$OUT" --passthrough && fail 'C1 marker was forwarded to claude' "$OUT"
-has_arg "$OUT" '{"alwaysThinkingEnabled":true}' && fail 'C1 forced thinking despite caller effort' "$OUT"
+has_forced_thinking "$OUT" && fail 'C1 forced thinking despite caller effort' "$OUT"
 has_arg "$OUT" --exclude-dynamic-system-prompt-sections \
   || fail 'C1 harness system-prompt flag missing' "$OUT"
 has_sequence "$OUT" --mcp-config "$MCP_FULL" || fail 'C1 harness MCP config missing' "$OUT"
@@ -109,7 +112,7 @@ has_sequence "$OUT" --permission-mode acceptEdits || fail 'C2 acceptEdits value 
 [[ "$(count_arg "$OUT" --permission-mode)" == 1 ]] || fail 'C2 duplicated --permission-mode' "$OUT"
 has_arg "$OUT" --effort=low || fail 'C2 --effort=low lost' "$OUT"
 [[ "$(count_arg "$OUT" --effort)" == 0 ]] || fail 'C2 launcher effort appended over caller' "$OUT"
-has_arg "$OUT" '{"alwaysThinkingEnabled":true}' && fail 'C2 forced thinking despite caller effort' "$OUT"
+has_forced_thinking "$OUT" && fail 'C2 forced thinking despite caller effort' "$OUT"
 [[ "$(value_after "$OUT" --model)" == 'opus[1m]' ]] || fail 'C2 keyword model default lost' "$OUT"
 echo 'PASS: C2 keyword-looking option values are not captured'
 
@@ -151,7 +154,9 @@ echo 'PASS: C6 launcher flags stay ahead of the caller argv'
 # C7: without the marker the legacy argv is unchanged.
 OUT="$TEST_TEMP/c7"
 run_claude "$OUT" base --verbose
-[[ "$(argv_of "$OUT" | tr '\n' ' ')" == "--model sonnet --verbose --effort high --exclude-dynamic-system-prompt-sections --mcp-config $MCP_FULL " ]] \
+# The launcher's one --settings (the launch-record hook) is the only addition.
+[[ "$(count_arg "$OUT" --settings)" == 1 ]] || fail 'C7 expected exactly one launcher --settings' "$OUT"
+[[ "$(argv_of "$OUT" | awk '$0=="--settings"{skip=2} skip>0{skip--; next} {print}' | tr '\n' ' ')" == "--model sonnet --verbose --effort high --exclude-dynamic-system-prompt-sections --mcp-config $MCP_FULL " ]] \
   || fail 'C7 legacy argv changed' "$OUT"
 echo 'PASS: C7 legacy keyword argv is unchanged'
 
@@ -189,11 +194,11 @@ echo 'PASS: C9 light mode keeps the caller prompt last'
 # C10: caller xhigh/max without its own thinking control still forces thinking.
 OUT="$TEST_TEMP/c10"
 run_claude "$OUT" base --passthrough --effort max
-has_arg "$OUT" '{"alwaysThinkingEnabled":true}' || fail 'C10 max effort lost forced thinking' "$OUT"
+has_forced_thinking "$OUT" || fail 'C10 max effort lost forced thinking' "$OUT"
 [[ "$(count_arg "$OUT" --effort)" == 1 ]] || fail 'C10 expected only the caller --effort' "$OUT"
 OUT="$TEST_TEMP/c10b"
 run_claude "$OUT" base --passthrough --effort=xhigh --thinking adaptive
-has_arg "$OUT" '{"alwaysThinkingEnabled":true}' && fail 'C10b forced thinking over caller --thinking' "$OUT"
+has_forced_thinking "$OUT" && fail 'C10b forced thinking over caller --thinking' "$OUT"
 echo 'PASS: C10 forced thinking follows the caller effort and thinking control'
 
 # C11: a launcher session keyword plus a caller session flag is ambiguous.
@@ -226,7 +231,7 @@ assert_thinking_disabled() {  # <caller args...>
   OUT="$TEST_TEMP/c14"
   run_claude "$OUT" rich --passthrough "$@"
   [[ "$(count_arg "$OUT" --effort)" == 0 ]] || fail "C14 '$*' kept launcher effort" "$OUT"
-  has_arg "$OUT" '{"alwaysThinkingEnabled":true}' && fail "C14 '$*' kept forced thinking" "$OUT"
+  has_forced_thinking "$OUT" && fail "C14 '$*' kept forced thinking" "$OUT"
   return 0
 }
 assert_thinking_disabled --thinking disabled
@@ -239,13 +244,13 @@ for keep in '--settings {"fastMode":true}' '--thinking adaptive' '--max-thinking
   OUT="$TEST_TEMP/c14"
   run_claude "$OUT" rich --passthrough ${=keep}
   [[ "$(value_after "$OUT" --effort)" == xhigh ]] || fail "C14 '$keep' dropped launcher effort" "$OUT"
-  has_arg "$OUT" '{"alwaysThinkingEnabled":true}' || fail "C14 '$keep' lost forced thinking" "$OUT"
+  has_forced_thinking "$OUT" || fail "C14 '$keep' lost forced thinking" "$OUT"
 done
 OUT="$TEST_TEMP/c14"
 run_claude "$OUT" rich --passthrough --thinking disabled --effort high
 [[ "$(count_arg "$OUT" --effort)" == 1 && "$(value_after "$OUT" --effort)" == high ]] \
   || fail 'C14 caller effort with thinking disabled' "$OUT"
-has_arg "$OUT" '{"alwaysThinkingEnabled":true}' && fail 'C14 forced thinking over a caller disable' "$OUT"
+has_forced_thinking "$OUT" && fail 'C14 forced thinking over a caller disable' "$OUT"
 echo 'PASS: C14 only explicit thinking disables drop the launcher xhigh/max'
 
 # C15: a launcher `--` ends keyword parsing and stays after launcher flags.
@@ -270,7 +275,7 @@ OUT="$TEST_TEMP/c17"
 run_claude "$OUT" base --passthrough -- --model x --effort max
 [[ "$(argv_of "$OUT" | grep -Fx -A1 -- --model | sed -n 2p)" == sonnet ]] || fail 'C17 launcher model dropped' "$OUT"
 [[ "$(value_after "$OUT" --effort)" == high ]] || fail 'C17 launcher effort dropped' "$OUT"
-has_arg "$OUT" '{"alwaysThinkingEnabled":true}' && fail 'C17 prompt text forced thinking' "$OUT"
+has_forced_thinking "$OUT" && fail 'C17 prompt text forced thinking' "$OUT"
 argv=("${(@f)$(argv_of "$OUT")}")
 [[ "${argv[-5]}" == -- && "${argv[-1]}" == max ]] || fail 'C17 caller prompt is not last' "$OUT"
 echo 'PASS: C17 caller -- hides later tokens from passthrough scans'

@@ -261,6 +261,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --launcher-file "$SCRIPT_DIR/harness-common.sh"
     --launcher-file "$SCRIPT_DIR/mcp_paths.py"
     --launcher-file "$SCRIPT_DIR/runtime_hooks_optin.py"
+    --launcher-file "$SCRIPT_DIR/harness-launch-record"
     --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
     --launcher-file "$SCRIPT_DIR/codex-pretool-adapter.py"
     --launcher-file "$TITLE_SYNC_PATH"
@@ -1688,18 +1689,19 @@ hooks_file="$CODEX_HOME/hooks.json"
 tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
 ADAPTER_PATH="$SCRIPT_DIR/codex-hook-adapter.sh"
 PRETOOL_ADAPTER_PATH="$SCRIPT_DIR/codex-pretool-adapter.py"
-python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$PRETOOL_ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" "$(python3 "$SCRIPT_DIR/runtime_hooks_optin.py" "$HARNESS_DIR")" > "$tmp_hooks" <<'PY'
+python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$PRETOOL_ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" "$(python3 "$SCRIPT_DIR/runtime_hooks_optin.py" "$HARNESS_DIR")" "$SCRIPT_DIR/harness-launch-record" > "$tmp_hooks" <<'PY'
 import json, os, re, shlex, sys
 harness = sys.argv[1]
 adapter = sys.argv[2]
 pretool_adapter = sys.argv[3]
 title_sync = sys.argv[4]
 python_bin = sys.argv[5]
-# One line, "orca=<0|1> herdr=<0|1>", from runtime_hooks_optin.py.
+# One line, "orca=<0|1> herdr=<0|1> launch_record=<0|1>", from runtime_hooks_optin.py.
 runtime_optins = {
     name: value == "1"
     for name, _, value in (pair.partition("=") for pair in sys.argv[6].split())
 }
+launch_record_hook = sys.argv[7]
 hooks_dir = os.path.join(harness, "core", "hooks")
 settings_path = os.path.join(harness, ".claude", "settings.json")
 hooks_policy_path = os.path.join(harness, ".claude", "source", "hooks.yaml")
@@ -1882,7 +1884,7 @@ if os.path.isfile(title_sync):
 
 # Runtime hook registry. Each row is enabled per harness by a literal
 # assignment in launcher.env (HARNESS_ORCA_AGENT_HOOKS=1,
-# HARNESS_HERDR_AGENT_HOOKS=1), resolved by runtime_hooks_optin.py; the process
+# HARNESS_HERDR_AGENT_HOOKS=1, HARNESS_LAUNCH_RECORD_HOOKS=1), resolved by runtime_hooks_optin.py; the process
 # environment is ignored. An opted-in row appends one matcher-less entry per
 # listed event after every existing entry, in registry order, so the
 # harness-owned hooks keep their order. Rows are emitted whether or not the
@@ -1912,6 +1914,15 @@ RUNTIME_HOOK_REGISTRY = (
         "events": ("SessionStart",),
         "timeout": 10,
     },
+    {
+        # Launcher-owned: records the grant the launcher launched Codex with
+        # (harness-launch-record). Unlike the host rows it is a plain command,
+        # not a host script, and it prints nothing.
+        "name": "launch_record",
+        "command": " ".join((shlex.quote(python_bin), shlex.quote(launch_record_hook), "codex")),
+        "events": ("SessionStart",),
+        "timeout": 5,
+    },
 )
 
 def runtime_hook_command(script, argument):
@@ -1924,7 +1935,7 @@ def runtime_hook_command(script, argument):
 for row in RUNTIME_HOOK_REGISTRY:
     if not runtime_optins.get(row["name"], False):
         continue
-    row_command = runtime_hook_command(row["script"], row["argument"])
+    row_command = row.get("command") or runtime_hook_command(row["script"], row["argument"])
     for event in row["events"]:
         config["hooks"].setdefault(event, []).append(
             {"hooks": [{"type": "command", "command": row_command, "timeout": row["timeout"]}]}

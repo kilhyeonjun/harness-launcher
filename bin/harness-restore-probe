@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Read restore facts for a session; print key=value lines; never fail.
+
+  harness-restore-probe claude <transcript.jsonl>
+  harness-restore-probe codex  <rollout.jsonl>
+
+Prints `model=`, `effort=` (and `context=` for Codex) for the last main-thread
+turn. Permission and sandbox are never read from these agent-writable files;
+they come only from the launcher's launch record. The file is opened with
+O_NOFOLLOW|O_NONBLOCK, must be a regular file, and only its last 8 MiB is
+parsed with the first (partial) line dropped. The run is time-bounded, exits 0
+in every case, and prints nothing when nothing valid is found. The caller
+re-validates every value.
+"""
+import json
+import os
+import re
+import signal
+import stat
+import sys
+
+WINDOW = 8 * 1024 * 1024
+BUDGET_SECONDS = 5
+MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+CLAUDE_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+CODEX_EFFORTS = CLAUDE_EFFORTS | {"minimal"}
+
+
+def read_tail(path):
+    """Return the last WINDOW bytes of a regular file as complete lines.
+
+    Exactly the window is read (the file may grow meanwhile). The first line is
+    dropped as partial unless the byte before the window is a newline.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode):
+            return []
+        size = meta.st_size
+        start = max(0, size - WINDOW)
+        on_boundary = start == 0 or os.pread(fd, 1, start - 1) == b"\n"
+        remaining = size - start
+        chunks = []
+        offset = start
+        while remaining > 0:
+            chunk = os.pread(fd, min(1 << 20, remaining), offset)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    lines = b"".join(chunks).split(b"\n")
+    return lines if on_boundary else lines[1:]
+
+
+def records(path):
+    for raw in read_tail(path):
+        if not raw.strip():
+            continue
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            yield value
+
+
+def valid_model(value):
+    return isinstance(value, str) and MODEL.fullmatch(value) is not None
+
+
+def probe_claude(path):
+    model = effort = None
+    usage = set()
+    for rec in records(path):
+        kind = rec.get("type")
+        if kind == "cost-state":
+            used = rec.get("modelUsage")
+            usage = set(used) if isinstance(used, dict) else set()
+        if kind != "assistant" or rec.get("isSidechain") is True:
+            continue
+        message = rec.get("message")
+        name = message.get("model") if isinstance(message, dict) else None
+        if not (valid_model(name) and name.startswith("claude-")):
+            continue
+        model = name
+        if isinstance(rec.get("effort"), str) and rec["effort"] in CLAUDE_EFFORTS:
+            effort = rec["effort"]
+    out = []
+    if model:
+        out.append("model=%s%s" % (model, "[1m]" if model + "[1m]" in usage else ""))
+    if effort:
+        out.append("effort=" + effort)
+    return out
+
+
+def context_window(payload):
+    for holder in (payload, payload.get("info")):
+        if isinstance(holder, dict):
+            window = holder.get("model_context_window")
+            if isinstance(window, int) and not isinstance(window, bool):
+                return window
+    return None
+
+
+def probe_codex(path):
+    model = effort = window = None
+    for rec in records(path):
+        payload = rec.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if rec.get("type") == "turn_context":
+            if valid_model(payload.get("model")):
+                model = payload["model"]
+            if isinstance(payload.get("effort"), str) and payload["effort"] in CODEX_EFFORTS:
+                effort = payload["effort"]
+        found = context_window(payload)
+        if found is not None:
+            window = found
+    out = []
+    if model:
+        out.append("model=" + model)
+    if effort:
+        out.append("effort=" + effort)
+    if model and window:
+        out.append("context=" + ("1m" if window >= 500000 else "272k"))
+    return out
+
+
+def main(argv):
+    if len(argv) != 3 or not argv[2]:
+        return []
+    handlers = {"claude": probe_claude, "codex": probe_codex}
+    handler = handlers.get(argv[1])
+    return handler(argv[2]) if handler else []
+
+
+if __name__ == "__main__":
+    try:
+        signal.signal(signal.SIGALRM, lambda *_: os._exit(0))
+        signal.alarm(BUDGET_SECONDS)
+        lines = main(sys.argv)
+    except BaseException:
+        lines = []
+    if lines:
+        sys.stdout.write("\n".join(lines) + "\n")
+    sys.exit(0)

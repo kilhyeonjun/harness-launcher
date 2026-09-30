@@ -113,7 +113,10 @@ _harness_launcher_claude_transcript_exists() {
 #   or `<override> codex resume <id>` (Codex). Map that single UUID back to the
 #   isolated session that owns it. Prints the session directory name (uppercase
 #   UUID) and returns 0 on a unique owner; 1 when there is no owner (caller keeps
-#   its reject message); 3 when several sessions own the id (ambiguous).
+#   its reject message); 3 when several sessions own the id (ambiguous); 4 when
+#   there is no isolated owner and the session lives in the canonical
+#   (non-isolated) harness root: a Codex rollout only in <source-root>'s own
+#   CODEX_HOME, or a Claude launch record with isolated=0 for this root.
 #   Only sessions recorded for this harness (source-root) count; symlinks are
 #   never followed. For Claude, a session also owns ids listed as exactly
 #   `claude <uuid>` in its provider-sessions (written by
@@ -173,7 +176,20 @@ _harness_launcher_resolve_restore() {
   done
   owners=(${(u)owners})
   (( ${#owners} <= 1 )) || return 3
-  (( ${#owners} == 1 )) || return 1
+  if (( ${#owners} == 0 )); then
+    # No isolated owner: 4 when the session belongs to the canonical harness
+    # root itself. Codex: its rollout exists only in the source CODEX_HOME.
+    # Claude: a launch record says isolated=0 for this harness (the transcript
+    # alone is no proof, isolated sessions file theirs in the same project dir).
+    local restore_permission restore_approval restore_sandbox restore_bypass restore_isolated
+    if $is_codex; then
+      local -a source_rollouts=("$source_root"/.harness/codex/sessions/*/*/*/rollout-*-$id.jsonl(N.))
+      (( ${#source_rollouts} )) && return 4
+    elif _harness_launcher_restore_launch_record claude "$id" "$source_root" && [[ "$restore_isolated" == 0 ]]; then
+      return 4
+    fi
+    return 1
+  fi
   if (( ${record_only[(Ie)${owners[1]}]} )); then
     _harness_launcher_claude_transcript_exists "$state_home" "${owners[1]}" "$id" || return 1
   fi
@@ -181,6 +197,227 @@ _harness_launcher_resolve_restore() {
 }
 
 _harness_launcher_resolve_orca_resume() { _harness_launcher_resolve_restore "$@"; }
+
+# --- Restore fidelity ---------------------------------------------------------
+# A host restores an agent by re-typing `claude --resume <id>` / `codex resume
+# <id>`. The typed argv carries no model, effort or grant, so the launcher would
+# apply its defaults. For a pure single-UUID resume it instead restores the
+# session's model and effort (harness-restore-probe: read from the transcript or
+# rollout) and its permission/sandbox grant (only from the launcher-owned launch
+# record harness-launch-record wrote at that session's start). A grant is never
+# taken from a transcript or rollout, and every value read is re-validated here.
+typeset -g _HARNESS_LAUNCHER_UUID_RE='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+typeset -g _HARNESS_LAUNCHER_MODEL_RE='^[A-Za-z0-9][A-Za-z0-9._-]*(\[1m\])?$'
+
+# _harness_launcher_restore_resume_id <claude|codex> [argv...]
+#   Prints the lowercase id when argv is exactly one resume of one UUID:
+#   Claude `--resume <id>`, `--resume=<id>`, `-r <id>`; Codex `resume <id>`.
+_harness_launcher_restore_resume_id() {
+  local kind="$1" id=""; shift
+  if [[ "$kind" == codex ]]; then
+    [[ $# -eq 2 && "$1" == resume ]] && id="$2"
+  else
+    case $# in
+      1) [[ "$1" == --resume=* ]] && id="${1#--resume=}" ;;
+      2) [[ "$1" == (--resume|-r) ]] && id="$2" ;;
+    esac
+  fi
+  [[ "$id" =~ $_HARNESS_LAUNCHER_UUID_RE ]] || return 1
+  print -r -- "${(L)id}"
+}
+
+# _harness_launcher_restore_probe <claude|codex> <lowercase id>
+#   Fills the caller's restore_model, restore_effort and restore_context from
+#   the session file. Output of the helper is data: each line is matched, never
+#   evaluated or word-split, and a value outside its vocabulary is dropped.
+_harness_launcher_restore_probe() {
+  local agent="$1" id="$2" file="" py out line key value
+  local helper="$_HARNESS_LAUNCHER_BIN/harness-restore-probe"
+  local -a hits=()
+  restore_model="" restore_effort="" restore_context=""
+  if [[ "$agent" == codex ]]; then
+    hits=("$HARNESS_DIR"/.harness/codex/sessions/*/*/*/rollout-*-$id.jsonl(N.om[1]))
+  else
+    hits=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/$id.jsonl(N.om[1]))
+  fi
+  file="${hits[1]-}"
+  [[ -n "$file" && -f "$helper" ]] || return 1
+  py="$(harness_python3_resolve 2>/dev/null)" || return 1
+  out="$("$py" "$helper" "$agent" "$file" 2>/dev/null)" || return 1
+  for line in "${(@f)out}"; do
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"; value="${line#*=}"
+    case "$key" in
+      model)
+        [[ "$value" =~ $_HARNESS_LAUNCHER_MODEL_RE ]] || continue
+        [[ "$agent" == codex || "$value" == claude-* ]] && restore_model="$value" ;;
+      effort)
+        case "$value" in
+          low|medium|high|xhigh|max) restore_effort="$value" ;;
+          minimal) [[ "$agent" == codex ]] && restore_effort="$value" ;;
+        esac ;;
+      context)
+        [[ "$agent" == codex && "$value" == (272k|1m) ]] && restore_context="$value" ;;
+    esac
+  done
+  return 0
+}
+
+# _harness_launcher_restore_launch_record <claude|codex> <lowercase id> <source-root>
+#   Fills the caller's restore_permission, restore_approval, restore_sandbox,
+#   restore_bypass, restore_profile and restore_isolated from the launch record, only when it
+#   names this harness root. Returns 1 (all empty) without a usable record.
+_harness_launcher_restore_launch_record() {
+  local agent="$1" id="$2" source_root="$3" py out line key value recorded=""
+  local helper="$_HARNESS_LAUNCHER_BIN/harness-launch-record"
+  local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated="" restore_profile=""
+  [[ -f "$helper" ]] || return 1
+  py="$(harness_python3_resolve 2>/dev/null)" || return 1
+  out="$(HARNESS_SESSION_STATE_HOME="$state_home" "$py" "$helper" read "$agent" "$id" 2>/dev/null)" || return 1
+  for line in "${(@f)out}"; do
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"; value="${line#*=}"
+    case "$key" in
+      permission) [[ "$agent" == claude && "$value" == (default|acceptEdits|plan|auto|dontAsk|bypassPermissions) ]] && restore_permission="$value" ;;
+      approval) [[ "$agent" == codex && "$value" == (untrusted|on-failure|on-request|never) ]] && restore_approval="$value" ;;
+      sandbox) [[ "$agent" == codex && "$value" == (read-only|workspace-write|danger-full-access) ]] && restore_sandbox="$value" ;;
+      bypass) [[ "$agent" == codex && "$value" == 1 ]] && restore_bypass=1 ;;
+      profile) [[ "$agent" == codex && "$value" == (fast|base|sol|astra|plan|rich) ]] && restore_profile="$value" ;;
+      isolated) [[ "$value" == (0|1) ]] && restore_isolated="$value" ;;
+      source_root) [[ "$value" == /* && "$value" != *[[:cntrl:]]* ]] && recorded="$value" ;;
+    esac
+  done
+  if [[ -z "$recorded" || "${recorded:A}" != "${source_root:A}" ]]; then
+    restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated="" restore_profile=""
+    return 1
+  fi
+  return 0
+}
+
+# _harness_launcher_restore_hint <claude|codex> <id> <model>
+#   One stderr line with the exact command that relaunches this session with
+#   bypass, printed when the session has no launch record for this harness (a
+#   session that predates records, or one started outside the launcher). The
+#   launcher never escalates on its own.
+_harness_launcher_restore_hint() {
+  local agent="$1" id="$2" model="$3" keyword=""
+  if [[ "$agent" == codex ]]; then
+    case "$model" in *sol*) keyword=sol ;; *terra*) keyword=base ;; *luna*) keyword=fast ;; esac
+    echo "harness-launcher: restored with default permissions (no launch record for this session); to relaunch with bypass: ${HARNESS_PREFIX} codex ${keyword:+$keyword }bypass --passthrough resume $id" >&2
+  else
+    case "$model" in *opus*) keyword=rich ;; *sonnet*) keyword=base ;; *haiku*) keyword=fast ;; esac
+    echo "harness-launcher: restored with default permissions (no launch record for this session); to relaunch with bypass: ${HARNESS_PREFIX} ${keyword:+$keyword }bypass --passthrough --resume $id" >&2
+  fi
+}
+
+# _harness_launcher_claude_restore_apply
+#   Detects a Claude restore and injects the restored --model/--effort/
+#   --permission-mode. Runs before _harness_launcher_passthrough_reconcile,
+#   which already implements caller-wins (a restored --model replaces a host
+#   default `base` model) and forces thinking for xhigh/max. Reads and updates
+#   the caller's locals (zsh dynamic scope).
+#   A restore is one resume of one UUID and nothing else, and no launcher
+#   keyword other than the host-default `base` marked by shell routing.
+_harness_launcher_claude_restore_apply() {
+  [[ -z "$provider_name" && -z "$session_flag" ]] || return 0
+  local -a argv=()
+  if $passthrough; then
+    if $mode_applied; then
+      $host_default_base || return 0
+    else
+      (( ${#claude_args} == 0 )) || return 0
+    fi
+    argv=("${claude_passthrough_args[@]}")
+  else
+    $mode_applied && return 0
+    (( ${#claude_prompt_args} == 0 )) || return 0
+    argv=("${claude_args[@]}")
+  fi
+  local restore_id restore_model restore_effort restore_context
+  local restore_permission restore_approval restore_sandbox restore_bypass restore_isolated
+  restore_id="$(_harness_launcher_restore_resume_id claude "${argv[@]}")" || return 0
+  skip_tui=true
+  _harness_launcher_restore_probe claude "$restore_id" || true
+  # Only a session with no record at all gets the hint; a record without a grant
+  # means the user chose the default mode.
+  _harness_launcher_restore_launch_record claude "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" \
+    || _harness_launcher_restore_hint claude "$restore_id" "$restore_model"
+  if $passthrough; then
+    [[ -z "$restore_model" ]] || claude_passthrough_args+=(--model "$restore_model")
+    [[ -z "$restore_effort" ]] || claude_passthrough_args+=(--effort "$restore_effort")
+    [[ -z "$restore_permission" ]] || claude_passthrough_args+=(--permission-mode "$restore_permission")
+  else
+    [[ -z "$restore_model" ]] || claude_args+=(--model "$restore_model")
+    [[ -z "$restore_effort" ]] || env_effort="$restore_effort"
+    [[ -z "$restore_permission" ]] || claude_args+=(--permission-mode "$restore_permission")
+  fi
+  return 0
+}
+
+# _harness_launcher_claude_launch_grant
+#   Prints the permission mode Claude is launched with (the last one in the
+#   final launcher and passthrough argv), or nothing. Recorded by the launch
+#   record hook so a later restore can reapply it.
+_harness_launcher_claude_launch_grant() {
+  local arg prev="" grant=""
+  for arg in "${claude_args[@]}" "${claude_passthrough_opts[@]}"; do
+    case "$arg" in
+      --permission-mode=*) grant="${arg#--permission-mode=}" ;;
+      --dangerously-skip-permissions) grant=bypassPermissions ;;
+      *) [[ "$prev" == --permission-mode ]] && grant="$arg" ;;
+    esac
+    prev="$arg"
+  done
+  case "$grant" in
+    default|acceptEdits|plan|auto|dontAsk|bypassPermissions) print -r -- "$grant" ;;
+  esac
+}
+
+# _harness_launcher_export_launch_env <approval> <sandbox> <bypass> <profile>
+#   Codex only; run inside the agent's subshell. Exports the grant and profile
+#   the agent is launched with, its source root and isolation, for the
+#   launch-record hook (its hooks.json row is static, so it reads the
+#   environment). Anything inherited from a parent launch is dropped first.
+#   Claude does not use this: its hook takes the same facts as arguments,
+#   because Claude applies an agent-writable `env` block from settings.
+_harness_launcher_export_launch_env() {
+  unset HARNESS_LAUNCH_PERMISSION HARNESS_LAUNCH_APPROVAL HARNESS_LAUNCH_SANDBOX HARNESS_LAUNCH_BYPASS HARNESS_LAUNCH_PROFILE
+  [[ -z "$1" ]] || export HARNESS_LAUNCH_APPROVAL="$1"
+  [[ -z "$2" ]] || export HARNESS_LAUNCH_SANDBOX="$2"
+  [[ -z "$3" ]] || export HARNESS_LAUNCH_BYPASS="$3"
+  [[ -z "$4" ]] || export HARNESS_LAUNCH_PROFILE="$4"
+  export HARNESS_LAUNCH_SOURCE_ROOT="${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}"
+  export HARNESS_LAUNCH_ISOLATED=0
+  [[ -z "${HARNESS_SESSION_ROOT:-}" ]] || HARNESS_LAUNCH_ISOLATED=1
+  return 0
+}
+
+# _harness_launcher_claude_launch_settings <force-thinking:true|false> <permission>
+#   Prints the one launcher-owned --settings JSON: the forced-thinking setting
+#   (xhigh/max) merged with the SessionStart hook that writes the launch record.
+#   The grant, source root and isolation are ARGUMENTS of the hook
+#   command, not environment, so a forged `env` block in settings.local.json
+#   cannot change them. The hook prints nothing (its stdout would become
+#   session context).
+_harness_launcher_claude_launch_settings() {
+  local hook="$_HARNESS_LAUNCHER_BIN/harness-launch-record" py cmd out=""
+  local root="${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" isolated=0 args
+  [[ -z "${HARNESS_SESSION_ROOT:-}" ]] || isolated=1
+  [[ "$1" == true ]] && out='"alwaysThinkingEnabled":true'
+  if [[ -f "$hook" ]] && py="$(harness_python3_resolve 2>/dev/null)"; then
+    args="--source-root ${(q)root} --isolated $isolated"
+    [[ -z "$2" ]] || args+=" --permission ${(q)2}"
+    if (( isolated )) && [[ "${HARNESS_SESSION_ID:-}" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
+      args+=" --harness-session-id ${(q)HARNESS_SESSION_ID}"
+    fi
+    cmd="${(q)py} ${(q)hook} claude $args"
+    cmd="${cmd//\\/\\\\}"
+    cmd="${cmd//\"/\\\"}"
+    out+="${out:+,}\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$cmd\",\"timeout\":5}]}]}"
+  fi
+  [[ -z "$out" ]] || print -r -- "{$out}"
+}
 
 # _harness_launcher_isolated_record_run_dir
 #   Appends the isolated session's resolved run directory (HARNESS_RUN_DIR) to
@@ -477,7 +714,9 @@ _harness_launcher_auto_runtime() {
     if _harness_launcher_is_claude_management_command "${1:-}"; then
       "$harness_auto" claude-management "$@"
     else
-      "$harness_auto" claude base --passthrough "$@"
+      # `base` is the host default, not a user choice: mark it so a pure
+      # resume can restore the session's own model and effort instead.
+      HARNESS_HOST_DEFAULT_MODE=base "$harness_auto" claude base --passthrough "$@"
     fi
   elif [[ "$runtime" == codex && "${1:-}" == (--version|-V|--help|-h) ]]; then
     local codex_bin
@@ -487,7 +726,7 @@ _harness_launcher_auto_runtime() {
     }
     "$codex_bin" "$@"
   else
-    "$harness_auto" "$runtime" --passthrough "$@"
+    HARNESS_HOST_DEFAULT_MODE=base "$harness_auto" "$runtime" --passthrough "$@"
   fi
 }
 
@@ -695,6 +934,10 @@ _harness_launcher_run() {
   # skip the `always` block that finishes an isolated session.
   setopt localoptions noerrexit
   local HARNESS_DIR="$1"; shift
+  # Shell routing marks its host-default `base` for a restore; consume it here
+  # so it never reaches the agent or a nested launch.
+  local host_default_mode="${HARNESS_HOST_DEFAULT_MODE-}"
+  unset HARNESS_HOST_DEFAULT_MODE
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
   local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
@@ -783,6 +1026,7 @@ _harness_launcher_run() {
           0) isolated=true; requested_session_id="$orca_resume_id"; orca_resume=true ;;
           3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
              return 2 ;;
+          4) isolation_route=legacy ;;
           *) echo "harness-launcher: this profile isolates fresh sessions; use '${HARNESS_PREFIX} --isolated-session <uuid> $*' or '${HARNESS_PREFIX} --no-isolated $*'" >&2
              return 2 ;;
         esac
@@ -867,6 +1111,8 @@ _harness_launcher_run_session() {
   local -a claude_args=() claude_passthrough_args=() claude_passthrough_opts=() claude_prompt_args=()
   local session_flag="" skip_tui=false env_effort="" provider_url="" gateway_api_key="" provider_name=""
   local mode_applied=false mcp_surface="full" passthrough=false passthrough_force_thinking=false
+  local host_default_base=false
+  [[ "${host_default_mode-}" == base && "${1:-}" == base && "${2:-}" == --passthrough ]] && host_default_base=true
 
   # Optional provider prefix (must be first arg)
   case "${1:-}" in
@@ -999,6 +1245,8 @@ _harness_launcher_run_session() {
     esac
   done
 
+  _harness_launcher_claude_restore_apply
+
   if $passthrough; then
     # Caller options end at its own `--`; later tokens are prompt text and
     # are never scanned for options.
@@ -1058,6 +1306,7 @@ _harness_launcher_run_session() {
         [[ -n "${CODEX_HAIKU_MODEL:-}" ]]  && export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CODEX_HAIKU_MODEL"
       fi
     fi
+    local force_thinking=false
     if [[ -n "$env_effort" ]]; then
       claude_args+=(--effort "$env_effort")
       # The API rejects xhigh/max while thinking is disabled ("effort 'xhigh' is
@@ -1066,11 +1315,16 @@ _harness_launcher_run_session() {
       # settings.json got a 400 at first prompt. Force it on for those efforts
       # instead of depending on per-machine settings; high and below are
       # unaffected and keep the user's own choice.
-      [[ "$env_effort" == (xhigh|max) ]] \
-        && claude_args+=(--settings '{"alwaysThinkingEnabled":true}')
+      [[ "$env_effort" == (xhigh|max) ]] && force_thinking=true
     elif $passthrough_force_thinking; then
-      claude_args+=(--settings '{"alwaysThinkingEnabled":true}')
+      force_thinking=true
     fi
+    # One launcher --settings: forced thinking merged with the SessionStart
+    # hook that records the launch grant for a later restore.
+    local launch_grant launch_settings
+    launch_grant="$(_harness_launcher_claude_launch_grant)"
+    launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant")"
+    [[ -z "$launch_settings" ]] || claude_args+=(--settings "$launch_settings")
     # Passthrough argv goes last, after the launcher-owned flags. The boolean
     # --exclude-dynamic-system-prompt-sections then closes the variadic
     # --mcp-config value list, so neither a caller prompt nor a caller `--`
@@ -1329,6 +1583,84 @@ PY
   return $exit_code
 }
 
+# _harness_launcher_codex_restore_apply
+#   Detects a Codex restore (one `resume <uuid>` and no launcher profile) and
+#   fills the caller's codex_restore_args with the restored `-m`, `-c
+#   model_reasoning_effort` and the recorded grant flags, and HARNESS_CODEX_CONTEXT
+#   unless a context keyword chose one. Caller flags make the argv impure, so
+#   they always win. Reads and updates the caller's locals.
+_harness_launcher_codex_restore_apply() {
+  $profile_explicit && return 0
+  $use_happy && return 0
+  local -a argv=()
+  if $passthrough; then
+    [[ -z "$subcmd" ]] && (( ${#codex_args} == 0 )) || return 0
+    argv=("${codex_passthrough_args[@]}")
+  else
+    [[ "$subcmd" == resume ]] && (( ${#codex_args} == 1 )) || return 0
+    argv=(resume "${codex_args[1]}")
+  fi
+  local restore_id restore_model restore_effort restore_context
+  local restore_permission restore_approval restore_sandbox restore_bypass restore_isolated restore_profile
+  local hint=false
+  restore_id="$(_harness_launcher_restore_resume_id codex "${argv[@]}")" || return 0
+  _harness_launcher_restore_probe codex "$restore_id" || true
+  _harness_launcher_restore_launch_record codex "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" || hint=true
+  # The launched profile carries grants of its own (plan is read-only), so it is
+  # reapplied, but only while the generated registry still has it; otherwise
+  # keep base and say so.
+  if [[ -n "$restore_profile" ]]; then
+    if [[ -f "$HARNESS_DIR/.harness/codex/$restore_profile.config.toml" && ! -L "$HARNESS_DIR/.harness/codex/$restore_profile.config.toml" ]]; then
+      profile="$restore_profile"
+    else
+      hint=true
+    fi
+  fi
+  ! $hint || _harness_launcher_restore_hint codex "$restore_id" "$restore_model"
+  [[ -z "$restore_model" ]] || codex_restore_args+=(-m "$restore_model")
+  [[ -z "$restore_effort" ]] || codex_restore_args+=(-c "model_reasoning_effort=\"$restore_effort\"")
+  [[ -z "$restore_context" ]] || $context_explicit || HARNESS_CODEX_CONTEXT="$restore_context"
+  if [[ -n "$restore_bypass" ]]; then
+    codex_restore_args+=(--dangerously-bypass-approvals-and-sandbox)
+  else
+    [[ -z "$restore_approval" ]] || codex_restore_args+=(-a "$restore_approval")
+    [[ -z "$restore_sandbox" ]] || codex_restore_args+=(-s "$restore_sandbox")
+  fi
+  return 0
+}
+
+# _harness_launcher_codex_launch_grant [codex args...]
+#   Sets the caller's launch_approval, launch_sandbox and launch_bypass to the
+#   grant the final Codex flags carry (later flags win; bypass replaces both).
+#   Only launcher-visible flags count, never config overrides or profile
+#   contents, so a session launched on profile defaults records no grant.
+_harness_launcher_codex_launch_grant() {
+  local -a argv=("$@")
+  local i arg
+  launch_approval="" launch_sandbox="" launch_bypass=""
+  for (( i = 1; i <= ${#argv}; i++ )); do
+    arg="${argv[i]}"
+    case "$arg" in
+      --) break ;;
+      --dangerously-bypass-approvals-and-sandbox) launch_bypass=1 ;;
+      --full-auto) launch_approval=on-request; launch_sandbox=workspace-write ;;
+      -a|--ask-for-approval) launch_approval="${argv[i+1]-}"; (( i++ )) ;;
+      --ask-for-approval=*) launch_approval="${arg#--ask-for-approval=}" ;;
+      -a?*) launch_approval="${arg#-a}" ;;
+      -s|--sandbox) launch_sandbox="${argv[i+1]-}"; (( i++ )) ;;
+      --sandbox=*) launch_sandbox="${arg#--sandbox=}" ;;
+      -s?*) launch_sandbox="${arg#-s}" ;;
+      -*) if harness_codex_option_takes_value "$arg"; then (( i++ )); fi ;;
+    esac
+  done
+  [[ "$launch_approval" == (untrusted|on-failure|on-request|never) ]] || launch_approval=""
+  [[ "$launch_sandbox" == (read-only|workspace-write|danger-full-access) ]] || launch_sandbox=""
+  if [[ -n "$launch_bypass" ]]; then
+    launch_approval="" launch_sandbox=""
+  fi
+  return 0
+}
+
 # _harness_launcher_run_codex_cli <harness-dir> <resolved-policy> [args...]
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
 #   Modes:    fast | base | sol | plan | rich | astra → -p <profile>
@@ -1365,8 +1697,9 @@ _harness_launcher_run_codex_cli() {
   local subcmd=""
   local use_happy=false
   local freeform=false
-  local passthrough=false
-  local -a codex_args=() codex_passthrough_args=()
+  local passthrough=false context_explicit=false
+  local -a codex_args=() codex_passthrough_args=() codex_restore_args=()
+  local launch_approval="" launch_sandbox="" launch_bypass="" launch_profile=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1424,7 +1757,7 @@ _harness_launcher_run_codex_cli() {
         if $freeform; then
           codex_args+=("$1")
         else
-          HARNESS_CODEX_CONTEXT="$1"
+          HARNESS_CODEX_CONTEXT="$1"; context_explicit=true
         fi
         shift ;;
       resume)              subcmd="resume"; shift ;;
@@ -1442,6 +1775,10 @@ _harness_launcher_run_codex_cli() {
   export HARNESS_CODEX_APPS_ALLOWLIST
 
   [[ -z "$profile" ]] && profile="base"
+  # A pure `resume <id>` restores the session's model, effort, context and
+  # recorded grant instead of the launcher's profile defaults.
+  _harness_launcher_codex_restore_apply
+  _harness_launcher_codex_launch_grant "${codex_restore_args[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}"
   export HARNESS_CODEX_CONTEXT
 
   # Caller wins after the marker. A caller -C/--cd must stay inside the
@@ -1499,6 +1836,10 @@ _harness_launcher_run_codex_cli() {
     fi
   fi
   $caller_profile && profile_arg=false
+  # The launcher-owned profile (not a caller -p) is part of what was launched.
+  if [[ "$profile" == (fast|base|sol|astra|plan|rich) ]] && ! $use_happy && ! $caller_profile; then
+    launch_profile="$profile"
+  fi
   local guard_python=""
   if $guard_app_server; then
     guard_python="$(harness_python3_resolve)" || return 1
@@ -1550,6 +1891,7 @@ _harness_launcher_run_codex_cli() {
   fi
   $caller_cd_set || codex_head+=(--cd "$run_dir")
   $profile_arg && codex_head+=(-p "$profile")
+  codex_head+=("${codex_restore_args[@]}")
   if $guard_app_server; then
     local registry="${HARNESS_PROFILE_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/harness-launcher}/profiles"
     launch_cmd=("$guard_python" "$_HARNESS_LAUNCHER_BIN/codex-app-server-guard.py"
@@ -1560,13 +1902,16 @@ _harness_launcher_run_codex_cli() {
   _harness_launcher_announce_run_dir "${caller_run_dir:-$run_dir}"
   if [[ -n "$subcmd" ]]; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
+    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" \
+      && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   elif $use_happy; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && "${launch_cmd[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
+    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" \
+      && "${launch_cmd[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   else
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && "${launch_cmd[@]}" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
+    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" \
+      && "${launch_cmd[@]}" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   fi
   local rc=$?
   harness_codex_cmux_broker_stop

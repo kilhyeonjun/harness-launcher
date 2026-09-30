@@ -225,6 +225,60 @@ submission to `SUBMITTED`. Clean close or normal exit records terminal `CLOSED`.
 
 Manifest-enabled homes also keep an atomic successful-input fingerprint plus a source-identity watch snapshot. The lean warm path validates watched file identities, semantic TOML policy, launcher-owned output hashes, product-plugin skill digests, explicit-only policies, skill/plugin directory topology, every managed skill link, and the normalized global-MCP definition digest before returning; it does not rescan plugin tests/docs/assets. Changing selected global definitions or allowlist membership therefore invalidates the warm path. Unexpected generated-home skill routes force a cold rebuild and reversible quarantine, and marker membership alone never proves ownership. Auth contents, sessions, hook trust state, and generated output mtimes remain runtime state and do not invalidate source generation. A cold rebuild leaves the live success stamp in place while it prepares a candidate transaction, then publishes the replacement success stamp last.
 
+### Restore fidelity and the launch record
+
+A host restore (`claude --resume <id>`, `codex resume <id>`) restores the
+session's model and effort from its transcript or rollout, and its permission or
+sandbox grant from a launch record. The two sources have different trust:
+
+- A transcript or rollout is written by the agent, so the launcher treats it as
+  untrusted data. It is read by a bounded helper (no symlink or non-regular file,
+  last 8 MiB, time limit), and only model and effort are taken, each re-validated
+  against a fixed vocabulary before use. A forged `permissionMode`,
+  `approval_policy` or `sandbox_policy` in it is never read.
+- The launch record is written by the launcher's own `SessionStart` hook from the
+  grant the launcher exported for that launch, under
+  `<state>/launch-records/<agent>-<session_id>` with mode 0600.
+  The launcher never escalates: without a record it keeps the default grant and
+  prints the command that relaunches with bypass. A record is honoured only for its own harness root,
+  and it is also the only proof that a Claude session lives outside an isolated
+  root. The record protects against content in agent-written session files; it
+  does not stop a process running as the same user from writing the file, exactly
+  like every other file in the state directory.
+
+Three details keep the record honest. A Claude hook takes its grant as command
+arguments inside the launcher's `--settings`, never from the environment, because
+Claude applies the agent-writable `env` block of `.claude/settings.local.json`.
+Codex's `hooks.json` row is static, so it reads the launcher's environment, and
+`$CODEX_HOME` (`.harness/codex`) sits inside the workspace-write root, which makes it a
+pre-existing lever inside the same boundary. Whether a launch is nested is decided by
+the hook from process ancestry (a second `claude` or `codex` executable above the agent
+that ran the hook), not from environment variables, so a stale agent environment in a
+pane shell does not demote a restore and `env -u CLAUDECODE` does not promote a nested
+launch. A nested launch may keep or lower a record's grant and never raise it, and it
+can create a grant-less `isolated=0` record, which only enables the legacy route: an
+isolated owner still wins. The nesting rule stops accidental nesting, not a deliberate
+agent: a same-user process can still write the record file directly, double-fork so it
+is reparented to launchd, or type the launch into a pane shell (herdr, tmux, osascript),
+and each of these counts as top-level. That stays the documented same-user boundary.
+
+Known limits, kept on purpose:
+
+- A raw `codex exec` or `codex exec resume` inside a Codex agent inherits the parent's
+  `HARNESS_LAUNCH_*` environment, but its own hook sees the parent `codex` as an ancestor
+  and is treated as nested. Ancestry recognises only executables named exactly `claude`
+  or `codex`; an agent started through a wrapper with another name, such as an npm
+  install whose process is named `node`, is not seen, and the walk then treats the next
+  recognised ancestor as the owner.
+- The hook reads the process table with `ps`. Where that fails, for example if a Codex
+  hook runs inside a sandbox that denies it, the launch counts as nested and records no
+  grant. The opt-in Codex row has not been checked against a real Codex session.
+- A caller `--settings` after `--passthrough` replaces the launcher's, so that launch has no record.
+- A planted canonical rollout in the source `CODEX_HOME` can steer a restore to the legacy route.
+- The Codex hook row names the Python interpreter by its Cellar path, which changes after `brew upgrade` until the next prepare.
+
+See [Terminal runtimes](terminal-runtimes.md#restore-fidelity) for the argv rules.
+
 ## Browser and plugin trust
 
 The launcher can materialize supported Codex bundled plugins when a compatible marketplace source or existing cache is available.

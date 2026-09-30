@@ -2,6 +2,39 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.38.0 — 2026-09-30
+
+- Restore fidelity. A typed `claude --resume <id>` or `codex resume <id>` (herdr,
+  Orca, `<prefix> --resume <id>`) now keeps the session's model and effort, read
+  from its transcript or rollout, instead of resetting to the `base` defaults.
+  Only a pure resume of one UUID with no caller `--model`, `--effort`,
+  `--permission-mode` (Claude) or `-m`, `-p`, `-a`, `-s`, `--full-auto`, bypass
+  flag (Codex) restores; shell routing marks its host-default `base` with
+  `HARNESS_HOST_DEFAULT_MODE=base`, which the launcher consumes before any agent
+  starts. A restored Claude session always launches directly, so
+  `<prefix> --resume <id>` no longer drops the id into the picker.
+- Permission and sandbox are restored only from a launcher-owned launch record
+  (`<state>/launch-records/<agent>-<session_id>`), never from a transcript or
+  rollout. Claude gets the `SessionStart` hook through the launcher's `--settings`,
+  merged with forced thinking into one JSON; Codex gets it through the new
+  `launch_record` registry row (`HARNESS_LAUNCH_RECORD_HOOKS=1`, opt in per
+  harness and rerun the Codex hook trust step). A restore without a record
+  keeps defaults and prints the one command that relaunches with bypass. The Claude hook gets its grant as command
+  arguments, never from the environment (Claude applies `settings.local.json`'s
+  `env`); a launch nested inside an agent (decided by the hook from process ancestry) can lower a record but never raise it, with `dontAsk` ranked just above `plan`; a
+  Codex restore reapplies the recorded launcher profile (for example `plan`, which is
+  read-only) while it still exists. The record reader also requires an owned,
+  single-link file under an `O_NOFOLLOW` directory, and the probe reads exactly its
+  8 MiB window and ignores non-string values.
+- In an isolation-default profile, a restore of a session that lives in the
+  canonical harness root is no longer rejected: a Codex rollout found only in the
+  source `CODEX_HOME`, or a Claude session with a launch record `isolated=0`, takes
+  the legacy route. Forced isolation still rejects.
+- New commands `harness-restore-probe` and `harness-launch-record`.
+- Behavior change: the launcher's Claude `--settings` argument now always carries
+  the launch-record hook, so it is never the bare
+  `{"alwaysThinkingEnabled":true}` string.
+
 ## 0.37.5 — 2026-09-30
 
 - Fix 0.37.4, which broke every Codex launch in a harness with an exact
