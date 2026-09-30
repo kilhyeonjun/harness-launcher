@@ -21,6 +21,7 @@ for term in 'launch record' 'never escalates' 'nested launch' 'ancestry' 'grant-
   grep -qF -- "$term" "$ROOT/docs/architecture.md" || { echo "FAIL: docs/architecture.md must cover: $term" >&2; exit 1; }
 done
 grep -qF 'docs/terminal-runtimes.md' "$ROOT/README.md" || { echo 'FAIL: README must link docs/terminal-runtimes.md' >&2; exit 1; }
+grep -qF 'docs/herdr-web-ui.md' "$ROOT/README.md" || { echo 'FAIL: README must link docs/herdr-web-ui.md' >&2; exit 1; }
 python3 - "$ROOT" <<'PY'
 from pathlib import Path
 import re

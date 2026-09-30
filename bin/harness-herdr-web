@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+set -u
+
+SELF_PATH="${0:A}"
+SCRIPT_DIR="${SELF_PATH:h}"
+source "$SCRIPT_DIR/harness-common.sh"
+python_bin="$(harness_python3_resolve)" || exit $?
+exec "$python_bin" "$SCRIPT_DIR/harness_herdr_web.py" "$@"
