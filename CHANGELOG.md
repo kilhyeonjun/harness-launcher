@@ -66,6 +66,13 @@ Notable changes are recorded here. This project follows semantic versioning for 
   physical path. A decision you already made for one of those roots wins.
   Nested repositories under the harness are not trusted automatically.
 
+## 0.37.3 — 2026-09-30
+
+- Codex presets move to the latest models. `fast` and the `haiku` subagent
+  role use GPT-6 Luna; `sol`, `plan`, `rich` and the `opus` role use GPT-6.1
+  Sol. The opt-in `luna6` and `sol6` profiles are removed; use `fast` and
+  `sol` instead. The default profile stays on Terra.
+
 ## 0.37.2 — 2026-09-30
 
 - herdr plugin: notifications now use `terminal-notifier` when it is installed
