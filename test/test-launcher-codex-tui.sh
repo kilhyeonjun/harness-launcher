@@ -82,6 +82,9 @@ cat > "$TEST_BIN/codex" <<'EOF'
   echo "CODEX_HOME:${CODEX_HOME:-}"
   echo "MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}"
   echo "HARNESS_PREFIX:${HARNESS_PREFIX:-<UNSET>}"
+  for v in APPROVAL SANDBOX BYPASS PROFILE SOURCE_ROOT ISOLATED PERMISSION; do
+    n="HARNESS_LAUNCH_$v"; echo "LAUNCH_$v:${!n-<UNSET>}"
+  done
 } >> "$TEST_STUB_FILE"
 exit 0
 EOF
@@ -96,6 +99,9 @@ cat > "$HAPPY_BIN/happy" <<'EOF'
   echo "ARGS:$*"
   echo "CODEX_HOME:${CODEX_HOME:-}"
   echo "HARNESS_PREFIX:${HARNESS_PREFIX:-<UNSET>}"
+  for v in APPROVAL SANDBOX BYPASS PROFILE SOURCE_ROOT ISOLATED PERMISSION; do
+    n="HARNESS_LAUNCH_$v"; echo "LAUNCH_$v:${!n-<UNSET>}"
+  done
 } >> "$TEST_STUB_FILE"
 exit 0
 EOF
@@ -564,5 +570,47 @@ head -1 "$TEST_HARNESS/.harness/launcher-history" | grep -q 'CODEX_SURFACE=full'
   cat "$TEST_HARNESS/.harness/launcher-history"; exit 1;
 }
 echo "PASS: case8b — opt-in Codex Happy accepts the canonical full surface"
+
+# Launch record: the picker exports the same HARNESS_LAUNCH_* facts as the
+# shortcut path, so the SessionStart hook can record the grant for a restore.
+TEST_HARNESS_REAL="$(cd -P "$TEST_HARNESS" && pwd -P)"
+launch_env_is() {
+  local stub="$1" label="$2"; shift 2
+  local pair
+  for pair in "$@"; do
+    grep -qxF "LAUNCH_$pair" "$stub" || {
+      echo "FAIL: $label — expected LAUNCH_$pair"; cat "$stub"; cat "$stub.tui.log"; exit 1;
+    }
+  done
+}
+STUB_LR1="$TEST_TEMP/out-lr1-bypass.txt"; : > "$STUB_LR1"
+run_tui $'2\n1\n3\n4\n1\n' "$STUB_LR1"
+grep -qE '^ARGS:.*-p sol --dangerously-bypass-approvals-and-sandbox' "$STUB_LR1" || {
+  echo "FAIL: lr1 — expected sol + bypass"; cat "$STUB_LR1"; exit 1;
+}
+launch_env_is "$STUB_LR1" lr1 BYPASS:1 PROFILE:sol "SOURCE_ROOT:$TEST_HARNESS_REAL" ISOLATED:0 \
+  APPROVAL:'<UNSET>' SANDBOX:'<UNSET>' PERMISSION:'<UNSET>'
+STUB_LR2="$TEST_TEMP/out-lr2-full-auto.txt"; : > "$STUB_LR2"
+run_tui $'2\n1\n2\n2\n1\n' "$STUB_LR2"
+launch_env_is "$STUB_LR2" lr2 APPROVAL:on-request SANDBOX:workspace-write BYPASS:'<UNSET>' PROFILE:base
+STUB_LR3="$TEST_TEMP/out-lr3-never.txt"; : > "$STUB_LR3"
+run_tui $'2\n1\n5\n3\n1\n' "$STUB_LR3"
+launch_env_is "$STUB_LR3" lr3 APPROVAL:never SANDBOX:'<UNSET>' BYPASS:'<UNSET>' PROFILE:rich
+# A grant inherited from a parent launch never survives into a default launch.
+STUB_LR4="$TEST_TEMP/out-lr4-inherited.txt"; : > "$STUB_LR4"
+export HARNESS_LAUNCH_BYPASS=1 HARNESS_LAUNCH_APPROVAL=never HARNESS_LAUNCH_PERMISSION=bypassPermissions
+run_tui $'2\n1\n2\n1\n1\n' "$STUB_LR4"
+unset HARNESS_LAUNCH_BYPASS HARNESS_LAUNCH_APPROVAL HARNESS_LAUNCH_PERMISSION
+launch_env_is "$STUB_LR4" lr4 BYPASS:'<UNSET>' APPROVAL:'<UNSET>' PERMISSION:'<UNSET>' PROFILE:base ISOLATED:0
+# Happy runs codex with no -p and the default safety: no profile and no grant,
+# even when a parent launch left some in the environment.
+STUB_LR5="$TEST_TEMP/out-lr5-happy.txt"; : > "$STUB_LR5"
+export HARNESS_LAUNCH_BYPASS=1 HARNESS_LAUNCH_PROFILE=rich
+run_tui $'2\n1\n2\n1\n2\n1\n' "$STUB_LR5" "$HAPPY_BIN"
+unset HARNESS_LAUNCH_BYPASS HARNESS_LAUNCH_PROFILE
+grep -q '^EXEC:happy$' "$STUB_LR5" || { echo "FAIL: lr5 — expected happy"; cat "$STUB_LR5"; cat "$STUB_LR5.tui.log"; exit 1; }
+launch_env_is "$STUB_LR5" lr5 PROFILE:'<UNSET>' BYPASS:'<UNSET>' APPROVAL:'<UNSET>' SANDBOX:'<UNSET>' \
+  "SOURCE_ROOT:$TEST_HARNESS_REAL" ISOLATED:0
+echo "PASS: launch record — the picker exports the Codex grant, profile, root and isolation"
 
 echo "✓ All codex TUI tests passed"

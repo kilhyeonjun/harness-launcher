@@ -2,6 +2,17 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.39.1 — 2026-10-01
+
+- Fix: sessions started from the interactive picker (`<prefix>` with no
+  arguments, `harness-exec <dir>`) wrote no launch record, so after a terminal
+  host restart they came back without their permission mode, Codex profile or
+  1M context. The picker now passes the same launch-record hook to Claude and
+  exports the same `HARNESS_LAUNCH_*` to Codex as the shortcut path; both paths
+  share one implementation in `harness-common.sh`. Sessions started from the
+  picker before this release still have no record; relaunch them once as the
+  restore hint says.
+
 ## 0.39.0 — 2026-09-30
 
 - New `harness-herdr-web` (`install`, `check`, `configure`, `token --copy`) runs

@@ -50,6 +50,7 @@ write_stub() {
   echo "CMUX_TAB_ID:\${CMUX_TAB_ID:-<UNSET>}"
   echo "CMUX_SURFACE_ID:\${CMUX_SURFACE_ID:-<UNSET>}"
 } >> "\$TEST_STUB_FILE"
+printf '%s\n' "\$@" > "\$TEST_STUB_FILE.argv"
 exit 0
 EOF
   chmod +x "$TEST_BIN/$1"
@@ -242,6 +243,7 @@ run_tui $'1\n2\n5\n1\n' "$OUT" "$STUB"
 grep -q 'EXEC:happy --model sonnet' "$STUB" || fail 'happy toggle should exec happy' "$OUT"
 grep -q 'EXEC:claude' "$STUB" && fail 'happy launch must not also exec claude' "$OUT"
 [[ "$(grep -c '^EXEC:' "$STUB")" -eq 1 ]] || fail 'happy launch should exec exactly once' "$OUT"
+! grep -Fxq -- --settings "$STUB.argv" || fail 'happy must get no --settings (its flag passthrough is unverified)' "$STUB.argv"
 echo 'PASS: happy wrapper launch'
 
 # --- 8. invalid input reprompts instead of exiting (B4) -----------------------
@@ -745,5 +747,56 @@ grep -qE 'custom 모드에는 model이 필요합니다|잘못된 effort' "$OUT" 
   || fail 'an unresolvable Kiro row should explain why it did not launch' "$OUT"
 reset_plan
 echo 'PASS: unresolvable Kiro row fails loudly instead of substituting a preset'
+
+# --- launch record: the picker passes the same launch-record hook as the shortcut
+# path, inside one --settings; grant, root and isolation are hook ARGUMENTS.
+LR_PY="$(bash -c ". '$LAUNCHER_DIR/bin/harness-common.sh'; harness_python3_resolve")"
+LR_STATE="$TEST_TEMP/lr-state"
+LR_ROOT="$(cd -P "$TEST_HARNESS" && pwd -P)"
+cat > "$TEST_TEMP/ps-clean" <<'PS'
+1000 999 /bin/sh
+998 997 claude
+999 998 /bin/sh
+997 996 -zsh
+996 995 zsh
+995 1 herdr
+1 0 launchd
+PS
+lr_settings() { grep -Fx -A1 -- --settings "$1.argv" | sed -n 2p; }
+lr_hook() { "$LR_PY" -c 'import json,sys; print(json.loads(sys.argv[1])["hooks"]["SessionStart"][0]["hooks"][0]["command"])' "$(lr_settings "$1")"; }
+lr_run_hook() { # <command> <session-id>
+  printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"%s"}' "$2" \
+    | env HARNESS_SESSION_STATE_HOME="$LR_STATE" /bin/sh -c "$1 --pstable $TEST_TEMP/ps-clean --start-pid 1000" > "$TEST_TEMP/lr-hook.out"
+  [[ ! -s "$TEST_TEMP/lr-hook.out" ]] || fail 'launch-record hook printed output'
+}
+lr_record() { HARNESS_SESSION_STATE_HOME="$LR_STATE" "$LR_PY" "$LAUNCHER_DIR/bin/harness-launch-record" read claude "$1"; }
+# opus (opus[1m]) + bypassPermissions: final 2=Permission, 4=bypassPermissions, 1=Start
+OUT="$TEST_TEMP/lr1.out"; STUB="$TEST_TEMP/lr1.stub"; reset_plan
+run_tui $'1\n4\n2\n4\n1\n' "$OUT" "$STUB"
+grep -q -- '--permission-mode bypassPermissions' "$STUB" || fail 'lr1 expected a bypassPermissions launch' "$OUT"
+[[ "$(grep -cFx -- --settings "$STUB.argv")" == 1 ]] || fail 'lr1 the picker must pass exactly one --settings' "$STUB.argv"
+HOOK="$(lr_hook "$STUB")"
+[[ "$HOOK" == *harness-launch-record*" claude "* && "$HOOK" == *"--permission bypassPermissions"* \
+   && "$HOOK" == *"--source-root $LR_ROOT"* && "$HOOK" == *"--isolated 0"* && "$HOOK" == *"--context 1m"* ]] \
+  || fail "lr1 hook command lacks its launch arguments: $HOOK" "$STUB.argv"
+LR_ID=0c5d1f3e-0000-4000-8000-0000000000b1
+lr_run_hook "$HOOK" $LR_ID
+[[ "$(lr_record $LR_ID)" == $'permission=bypassPermissions\nsource_root='"$LR_ROOT"$'\nisolated=0\ncontext=1m' ]] \
+  || fail "lr1 hook did not write the picker's grant: $(lr_record $LR_ID)"
+grep -q '<launch settings>' "$OUT" || fail 'lr1 the banner must name the launcher settings' "$OUT"
+grep -q 'harness-launch-record' "$OUT" && fail 'lr1 the banner must not print the settings JSON' "$OUT"
+# base + default permission: a record without a grant (the user chose default)
+OUT="$TEST_TEMP/lr2.out"; STUB="$TEST_TEMP/lr2.stub"; reset_plan
+run_tui $'1\n2\n1\n' "$OUT" "$STUB"
+HOOK="$(lr_hook "$STUB")"
+[[ "$HOOK" == *harness-launch-record* && "$HOOK" != *--permission* && "$HOOK" != *--context* ]] \
+  || fail "lr2 a default launch must pass the hook with no grant: $HOOK" "$STUB.argv"
+grep -q 'EXEC:claude --model sonnet --effort high --exclude-dynamic-system-prompt-sections' "$STUB" \
+  || fail 'lr2 launcher flag order changed' "$STUB"
+LR_ID=0c5d1f3e-0000-4000-8000-0000000000b2
+lr_run_hook "$HOOK" $LR_ID
+[[ "$(lr_record $LR_ID)" == $'source_root='"$LR_ROOT"$'\nisolated=0' ]] || fail "lr2 unexpected record: $(lr_record $LR_ID)"
+reset_plan
+echo 'PASS: launch record — the picker records the Claude grant, root, isolation and 1M context'
 
 echo 'ALL launcher TUI tests passed'

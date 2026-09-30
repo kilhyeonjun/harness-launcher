@@ -384,22 +384,10 @@ _harness_launcher_claude_launch_grant() {
 }
 
 # _harness_launcher_export_launch_env <approval> <sandbox> <bypass> <profile>
-#   Codex only; run inside the agent's subshell. Exports the grant and profile
-#   the agent is launched with, its source root and isolation, for the
-#   launch-record hook (its hooks.json row is static, so it reads the
-#   environment). Anything inherited from a parent launch is dropped first.
-#   Claude does not use this: its hook takes the same facts as arguments,
-#   because Claude applies an agent-writable `env` block from settings.
+#   Codex only; run inside the agent's subshell. harness_launch_record_export_codex
+#   (harness-common.sh, shared with launcher.sh) with this launch's source root.
 _harness_launcher_export_launch_env() {
-  unset HARNESS_LAUNCH_PERMISSION HARNESS_LAUNCH_APPROVAL HARNESS_LAUNCH_SANDBOX HARNESS_LAUNCH_BYPASS HARNESS_LAUNCH_PROFILE
-  [[ -z "$1" ]] || export HARNESS_LAUNCH_APPROVAL="$1"
-  [[ -z "$2" ]] || export HARNESS_LAUNCH_SANDBOX="$2"
-  [[ -z "$3" ]] || export HARNESS_LAUNCH_BYPASS="$3"
-  [[ -z "$4" ]] || export HARNESS_LAUNCH_PROFILE="$4"
-  export HARNESS_LAUNCH_SOURCE_ROOT="${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}"
-  export HARNESS_LAUNCH_ISOLATED=0
-  [[ -z "${HARNESS_SESSION_ROOT:-}" ]] || HARNESS_LAUNCH_ISOLATED=1
-  return 0
+  harness_launch_record_export_codex "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$@"
 }
 
 # _harness_launcher_claude_launch_context
@@ -418,30 +406,10 @@ _harness_launcher_claude_launch_context() {
 }
 
 # _harness_launcher_claude_launch_settings <force-thinking:true|false> <permission> <context>
-#   Prints the one launcher-owned --settings JSON: the forced-thinking setting
-#   (xhigh/max) merged with the SessionStart hook that writes the launch record.
-#   The grant, source root and isolation are ARGUMENTS of the hook
-#   command, not environment, so a forged `env` block in settings.local.json
-#   cannot change them. The hook prints nothing (its stdout would become
-#   session context).
+#   harness_claude_launch_settings (harness-common.sh, shared with launcher.sh)
+#   with this launch's source root.
 _harness_launcher_claude_launch_settings() {
-  local hook="$_HARNESS_LAUNCHER_BIN/harness-launch-record" py cmd out=""
-  local root="${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" isolated=0 args
-  [[ -z "${HARNESS_SESSION_ROOT:-}" ]] || isolated=1
-  [[ "$1" == true ]] && out='"alwaysThinkingEnabled":true'
-  if [[ -f "$hook" ]] && py="$(harness_python3_resolve 2>/dev/null)"; then
-    args="--source-root ${(q)root} --isolated $isolated"
-    [[ -z "$2" ]] || args+=" --permission ${(q)2}"
-    [[ "$3" != 1m ]] || args+=" --context 1m"
-    if (( isolated )) && [[ "${HARNESS_SESSION_ID:-}" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
-      args+=" --harness-session-id ${(q)HARNESS_SESSION_ID}"
-    fi
-    cmd="${(q)py} ${(q)hook} claude $args"
-    cmd="${cmd//\\/\\\\}"
-    cmd="${cmd//\"/\\\"}"
-    out+="${out:+,}\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$cmd\",\"timeout\":5}]}]}"
-  fi
-  [[ -z "$out" ]] || print -r -- "{$out}"
+  harness_claude_launch_settings "$_HARNESS_LAUNCHER_BIN" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$@"
 }
 
 # _harness_launcher_isolated_record_run_dir
