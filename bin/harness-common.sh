@@ -118,6 +118,104 @@ harness_claude_stdio_is_tty() {
   [ -t 0 ] && [ -t 1 ]
 }
 
+# Launch record (harness-launch-record, a SessionStart hook) — shared by the
+# shortcut path (aliases.zsh) and the interactive picker (launcher.sh), so both
+# record the same facts. Portable across bash 3.2 and zsh.
+
+# harness_shell_word <s>
+#   Prints <s> as one word for a command line /bin/sh parses: unchanged when it
+#   holds only [A-Za-z0-9_./:@%+=,-], otherwise single-quoted. Empty prints ''.
+harness_shell_word() {
+  case "$1" in
+    ''|*[!A-Za-z0-9_./:@%+=,-]*) ;;
+    *) printf '%s' "$1"; return 0 ;;
+  esac
+  local rest="$1" out="'"
+  while :; do
+    case "$rest" in
+      *\'*) out="$out${rest%%\'*}'\\''"; rest="${rest#*\'}" ;;
+      *) out="$out$rest'"; break ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# harness_json_escape <s>: <s> with \ and " escaped for a JSON string body.
+harness_json_escape() {
+  local s="$1" out="" c i=0 n=${#1}
+  while [ "$i" -lt "$n" ]; do
+    c="${s:$i:1}"
+    case "$c" in
+      \\) out="$out\\\\" ;;
+      \") out="$out\\\"" ;;
+      *) out="$out$c" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
+# harness_launch_source_root
+#   bash callers only: HARNESS_SOURCE_ROOT when set, else the physical
+#   HARNESS_DIR (zsh callers pass ${HARNESS_DIR:A}; the restore side resolves
+#   both before comparing). Falls back to HARNESS_DIR as given.
+harness_launch_source_root() {
+  if [ -n "${HARNESS_SOURCE_ROOT:-}" ]; then
+    printf '%s\n' "$HARNESS_SOURCE_ROOT"
+    return 0
+  fi
+  (cd -P -- "$HARNESS_DIR" 2>/dev/null && pwd -P) || printf '%s\n' "$HARNESS_DIR"
+}
+
+# harness_launch_record_export_codex <source-root> <approval> <sandbox> <bypass> <profile>
+#   Codex only; run in the process that execs the agent. Exports the grant and
+#   profile it is launched with, its source root and isolation, for the
+#   launch-record hook (its hooks.json row is static, so it reads the
+#   environment). Anything inherited from a parent launch is dropped first.
+#   Claude does not use this: its hook takes the same facts as arguments,
+#   because Claude applies an agent-writable `env` block from settings.
+harness_launch_record_export_codex() {
+  unset HARNESS_LAUNCH_PERMISSION HARNESS_LAUNCH_APPROVAL HARNESS_LAUNCH_SANDBOX HARNESS_LAUNCH_BYPASS HARNESS_LAUNCH_PROFILE
+  [ -z "$2" ] || export HARNESS_LAUNCH_APPROVAL="$2"
+  [ -z "$3" ] || export HARNESS_LAUNCH_SANDBOX="$3"
+  [ -z "$4" ] || export HARNESS_LAUNCH_BYPASS="$4"
+  [ -z "$5" ] || export HARNESS_LAUNCH_PROFILE="$5"
+  export HARNESS_LAUNCH_SOURCE_ROOT="$1"
+  export HARNESS_LAUNCH_ISOLATED=0
+  [ -z "${HARNESS_SESSION_ROOT:-}" ] || HARNESS_LAUNCH_ISOLATED=1
+  return 0
+}
+
+# harness_claude_launch_settings <bin-dir> <source-root> <force-thinking:true|false> <permission> <context>
+#   Prints the one launcher-owned --settings JSON: the forced-thinking setting
+#   (xhigh/max) merged with the SessionStart hook that writes the launch record.
+#   The grant, source root and isolation are ARGUMENTS of the hook command, not
+#   environment, so a forged `env` block in settings.local.json cannot change
+#   them. An unknown permission records no grant. The hook prints nothing (its
+#   stdout would become session context). Prints nothing when there is nothing
+#   to set.
+harness_claude_launch_settings() {
+  local hook="$1/harness-launch-record" py cmd out="" isolated=0 perm=""
+  local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+  [ -z "${HARNESS_SESSION_ROOT:-}" ] || isolated=1
+  [ "$3" = true ] && out='"alwaysThinkingEnabled":true'
+  case "$4" in default|acceptEdits|plan|auto|dontAsk|bypassPermissions) perm="$4" ;; esac
+  if [ -f "$hook" ] && py="$(harness_python3_resolve 2>/dev/null)"; then
+    cmd="$(harness_shell_word "$py") $(harness_shell_word "$hook") claude --source-root $(harness_shell_word "$2") --isolated $isolated"
+    [ -z "$perm" ] || cmd="$cmd --permission $perm"
+    [ "$5" != 1m ] || cmd="$cmd --context 1m"
+    if [ "$isolated" = 1 ] && [[ "${HARNESS_SESSION_ID:-}" =~ $uuid_re ]]; then
+      cmd="$cmd --harness-session-id $HARNESS_SESSION_ID"
+    fi
+    # A control character would break the hand-built JSON; record nothing instead.
+    case "$cmd" in
+      *[[:cntrl:]]*) ;;
+      *) out="$out${out:+,}\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$(harness_json_escape "$cmd")\",\"timeout\":5}]}]}" ;;
+    esac
+  fi
+  [ -z "$out" ] || printf '%s\n' "{$out}"
+}
+
 # harness_codex_option_takes_value <option>: top-level Codex options whose
 # value is the next argument.
 harness_codex_option_takes_value() {

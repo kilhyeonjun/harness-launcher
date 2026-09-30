@@ -295,7 +295,11 @@ can write. They come only from the **launch record**:
   `<prefix> codex sol bypass --passthrough resume <id>` (the keyword follows the
   restored model). Claude modes carry no permission, so there is no Claude profile
   to restore. It never escalates from a session file.
-- Sessions started from the interactive picker (`launcher.sh`) write no record.
+- Sessions started from the interactive picker (`launcher.sh`, v0.39.1+) write the
+  same record: it passes the same Claude hook arguments and exports the same Codex
+  `HARNESS_LAUNCH_*` from its menu choices (`harness-common.sh` holds both for the
+  two paths). A picker launch through `happy` still writes none for Claude; Codex
+  through `happy` records no profile and no grant, as on the shortcut path.
 
 Canonical owner. `harness-launcher` maps a restore id to the isolated session that
 owns it (above). When no isolated session owns the id, `_harness_launcher_resolve_restore`

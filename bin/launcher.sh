@@ -1053,6 +1053,17 @@ launch_claude() {
   [ "$CHOICE_HAPPY" = 1 ] && exe="happy"
   command -v "$exe" >/dev/null 2>&1 || { echo "Error: $exe not found in PATH" >&2; return 1; }
 
+  # The launch-record hook, as on the shortcut path (harness_claude_launch_settings).
+  # happy's flag passthrough is unverified (as for --mcp-config), so it gets none.
+  if [ "$exe" = "claude" ]; then
+    local launch_grant="" launch_context="" launch_settings
+    [ "$CHOICE_PERM" = "default" ] || launch_grant="$CHOICE_PERM"
+    case "$model" in *"[1m]") launch_context=1m ;; esac
+    launch_settings="$(harness_claude_launch_settings "$LAUNCHER_BIN_DIR" "$(harness_launch_source_root)" \
+      false "$launch_grant" "$launch_context")"
+    [ -z "$launch_settings" ] || args+=(--settings "$launch_settings")
+  fi
+
   # Replay-path guard: history rows predating the toggle exclusivity (or a
   # hand-edited history file) must not silently launch the full surface.
   if [ "$CHOICE_MCP_SURFACE" = "light" ] && [ "$CHOICE_HAPPY" = 1 ]; then
@@ -1094,7 +1105,14 @@ launch_claude() {
   [ "$CHOICE_MODE" = "ultracode" ] && harness_ultracode_hint
 
   history_save
-  launch_banner "$PLAN_SUMMARY" "$exe" "${args[@]}"
+  # The banner names the launcher settings instead of printing the JSON.
+  local -a banner_args=()
+  local banner_arg banner_prev=""
+  for banner_arg in "${args[@]}"; do
+    if [ "$banner_prev" = "--settings" ]; then banner_args+=("<launch settings>"); else banner_args+=("$banner_arg"); fi
+    banner_prev="$banner_arg"
+  done
+  launch_banner "$PLAN_SUMMARY" "$exe" "${banner_args[@]}"
   harness_claude_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py" "$HARNESS_DIR"
   exec "$exe" "${args[@]}"
 }
@@ -1117,12 +1135,18 @@ launch_codex() {
   export CODEX_HOME="$HARNESS_DIR/.harness/codex"
   harness_export_local_env "$HARNESS_DIR"
 
+  # The launch record's source root, resolved before any cd.
+  local source_root
+  source_root="$(harness_launch_source_root)"
+
   if [ "$CHOICE_HAPPY" = 1 ]; then
     command -v happy >/dev/null 2>&1 || { echo "❌ happy not found in PATH" >&2; return 1; }
     codex_happy_compatible || { echo "❌ Happy는 base 프로필 새 세션에서만 사용할 수 있습니다" >&2; return 1; }
     history_save
     launch_banner "$PLAN_SUMMARY" happy codex
     harness_codex_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py"
+    # Happy runs codex with no -p and the default safety: no profile, no grant.
+    harness_launch_record_export_codex "$source_root" "" "" "" ""
     cd "$HARNESS_RUN_DIR" && exec happy codex
     local rc=$?
     harness_codex_cmux_broker_stop
@@ -1137,11 +1161,18 @@ launch_codex() {
     fork)     cmd+=(fork --last) ;;
   esac
   cmd+=(--cd "$HARNESS_RUN_DIR" -p "$CHOICE_CODEX_PROFILE")
+  # One mapping for the flag and the grant the launch record keeps; an unknown
+  # value adds neither.
+  local rec_approval="" rec_sandbox="" rec_bypass="" rec_profile=""
   case "$CHOICE_CODEX_SAFETY" in
-    full-auto) cmd+=(--full-auto) ;;
-    never)     cmd+=(-a never) ;;
-    bypass)    cmd+=(--dangerously-bypass-approvals-and-sandbox) ;;
+    full-auto) cmd+=(--full-auto); rec_approval=on-request; rec_sandbox=workspace-write ;;
+    never)     cmd+=(-a never); rec_approval=never ;;
+    bypass)    cmd+=(--dangerously-bypass-approvals-and-sandbox); rec_bypass=1 ;;
   esac
+  case "$CHOICE_CODEX_PROFILE" in
+    fast|base|sol|astra|plan|rich) rec_profile="$CHOICE_CODEX_PROFILE" ;;
+  esac
+  harness_launch_record_export_codex "$source_root" "$rec_approval" "$rec_sandbox" "$rec_bypass" "$rec_profile"
 
   history_save
   launch_banner "$PLAN_SUMMARY" "${cmd[@]}"
