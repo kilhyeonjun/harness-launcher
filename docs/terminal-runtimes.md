@@ -209,9 +209,14 @@ Model and effort come from the session file, through `harness-restore-probe`
 
 - Claude: the last main-thread (non-sidechain) assistant `message.model` that is
   a Claude model (`<synthetic>` and gateway names are skipped), and the `effort`
-  of the same entries. `[1m]` is added only when the latest `cost-state`
-  `modelUsage` has `<model>[1m]`; that map accumulates over the session, so this is
-  a known imprecision.
+  of the same entries. `[1m]` is added when any of three signals shows a 1M context. The
+  first is the latest `cost-state` `modelUsage` having `<model>[1m]` in the
+  window; that map accumulates over the session, so it is imprecise, and a long
+  transcript may keep none in the 8 MiB tail. The second is usage: the largest
+  `input_tokens + cache_read_input_tokens + cache_creation_input_tokens` of a
+  main-thread turn in the window (each count an integer of 0 or more, sidechains
+  ignored) above 200000, which a 200k context cannot reach. The third is the launch
+  record's `context=1m`, below.
 - Codex: the last `turn_context` `model` and `effort`, and `context=1m` when the
   rollout recorded a context window of at least 500000 tokens (otherwise
   `272k`). An explicit `272k`/`1m` keyword wins.
@@ -241,7 +246,8 @@ can write. They come only from the **launch record**:
   replaced, never followed and a symlinked directory is refused. The reader
   opens the same way and also requires a regular file owned by the current user
   with a single link. Keys: `permission`, `approval`, `sandbox`, `bypass`,
-  `profile=<name>`, `source_root`, `isolated=0|1`, `harness_session_id`; each value
+  `profile=<name>`, `source_root`, `isolated=0|1`, `harness_session_id`,
+  `context=1m`; each value
   is checked against a fixed vocabulary before it is written or read.
 - Claude: the hook rides the launcher's own `--settings`, merged with the forced
   thinking setting into one JSON (`{"alwaysThinkingEnabled":true,"hooks":{...}}`).
@@ -251,6 +257,12 @@ can write. They come only from the **launch record**:
   `.claude/settings.local.json`, which an agent can write. A caller `--settings`
   after `--passthrough` is passed last and may replace it; the launch then simply
   has no record.
+- Context. When the final `--model` (profile or passthrough, the last wins) ends in
+  `[1m]`, the Claude hook command also carries `--context 1m`, and the record stores
+  `context=1m`. A Claude restore appends `[1m]` to a probed model that has no suffix
+  when the record says so (never inventing a model, and the result must pass the
+  model check). `context` is not a grant: it only sizes the context window, so the
+  nested rank rules do not apply and nothing about permissions depends on it.
 - Codex: the `launch_record` registry row above (opt in with
   `HARNESS_LAUNCH_RECORD_HOOKS=1`). Its `hooks.json` row is static, so the hook
   reads the launcher's environment (`HARNESS_LAUNCH_APPROVAL`, `_SANDBOX`,

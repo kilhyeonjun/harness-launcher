@@ -2,6 +2,17 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.38.1 — 2026-09-30
+
+- Fix: restoring a long Claude session dropped the `[1m]` suffix, so a 1M session
+  came back at 200k context and compacted at once. The old rule needed a
+  `cost-state` record inside the 8 MiB transcript window, which a long session can
+  lack. `[1m]` is now also added when a main-thread turn in the window used more
+  than 200000 prompt tokens, or when the launch record says the launcher started
+  the session with a `[1m]` model (`context=1m`, a non-grant field passed to the
+  hook as `--context 1m`). Sessions launched before this release have only the
+  usage signal.
+
 ## 0.38.0 — 2026-09-30
 
 - Restore fidelity. A typed `claude --resume <id>` or `codex resume <id>` (herdr,
