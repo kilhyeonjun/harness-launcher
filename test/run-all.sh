@@ -21,6 +21,7 @@ for test_file in "$ROOT"/test/test-*.sh; do
       test-codex-config-preservation.sh|test-codex-global-mcp-drift.sh|\
         test-codex-home-lock.sh|test-codex-home-prepare.sh|\
         test-codex-observability-profile.sh|test-codex-migrate-to-symlinks.sh|\
+        test-codex-project-trust.sh|\
         test-session-isolation.sh|test-session-isolation-concurrency.sh)
         printf '==> %s (SKIP: /usr/bin/lockf unavailable)\n' "$test_name"
         skipped=$((skipped + 1))
