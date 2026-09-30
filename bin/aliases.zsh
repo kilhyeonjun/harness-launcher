@@ -24,6 +24,9 @@ typeset -g _HARNESS_LAUNCHER_CODEX_WRAPPER_BODY=""
 # Single source of truth for mode tables, bin resolution, probes, MCP config
 # validation, secrets export, and autocompact PCT — shared with launcher.sh.
 source "$_HARNESS_LAUNCHER_BIN/harness-common.sh"
+# Hook commands and the Claude launch-record hook name files here; keep them on
+# the upgrade-stable `opt` spelling even when entered through a Cellar path.
+_HARNESS_LAUNCHER_BIN="$(harness_launcher_stable_dir "$_HARNESS_LAUNCHER_BIN")"
 
 _harness_launcher_codex_bin() { harness_codex_bin_resolve "$@"; }
 

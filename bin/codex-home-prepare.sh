@@ -72,18 +72,11 @@ FINAL_CODEX_HOME="$HARNESS_DIR/.harness/codex"
 CODEX_HOME="$FINAL_CODEX_HOME"
 PROJECT_CODEX_DIR="$HARNESS_DIR/.codex"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Homebrew's compatibility share link and opt link address the same package.
-# Render one stable command spelling so alternating entrypoints cannot invalidate
-# Codex hook approvals. Never redirect to a different installed/source tree.
-case "$SCRIPT_DIR" in
-  */share/harness-launcher)
-    preferred_dir="${SCRIPT_DIR%/share/harness-launcher}/opt/harness-launcher/share/harness-launcher"
-    if [[ -d "$preferred_dir" && "$SCRIPT_DIR" -ef "$preferred_dir" ]]; then
-      SCRIPT_DIR="$preferred_dir"
-    fi
-    ;;
-esac
 source "$SCRIPT_DIR/harness-common.sh"
+# The share link, the opt link and the versioned keg address the same package.
+# Render one stable command spelling so alternating entrypoints and upgrades
+# cannot invalidate Codex hook approvals.
+SCRIPT_DIR="$(harness_launcher_stable_dir "$SCRIPT_DIR")"
 
 codex_context_management_supported() {
   local codex_bin version major minor patch

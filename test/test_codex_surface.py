@@ -745,14 +745,17 @@ out.mkdir(parents=True, exist_ok=True)
         settings = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "bash " + str(self.repo / "core/hooks/session-start.sh")}]}]}}
         (self.repo / ".claude/settings.json").write_text(json.dumps(settings))
         rendered = []
-        for entry in (compat, stable, compat):
+        # A shell route that resolves symlinks enters through the versioned keg.
+        for entry in (compat, stable, package, compat):
             (self.codex_home / ".surface-success.json").unlink(missing_ok=True)
             result = subprocess.run(["/bin/bash", str(entry / "codex-home-prepare.sh"), str(self.repo)], env=self.environment(), capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             rendered.append((self.codex_home / "hooks.json").read_bytes())
         self.assertEqual(rendered[0], rendered[1])
         self.assertEqual(rendered[1], rendered[2])
+        self.assertEqual(rendered[2], rendered[3])
         self.assertIn(str(stable).encode(), rendered[0])
+        self.assertNotIn(b"/Cellar/", rendered[2])
         # A different active keg is not an equivalent alias and must not win.
         other_keg = prefix / "Cellar" / "harness-launcher" / "other"
         shutil.copytree(package, other_keg / "share/harness-launcher")

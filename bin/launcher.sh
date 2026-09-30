@@ -29,6 +29,7 @@ unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CO
 LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=harness-common.sh
 . "$LAUNCHER_BIN_DIR/harness-common.sh"
+LAUNCHER_BIN_DIR="$(harness_launcher_stable_dir "$LAUNCHER_BIN_DIR")"
 
 MCP_SURFACE_POLICY="$(harness_mcp_surface_policy_resolve "${HARNESS_MCP_SURFACE_POLICY:-}")" || exit $?
 

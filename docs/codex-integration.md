@@ -460,10 +460,15 @@ New preparation stamps also separate TOML diagnostics:
 These fields do not replace full output hashes or alter warm-cache repair. A
 legacy stamp reports unknown diagnostics until normal preparation writes them.
 
-Homebrew preparation through its compatibility `share` link uses the equivalent
-`opt` package path when both resolve to the same directory. This keeps generated
-hook command spelling stable. It does not approve hooks or redirect a source
-checkout to a different installed package.
+Homebrew preparation through its compatibility `share` link or a versioned
+`Cellar/harness-launcher/<version>` keg uses the equivalent `opt` package path
+when both resolve to the same directory (`harness_launcher_stable_dir`; the shell
+route through `harness-auto` enters through the keg). This keeps generated hook
+command spelling stable across entrypoints and upgrades: Codex asks to trust
+every hook whose command changed, so a keg path re-asked after each upgrade, and
+a running session's hooks broke once `brew cleanup` removed the old keg. The
+Claude launch-record hook in `--settings` uses the same spelling. It does not
+approve hooks or redirect a source checkout or a different active keg.
 
 The Codex hook adapter sets `HARNESS_HOOK_RUNTIME=codex` for its child hook only.
 Shared hooks should prefer an explicit runtime identity over a stale
