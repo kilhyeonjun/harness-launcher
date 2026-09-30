@@ -265,13 +265,13 @@ _harness_launcher_restore_probe() {
 
 # _harness_launcher_restore_launch_record <claude|codex> <lowercase id> <source-root>
 #   Fills the caller's restore_permission, restore_approval, restore_sandbox,
-#   restore_bypass and restore_isolated from the launch record, only when it
+#   restore_bypass, restore_profile and restore_isolated from the launch record, only when it
 #   names this harness root. Returns 1 (all empty) without a usable record.
 _harness_launcher_restore_launch_record() {
   local agent="$1" id="$2" source_root="$3" py out line key value recorded=""
   local helper="$_HARNESS_LAUNCHER_BIN/harness-launch-record"
   local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
-  restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated=""
+  restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated="" restore_profile=""
   [[ -f "$helper" ]] || return 1
   py="$(harness_python3_resolve 2>/dev/null)" || return 1
   out="$(HARNESS_SESSION_STATE_HOME="$state_home" "$py" "$helper" read "$agent" "$id" 2>/dev/null)" || return 1
@@ -283,12 +283,13 @@ _harness_launcher_restore_launch_record() {
       approval) [[ "$agent" == codex && "$value" == (untrusted|on-failure|on-request|never) ]] && restore_approval="$value" ;;
       sandbox) [[ "$agent" == codex && "$value" == (read-only|workspace-write|danger-full-access) ]] && restore_sandbox="$value" ;;
       bypass) [[ "$agent" == codex && "$value" == 1 ]] && restore_bypass=1 ;;
+      profile) [[ "$agent" == codex && "$value" == (fast|base|sol|astra|plan|rich) ]] && restore_profile="$value" ;;
       isolated) [[ "$value" == (0|1) ]] && restore_isolated="$value" ;;
       source_root) [[ "$value" == /* && "$value" != *[[:cntrl:]]* ]] && recorded="$value" ;;
     esac
   done
   if [[ -z "$recorded" || "${recorded:A}" != "${source_root:A}" ]]; then
-    restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated=""
+    restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated="" restore_profile=""
     return 1
   fi
   return 0
@@ -338,8 +339,12 @@ _harness_launcher_claude_restore_apply() {
   restore_id="$(_harness_launcher_restore_resume_id claude "${argv[@]}")" || return 0
   skip_tui=true
   _harness_launcher_restore_probe claude "$restore_id" || true
-  _harness_launcher_restore_launch_record claude "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" \
-    || _harness_launcher_restore_hint claude "$restore_id" "$restore_model"
+  # No record, or a record with no grant: nothing says what the session was
+  # allowed to do, so keep the default and offer the relaunch command.
+  if ! _harness_launcher_restore_launch_record claude "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" \
+      || [[ -z "$restore_permission" ]]; then
+    _harness_launcher_restore_hint claude "$restore_id" "$restore_model"
+  fi
   if $passthrough; then
     [[ -z "$restore_model" ]] || claude_passthrough_args+=(--model "$restore_model")
     [[ -z "$restore_effort" ]] || claude_passthrough_args+=(--effort "$restore_effort")
@@ -371,31 +376,45 @@ _harness_launcher_claude_launch_grant() {
   esac
 }
 
-# _harness_launcher_export_launch_env <permission> <approval> <sandbox> <bypass>
-#   Run inside the agent's subshell. Exports the grant the agent is launched
-#   with plus its source root and isolation, for the launch-record hook.
-#   Anything inherited from a parent launch is dropped first.
+# _harness_launcher_export_launch_env <approval> <sandbox> <bypass> <profile>
+#   Codex only; run inside the agent's subshell. Exports the grant and profile
+#   the agent is launched with, its source root, isolation and nesting, for the
+#   launch-record hook (its hooks.json row is static, so it reads the
+#   environment). Anything inherited from a parent launch is dropped first.
+#   Claude does not use this: its hook takes the same facts as arguments,
+#   because Claude applies an agent-writable `env` block from settings.
 _harness_launcher_export_launch_env() {
-  unset HARNESS_LAUNCH_PERMISSION HARNESS_LAUNCH_APPROVAL HARNESS_LAUNCH_SANDBOX HARNESS_LAUNCH_BYPASS
-  [[ -z "$1" ]] || export HARNESS_LAUNCH_PERMISSION="$1"
-  [[ -z "$2" ]] || export HARNESS_LAUNCH_APPROVAL="$2"
-  [[ -z "$3" ]] || export HARNESS_LAUNCH_SANDBOX="$3"
-  [[ -z "$4" ]] || export HARNESS_LAUNCH_BYPASS="$4"
+  unset HARNESS_LAUNCH_PERMISSION HARNESS_LAUNCH_APPROVAL HARNESS_LAUNCH_SANDBOX HARNESS_LAUNCH_BYPASS HARNESS_LAUNCH_PROFILE
+  [[ -z "$1" ]] || export HARNESS_LAUNCH_APPROVAL="$1"
+  [[ -z "$2" ]] || export HARNESS_LAUNCH_SANDBOX="$2"
+  [[ -z "$3" ]] || export HARNESS_LAUNCH_BYPASS="$3"
+  [[ -z "$4" ]] || export HARNESS_LAUNCH_PROFILE="$4"
   export HARNESS_LAUNCH_SOURCE_ROOT="${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}"
   export HARNESS_LAUNCH_ISOLATED=0
   [[ -z "${HARNESS_SESSION_ROOT:-}" ]] || HARNESS_LAUNCH_ISOLATED=1
+  export HARNESS_LAUNCH_NESTED="$launch_nested"
   return 0
 }
 
-# _harness_launcher_claude_launch_settings <force-thinking:true|false>
+# _harness_launcher_claude_launch_settings <force-thinking:true|false> <permission>
 #   Prints the one launcher-owned --settings JSON: the forced-thinking setting
 #   (xhigh/max) merged with the SessionStart hook that writes the launch record.
-#   The hook command prints nothing (its stdout would become session context).
+#   The grant, source root, isolation and nesting are ARGUMENTS of the hook
+#   command, not environment, so a forged `env` block in settings.local.json
+#   cannot change them. The hook prints nothing (its stdout would become
+#   session context).
 _harness_launcher_claude_launch_settings() {
   local hook="$_HARNESS_LAUNCHER_BIN/harness-launch-record" py cmd out=""
+  local root="${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" isolated=0 args
+  [[ -z "${HARNESS_SESSION_ROOT:-}" ]] || isolated=1
   [[ "$1" == true ]] && out='"alwaysThinkingEnabled":true'
   if [[ -f "$hook" ]] && py="$(harness_python3_resolve 2>/dev/null)"; then
-    cmd="${(q)py} ${(q)hook} claude"
+    args="--source-root ${(q)root} --isolated $isolated --nested $launch_nested"
+    [[ -z "$2" ]] || args+=" --permission ${(q)2}"
+    if (( isolated )) && [[ "${HARNESS_SESSION_ID:-}" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
+      args+=" --harness-session-id ${(q)HARNESS_SESSION_ID}"
+    fi
+    cmd="${(q)py} ${(q)hook} claude $args"
     cmd="${cmd//\\/\\\\}"
     cmd="${cmd//\"/\\\"}"
     out+="${out:+,}\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$cmd\",\"timeout\":5}]}]}"
@@ -922,6 +941,11 @@ _harness_launcher_run() {
   # so it never reaches the agent or a nested launch.
   local host_default_mode="${HARNESS_HOST_DEFAULT_MODE-}"
   unset HARNESS_HOST_DEFAULT_MODE
+  # A launch that runs inside an agent is nested: the launcher sees the agent's
+  # own markers (or a parent launch's HARNESS_LAUNCH_*) before it re-exports
+  # anything. The launch-record hook never lets a nested launch raise a grant.
+  local launch_nested=0
+  [[ -z "${CLAUDECODE-}${CODEX_THREAD_ID-}${CODEX_SANDBOX-}${HARNESS_LAUNCH_PERMISSION-}${HARNESS_LAUNCH_APPROVAL-}${HARNESS_LAUNCH_SANDBOX-}${HARNESS_LAUNCH_BYPASS-}${HARNESS_LAUNCH_PROFILE-}${HARNESS_LAUNCH_SOURCE_ROOT-}${HARNESS_LAUNCH_ISOLATED-}${HARNESS_LAUNCH_NESTED-}" ]] || launch_nested=1
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
   local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
@@ -1305,11 +1329,10 @@ _harness_launcher_run_session() {
     fi
     # One launcher --settings: forced thinking merged with the SessionStart
     # hook that records the launch grant for a later restore.
-    local launch_settings
-    launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking")"
-    [[ -z "$launch_settings" ]] || claude_args+=(--settings "$launch_settings")
-    local launch_grant
+    local launch_grant launch_settings
     launch_grant="$(_harness_launcher_claude_launch_grant)"
+    launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant")"
+    [[ -z "$launch_settings" ]] || claude_args+=(--settings "$launch_settings")
     # Passthrough argv goes last, after the launcher-owned flags. The boolean
     # --exclude-dynamic-system-prompt-sections then closes the variadic
     # --mcp-config value list, so neither a caller prompt nor a caller `--`
@@ -1362,7 +1385,6 @@ _harness_launcher_run_session() {
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
-        _harness_launcher_export_launch_env "$launch_grant" "" "" ""
         claude --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}" "${claude_launch_tail[@]}"
       )
     else
@@ -1374,7 +1396,6 @@ _harness_launcher_run_session() {
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
         _harness_launcher_claude_mcp_local_args "$HARNESS_DIR" || exit $?
-        _harness_launcher_export_launch_env "$launch_grant" "" "" ""
         claude "${claude_args[@]}" "${reply[@]}" "${claude_launch_tail[@]}"
       )
     fi
@@ -1588,11 +1609,24 @@ _harness_launcher_codex_restore_apply() {
     argv=(resume "${codex_args[1]}")
   fi
   local restore_id restore_model restore_effort restore_context
-  local restore_permission restore_approval restore_sandbox restore_bypass restore_isolated
+  local restore_permission restore_approval restore_sandbox restore_bypass restore_isolated restore_profile
+  local hint=false
   restore_id="$(_harness_launcher_restore_resume_id codex "${argv[@]}")" || return 0
   _harness_launcher_restore_probe codex "$restore_id" || true
-  _harness_launcher_restore_launch_record codex "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" \
-    || _harness_launcher_restore_hint codex "$restore_id" "$restore_model"
+  _harness_launcher_restore_launch_record codex "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" || hint=true
+  # The launched profile carries grants of its own (plan is read-only), so it is
+  # reapplied, but only while the generated registry still has it; otherwise
+  # keep base and say so.
+  if [[ -n "$restore_profile" ]]; then
+    if [[ -f "$HARNESS_DIR/.harness/codex/$restore_profile.config.toml" && ! -L "$HARNESS_DIR/.harness/codex/$restore_profile.config.toml" ]]; then
+      profile="$restore_profile"
+    else
+      hint=true
+    fi
+  elif [[ -z "$restore_approval$restore_sandbox$restore_bypass" ]]; then
+    hint=true
+  fi
+  ! $hint || _harness_launcher_restore_hint codex "$restore_id" "$restore_model"
   [[ -z "$restore_model" ]] || codex_restore_args+=(-m "$restore_model")
   [[ -z "$restore_effort" ]] || codex_restore_args+=(-c "model_reasoning_effort=\"$restore_effort\"")
   [[ -z "$restore_context" ]] || $context_explicit || HARNESS_CODEX_CONTEXT="$restore_context"
@@ -1675,7 +1709,7 @@ _harness_launcher_run_codex_cli() {
   local freeform=false
   local passthrough=false context_explicit=false
   local -a codex_args=() codex_passthrough_args=() codex_restore_args=()
-  local launch_approval="" launch_sandbox="" launch_bypass=""
+  local launch_approval="" launch_sandbox="" launch_bypass="" launch_profile=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1812,6 +1846,10 @@ _harness_launcher_run_codex_cli() {
     fi
   fi
   $caller_profile && profile_arg=false
+  # The launcher-owned profile (not a caller -p) is part of what was launched.
+  if [[ "$profile" == (fast|base|sol|astra|plan|rich) ]] && ! $use_happy && ! $caller_profile; then
+    launch_profile="$profile"
+  fi
   local guard_python=""
   if $guard_app_server; then
     guard_python="$(harness_python3_resolve)" || return 1
@@ -1874,15 +1912,15 @@ _harness_launcher_run_codex_cli() {
   _harness_launcher_announce_run_dir "${caller_run_dir:-$run_dir}"
   if [[ -n "$subcmd" ]]; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && _harness_launcher_export_launch_env "" "$launch_approval" "$launch_sandbox" "$launch_bypass" \
+    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" \
       && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   elif $use_happy; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && _harness_launcher_export_launch_env "" "$launch_approval" "$launch_sandbox" "$launch_bypass" \
+    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" \
       && "${launch_cmd[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   else
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && _harness_launcher_export_launch_env "" "$launch_approval" "$launch_sandbox" "$launch_bypass" \
+    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" \
       && "${launch_cmd[@]}" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   fi
   local rc=$?

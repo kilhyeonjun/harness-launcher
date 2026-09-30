@@ -4,7 +4,7 @@
 # its rollout) and its approval/sandbox grant (only from the launcher-owned
 # launch record). A fake Codex binary records exactly what `resume` receives.
 set -e
-unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM HARNESS_HOST_DEFAULT_MODE HARNESS_CODEX_CONTEXT; unset -m 'HERDR_*' 'ORCA_*' 'CMUX_*' || true
+unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM HARNESS_HOST_DEFAULT_MODE HARNESS_CODEX_CONTEXT CLAUDECODE CODEX_THREAD_ID CODEX_SANDBOX HARNESS_LAUNCH_PERMISSION HARNESS_LAUNCH_APPROVAL HARNESS_LAUNCH_SANDBOX HARNESS_LAUNCH_BYPASS HARNESS_LAUNCH_SOURCE_ROOT HARNESS_LAUNCH_ISOLATED HARNESS_LAUNCH_PROFILE HARNESS_LAUNCH_NESTED; unset -m 'HERDR_*' 'ORCA_*' 'CMUX_*' || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -23,7 +23,7 @@ cat > "$BIN/codex" <<'STUB'
 #!/usr/bin/env bash
 {
   for arg in "$@"; do printf 'ARG:%s\n' "$arg"; done
-  for v in HARNESS_HOST_DEFAULT_MODE HARNESS_LAUNCH_APPROVAL HARNESS_LAUNCH_SANDBOX HARNESS_LAUNCH_BYPASS HARNESS_LAUNCH_SOURCE_ROOT HARNESS_LAUNCH_ISOLATED HARNESS_CODEX_CONTEXT; do
+  for v in HARNESS_HOST_DEFAULT_MODE HARNESS_LAUNCH_APPROVAL HARNESS_LAUNCH_SANDBOX HARNESS_LAUNCH_BYPASS HARNESS_LAUNCH_SOURCE_ROOT HARNESS_LAUNCH_ISOLATED HARNESS_LAUNCH_PROFILE HARNESS_LAUNCH_NESTED HARNESS_CODEX_CONTEXT; do
     printf 'ENV:%s=%s\n' "$v" "${!v-<unset>}"
   done
 } > "$TEST_STUB_FILE"
@@ -34,6 +34,8 @@ mkdir -p "$1/.harness/codex"
 printf '%s\n' "${HARNESS_CODEX_CONTEXT-<unset>}" > "$TEST_STUB_FILE.context"
 STUB
 chmod +x "$BIN/codex" "$BIN/codex-home-prepare.sh"
+# the generated profile registry a real prepare leaves behind
+for name in fast base sol astra plan rich; do : > "$HARNESS/.harness/codex/$name.config.toml"; done
 
 fail() { echo "FAIL: $1" >&2; [[ -f "${2:-}" ]] && sed 's/^/  /' "$2" >&2; [[ -f "${2:-}.err" ]] && sed 's/^/  err: /' "$2.err" >&2; exit 1; }
 
@@ -153,11 +155,11 @@ write_record $ID HARNESS_LAUNCH_BYPASS=1
 run_codex "$OUT" -- resume $ID
 [[ "$(count_arg "$OUT" --dangerously-bypass-approvals-and-sandbox)" == 1 ]] || fail 'X7 recorded bypass not reapplied' "$OUT"
 has_arg "$OUT" -a && fail 'X7 bypass must not add -a' "$OUT"
-# a record without a grant (launched on profile defaults) restores defaults, no hint
+# a record with no grant and no profile restores defaults and prints the hint
 write_record $ID
 run_codex "$OUT" -- resume $ID
 has_arg "$OUT" -a && fail 'X7 a record with no grant must not add -a' "$OUT"
-! grep -Fq relaunch "$OUT.err" || fail 'X7 hint printed although the session has a record' "$OUT"
+[[ "$(grep -c relaunch "$OUT.err")" == 1 ]] || fail 'M3 a record with no grant and no profile must print the relaunch hint' "$OUT"
 # a record for another harness root is not this session's grant
 write_record $ID HARNESS_LAUNCH_BYPASS=1 HARNESS_LAUNCH_SOURCE_ROOT=/somewhere/else
 run_codex "$OUT" -- resume $ID
@@ -200,5 +202,52 @@ if [[ -n "$REAL_CODEX" ]]; then
 else
   echo 'SKIP: X10 real codex CLI not installed'
 fi
+
+# X11 (M3): the launched profile is recorded and reapplied.
+rollout gpt-6.1-sol high
+write_record $ID HARNESS_LAUNCH_PROFILE=plan
+run_codex "$OUT" HARNESS_HOST_DEFAULT_MODE=base -- --passthrough resume $ID
+line="$(argv_line "$OUT")"
+[[ "$line" == *" -p plan -m gpt-6.1-sol -c model_reasoning_effort=\"high\" resume $ID " ]] || fail "M3 recorded profile plan not reapplied before model/effort: $line" "$OUT"
+[[ "$line" != *" -p base "* ]] || fail 'M3 a plan session was restored on base' "$OUT"
+! grep -Fq relaunch "$OUT.err" || fail 'M3 hint printed although the profile was restored' "$OUT"
+run_codex "$OUT" -- resume $ID
+[[ "$(argv_line "$OUT")" == "resume --cd "*" -p plan -m gpt-6.1-sol "* ]] || fail 'M3 subcommand-first restore lost the recorded profile' "$OUT"
+# a profile that left the registry falls back to base plus the hint
+mv "$HARNESS/.harness/codex/plan.config.toml" "$TMP/plan.bak"
+run_codex "$OUT" -- --passthrough resume $ID
+[[ "$(argv_line "$OUT")" == *" -p base "* && "$(argv_line "$OUT")" != *" -p plan "* ]] || fail 'M3 vanished profile must fall back to base' "$OUT"
+[[ "$(grep -c relaunch "$OUT.err")" == 1 ]] || fail 'M3 vanished profile must print the hint' "$OUT"
+mv "$TMP/plan.bak" "$HARNESS/.harness/codex/plan.config.toml"
+# a symlinked registry entry is not a profile
+mv "$HARNESS/.harness/codex/plan.config.toml" "$TMP/plan.bak"; ln -s "$TMP/plan.bak" "$HARNESS/.harness/codex/plan.config.toml"
+run_codex "$OUT" -- --passthrough resume $ID
+[[ "$(argv_line "$OUT")" == *" -p base "* ]] || fail 'M3 symlinked profile must not be used' "$OUT"
+find "$HARNESS/.harness/codex/plan.config.toml" -delete; mv "$TMP/plan.bak" "$HARNESS/.harness/codex/plan.config.toml"
+# an unknown recorded profile is dropped
+write_record $ID HARNESS_LAUNCH_PROFILE=../../evil
+run_codex "$OUT" -- --passthrough resume $ID
+[[ "$(argv_line "$OUT")" == *" -p base "* ]] || fail 'M3 unknown profile applied' "$OUT"
+# the launched profile is exported for the hook
+run_codex "$OUT" -- sol bypass
+[[ "$(env_of "$OUT" HARNESS_LAUNCH_PROFILE)" == sol ]] || fail 'M3 launched profile not exported' "$OUT"
+run_codex "$OUT" -- base
+[[ "$(env_of "$OUT" HARNESS_LAUNCH_PROFILE)" == base ]] || fail 'M3 default profile not exported' "$OUT"
+run_codex "$OUT" -- --passthrough -p fast
+[[ "$(env_of "$OUT" HARNESS_LAUNCH_PROFILE)" == '<unset>' ]] || fail 'M3 a caller profile is not the launcher profile' "$OUT"
+echo 'PASS: X11 launched profile recorded and reapplied while it exists'
+
+# X12 (M1): nesting is passed to the hook through the environment.
+run_codex "$OUT" -- sol
+[[ "$(env_of "$OUT" HARNESS_LAUNCH_NESTED)" == 0 ]] || fail 'M1 a top-level launch must not be nested' "$OUT"
+for nested_env in CODEX_THREAD_ID=t-1 CLAUDECODE=1 HARNESS_LAUNCH_BYPASS=1 HARNESS_LAUNCH_SOURCE_ROOT=/parent; do
+  run_codex "$OUT" "$nested_env" -- sol
+  [[ "$(env_of "$OUT" HARNESS_LAUNCH_NESTED)" == 1 ]] || fail "M1 launch with $nested_env must be nested" "$OUT"
+done
+# the herdr path (no agent env) is top-level and restores the recorded grant
+write_record $ID HARNESS_LAUNCH_APPROVAL=never HARNESS_LAUNCH_SANDBOX=danger-full-access HARNESS_LAUNCH_PROFILE=base
+run_codex "$OUT" HARNESS_HOST_DEFAULT_MODE=base -- --passthrough resume $ID
+[[ "$(argv_line "$OUT")" == *"-a never -s danger-full-access resume $ID "* && "$(env_of "$OUT" HARNESS_LAUNCH_NESTED)" == 0 ]] || fail 'M1 herdr restore must reapply the grant as a top-level launch' "$OUT"
+echo 'PASS: X12 nested launches are flagged; a herdr restore stays top-level'
 
 echo 'PASS: Codex restore fidelity'

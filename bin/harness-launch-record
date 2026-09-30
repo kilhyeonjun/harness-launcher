@@ -1,45 +1,70 @@
 #!/usr/bin/env python3
 """Launcher-owned launch record: the only source of a restored grant.
 
-  harness-launch-record <claude|codex>          SessionStart hook: write
+  harness-launch-record claude [--source-root R] [--isolated 0|1] [--permission P]
+                               [--harness-session-id U] [--nested 0|1]
+  harness-launch-record codex                     (settings from the environment)
   harness-launch-record read <claude|codex> <id>  print the validated record
 
-The launcher exports the grant it launched the agent with
-(HARNESS_LAUNCH_PERMISSION for Claude; HARNESS_LAUNCH_APPROVAL,
-HARNESS_LAUNCH_SANDBOX or HARNESS_LAUNCH_BYPASS for Codex), plus
-HARNESS_LAUNCH_SOURCE_ROOT and HARNESS_LAUNCH_ISOLATED, around the agent
-process. As a SessionStart hook this command reads the payload on stdin and
-writes <state>/launch-records/<agent>-<session_id> (0600, key=value). It never
-reads a transcript or rollout. Both modes print nothing on failure and exit 0
-(the hook must not add context or fail a launch); `read` prints only known keys
-whose values pass the same vocabulary the launcher re-validates.
+As a SessionStart hook this command reads the payload on stdin and writes
+<state>/launch-records/<agent>-<session_id> (0600, key=value). It never reads a
+transcript or rollout, and prints nothing (a hook's stdout becomes session
+context). It always exits 0.
+
+Where the grant comes from:
+  claude  arguments of the hook command inside the launcher's own --settings
+          JSON. The environment is ignored: Claude applies the `env` block of
+          .claude/settings.local.json, which an agent can write.
+  codex   the launcher's HARNESS_LAUNCH_* environment (APPROVAL, SANDBOX,
+          BYPASS, PROFILE, SOURCE_ROOT, ISOLATED, NESTED), because the
+          hooks.json row is static.
+
+A nested launch (one that runs inside an agent) may keep or lower an existing
+record's grant but never raise it, and creates a record without a grant when
+none exists. A top-level launch replaces the record.
 """
 import json
 import os
 import re
 import stat
 import sys
-import tempfile
+import uuid
 
 UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 SOURCES = {"startup", "resume", "clear", "compact", "fork"}
 AGENTS = {"claude", "codex"}
 MAX_RECORD = 64 * 1024
-# key -> (environment variable, value check). Order is the file order.
-FIELDS = (
-    ("permission", "HARNESS_LAUNCH_PERMISSION",
-     lambda v: v in {"default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"}),
-    ("approval", "HARNESS_LAUNCH_APPROVAL",
-     lambda v: v in {"untrusted", "on-failure", "on-request", "never"}),
-    ("sandbox", "HARNESS_LAUNCH_SANDBOX",
-     lambda v: v in {"read-only", "workspace-write", "danger-full-access"}),
-    ("bypass", "HARNESS_LAUNCH_BYPASS", lambda v: v == "1"),
-    ("source_root", "HARNESS_LAUNCH_SOURCE_ROOT",
-     lambda v: v.startswith("/") and "\n" not in v and not re.search(r"[\x00-\x1f\x7f]", v)),
-    ("isolated", "HARNESS_LAUNCH_ISOLATED", lambda v: v in {"0", "1"}),
-    ("harness_session_id", "HARNESS_SESSION_ID", lambda v: UUID.fullmatch(v) is not None),
-)
-CHECKS = {key: check for key, _, check in FIELDS}
+# Lowest privilege first; a nested launch may only move a field toward the front.
+RANKS = {
+    "permission": ["plan", "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions"],
+    "approval": ["untrusted", "on-failure", "on-request", "never"],
+    "sandbox": ["read-only", "workspace-write", "danger-full-access"],
+}
+PROFILES = {"fast", "base", "sol", "astra", "plan", "rich"}
+GRANT_KEYS = ("permission", "approval", "sandbox", "bypass", "profile")
+CHECKS = {
+    "permission": lambda v: v in RANKS["permission"],
+    "approval": lambda v: v in RANKS["approval"],
+    "sandbox": lambda v: v in RANKS["sandbox"],
+    "bypass": lambda v: v == "1",
+    "profile": lambda v: v in PROFILES,
+    "source_root": lambda v: v.startswith("/") and not re.search(r"[\x00-\x1f\x7f]", v),
+    "isolated": lambda v: v in {"0", "1"},
+    "harness_session_id": lambda v: UUID.fullmatch(v) is not None,
+}
+ORDER = ("permission", "approval", "sandbox", "bypass", "profile",
+         "source_root", "isolated", "harness_session_id")
+ENV_KEYS = {
+    "approval": "HARNESS_LAUNCH_APPROVAL", "sandbox": "HARNESS_LAUNCH_SANDBOX",
+    "bypass": "HARNESS_LAUNCH_BYPASS", "profile": "HARNESS_LAUNCH_PROFILE",
+    "source_root": "HARNESS_LAUNCH_SOURCE_ROOT", "isolated": "HARNESS_LAUNCH_ISOLATED",
+    "harness_session_id": "HARNESS_SESSION_ID",
+}
+CLAUDE_FLAGS = {
+    "--permission": "permission", "--source-root": "source_root",
+    "--isolated": "isolated", "--harness-session-id": "harness_session_id",
+    "--nested": "nested",
+}
 
 
 def state_home():
@@ -50,11 +75,81 @@ def state_home():
     return os.path.join(base, "harness-launcher")
 
 
-def record_path(agent, session_id):
+def record_name(agent, session_id):
     if agent not in AGENTS or not UUID.fullmatch(session_id):
-        return None, None
-    directory = os.path.join(state_home(), "launch-records")
-    return directory, os.path.join(directory, "%s-%s" % (agent, session_id.lower()))
+        return None
+    return "%s-%s" % (agent, session_id.lower())
+
+
+def open_records_dir(create):
+    """O_DIRECTORY|O_NOFOLLOW descriptor of <state>/launch-records, or None."""
+    path = os.path.join(state_home(), "launch-records")
+    if create:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            pass
+    try:
+        return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+
+
+def read_fields(dir_fd, name):
+    """Validated fields of one record: regular, ours, single link, no symlink."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode) or meta.st_uid != os.getuid() or meta.st_nlink != 1:
+            return None
+        data = os.read(fd, MAX_RECORD)
+    finally:
+        os.close(fd)
+    found = {}
+    for raw in data.decode("utf-8", "replace").split("\n"):
+        key, sep, value = raw.partition("=")
+        if sep and key in CHECKS and CHECKS[key](value):
+            found[key] = value
+    return found
+
+
+def rank_lower(key, new, old):
+    order = RANKS[key]
+    return order.index(new) < order.index(old)
+
+
+def merge_nested(existing, new):
+    """A nested launch may keep or lower an existing grant, never raise it."""
+    if existing is None:
+        return {k: v for k, v in new.items() if k not in GRANT_KEYS}
+    merged = dict(existing)
+    for key in RANKS:
+        if key in new and key in existing and rank_lower(key, new[key], existing[key]):
+            merged[key] = new[key]
+    return merged
+
+
+def launch_settings(agent):
+    """(fields, nested) for this launch, from arguments (claude) or environment."""
+    if agent == "claude":
+        raw = {}
+        args = sys.argv[2:]
+        if len(args) % 2:
+            return None, False
+        for flag, value in zip(args[0::2], args[1::2]):
+            if flag not in CLAUDE_FLAGS:
+                return None, False
+            raw[CLAUDE_FLAGS[flag]] = value
+        nested = raw.pop("nested", "0") == "1"
+    else:
+        raw = {key: os.environ.get(var, "") for key, var in ENV_KEYS.items()}
+        nested = os.environ.get("HARNESS_LAUNCH_NESTED", "") == "1"
+    fields = {k: v for k, v in raw.items() if v and CHECKS[k](v)}
+    return fields, nested
 
 
 def write(agent):
@@ -64,58 +159,45 @@ def write(agent):
     session_id = payload.get("session_id")
     if payload.get("source") not in SOURCES or not isinstance(session_id, str):
         return
-    directory, path = record_path(agent, session_id)
-    if path is None:
+    name = record_name(agent, session_id)
+    if name is None:
         return
-    lines = []
-    for key, variable, check in FIELDS:
-        value = os.environ.get(variable, "")
-        if value and check(value):
-            lines.append("%s=%s\n" % (key, value))
-    keys = {line.split("=", 1)[0] for line in lines}
-    if "source_root" not in keys or "isolated" not in keys:
+    fields, nested = launch_settings(agent)
+    if fields is None or "source_root" not in fields or "isolated" not in fields:
         return
-    os.makedirs(os.path.dirname(directory), exist_ok=True)
+    dir_fd = open_records_dir(create=True)
+    if dir_fd is None:
+        return
     try:
-        os.mkdir(directory, 0o700)
-    except FileExistsError:
-        pass
-    if not stat.S_ISDIR(os.lstat(directory).st_mode):
-        return
-    # Write a private temp file then rename it over the record: a symlink at
-    # the record path is replaced, never followed.
-    fd, temp = tempfile.mkstemp(prefix=".tmp-", dir=directory)
-    try:
-        os.fchmod(fd, 0o600)
-        os.write(fd, "".join(lines).encode("utf-8"))
-        os.close(fd)
-        fd = -1
-        os.replace(temp, path)
-        temp = None
-    finally:
-        if fd >= 0:
+        if nested:
+            fields = merge_nested(read_fields(dir_fd, name), fields)
+        text = "".join("%s=%s\n" % (k, fields[k]) for k in ORDER if k in fields)
+        temp = ".tmp-%s" % uuid.uuid4().hex
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+        try:
+            os.write(fd, text.encode("utf-8"))
+        finally:
             os.close(fd)
-        if temp:
-            os.unlink(temp)
+        try:
+            os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except OSError:
+            os.unlink(temp, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def read(agent, session_id):
-    _, path = record_path(agent, session_id)
-    if path is None:
+    name = record_name(agent, session_id)
+    dir_fd = open_records_dir(create=False) if name else None
+    if dir_fd is None:
         return []
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return []
-        data = os.read(fd, MAX_RECORD)
+        found = read_fields(dir_fd, name)
     finally:
-        os.close(fd)
-    found = {}
-    for raw in data.decode("utf-8", "replace").split("\n"):
-        key, sep, value = raw.partition("=")
-        if sep and key in CHECKS and CHECKS[key](value):
-            found[key] = value
-    return ["%s=%s" % (key, found[key]) for key, _, _ in FIELDS if key in found]
+        os.close(dir_fd)
+    if not found:
+        return []
+    return ["%s=%s" % (key, found[key]) for key in ORDER if key in found]
 
 
 def main(argv):
@@ -123,7 +205,7 @@ def main(argv):
         lines = read(argv[2], argv[3])
         if lines:
             sys.stdout.write("\n".join(lines) + "\n")
-    elif len(argv) == 2:
+    elif len(argv) >= 2 and argv[1] in AGENTS:
         write(argv[1])
 
 
