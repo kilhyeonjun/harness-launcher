@@ -139,8 +139,16 @@ def config_matches(
         "otel",
         "apps",
         "tools",
+        "projects",
     }
     if set(config) - allowed_root_keys:
+        return False
+    # Folder trust: the launcher's own roots plus decisions Codex saved.
+    projects = config.get("projects")
+    if projects is not None and (
+        not isinstance(projects, dict)
+        or not all(isinstance(entry, dict) for entry in projects.values())
+    ):
         return False
     hooks = config.get("hooks")
     if hooks is not None and (
@@ -323,6 +331,7 @@ def managed_config_projection_sha256(codex_home):
         with open(os.path.join(codex_home, "config.toml"), "rb") as stream:
             config = tomllib.load(stream)
         config.pop("hooks", None)
+        config.pop("projects", None)
         config.pop("skills", None)
         marketplaces = config.get("marketplaces")
         if isinstance(marketplaces, dict):
