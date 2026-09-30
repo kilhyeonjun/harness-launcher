@@ -225,6 +225,29 @@ submission to `SUBMITTED`. Clean close or normal exit records terminal `CLOSED`.
 
 Manifest-enabled homes also keep an atomic successful-input fingerprint plus a source-identity watch snapshot. The lean warm path validates watched file identities, semantic TOML policy, launcher-owned output hashes, product-plugin skill digests, explicit-only policies, skill/plugin directory topology, every managed skill link, and the normalized global-MCP definition digest before returning; it does not rescan plugin tests/docs/assets. Changing selected global definitions or allowlist membership therefore invalidates the warm path. Unexpected generated-home skill routes force a cold rebuild and reversible quarantine, and marker membership alone never proves ownership. Auth contents, sessions, hook trust state, and generated output mtimes remain runtime state and do not invalidate source generation. A cold rebuild leaves the live success stamp in place while it prepares a candidate transaction, then publishes the replacement success stamp last.
 
+### Restore fidelity and the launch record
+
+A host restore (`claude --resume <id>`, `codex resume <id>`) restores the
+session's model and effort from its transcript or rollout, and its permission or
+sandbox grant from a launch record. The two sources have different trust:
+
+- A transcript or rollout is written by the agent, so the launcher treats it as
+  untrusted data. It is read by a bounded helper (no symlink or non-regular file,
+  last 8 MiB, time limit), and only model and effort are taken, each re-validated
+  against a fixed vocabulary before use. A forged `permissionMode`,
+  `approval_policy` or `sandbox_policy` in it is never read.
+- The launch record is written by the launcher's own `SessionStart` hook from the
+  grant the launcher exported for that launch, under
+  `<state>/launch-records/<agent>-<session_id>` with mode 0600.
+  The launcher never escalates: without a record it keeps the default grant and
+  prints the command that relaunches with bypass. A record is honoured only for its own harness root,
+  and it is also the only proof that a Claude session lives outside an isolated
+  root. The record protects against content in agent-written session files; it
+  does not stop a process running as the same user from writing the file, exactly
+  like every other file in the state directory.
+
+See [Terminal runtimes](terminal-runtimes.md#restore-fidelity) for the argv rules.
+
 ## Browser and plugin trust
 
 The launcher can materialize supported Codex bundled plugins when a compatible marketplace source or existing cache is available.
