@@ -93,6 +93,25 @@ with open(sys.argv[1], 'w') as f:
 PYEOF
 probe claude "$TMP/cut.jsonl"; expect 'partial first line dropped' ''
 
+# L7: a window that starts exactly on a line boundary keeps its first line.
+"$PY" - "$TMP/edge.jsonl" <<'PYEOF'
+import sys
+line = '{"type":"assistant","isSidechain":false,"message":{"model":"claude-edge-1"},"effort":"low"}\n'
+window = 8 * 1024 * 1024
+junk = '{"type":"user","x":"old"}\n'
+with open(sys.argv[1], 'w') as f:
+    f.write(junk + line)
+    f.write('{"type":"user","x":"' + 'z' * (window - len(line) - len('{"type":"user","x":""}\n')) + '"}\n')
+PYEOF
+probe claude "$TMP/edge.jsonl"; expect 'L7 window starting on a line boundary keeps its first line' $'model=claude-edge-1\neffort=low'
+# L7: non-string values are ignored, not fatal (a list-valued effort used to raise)
+{ printf '{"type":"assistant","isSidechain":false,"message":{"model":"claude-ok-1"},"effort":["high"]}\n'; } > "$TMP/listeffort.jsonl"
+probe claude "$TMP/listeffort.jsonl"; expect 'L7 list-valued effort' 'model=claude-ok-1'
+{ printf '{"type":"assistant","isSidechain":false,"message":{"model":"claude-ok-2"},"effort":{"x":1}}\n'; } > "$TMP/dicteffort.jsonl"
+probe claude "$TMP/dicteffort.jsonl"; expect 'L7 dict-valued effort' 'model=claude-ok-2'
+{ printf '{"type":"turn_context","payload":{"model":"gpt-6-sol","effort":["low"]}}\n'; } > "$TMP/listcodex.jsonl"
+probe codex "$TMP/listcodex.jsonl"; expect 'L7 list-valued codex effort' 'model=gpt-6-sol'
+
 # --- Codex rollout -----------------------------------------------------------
 R="$TMP/rollout.jsonl"
 {

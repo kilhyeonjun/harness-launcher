@@ -27,24 +27,33 @@ CODEX_EFFORTS = CLAUDE_EFFORTS | {"minimal"}
 
 
 def read_tail(path):
-    """Return the last WINDOW bytes of a regular file as complete lines."""
+    """Return the last WINDOW bytes of a regular file as complete lines.
+
+    Exactly the window is read (the file may grow meanwhile). The first line is
+    dropped as partial unless the byte before the window is a newline.
+    """
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        size = os.fstat(fd).st_size
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        meta = os.fstat(fd)
+        if not stat.S_ISREG(meta.st_mode):
             return []
+        size = meta.st_size
         start = max(0, size - WINDOW)
-        os.lseek(fd, start, os.SEEK_SET)
+        on_boundary = start == 0 or os.pread(fd, 1, start - 1) == b"\n"
+        remaining = size - start
         chunks = []
-        while True:
-            chunk = os.read(fd, 1 << 20)
+        offset = start
+        while remaining > 0:
+            chunk = os.pread(fd, min(1 << 20, remaining), offset)
             if not chunk:
                 break
             chunks.append(chunk)
+            offset += len(chunk)
+            remaining -= len(chunk)
     finally:
         os.close(fd)
     lines = b"".join(chunks).split(b"\n")
-    return lines[1:] if start > 0 else lines
+    return lines if on_boundary else lines[1:]
 
 
 def records(path):
@@ -78,7 +87,7 @@ def probe_claude(path):
         if not (valid_model(name) and name.startswith("claude-")):
             continue
         model = name
-        if rec.get("effort") in CLAUDE_EFFORTS:
+        if isinstance(rec.get("effort"), str) and rec["effort"] in CLAUDE_EFFORTS:
             effort = rec["effort"]
     out = []
     if model:
@@ -106,7 +115,7 @@ def probe_codex(path):
         if rec.get("type") == "turn_context":
             if valid_model(payload.get("model")):
                 model = payload["model"]
-            if payload.get("effort") in CODEX_EFFORTS:
+            if isinstance(payload.get("effort"), str) and payload["effort"] in CODEX_EFFORTS:
                 effort = payload["effort"]
         found = context_window(payload)
         if found is not None:
