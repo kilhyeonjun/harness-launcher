@@ -246,17 +246,26 @@ sandbox grant from a launch record. The two sources have different trust:
   does not stop a process running as the same user from writing the file, exactly
   like every other file in the state directory.
 
-Two details keep the record honest. A Claude hook takes its grant as command
+Three details keep the record honest. A Claude hook takes its grant as command
 arguments inside the launcher's `--settings`, never from the environment, because
 Claude applies the agent-writable `env` block of `.claude/settings.local.json`.
 Codex's `hooks.json` row is static, so it reads the launcher's environment, and
 `$CODEX_HOME` (`.harness/codex`) sits inside the workspace-write root, which makes it a
-pre-existing lever inside the same boundary. A nested launch (one running inside an
-agent) may keep or lower a record's grant and never raise it.
+pre-existing lever inside the same boundary. Whether a launch is nested is decided by
+the hook from process ancestry (a second `claude` or `codex` executable above the agent
+that ran the hook), not from environment variables, so a stale agent environment in a
+pane shell does not demote a restore and `env -u CLAUDECODE` does not promote a nested
+launch. A nested launch may keep or lower a record's grant and never raise it, and it
+can create a grant-less `isolated=0` record, which only enables the legacy route: an
+isolated owner still wins. A same-user process can still write the record file directly
+or double-fork to escape its ancestry; that stays the documented same-user boundary.
 
 Known limits, kept on purpose:
 
-- A nested `codex exec` inherits the parent's `HARNESS_LAUNCH_*` environment.
+- A raw `codex exec` or `codex exec resume` inside a Codex agent inherits the parent's
+  `HARNESS_LAUNCH_*` environment, but its own hook sees the parent `codex` as an ancestor
+  and is treated as nested. Ancestry recognises only executables named exactly `claude`
+  or `codex`; an agent started through a wrapper with another name is not seen.
 - A caller `--settings` after `--passthrough` replaces the launcher's, so that launch has no record.
 - A planted canonical rollout in the source `CODEX_HOME` can steer a restore to the legacy route.
 - The Codex hook row names the Python interpreter by its Cellar path, which changes after `brew upgrade` until the next prepare.

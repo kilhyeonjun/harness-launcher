@@ -233,7 +233,7 @@ can write. They come only from the **launch record**:
 - The launcher records what it launched the agent with: for Claude the
   `--permission-mode`; for Codex `-a`, `-s`, `--full-auto` or the bypass flag, and
   the launcher-owned profile (`fast|base|sol|astra|plan|rich`, not a caller `-p`),
-  plus the source root, isolation, and whether the launch is nested (below).
+  plus the source root and isolation.
 - A `SessionStart` hook the launcher injects runs `harness-launch-record`, which
   writes `<state>/launch-records/<agent>-<session_id>` (mode 0600). It opens the
   `launch-records` directory with `O_DIRECTORY|O_NOFOLLOW`, writes a private temp
@@ -245,8 +245,8 @@ can write. They come only from the **launch record**:
   is checked against a fixed vocabulary before it is written or read.
 - Claude: the hook rides the launcher's own `--settings`, merged with the forced
   thinking setting into one JSON (`{"alwaysThinkingEnabled":true,"hooks":{...}}`).
-  The grant, source root, isolation and nesting are arguments of the hook command
-  (`--permission`, `--source-root`, `--isolated`, `--nested`, ...), and the hook
+  The grant, source root and isolation are arguments of the hook command
+  (`--permission`, `--source-root`, `--isolated`, `--harness-session-id`), and the hook
   ignores `HARNESS_LAUNCH_*` for Claude: Claude applies the `env` block of
   `.claude/settings.local.json`, which an agent can write. A caller `--settings`
   after `--passthrough` is passed last and may replace it; the launch then simply
@@ -254,26 +254,32 @@ can write. They come only from the **launch record**:
 - Codex: the `launch_record` registry row above (opt in with
   `HARNESS_LAUNCH_RECORD_HOOKS=1`). Its `hooks.json` row is static, so the hook
   reads the launcher's environment (`HARNESS_LAUNCH_APPROVAL`, `_SANDBOX`,
-  `_BYPASS`, `HARNESS_LAUNCH_PROFILE`, `_SOURCE_ROOT`, `_ISOLATED`, `_NESTED`),
+  `_BYPASS`, `HARNESS_LAUNCH_PROFILE`, `_SOURCE_ROOT`, `_ISOLATED`),
   exported around the agent process only, inherited values cleared first.
   Isolated Codex homes lack hook trust, so isolated Codex sessions have no record.
-- Nested launches. A launch is nested when it runs inside an agent: the launcher
-  sees `CLAUDECODE`, a Codex thread variable, or `HARNESS_LAUNCH_*` inherited from
-  a parent agent before it re-exports anything. A nested launch passes `--nested 1`
-  (Codex: `HARNESS_LAUNCH_NESTED=1`). The hook then keeps or lowers an existing
+- Nested launches. The hook decides from process ancestry, not from the
+  environment: starting at the `claude` or `codex` process that ran the hook, if
+  any further ancestor's executable basename is exactly `claude` or `codex`
+  (at most 64 hops, stopping at pid 1), the launch is nested; an unreadable
+  process table also counts as nested. A nested launch keeps or lowers an existing
   record's grant, never raises it, keeps the record's source root and isolation,
-  and creates a record without a grant when none exists. A top-level launch (your
-  terminal, or a herdr-typed restore from a pane shell with no agent environment)
-  sets or raises, so the relaunch command the hint prints does record its grant.
+  and creates a record without a grant when none exists. Grants rank
+  `plan` < `dontAsk` < `default` < `acceptEdits` < `auto` < `bypassPermissions`;
+  Codex approval `untrusted` < `on-failure` < `on-request` < `never` and sandbox
+  `read-only` < `workspace-write` < `danger-full-access`. A top-level launch (your
+  terminal, or a herdr-typed restore from a pane shell whose ancestors are only
+  herdr, shells and init) sets or raises, so the relaunch command the hint prints
+  does record its grant. A stale agent environment in a pane shell does not make it
+  nested, and `env -u CLAUDECODE` does not make a nested launch top-level.
 - On restore the launcher reapplies the recorded grant, only if the record names
   this harness root. For Codex it first reapplies the recorded `-p <profile>`,
   because a profile can carry a grant of its own (`plan` is read-only), and only
   while `$CODEX_HOME/<profile>.config.toml` still exists as a regular file;
   otherwise it keeps `base`. Model and effort from the rollout follow the profile.
   The launcher keeps the default and prints one line with the exact command that
-  relaunches with bypass when there is no record (every session started before this
-  feature), or the record carries no grant and no profile, or the recorded profile
-  is gone, for example `<prefix> rich bypass --passthrough --resume <id>` or
+  relaunches with bypass when there is no record at all (every session started
+  before this feature), or the recorded Codex profile is gone. A record without a
+  grant means the user chose the default mode, so it stays quiet. For example `<prefix> rich bypass --passthrough --resume <id>` or
   `<prefix> codex sol bypass --passthrough resume <id>` (the keyword follows the
   restored model). Claude modes carry no permission, so there is no Claude profile
   to restore. It never escalates from a session file.

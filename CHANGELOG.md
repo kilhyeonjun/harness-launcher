@@ -18,11 +18,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
   rollout. Claude gets the `SessionStart` hook through the launcher's `--settings`,
   merged with forced thinking into one JSON; Codex gets it through the new
   `launch_record` registry row (`HARNESS_LAUNCH_RECORD_HOOKS=1`, opt in per
-  harness and rerun the Codex hook trust step). A restore without a record, or
-  with a record that carries no grant and no profile, keeps defaults and prints the
-  one command that relaunches with bypass. The Claude hook gets its grant as command
+  harness and rerun the Codex hook trust step). A restore without a record
+  keeps defaults and prints the one command that relaunches with bypass. The Claude hook gets its grant as command
   arguments, never from the environment (Claude applies `settings.local.json`'s
-  `env`); a launch nested inside an agent can lower a record but never raise it; a
+  `env`); a launch nested inside an agent (decided by the hook from process ancestry) can lower a record but never raise it, with `dontAsk` ranked just above `plan`; a
   Codex restore reapplies the recorded launcher profile (for example `plan`, which is
   read-only) while it still exists. The record reader also requires an owned,
   single-link file under an `O_NOFOLLOW` directory, and the probe reads exactly its
