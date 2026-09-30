@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Launcher-owned launch record: the only source of a restored grant.
+
+  harness-launch-record <claude|codex>          SessionStart hook: write
+  harness-launch-record read <claude|codex> <id>  print the validated record
+
+The launcher exports the grant it launched the agent with
+(HARNESS_LAUNCH_PERMISSION for Claude; HARNESS_LAUNCH_APPROVAL,
+HARNESS_LAUNCH_SANDBOX or HARNESS_LAUNCH_BYPASS for Codex), plus
+HARNESS_LAUNCH_SOURCE_ROOT and HARNESS_LAUNCH_ISOLATED, around the agent
+process. As a SessionStart hook this command reads the payload on stdin and
+writes <state>/launch-records/<agent>-<session_id> (0600, key=value). It never
+reads a transcript or rollout. Both modes print nothing on failure and exit 0
+(the hook must not add context or fail a launch); `read` prints only known keys
+whose values pass the same vocabulary the launcher re-validates.
+"""
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
+
+UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+SOURCES = {"startup", "resume", "clear", "compact", "fork"}
+AGENTS = {"claude", "codex"}
+MAX_RECORD = 64 * 1024
+# key -> (environment variable, value check). Order is the file order.
+FIELDS = (
+    ("permission", "HARNESS_LAUNCH_PERMISSION",
+     lambda v: v in {"default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"}),
+    ("approval", "HARNESS_LAUNCH_APPROVAL",
+     lambda v: v in {"untrusted", "on-failure", "on-request", "never"}),
+    ("sandbox", "HARNESS_LAUNCH_SANDBOX",
+     lambda v: v in {"read-only", "workspace-write", "danger-full-access"}),
+    ("bypass", "HARNESS_LAUNCH_BYPASS", lambda v: v == "1"),
+    ("source_root", "HARNESS_LAUNCH_SOURCE_ROOT",
+     lambda v: v.startswith("/") and "\n" not in v and not re.search(r"[\x00-\x1f\x7f]", v)),
+    ("isolated", "HARNESS_LAUNCH_ISOLATED", lambda v: v in {"0", "1"}),
+    ("harness_session_id", "HARNESS_SESSION_ID", lambda v: UUID.fullmatch(v) is not None),
+)
+CHECKS = {key: check for key, _, check in FIELDS}
+
+
+def state_home():
+    explicit = os.environ.get("HARNESS_SESSION_STATE_HOME")
+    if explicit:
+        return explicit
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "harness-launcher")
+
+
+def record_path(agent, session_id):
+    if agent not in AGENTS or not UUID.fullmatch(session_id):
+        return None, None
+    directory = os.path.join(state_home(), "launch-records")
+    return directory, os.path.join(directory, "%s-%s" % (agent, session_id.lower()))
+
+
+def write(agent):
+    payload = json.loads(sys.stdin.read())
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart":
+        return
+    session_id = payload.get("session_id")
+    if payload.get("source") not in SOURCES or not isinstance(session_id, str):
+        return
+    directory, path = record_path(agent, session_id)
+    if path is None:
+        return
+    lines = []
+    for key, variable, check in FIELDS:
+        value = os.environ.get(variable, "")
+        if value and check(value):
+            lines.append("%s=%s\n" % (key, value))
+    keys = {line.split("=", 1)[0] for line in lines}
+    if "source_root" not in keys or "isolated" not in keys:
+        return
+    os.makedirs(os.path.dirname(directory), exist_ok=True)
+    try:
+        os.mkdir(directory, 0o700)
+    except FileExistsError:
+        pass
+    if not stat.S_ISDIR(os.lstat(directory).st_mode):
+        return
+    # Write a private temp file then rename it over the record: a symlink at
+    # the record path is replaced, never followed.
+    fd, temp = tempfile.mkstemp(prefix=".tmp-", dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, "".join(lines).encode("utf-8"))
+        os.close(fd)
+        fd = -1
+        os.replace(temp, path)
+        temp = None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temp:
+            os.unlink(temp)
+
+
+def read(agent, session_id):
+    _, path = record_path(agent, session_id)
+    if path is None:
+        return []
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return []
+        data = os.read(fd, MAX_RECORD)
+    finally:
+        os.close(fd)
+    found = {}
+    for raw in data.decode("utf-8", "replace").split("\n"):
+        key, sep, value = raw.partition("=")
+        if sep and key in CHECKS and CHECKS[key](value):
+            found[key] = value
+    return ["%s=%s" % (key, found[key]) for key, _, _ in FIELDS if key in found]
+
+
+def main(argv):
+    if len(argv) == 4 and argv[1] == "read":
+        lines = read(argv[2], argv[3])
+        if lines:
+            sys.stdout.write("\n".join(lines) + "\n")
+    elif len(argv) == 2:
+        write(argv[1])
+
+
+try:
+    main(sys.argv)
+except BaseException:
+    pass
+sys.exit(0)
