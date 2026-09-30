@@ -16,6 +16,7 @@ STATE="$TMP/state"
 mkdir -p "$HARNESS/config" "$BIN" "$HARNESS/.harness/codex/sessions/2026/09/30"
 print -r -- 'HARNESS_NAME="test"' 'HARNESS_PREFIX="test"' > "$HARNESS/config/launcher.env"
 PY="$(source "$LAUNCHER_DIR/bin/harness-common.sh"; harness_python3_resolve)"
+REAL_CODEX="$(command -v codex 2>/dev/null || true)"
 cp "$LAUNCHER_DIR/bin/harness-restore-probe" "$LAUNCHER_DIR/bin/harness-launch-record" "$BIN/"
 
 cat > "$BIN/codex" <<'STUB'
@@ -187,5 +188,17 @@ run_codex "$OUT" -- base
 run_codex "$OUT" HARNESS_LAUNCH_BYPASS=1 HARNESS_LAUNCH_APPROVAL=never -- base
 [[ "$(env_of "$OUT" HARNESS_LAUNCH_BYPASS)$(env_of "$OUT" HARNESS_LAUNCH_APPROVAL)" == '<unset><unset>' ]] || fail 'X9 inherited grant leaked into a new launch' "$OUT"
 echo 'PASS: X9 launch grant exported from launcher flags; inherited grants dropped'
+
+# X10: the real Codex CLI accepts the restored flags in both argv shapes the
+# launcher builds (root flags before `resume`, and flags after the subcommand).
+if [[ -n "$REAL_CODEX" ]]; then
+  "$REAL_CODEX" -p base -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' -a never -s danger-full-access resume --help >/dev/null 2>&1 \
+    || fail 'X10 real codex rejected the passthrough-shaped restore flags'
+  "$REAL_CODEX" resume -p base -m gpt-6.1-sol -c 'model_reasoning_effort="medium"' -a never -s danger-full-access --help >/dev/null 2>&1 \
+    || fail 'X10 real codex rejected the subcommand-shaped restore flags'
+  echo "PASS: X10 real codex CLI ($("$REAL_CODEX" --version 2>/dev/null)) accepts the restored flags"
+else
+  echo 'SKIP: X10 real codex CLI not installed'
+fi
 
 echo 'PASS: Codex restore fidelity'
