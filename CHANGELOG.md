@@ -2,6 +2,16 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.37.4 — 2026-09-30
+
+- Codex no longer asks to trust the harness folder on every launch. The
+  launcher rewrites `$CODEX_HOME/config.toml` on each launch, and it dropped the
+  `[projects."<path>"]` tables where Codex saves folder trust. It now keeps
+  those tables and writes a trusted entry for its own roots only: the harness
+  root and, in an isolated session, the source and session roots, keyed by
+  physical path. A decision you already made for one of those roots wins.
+  Nested repositories under the harness are not trusted automatically.
+
 ## 0.37.2 — 2026-09-30
 
 - herdr plugin: notifications now use `terminal-notifier` when it is installed

@@ -1092,8 +1092,17 @@ if [[ "$SURFACE_ENABLED" -eq 1 && -f "$CODEX_HOME/surface.config.toml" ]]; then
   cat "$CODEX_HOME/surface.config.toml" >> "$tmp_config"
 fi
 
+# Codex keys folder trust by physical path. An isolated session also runs in its
+# source root. Both regeneration steps below use this list.
+trust_roots=()
+for trust_root in "${HARNESS_SOURCE_ROOT:-}" "$HARNESS_DIR"; do
+  [[ -n "$trust_root" && -d "$trust_root" ]] || continue
+  trust_roots+=("$(cd "$trust_root" && pwd -P)")
+done
+
 if [[ -f "$config_file" ]]; then
-  python3 - "$config_file" "$surface_catalog" "$CODEX_HOME" "$FINAL_CODEX_HOME" >> "$tmp_config" <<'PY'
+  LAUNCHER_TRUST_ROOTS="$(printf '%s\n' "${trust_roots[@]}")" \
+    python3 - "$config_file" "$surface_catalog" "$CODEX_HOME" "$FINAL_CODEX_HOME" >> "$tmp_config" <<'PY'
 import json
 import os
 import re
@@ -1169,10 +1178,29 @@ def should_preserve(header):
     if header.startswith("[plugins.") and header.endswith("]") and not header.startswith("[["):
         key = first_toml_key(header[len("[plugins."):-1])
         return not key.endswith("@openai-bundled")
+    # Codex saves the user's folder trust decision here.
+    if header.startswith("[projects.") and header.endswith("]") and not header.startswith("[["):
+        return True
     return False
+
+launcher_trust_roots = {root for root in os.environ.get("LAUNCHER_TRUST_ROOTS", "").split("\n") if root}
+
+def is_launcher_trust_entry(block):
+    # The launcher re-emits its own entry on each run; keeping it here as well
+    # would change the output of an unchanged launch.
+    lines = [line.strip() for line in block if line.strip()]
+    if len(lines) != 2 or lines[1] != 'trust_level = "trusted"':
+        return False
+    try:
+        keys = list(tomllib.loads(lines[0] + "\n").get("projects", {}))
+    except tomllib.TOMLDecodeError:
+        return False
+    return len(keys) == 1 and keys[0] in launcher_trust_roots
 
 def flush_current():
     if not in_preserved_section or not current:
+        return
+    if current[0].startswith("[projects.") and is_launcher_trust_entry(current):
         return
     if current[0].strip() == "[[skills.config]]" and any(
         "launcher-managed-surface" in line for line in current
@@ -1205,11 +1233,42 @@ flush_current()
 
 if preserved:
     print()
-    print("# Preserved Codex runtime state (hooks, skill choices, external plugins).")
+    print("# Preserved Codex runtime state (hooks, skill choices, external plugins, folder trust).")
     for line in preserved:
         print(line, end="")
 PY
 fi
+
+# 2c. Trust the launcher's own roots so Codex does not ask on every launch. A root
+# the user already decided about keeps that preserved decision.
+python3 - "$tmp_config" "${trust_roots[@]}" >> "$tmp_config" <<'PY'
+import json
+import re
+import sys
+import tomllib
+
+config_path, roots = sys.argv[1], sys.argv[2:]
+header = re.compile(r"^\[projects\..*\]\s*$")
+decided = set()
+with open(config_path, encoding="utf-8") as stream:
+    text = stream.read()
+for line in text.splitlines():
+    if header.match(line):
+        try:
+            decided.update(tomllib.loads(line.strip() + "\n").get("projects", {}))
+        except tomllib.TOMLDecodeError:
+            continue
+emitted = []
+for root in roots:
+    if root in decided or root in emitted:
+        continue
+    # One blank line between tables; a preserved block may already end with one.
+    if emitted or (text and not text.endswith("\n\n")):
+        print()
+    emitted.append(root)
+    print("[projects.%s]" % json.dumps(root, ensure_ascii=False))
+    print('trust_level = "trusted"')
+PY
 
 # 3. Atomic swap only if content differs (preserves mtime when unchanged)
 if [[ -f "$config_file" ]] && cmp -s "$tmp_config" "$config_file"; then
