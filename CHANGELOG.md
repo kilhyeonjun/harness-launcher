@@ -2,6 +2,17 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.39.2 — 2026-10-01
+
+- herdr plugin: a Codex tab now takes its thread's latest name. A running Codex
+  never updates its terminal title when a harness hook renames the thread from
+  another app-server connection, so the tab kept the thread id (shown as its
+  position) or the name the session resumed with. The plugin reads the name
+  from the harness `.harness/codex/session_index.jsonl` found from the pane's
+  directory upward, then `~/.codex`, and falls back to the terminal title.
+  Notifications use the same title, without the Codex `| <name>harness` suffix.
+  herdr's own sidebar still shows the terminal title.
+
 ## 0.39.1 — 2026-10-01
 
 - Fix: sessions started from the interactive picker (`<prefix>` with no

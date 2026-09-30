@@ -377,23 +377,33 @@ The package ships a herdr plugin in `share/harness-launcher/herdr-plugin`
 startup and on pane and tab events. It does two things.
 
 Tab labels. A tab with exactly one pane that runs a detected agent takes the
-agent's terminal title as its label, cut to 20 display cells (a wide character
-counts as two) with a trailing `…`. A trailing `| <name>harness` that Codex adds
-to its title is dropped. The plugin renames a tab only while its label is
+agent's session title as its label, cut to 20 display cells (a wide character
+counts as two) with a trailing `…`. For Claude that is the terminal title. For
+Codex it is the thread's latest name in `<CODEX_HOME>/session_index.jsonl`,
+because a running Codex never updates its terminal title when its thread is
+renamed from another app-server connection (such as a harness title hook): the
+title keeps the thread id, or the name the session resumed with. The plugin
+looks for `.harness/codex/session_index.jsonl` from the pane's directory
+upward, then `~/.codex`, takes the first index that knows the thread, and reads
+only a regular file you own (at most its last 16 MiB). Without an indexed name
+it uses the terminal title. A trailing `| <name>harness` that Codex adds to its
+title is dropped. herdr's sidebar shows the terminal title itself, so a Codex
+row there can still show the old title. The plugin renames a tab only while its label is
 herdr's default (the tab's position in its workspace, such as `4`) or the
 label the plugin set last; a name you give a tab stays. Rename a tab back to
 its position number to hand it back to the plugin. When a tab it labeled no
 longer holds one agent with a usable title (the agent exited, the tab was
 split, or Codex titled a session by its thread id), the plugin renames it back
 to its position. herdr
-has no plugin event for title changes, so a new title shows up on the next
+has no plugin event for title or thread-name changes, so a new title shows up on the next
 agent status change, agent detection, pane focus change, pane creation, close
 or move, or tab creation or rename.
 
 Notifications. When an agent goes from `working` to `idle`, or to `blocked`,
 the plugin waits one second and, if the state still holds, posts a desktop
 notification. The title is `✅ <agent> 완료` or `⏳ <agent> 입력 필요`, the subtitle
-is the workspace label, and the body is the agent's session title. Clicking it
+is the workspace label, and the body is the agent's session title (as for tab
+labels, without the Codex `| <name>harness` suffix). Clicking it
 activates the terminal app that hosts the herdr client (found from the client's
 process ancestry, so cmux, Ghostty or another app) and runs
 `herdr agent focus <pane>`. A newer notification for the same pane replaces

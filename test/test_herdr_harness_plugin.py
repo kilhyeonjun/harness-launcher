@@ -329,6 +329,86 @@ class TabLabelTest(HerdrPluginTestCase):
         self.assertRan(self.h.run("startup"))
         self.assertEqual(self.h.renames(), [])
 
+    # Codex renames a thread from another app-server connection, which the running
+    # TUI never sees: its terminal title keeps the thread id or the name it resumed
+    # with. The thread's latest name is in <CODEX_HOME>/session_index.jsonl.
+    THREAD = "0199aaaa-1111-7222-8333-444455556666"
+
+    def codex_home(self, root, records):
+        index = root / ".harness" / "codex" / "session_index.jsonl"
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records),
+                         encoding="utf-8")
+        return index
+
+    def codex_pane(self, pane_id, tab_id, cwd, title=None, thread=None):
+        item = pane(pane_id, tab_id, agent="codex",
+                    title=title or "%s | acme-platform-harness" % (thread or self.THREAD))
+        item["cwd"] = str(cwd)
+        item["agent_session"] = {"agent": "codex", "kind": "id", "source": "hook",
+                                 "value": thread or self.THREAD}
+        return item
+
+    def test_codex_tab_takes_the_latest_thread_name_from_the_session_index(self):
+        harness = self.h.root / "acme-platform-harness"
+        self.codex_home(harness, [
+            {"id": self.THREAD, "thread_name": "작업 목표 확인 중", "updated_at": "1"},
+            {"id": "0199bbbb-1111-7222-8333-444455556666", "thread_name": "other", "updated_at": "2"},
+            {"id": self.THREAD, "thread_name": "릴리스 노트 검토", "updated_at": "3"},
+            "not a record", {"id": self.THREAD}])
+        (harness / "sub" / "dir").mkdir(parents=True)
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:tE", 14, label="1")],
+                         [self.codex_pane("w5:pE", "w5:tE", harness / "sub" / "dir")])
+        self.assertRan(self.h.run("pane.agent_status_changed"))
+        self.assertEqual(self.h.renames(), [["w5:tE", "릴리스 노트 검토"]])
+
+    def test_codex_thread_name_replaces_a_stale_resumed_title(self):
+        harness = self.h.root / "acme-platform-harness"
+        self.codex_home(harness, [{"id": self.THREAD, "thread_name": "TASK-2619 인계"}])
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t7", 7, label="1")],
+                         [self.codex_pane("w5:p7", "w5:t7", harness,
+                                          title="sandbox 확인 | acme-platform-harness")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w5:t7", "TASK-2619 인계"]])
+
+    def test_codex_without_an_indexed_name_keeps_the_terminal_title_rules(self):
+        harness = self.h.root / "acme-platform-harness"
+        self.codex_home(harness, [{"id": "0199bbbb-1111-7222-8333-444455556666", "thread_name": "x"},
+                                  {"id": self.THREAD, "thread_name": ""}])
+        self.h.set_state([workspace("w5", "beta")],
+                         [tab("w5:t1", 1), tab("w5:t2", 2)],
+                         [self.codex_pane("w5:p1", "w5:t1", harness),
+                          self.codex_pane("w5:p2", "w5:t2", self.h.root / "elsewhere",
+                                          title=CODEX_TITLE)])
+        self.assertRan(self.h.run("startup"))
+        # an empty latest name and a thread-id title name nothing; no index falls back
+        self.assertEqual(self.h.renames(), [["w5:t2", "TASK-2578 런타임 CI…"]])
+
+    def test_codex_default_home_is_the_last_candidate(self):
+        self.codex_home(self.h.root, [])  # creates ~/.harness/codex, not ~/.codex
+        index = self.h.root / ".codex" / "session_index.jsonl"
+        index.parent.mkdir()
+        index.write_text(json.dumps({"id": self.THREAD, "thread_name": "plain codex"}) + "\n",
+                         encoding="utf-8")
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)],
+                         [self.codex_pane("w5:p1", "w5:t1", self.h.root / "project")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w5:t1", "plain codex"]])
+
+    def test_codex_index_that_is_a_symlink_or_names_control_characters_is_handled(self):
+        harness = self.h.root / "acme-platform-harness"
+        real = self.codex_home(self.h.root / "real", [{"id": self.THREAD, "thread_name": "linked"}])
+        (harness / ".harness" / "codex").mkdir(parents=True)
+        (harness / ".harness" / "codex" / "session_index.jsonl").symlink_to(real)
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)],
+                         [self.codex_pane("w5:p1", "w5:t1", harness, title="terminal | x-harness")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w5:t1", "terminal"]])
+        (harness / ".harness" / "codex" / "session_index.jsonl").unlink()
+        self.codex_home(harness, [{"id": self.THREAD, "thread_name": "a\x1b]0;evil\x07b\nc"}])
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertEqual(self.h.renames()[-1], ["w5:t1", "a]0;evilbc"])
+
     def test_plugin_label_returns_to_the_position_when_the_agent_leaves(self):
         self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
                          [pane("w2:p1", "w2:t1", title="task")])
@@ -456,6 +536,24 @@ class NotificationTest(HerdrPluginTestCase):
         self.assertEqual(calls[-1], ["agent", "focus", "w5:p4"])
         sockets = Path(str(self.h.herdr_calls) + ".socket").read_text().splitlines()
         self.assertEqual(sockets[-1], str(self.h.root / "herdr test.sock"))
+
+    def test_codex_notification_names_the_latest_thread_name(self):
+        harness = self.h.root / "acme-platform-harness"
+        index = harness / ".harness" / "codex" / "session_index.jsonl"
+        index.parent.mkdir(parents=True)
+        thread = "0199aaaa-1111-7222-8333-444455556666"
+        index.write_text(json.dumps({"id": thread, "thread_name": "릴리스 노트 검토"},
+                                    ensure_ascii=False) + "\n", encoding="utf-8")
+        state = self.h.state()
+        codex = dict(pane("w5:p4", "w5:t4", agent="codex",
+                          title="%s | acme-platform-harness" % thread),
+                     cwd=str(harness), agent_session={"agent": "codex", "kind": "id", "value": thread})
+        self.h.set_state(state["workspaces"], state["tabs"], [state["panes"][0], codex])
+        self.assertRan(self.h.status("w5:p4", "working", agent="codex"))
+        self.assertRan(self.h.status("w5:p4", "idle", agent="codex"))
+        sent = self.h.notifications()
+        self.assertEqual(len(sent), 1, sent)
+        self.assertEqual(flag(sent[0], "-message"), "릴리스 노트 검토")
 
     def test_idle_event_processed_after_the_agent_resumed_work_is_silent(self):
         self.assertRan(self.h.status("w5:p4", "working"))

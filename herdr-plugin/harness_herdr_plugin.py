@@ -6,7 +6,8 @@ events listed in herdr-plugin.toml. The hook never fails: errors go to stderr,
 which herdr keeps in the plugin log, and the exit code stays 0.
 
 Tab labels: a tab with exactly one pane that runs a detected agent takes that
-agent's terminal title, cut to TAB_LABEL_CELLS display cells. A tab keeps its
+agent's session title, cut to TAB_LABEL_CELLS display cells: the terminal title,
+or for Codex the thread's latest name in its CODEX_HOME session index. A tab keeps its
 label when the user named it (the label is neither the default label, the tab's
 position in its workspace, nor the label this plugin set last). A tab the
 plugin labeled goes back to its position label once it no longer holds one
@@ -26,6 +27,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -42,6 +44,10 @@ HOMEBREW_HERDR = re.compile(r"^(.*)/Cellar/herdr/[^/]+/bin/herdr$")
 # The outermost bundle, so an app's nested helper (…/Frameworks/X Helper.app) maps to the app.
 APP_BUNDLE = re.compile(r"^(.*?\.app)/")
 EXPECTED_LIVE_STATUS = {"finished": "idle", "attention": "blocked"}
+# A harness Codex home, looked up from the pane's directory upward.
+CODEX_INDEX = os.path.join(".harness", "codex", "session_index.jsonl")
+CODEX_INDEX_MAX_BYTES = 16 * 1024 * 1024
+CODEX_HOME_DEPTH = 8
 
 
 def log(message):
@@ -118,6 +124,69 @@ def tab_label(title):
     return kept.rstrip() + "…"
 
 
+def thread_names(path, cache):
+    """{thread id: latest name} from a Codex session index; the index is append-only."""
+    if path in cache:
+        return cache[path]
+    names = {}
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        fd = None
+    if fd is not None:
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid():
+                if info.st_size > CODEX_INDEX_MAX_BYTES:
+                    handle.seek(info.st_size - CODEX_INDEX_MAX_BYTES)
+                    handle.readline()  # partial line
+                for raw in handle:
+                    try:
+                        record = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if (isinstance(record, dict) and isinstance(record.get("id"), str)
+                            and isinstance(record.get("thread_name"), str)):
+                        names[record["id"].lower()] = record["thread_name"]
+    cache[path] = names
+    return names
+
+
+def codex_thread_name(pane, cache):
+    """The latest name of a Codex pane's thread, or "".
+
+    Codex renames a thread from another app-server connection (a title hook), which
+    the running TUI never sees, so its terminal title keeps the thread id or the name
+    it resumed with. The first index on the way up from the pane's directory that
+    knows the thread wins; ~/.codex is the last candidate.
+    """
+    session = pane.get("agent_session")
+    thread = session.get("value") if isinstance(session, dict) else None
+    if pane.get("agent") != "codex" or not isinstance(thread, str) or not THREAD_ID.match(thread):
+        return ""
+    candidates = []
+    for start in (pane.get("foreground_cwd"), pane.get("cwd")):
+        directory = start if isinstance(start, str) and os.path.isabs(start) else None
+        for _ in range(CODEX_HOME_DEPTH):
+            if directory is None:
+                break
+            index = os.path.join(directory, CODEX_INDEX)
+            if index not in candidates:
+                candidates.append(index)
+            parent = os.path.dirname(directory)
+            directory = parent if parent != directory else None
+    candidates.append(os.path.join(os.path.expanduser("~"), ".codex", "session_index.jsonl"))
+    for index in candidates:
+        name = thread_names(index, cache).get(thread.lower())
+        if name is not None:
+            return "".join(c for c in name if not unicodedata.category(c).startswith("C")).strip()
+    return ""
+
+
+def session_title(pane, cache):
+    return codex_thread_name(pane, cache) or (pane.get("terminal_title_stripped") or "").strip()
+
+
 def sync_tabs():
     # Read herdr's lists under the lock so a concurrent run cannot act on an older snapshot.
     with locked_state() as state:
@@ -127,6 +196,7 @@ def sync_tabs():
         for pane in panes:
             panes_by_tab.setdefault(pane.get("tab_id"), []).append(pane)
         owned = state["tabs"]
+        indexes = {}
         live_tabs = {tab["tab_id"] for tab in tabs}
         for tab_id in [tab_id for tab_id in owned if tab_id not in live_tabs]:
             del owned[tab_id]
@@ -149,7 +219,7 @@ def sync_tabs():
             members = panes_by_tab.get(tab_id, [])
             wanted = ""
             if tab.get("pane_count") == 1 and len(members) == 1 and members[0].get("agent"):
-                wanted = tab_label((members[0].get("terminal_title_stripped") or "").strip())
+                wanted = tab_label(session_title(members[0], indexes))
             if not wanted:
                 # No single agent title any more (agent exited, tab split, thread-id title):
                 # hand the tab back its position label. herdr cannot clear a tab name, so
@@ -268,7 +338,7 @@ def announce(pending):
     template = "✅ %s 완료" if pending["kind"] == "finished" else "⏳ %s 입력 필요"
     title = template % pending["agent"]
     subtitle = workspace.get("label") or pane.get("workspace_id") or ""
-    message = (pane.get("terminal_title_stripped") or "").strip() or pane_id
+    message = CODEX_HARNESS_SUFFIX.sub("", session_title(pane, {})).strip() or pane_id
     notifier = terminal_notifier()
     if notifier:
         # terminal-notifier runs the click command without herdr's environment, so carry
