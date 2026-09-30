@@ -6,7 +6,8 @@
 #           command (the environment is writable through settings.local.json
 #           and is ignored).
 #   codex:  the hooks.json row is static, so the launcher's environment is used.
-#   nested: a launch inside an agent may keep or lower a grant, never raise it.
+#   nested: a launch inside an agent (decided by process ancestry, not by
+#           environment) may keep or lower a grant, never raise it.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/bin/harness-common.sh"
@@ -28,13 +29,59 @@ rec() {
   while [[ $# -gt 0 && "$1" != -- ]]; do envs+=("$1"); shift; done
   [[ $# -eq 0 ]] || shift
   args=("$@")
-  OUT="$(printf '%s' "$json" | env -i HOME="$HOME" PATH="$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ${envs[@]+"${envs[@]}"} "$PY" "$WRITER" "$agent" ${args[@]+"${args[@]}"} 2>&1)"
+  OUT="$(printf '%s' "$json" | env -i HOME="$HOME" PATH="$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ${envs[@]+"${envs[@]}"} "$PY" "$WRITER" "$agent" ${args[@]+"${args[@]}"} "${PSARGS[@]}" 2>&1)"
   RC=$?
 }
 event() { printf '{"hook_event_name":"%s","source":"%s","session_id":"%s"}' "$1" "$2" "$3"; }
 read_rec() { OUT="$(HARNESS_SESSION_STATE_HOME="$STATE" "$PY" "$WRITER" read "$1" "$2" 2>&1)"; RC=$?; }
 mode_of() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
 LAUNCH=(--source-root /srv/harness --isolated 0)
+
+# Process tables for ancestry (test-only arguments; production never passes
+# them). Lines are `pid ppid command`; the hook itself is pid 1000.
+CLEAN="$TMP/ps-clean"      # pane shell: herdr -> zsh -> zsh -> claude -> sh -> hook
+cat > "$CLEAN" <<'PS'
+1000 999 /opt/homebrew/bin/python3
+999 998 /bin/sh
+998 997 claude
+997 996 -zsh
+996 995 zsh
+995 1 /Applications/herdr.app/Contents/MacOS/herdr
+1 0 /sbin/launchd
+PS
+NESTED_CLAUDE="$TMP/ps-nested-claude"   # claude -> zsh -> launcher -> claude -> sh -> hook
+cat > "$NESTED_CLAUDE" <<'PS'
+1000 999 /opt/homebrew/bin/python3
+999 998 /bin/sh
+998 997 claude
+997 996 /bin/zsh
+996 900 /bin/zsh
+900 899 claude
+899 1 /sbin/launchd
+1 0 /sbin/launchd
+PS
+NESTED_CODEX="$TMP/ps-nested-codex"     # codex -> zsh -> codex exec -> sh -> hook
+cat > "$NESTED_CODEX" <<'PS'
+1000 999 /opt/homebrew/bin/python3
+999 998 /bin/sh
+998 997 /x/vendor/bin/codex
+997 996 /bin/zsh
+996 900 /x/vendor/bin/codex
+900 1 /sbin/launchd
+1 0 /sbin/launchd
+PS
+NOT_AGENTS="$TMP/ps-lookalikes"   # names that merely contain the agent names
+cat > "$NOT_AGENTS" <<'PS'
+1000 999 /opt/homebrew/bin/python3
+999 998 /bin/sh
+998 997 claude
+997 900 codex-code-mode-host
+900 899 /usr/bin/claude-helper
+899 898 node
+898 1 /opt/codex/tools/codexctl
+1 0 /sbin/launchd
+PS
+PSARGS=(--pstable "$CLEAN" --start-pid 1000)
 
 # --- Claude record (arguments) -------------------------------------------------
 rec claude "$(event SessionStart startup $CID)" -- "${LAUNCH[@]}" --permission bypassPermissions
@@ -104,25 +151,34 @@ read_rec claude 22222222-2222-4333-8444-555555555555
 [[ "$OUT" == $'source_root=/srv/harness\nisolated=0' ]] || fail "unknown grant kept: [$OUT]"
 
 # --- M1: nested launches never raise a record ---------------------------------------
-N=(--source-root /srv/harness --isolated 0 --nested 1)
+# Nesting is decided by process ancestry: from the agent that ran the hook,
+# any further agent ancestor (executable basename exactly claude or codex).
+N=("${LAUNCH[@]}")
+nested() { PSARGS=(--pstable "$1" --start-pid 1000); }
+top_level() { PSARGS=(--pstable "$CLEAN" --start-pid 1000); }
 NID=33333333-aaaa-4bbb-8ccc-000000000001
 # no record yet: a nested launch creates one without a grant
+nested "$NESTED_CLAUDE"
 rec claude "$(event SessionStart startup $NID)" -- "${N[@]}" --permission bypassPermissions
 read_rec claude $NID
 [[ "$OUT" == $'source_root=/srv/harness\nisolated=0' ]] || fail "M1 nested created a record with a grant: [$OUT]"
 # existing plan: nested bypass cannot raise it; a top-level launch can
 NID=33333333-aaaa-4bbb-8ccc-000000000002
+top_level
 rec claude "$(event SessionStart startup $NID)" -- "${LAUNCH[@]}" --permission plan
+nested "$NESTED_CLAUDE"
 rec claude "$(event SessionStart resume $NID)" -- "${N[@]}" --permission bypassPermissions
 read_rec claude $NID
 [[ "$OUT" == $'permission=plan\nsource_root=/srv/harness\nisolated=0' ]] || fail "M1 nested raised plan to bypass: [$OUT]"
 rec claude "$(event SessionStart resume $NID)" -- "${N[@]}"
 read_rec claude $NID
 [[ "$OUT" == $'permission=plan\nsource_root=/srv/harness\nisolated=0' ]] || fail "M1 nested launch without a grant dropped the record's grant: [$OUT]"
+top_level
 rec claude "$(event SessionStart resume $NID)" -- "${LAUNCH[@]}" --permission bypassPermissions
 read_rec claude $NID
 [[ "$OUT" == $'permission=bypassPermissions\nsource_root=/srv/harness\nisolated=0' ]] || fail "M1 top-level relaunch could not raise: [$OUT]"
 # existing bypass: nested keeps or lowers, never raises
+nested "$NESTED_CLAUDE"
 rec claude "$(event SessionStart resume $NID)" -- "${N[@]}" --permission bypassPermissions
 read_rec claude $NID
 [[ "$OUT" == $'permission=bypassPermissions\nsource_root=/srv/harness\nisolated=0' ]] || fail "M1 nested changed an equal grant: [$OUT]"
@@ -130,25 +186,140 @@ rec claude "$(event SessionStart resume $NID)" -- "${N[@]}" --permission acceptE
 read_rec claude $NID
 [[ "$OUT" == $'permission=acceptEdits\nsource_root=/srv/harness\nisolated=0' ]] || fail "M1 nested could not lower: [$OUT]"
 # a nested launch cannot rewrite where the session lives
-rec claude "$(event SessionStart resume $NID)" -- --source-root /elsewhere --isolated 1 --nested 1
+rec claude "$(event SessionStart resume $NID)" -- --source-root /elsewhere --isolated 1
 read_rec claude $NID
 [[ "$OUT" == *'source_root=/srv/harness'* && "$OUT" == *'isolated=0'* ]] || fail "M1 nested rewrote root/isolation: [$OUT]"
-# Codex: same rule through the environment
+
+# rank order: dontAsk denies whatever is not pre-approved, so it sits just above plan
+RID=33333333-aaaa-4bbb-8ccc-000000000003
+top_level
+rec claude "$(event SessionStart startup $RID)" -- "${LAUNCH[@]}" --permission dontAsk
+nested "$NESTED_CLAUDE"
+for higher in auto acceptEdits default bypassPermissions; do
+  rec claude "$(event SessionStart resume $RID)" -- "${N[@]}" --permission $higher
+  read_rec claude $RID
+  [[ "$OUT" == *'permission=dontAsk'* ]] || fail "rank: nested $higher raised a dontAsk record: [$OUT]"
+done
+rec claude "$(event SessionStart resume $RID)" -- "${N[@]}" --permission plan
+read_rec claude $RID
+[[ "$OUT" == *'permission=plan'* ]] || fail "rank: nested plan must lower dontAsk: [$OUT]"
+top_level
+rec claude "$(event SessionStart resume $RID)" -- "${LAUNCH[@]}" --permission acceptEdits
+nested "$NESTED_CLAUDE"
+rec claude "$(event SessionStart resume $RID)" -- "${N[@]}" --permission dontAsk
+read_rec claude $RID
+[[ "$OUT" == *'permission=dontAsk'* ]] || fail "rank: nested dontAsk must lower acceptEdits: [$OUT]"
+rec claude "$(event SessionStart resume $RID)" -- "${N[@]}" --permission default
+read_rec claude $RID
+[[ "$OUT" == *'permission=dontAsk'* ]] || fail "rank: nested default must not raise dontAsk: [$OUT]"
+
+# Codex: same rule through the environment (grant) and the same ancestry
 XN=01a0ef50-1bec-7852-afb3-a6b6559f4700
+top_level
 rec codex "$(event SessionStart startup $XN)" HARNESS_LAUNCH_SANDBOX=read-only HARNESS_LAUNCH_APPROVAL=on-request \
   HARNESS_LAUNCH_SOURCE_ROOT=/srv/harness HARNESS_LAUNCH_ISOLATED=0
-rec codex "$(event SessionStart resume $XN)" HARNESS_LAUNCH_BYPASS=1 HARNESS_LAUNCH_NESTED=1 \
+nested "$NESTED_CODEX"
+rec codex "$(event SessionStart resume $XN)" HARNESS_LAUNCH_BYPASS=1 \
   HARNESS_LAUNCH_SOURCE_ROOT=/srv/harness HARNESS_LAUNCH_ISOLATED=0
 read_rec codex $XN
 [[ "$OUT" == $'approval=on-request\nsandbox=read-only\nsource_root=/srv/harness\nisolated=0' ]] || fail "M1 nested codex raised the record: [$OUT]"
-rec codex "$(event SessionStart resume $XN)" HARNESS_LAUNCH_SANDBOX=danger-full-access HARNESS_LAUNCH_NESTED=1 \
+rec codex "$(event SessionStart resume $XN)" HARNESS_LAUNCH_SANDBOX=danger-full-access HARNESS_LAUNCH_APPROVAL=never \
   HARNESS_LAUNCH_SOURCE_ROOT=/srv/harness HARNESS_LAUNCH_ISOLATED=0
 read_rec codex $XN
-[[ "$OUT" == *'sandbox=read-only'* ]] || fail "M1 nested codex raised the sandbox: [$OUT]"
+[[ "$OUT" == *'approval=on-request'* && "$OUT" == *'sandbox=read-only'* ]] || fail "M1 nested codex raised approval/sandbox: [$OUT]"
+rec codex "$(event SessionStart resume $XN)" HARNESS_LAUNCH_SANDBOX=read-only HARNESS_LAUNCH_APPROVAL=untrusted \
+  HARNESS_LAUNCH_SOURCE_ROOT=/srv/harness HARNESS_LAUNCH_ISOLATED=0
+read_rec codex $XN
+[[ "$OUT" == *'approval=untrusted'* ]] || fail "rank: nested codex could not lower approval to untrusted: [$OUT]"
+rec codex "$(event SessionStart resume $XN)" HARNESS_LAUNCH_APPROVAL=on-failure \
+  HARNESS_LAUNCH_SOURCE_ROOT=/srv/harness HARNESS_LAUNCH_ISOLATED=0
+read_rec codex $XN
+[[ "$OUT" == *'approval=untrusted'* ]] || fail "rank: nested codex on-failure must not raise untrusted: [$OUT]"
+top_level
 rec codex "$(event SessionStart resume $XN)" HARNESS_LAUNCH_BYPASS=1 \
   HARNESS_LAUNCH_SOURCE_ROOT=/srv/harness HARNESS_LAUNCH_ISOLATED=0
 read_rec codex $XN
 [[ "$OUT" == *'bypass=1'* ]] || fail "M1 top-level codex relaunch could not raise: [$OUT]"
+
+# ancestry: only real agent executables count, the environment does not
+top_level
+ENVSTALE=(CLAUDECODE=1 CODEX_THREAD_ID=t-1 HARNESS_LAUNCH_NESTED=1 HARNESS_LAUNCH_SOURCE_ROOT=/parent HARNESS_LAUNCH_PERMISSION=plan)
+AID=44444444-aaaa-4bbb-8ccc-000000000001
+rec claude "$(event SessionStart startup $AID)" "${ENVSTALE[@]}" -- "${LAUNCH[@]}" --permission bypassPermissions
+read_rec claude $AID
+[[ "$OUT" == *'permission=bypassPermissions'* ]] || fail "ancestry: a stale agent environment made a pane launch nested: [$OUT]"
+AID=44444444-aaaa-4bbb-8ccc-000000000002
+nested "$NOT_AGENTS"
+rec claude "$(event SessionStart startup $AID)" -- "${LAUNCH[@]}" --permission bypassPermissions
+read_rec claude $AID
+[[ "$OUT" == *'permission=bypassPermissions'* ]] || fail "ancestry: look-alike executable names counted as agents: [$OUT]"
+# a table with no agent at all (the hook run by hand) and a loop both terminate as top-level
+printf '1000 999 python3\n999 1000 sh\n' > "$TMP/ps-loop"
+AID=44444444-aaaa-4bbb-8ccc-000000000003
+PSARGS=(--pstable "$TMP/ps-loop" --start-pid 1000)
+rec claude "$(event SessionStart startup $AID)" -- "${LAUNCH[@]}" --permission plan
+read_rec claude $AID
+[[ "$OUT" == *'permission=plan'* ]] || fail "ancestry: a cyclic table did not terminate as top-level: [$OUT]"
+# 64 hops at most: an agent farther up than that is not seen
+"$PY" - "$TMP/ps-deep" <<'PYEOF'
+import sys
+lines = ["1000 999 python3", "999 998 sh", "998 997 claude"]
+for pid in range(997, 997 - 70, -1):
+    lines.append("%d %d zsh" % (pid, pid - 1))
+lines.append("%d 1 claude" % (997 - 70))
+open(sys.argv[1], "w").write("\n".join(lines) + "\n1 0 launchd\n")
+PYEOF
+AID=44444444-aaaa-4bbb-8ccc-000000000004
+PSARGS=(--pstable "$TMP/ps-deep" --start-pid 1000)
+rec claude "$(event SessionStart startup $AID)" -- "${LAUNCH[@]}" --permission plan
+read_rec claude $AID
+[[ "$OUT" == *'permission=plan'* ]] || fail "ancestry: walk exceeded 64 hops: [$OUT]"
+top_level
+
+# a nested launch can only create a grant-less record; it never sets isolated=1 over a real one
+# the pure function agrees (imported, not executed)
+"$PY" - "$WRITER" "$CLEAN" "$NESTED_CLAUDE" "$NESTED_CODEX" <<'PYEOF' || fail 'pure ancestry function disagrees'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("launch_record", sys.argv[1])
+spec = importlib.util.spec_from_loader("launch_record", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+def table(path):
+    out = {}
+    for line in open(path):
+        pid, ppid, comm = line.split(None, 2)
+        out[int(pid)] = (int(ppid), comm.strip())
+    return out
+assert mod.ancestry_nested(table(sys.argv[2]), 1000) is False
+assert mod.ancestry_nested(table(sys.argv[3]), 1000) is True
+assert mod.ancestry_nested(table(sys.argv[4]), 1000) is True
+assert mod.ancestry_nested({}, 1000) is False
+PYEOF
+
+# L: the temp file never outlives a failed write
+"$PY" - "$WRITER" "$STATE" <<'PYEOF' || fail 'temp file left behind after a failed write'
+import importlib.machinery, importlib.util, io, os, sys
+loader = importlib.machinery.SourceFileLoader("launch_record", sys.argv[1])
+spec = importlib.util.spec_from_loader("launch_record", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+os.environ["HARNESS_SESSION_STATE_HOME"] = sys.argv[2]
+sys.argv = ["harness-launch-record", "claude", "--source-root", "/srv/harness", "--isolated", "0",
+            "--pstable", sys.argv[2] + "/../ps-clean", "--start-pid", "1000"]
+sys.stdin = io.StringIO('{"hook_event_name":"SessionStart","source":"startup","session_id":"55555555-aaaa-4bbb-8ccc-000000000009"}')
+real = os.write
+def boom(fd, data):
+    raise OSError(28, "No space left on device")
+os.write = boom
+try:
+    mod.write("claude")
+except OSError:
+    pass
+finally:
+    os.write = real
+left = [n for n in os.listdir(os.path.join(os.environ["HARNESS_SESSION_STATE_HOME"], "launch-records")) if n.startswith(".tmp-")]
+sys.exit(1 if left else 0)
+PYEOF
 
 # --- hardening --------------------------------------------------------------------
 # a symlink at the record path is replaced, never followed
