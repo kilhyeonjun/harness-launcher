@@ -166,6 +166,11 @@ run_claude "$OUT" HARNESS_HOST_DEFAULT_MODE=base -- base --passthrough --resume 
 write_record $ID acceptEdits
 run_claude "$OUT" -- --resume $ID
 [[ "$(value_after "$OUT" --permission-mode)" == acceptEdits ]] || fail 'R8 recorded (narrower) grant not reapplied' "$OUT"
+# a record without a permission (launched on defaults) restores defaults, no hint
+write_record $ID ""
+run_claude "$OUT" -- --resume $ID
+has_arg "$OUT" --permission-mode && fail 'R8 a record with no grant must not add a permission mode' "$OUT"
+! grep -Fq 'relaunch' "$OUT.err" || fail 'R8 hint printed although the session has a record' "$OUT"
 # a record for another harness root is not this session's grant
 write_record $ID bypassPermissions /somewhere/else
 run_claude "$OUT" -- --resume $ID

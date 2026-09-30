@@ -280,8 +280,9 @@ _harness_launcher_restore_launch_record() {
 
 # _harness_launcher_restore_hint <claude|codex> <id> <model>
 #   One stderr line with the exact command that relaunches this session with
-#   bypass, printed when there is no launch record. The launcher never
-#   escalates on its own.
+#   bypass, printed when the session has no launch record for this harness (a
+#   session that predates records, or one started outside the launcher). The
+#   launcher never escalates on its own.
 _harness_launcher_restore_hint() {
   local agent="$1" id="$2" model="$3" keyword=""
   if [[ "$agent" == codex ]]; then
@@ -321,8 +322,8 @@ _harness_launcher_claude_restore_apply() {
   restore_id="$(_harness_launcher_restore_resume_id claude "${argv[@]}")" || return 0
   skip_tui=true
   _harness_launcher_restore_probe claude "$restore_id" || true
-  _harness_launcher_restore_launch_record claude "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" || true
-  [[ -n "$restore_permission" ]] || _harness_launcher_restore_hint claude "$restore_id" "$restore_model"
+  _harness_launcher_restore_launch_record claude "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" \
+    || _harness_launcher_restore_hint claude "$restore_id" "$restore_model"
   if $passthrough; then
     [[ -z "$restore_model" ]] || claude_passthrough_args+=(--model "$restore_model")
     [[ -z "$restore_effort" ]] || claude_passthrough_args+=(--effort "$restore_effort")
@@ -367,6 +368,7 @@ _harness_launcher_export_launch_env() {
   export HARNESS_LAUNCH_SOURCE_ROOT="${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}"
   export HARNESS_LAUNCH_ISOLATED=0
   [[ -z "${HARNESS_SESSION_ROOT:-}" ]] || HARNESS_LAUNCH_ISOLATED=1
+  return 0
 }
 
 # _harness_launcher_claude_launch_settings <force-thinking:true|false>
@@ -1551,6 +1553,73 @@ PY
   return $exit_code
 }
 
+# _harness_launcher_codex_restore_apply
+#   Detects a Codex restore (one `resume <uuid>` and no launcher profile) and
+#   fills the caller's codex_restore_args with the restored `-m`, `-c
+#   model_reasoning_effort` and the recorded grant flags, and HARNESS_CODEX_CONTEXT
+#   unless a context keyword chose one. Caller flags make the argv impure, so
+#   they always win. Reads and updates the caller's locals.
+_harness_launcher_codex_restore_apply() {
+  $profile_explicit && return 0
+  $use_happy && return 0
+  local -a argv=()
+  if $passthrough; then
+    [[ -z "$subcmd" ]] && (( ${#codex_args} == 0 )) || return 0
+    argv=("${codex_passthrough_args[@]}")
+  else
+    [[ "$subcmd" == resume ]] && (( ${#codex_args} == 1 )) || return 0
+    argv=(resume "${codex_args[1]}")
+  fi
+  local restore_id restore_model restore_effort restore_context
+  local restore_permission restore_approval restore_sandbox restore_bypass restore_isolated
+  restore_id="$(_harness_launcher_restore_resume_id codex "${argv[@]}")" || return 0
+  _harness_launcher_restore_probe codex "$restore_id" || true
+  _harness_launcher_restore_launch_record codex "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" \
+    || _harness_launcher_restore_hint codex "$restore_id" "$restore_model"
+  [[ -z "$restore_model" ]] || codex_restore_args+=(-m "$restore_model")
+  [[ -z "$restore_effort" ]] || codex_restore_args+=(-c "model_reasoning_effort=\"$restore_effort\"")
+  [[ -z "$restore_context" ]] || $context_explicit || HARNESS_CODEX_CONTEXT="$restore_context"
+  if [[ -n "$restore_bypass" ]]; then
+    codex_restore_args+=(--dangerously-bypass-approvals-and-sandbox)
+  else
+    [[ -z "$restore_approval" ]] || codex_restore_args+=(-a "$restore_approval")
+    [[ -z "$restore_sandbox" ]] || codex_restore_args+=(-s "$restore_sandbox")
+  fi
+  return 0
+}
+
+# _harness_launcher_codex_launch_grant [codex args...]
+#   Sets the caller's launch_approval, launch_sandbox and launch_bypass to the
+#   grant the final Codex flags carry (later flags win; bypass replaces both).
+#   Only launcher-visible flags count, never config overrides or profile
+#   contents, so a session launched on profile defaults records no grant.
+_harness_launcher_codex_launch_grant() {
+  local -a argv=("$@")
+  local i arg
+  launch_approval="" launch_sandbox="" launch_bypass=""
+  for (( i = 1; i <= ${#argv}; i++ )); do
+    arg="${argv[i]}"
+    case "$arg" in
+      --) break ;;
+      --dangerously-bypass-approvals-and-sandbox) launch_bypass=1 ;;
+      --full-auto) launch_approval=on-request; launch_sandbox=workspace-write ;;
+      -a|--ask-for-approval) launch_approval="${argv[i+1]-}"; (( i++ )) ;;
+      --ask-for-approval=*) launch_approval="${arg#--ask-for-approval=}" ;;
+      -a?*) launch_approval="${arg#-a}" ;;
+      -s|--sandbox) launch_sandbox="${argv[i+1]-}"; (( i++ )) ;;
+      --sandbox=*) launch_sandbox="${arg#--sandbox=}" ;;
+      -s?*) launch_sandbox="${arg#-s}" ;;
+      -*) if harness_codex_option_takes_value "$arg"; then (( i++ )); fi ;;
+    esac
+  done
+  [[ "$launch_approval" == (untrusted|on-failure|on-request|never) ]] || launch_approval=""
+  [[ "$launch_sandbox" == (read-only|workspace-write|danger-full-access) ]] || launch_sandbox=""
+  if [[ -n "$launch_bypass" ]]; then
+    launch_approval="" launch_sandbox=""
+  fi
+  return 0
+}
+
 # _harness_launcher_run_codex_cli <harness-dir> <resolved-policy> [args...]
 #   Launches Codex CLI natively against a per-harness CODEX_HOME.
 #   Modes:    fast | base | sol | plan | rich | astra → -p <profile>
@@ -1587,8 +1656,9 @@ _harness_launcher_run_codex_cli() {
   local subcmd=""
   local use_happy=false
   local freeform=false
-  local passthrough=false
-  local -a codex_args=() codex_passthrough_args=()
+  local passthrough=false context_explicit=false
+  local -a codex_args=() codex_passthrough_args=() codex_restore_args=()
+  local launch_approval="" launch_sandbox="" launch_bypass=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1646,7 +1716,7 @@ _harness_launcher_run_codex_cli() {
         if $freeform; then
           codex_args+=("$1")
         else
-          HARNESS_CODEX_CONTEXT="$1"
+          HARNESS_CODEX_CONTEXT="$1"; context_explicit=true
         fi
         shift ;;
       resume)              subcmd="resume"; shift ;;
@@ -1664,6 +1734,10 @@ _harness_launcher_run_codex_cli() {
   export HARNESS_CODEX_APPS_ALLOWLIST
 
   [[ -z "$profile" ]] && profile="base"
+  # A pure `resume <id>` restores the session's model, effort, context and
+  # recorded grant instead of the launcher's profile defaults.
+  _harness_launcher_codex_restore_apply
+  _harness_launcher_codex_launch_grant "${codex_restore_args[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}"
   export HARNESS_CODEX_CONTEXT
 
   # Caller wins after the marker. A caller -C/--cd must stay inside the
@@ -1772,6 +1846,7 @@ _harness_launcher_run_codex_cli() {
   fi
   $caller_cd_set || codex_head+=(--cd "$run_dir")
   $profile_arg && codex_head+=(-p "$profile")
+  codex_head+=("${codex_restore_args[@]}")
   if $guard_app_server; then
     local registry="${HARNESS_PROFILE_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/harness-launcher}/profiles"
     launch_cmd=("$guard_python" "$_HARNESS_LAUNCHER_BIN/codex-app-server-guard.py"
@@ -1782,13 +1857,16 @@ _harness_launcher_run_codex_cli() {
   _harness_launcher_announce_run_dir "${caller_run_dir:-$run_dir}"
   if [[ -n "$subcmd" ]]; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
+    (cd "$run_dir" && _harness_launcher_export_launch_env "" "$launch_approval" "$launch_sandbox" "$launch_bypass" \
+      && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   elif $use_happy; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && "${launch_cmd[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
+    (cd "$run_dir" && _harness_launcher_export_launch_env "" "$launch_approval" "$launch_sandbox" "$launch_bypass" \
+      && "${launch_cmd[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   else
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && "${launch_cmd[@]}" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
+    (cd "$run_dir" && _harness_launcher_export_launch_env "" "$launch_approval" "$launch_sandbox" "$launch_bypass" \
+      && "${launch_cmd[@]}" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   fi
   local rc=$?
   harness_codex_cmux_broker_stop
