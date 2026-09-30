@@ -2,6 +2,16 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.37.5 — 2026-09-30
+
+- Fix 0.37.4, which broke every Codex launch in a harness with an exact
+  Codex surface. The folder trust tables it adds to `config.toml` failed the
+  surface warm check (`projects` was not an allowed root key), so
+  `codex-home-prepare.sh` exited 3. The warm check now accepts `projects`, the
+  managed-config fingerprint ignores it as runtime state, and the late runtime
+  merge keeps trust that Codex saved without duplicating the launcher's own
+  roots.
+
 ## 0.37.4 — 2026-09-30
 
 - Codex no longer asks to trust the harness folder on every launch. The

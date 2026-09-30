@@ -165,6 +165,24 @@ def base_manifest() -> dict:
     }
 
 
+class RuntimeConfigMergeTests(unittest.TestCase):
+    def test_merge_keeps_saved_folder_trust_without_duplicating_candidate_roots(self):
+        spec = importlib.util.spec_from_file_location(
+            "codex_surface_merge_test", ROOT / "bin" / "codex-surface.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(module)
+        candidate = 'model = "m"\n\n[projects."/harness"]\ntrust_level = "trusted"\n'
+        live = candidate + '\n[projects."/other repo"]\ntrust_level = "untrusted"\n'
+        merged = module.merge_runtime_config(candidate, live, {}, Path("/codex-home"))
+        self.assertEqual(
+            tomllib.loads(merged)["projects"],
+            {"/harness": {"trust_level": "trusted"}, "/other repo": {"trust_level": "untrusted"}},
+        )
+
+
 class CoordinationTimeoutTests(unittest.TestCase):
     def test_coordination_timeout_defaults_to_30_seconds(self):
         self.assertEqual(parse_coordination_timeout({}), 30)
@@ -1005,6 +1023,22 @@ out.mkdir(parents=True, exist_ok=True)
         marker.unlink()
         self.prepare()
         self.assertEqual(self.compiler_calls(), 1, "removing .in_use regenerated the surface")
+
+    def test_folder_trust_entries_stay_warm(self):
+        # config.toml carries [projects] trust for the launcher's root and any
+        # decision Codex saved; neither may turn the warm check cold.
+        self.prepare()
+        config_path = self.codex_home / "config.toml"
+        root = str(self.repo.resolve())
+        with open(config_path, "rb") as stream:
+            self.assertEqual(tomllib.load(stream)["projects"], {root: {"trust_level": "trusted"}})
+        with open(config_path, "a", encoding="utf-8") as stream:
+            stream.write('\n[projects."/tmp/other repo"]\ntrust_level = "untrusted"\n')
+        self.prepare()
+        self.prepare()
+        self.assertEqual(self.compiler_calls(), 1, "folder trust entries regenerated the surface")
+        with open(config_path, "rb") as stream:
+            self.assertEqual(tomllib.load(stream)["projects"]["/tmp/other repo"], {"trust_level": "untrusted"})
 
     def test_in_use_nonregular_and_entry_type_transitions_invalidate(self):
         self.prepare()

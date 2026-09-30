@@ -7,6 +7,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASH_BIN="${BASH_BIN:-$(command -v bash)}"
 PREPARE="$ROOT/bin/codex-home-prepare.sh"
+source "$ROOT/bin/harness-common.sh"
+PYTHON_BIN="$(harness_python3_resolve)" || exit $?
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 unset HARNESS_SOURCE_ROOT HARNESS_SESSION_ROOT HARNESS_SESSION_ID
@@ -22,7 +24,7 @@ prepare() {
 
 # projects <config>: print each [projects] key and its trust_level, in file order.
 projects() {
-  python3 - "$1" <<'PY'
+  "$PYTHON_BIN" - "$1" <<'PY'
 import sys
 import tomllib
 
@@ -57,7 +59,7 @@ echo "PASS: an unchanged launch does not rewrite config.toml"
 # The user's own decisions survive byte-for-byte, and a decision for the harness
 # root wins over the launcher's entry instead of producing a duplicate table.
 # Codex edits the saved table in place when the user changes a decision.
-python3 - "$CONFIG" "$PHYSICAL" <<'PY2'
+"$PYTHON_BIN" - "$CONFIG" "$PHYSICAL" <<'PY2'
 import json
 import sys
 

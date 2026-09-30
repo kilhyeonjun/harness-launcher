@@ -1662,6 +1662,7 @@ def print_managed_output_paths(args: argparse.Namespace) -> None:
 def managed_config_projection_from_value(config: dict) -> dict:
     config = dict(config)
     config.pop("hooks", None)
+    config.pop("projects", None)
     config.pop("skills", None)
     marketplaces = config.get("marketplaces")
     if isinstance(marketplaces, dict):
@@ -1724,6 +1725,8 @@ def merge_runtime_config(
         managed_skill_paths.add(skill.get("exposed_path"))
     managed_skill_paths.discard(None)
     managed_plugin_root = published_codex_home / "plugins" / "cache" / "openai-bundled"
+    candidate_projects = candidate_value.get("projects")
+    candidate_projects = set(candidate_projects) if isinstance(candidate_projects, dict) else set()
     section_header = re.compile(r"^\[.*\]\s*$")
     hooks_state_header = re.compile(r"^\[hooks\.state(?:\.|\])")
     preserved: list[str] = []
@@ -1769,6 +1772,14 @@ def merge_runtime_config(
         if header.startswith("[plugins.") and header.endswith("]") and not header.startswith("[["):
             key = first_toml_key(header[len("[plugins.") : -1])
             return not key.endswith("@openai-bundled")
+        # Folder trust Codex saved; the candidate already carries the launcher's
+        # own roots, and a second table for the same path is invalid TOML.
+        if header.startswith("[projects.") and header.endswith("]") and not header.startswith("[["):
+            try:
+                keys = list(tomllib.loads(header + "\n").get("projects", {}))
+            except tomllib.TOMLDecodeError:
+                return False
+            return len(keys) == 1 and keys[0] not in candidate_projects
         return False
 
     def flush_current() -> None:
@@ -1799,7 +1810,7 @@ def merge_runtime_config(
 
     merged = candidate_content.rstrip() + "\n"
     if preserved:
-        merged += "\n# Preserved Codex runtime state (hooks, skill choices, external plugins).\n"
+        merged += "\n# Preserved Codex runtime state (hooks, skill choices, external plugins, folder trust).\n"
         merged += "".join(preserved)
         if not merged.endswith("\n"):
             merged += "\n"
