@@ -615,7 +615,7 @@ launch_env_is "$STUB_LR5" lr5 PROFILE:'<UNSET>' BYPASS:'<UNSET>' APPROVAL:'<UNSE
 echo "PASS: launch record — the picker exports the Codex grant, profile, root and isolation"
 
 # Slack opt-in must record the effective native user-approval grant, including bypass.
-printf '%s\n' 'HARNESS_CODEX_APPS_ALLOWLIST="appSlack"' 'HARNESS_CODEX_SLACK_APPS="appSlack"' >> "$TEST_HARNESS/config/launcher.env"
+printf '%s\n' 'HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_slack"' 'HARNESS_CODEX_SLACK_APPS="asdk_app_slack"' >> "$TEST_HARNESS/config/launcher.env"
 STUB_SLACK="$TEST_TEMP/out-slack-record.txt"; : > "$STUB_SLACK"
 run_tui $'2\n1\n5\n4\n1\n' "$STUB_SLACK"
 launch_env_is "$STUB_SLACK" slack APPROVAL:on-request SANDBOX:danger-full-access BYPASS:'<UNSET>' PROFILE:rich
