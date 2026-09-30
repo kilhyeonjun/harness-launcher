@@ -113,7 +113,10 @@ _harness_launcher_claude_transcript_exists() {
 #   or `<override> codex resume <id>` (Codex). Map that single UUID back to the
 #   isolated session that owns it. Prints the session directory name (uppercase
 #   UUID) and returns 0 on a unique owner; 1 when there is no owner (caller keeps
-#   its reject message); 3 when several sessions own the id (ambiguous).
+#   its reject message); 3 when several sessions own the id (ambiguous); 4 when
+#   there is no isolated owner and the session lives in the canonical
+#   (non-isolated) harness root: a Codex rollout only in <source-root>'s own
+#   CODEX_HOME, or a Claude launch record with isolated=0 for this root.
 #   Only sessions recorded for this harness (source-root) count; symlinks are
 #   never followed. For Claude, a session also owns ids listed as exactly
 #   `claude <uuid>` in its provider-sessions (written by
@@ -173,7 +176,20 @@ _harness_launcher_resolve_restore() {
   done
   owners=(${(u)owners})
   (( ${#owners} <= 1 )) || return 3
-  (( ${#owners} == 1 )) || return 1
+  if (( ${#owners} == 0 )); then
+    # No isolated owner: 4 when the session belongs to the canonical harness
+    # root itself. Codex: its rollout exists only in the source CODEX_HOME.
+    # Claude: a launch record says isolated=0 for this harness (the transcript
+    # alone is no proof, isolated sessions file theirs in the same project dir).
+    local restore_permission restore_approval restore_sandbox restore_bypass restore_isolated
+    if $is_codex; then
+      local -a source_rollouts=("$source_root"/.harness/codex/sessions/*/*/*/rollout-*-$id.jsonl(N.))
+      (( ${#source_rollouts} )) && return 4
+    elif _harness_launcher_restore_launch_record claude "$id" "$source_root" && [[ "$restore_isolated" == 0 ]]; then
+      return 4
+    fi
+    return 1
+  fi
   if (( ${record_only[(Ie)${owners[1]}]} )); then
     _harness_launcher_claude_transcript_exists "$state_home" "${owners[1]}" "$id" || return 1
   fi
@@ -994,6 +1010,7 @@ _harness_launcher_run() {
           0) isolated=true; requested_session_id="$orca_resume_id"; orca_resume=true ;;
           3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
              return 2 ;;
+          4) isolation_route=legacy ;;
           *) echo "harness-launcher: this profile isolates fresh sessions; use '${HARNESS_PREFIX} --isolated-session <uuid> $*' or '${HARNESS_PREFIX} --no-isolated $*'" >&2
              return 2 ;;
         esac
