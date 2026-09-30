@@ -1093,12 +1093,18 @@ if [[ "$SURFACE_ENABLED" -eq 1 && -f "$CODEX_HOME/surface.config.toml" ]]; then
 fi
 
 # Codex keys folder trust by physical path. An isolated session also runs in its
-# source root. Both regeneration steps below use this list.
+# source root, but only a session whose root is this harness counts: a shell
+# inside a session inherits HARNESS_SOURCE_ROOT when it prepares another harness.
+# Both regeneration steps below use this list.
+physical_dir() { [[ -n "$1" && -d "$1" ]] && (cd "$1" 2>/dev/null && pwd -P) || true; }
 trust_roots=()
-for trust_root in "${HARNESS_SOURCE_ROOT:-}" "$HARNESS_DIR"; do
-  [[ -n "$trust_root" && -d "$trust_root" ]] || continue
-  trust_roots+=("$(cd "$trust_root" && pwd -P)")
-done
+harness_physical="$(physical_dir "$HARNESS_DIR")"
+session_physical="$(physical_dir "${HARNESS_SESSION_ROOT:-}")"
+if [[ -n "$harness_physical" && "$session_physical" == "$harness_physical" ]]; then
+  source_physical="$(physical_dir "${HARNESS_SOURCE_ROOT:-}")"
+  [[ -z "$source_physical" ]] || trust_roots+=("$source_physical")
+fi
+[[ -z "$harness_physical" ]] || trust_roots+=("$harness_physical")
 
 if [[ -f "$config_file" ]]; then
   LAUNCHER_TRUST_ROOTS="$(printf '%s\n' "${trust_roots[@]}")" \
@@ -1242,7 +1248,6 @@ fi
 # 2c. Trust the launcher's own roots so Codex does not ask on every launch. A root
 # the user already decided about keeps that preserved decision.
 python3 - "$tmp_config" "${trust_roots[@]}" >> "$tmp_config" <<'PY'
-import json
 import re
 import sys
 import tomllib
@@ -1258,15 +1263,30 @@ for line in text.splitlines():
             decided.update(tomllib.loads(line.strip() + "\n").get("projects", {}))
         except tomllib.TOMLDecodeError:
             continue
+def toml_string(value):
+    escaped = []
+    for char in value:
+        if char in '"\\':
+            escaped.append("\\" + char)
+        elif ord(char) < 0x20 or ord(char) == 0x7F:
+            escaped.append("\\u%04x" % ord(char))
+        else:
+            escaped.append(char)
+    return '"%s"' % "".join(escaped)
+
 emitted = []
 for root in roots:
-    if root in decided or root in emitted:
+    if not root or root in decided or root in emitted:
+        continue
+    try:
+        root.encode("utf-8")
+    except UnicodeEncodeError:
         continue
     # One blank line between tables; a preserved block may already end with one.
     if emitted or (text and not text.endswith("\n\n")):
         print()
     emitted.append(root)
-    print("[projects.%s]" % json.dumps(root, ensure_ascii=False))
+    print("[projects.%s]" % toml_string(root))
     print('trust_level = "trusted"')
 PY
 
