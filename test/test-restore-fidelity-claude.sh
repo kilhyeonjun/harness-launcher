@@ -229,7 +229,7 @@ HOOK="$(hook_command "$OUT")"
    && "$HOOK" == *"--isolated 0"* && "$HOOK" != *--nested* ]] || fail "M2 hook command lacks its launch arguments: $HOOK" "$OUT"
 NEWID=0b5d1f3e-0000-4000-8000-0000000000aa
 run_hook "$HOOK" $NEWID startup
-[[ "$(record_of $NEWID)" == $'permission=bypassPermissions\nsource_root='"$HARNESS"$'\nisolated=0' ]] || fail 'R9 hook did not write the record'
+[[ "$(record_of $NEWID)" == $'permission=bypassPermissions\nsource_root='"$HARNESS"$'\nisolated=0\ncontext=1m' ]] || fail 'R9 hook did not write the record (rich = opus[1m])'
 # M2: a forged environment (settings.local.json env block) cannot add or change a grant
 run_claude "$OUT" -- base
 HOOK="$(hook_command "$OUT")"
@@ -269,7 +269,7 @@ for nested_env in CLAUDECODE=1 CODEX_THREAD_ID=t-1 HARNESS_LAUNCH_SOURCE_ROOT=/p
 done
 # nested and no record: created without a grant
 TABLE="$TMP/ps-nested" run_hook "$HOOK" 0b5d1f3e-0000-4000-8000-0000000000b2 startup
-[[ "$(record_of 0b5d1f3e-0000-4000-8000-0000000000b2)" == $'source_root='"$HARNESS"$'\nisolated=0' ]] || fail 'M1 nested launch created a record with a grant'
+[[ "$(record_of 0b5d1f3e-0000-4000-8000-0000000000b2)" == $'source_root='"$HARNESS"$'\nisolated=0\ncontext=1m' ]] || fail 'M1 nested launch created a record with a grant (context=1m is not a grant)'
 # the herdr path (a pane shell with no agent ancestor) is top-level and restores
 run_claude "$OUT" HARNESS_HOST_DEFAULT_MODE=base -- base --passthrough --resume $NEST
 [[ "$(value_after "$OUT" --permission-mode)" == plan ]] || fail 'M1 a herdr restore (no agent env) must reapply the recorded grant' "$OUT"
@@ -280,5 +280,47 @@ HOOK="$(hook_command "$OUT")"
 TABLE="$TMP/ps-clean" run_hook "$HOOK" $NEST resume
 [[ "$(record_of $NEST)" == *permission=bypassPermissions* ]] || fail 'M1 top-level relaunch did not record the grant'
 echo 'PASS: R10 nested launches never raise a record; top-level restore and relaunch still work'
+
+# R11: 1M context survives a restore. The launcher records `--context 1m` in the
+# hook command when it launched with a [1m] model; a restore appends [1m] to a
+# transcript model that has no suffix (a long session can have no cost-state left).
+rm -rf "$STATE/launch-records"
+run_claude "$OUT" -- rich
+[[ "$(hook_command "$OUT")" == *"--context 1m"* ]] || fail 'R11 an opus[1m] launch must put --context 1m on the hook command' "$OUT"
+run_claude "$OUT" -- opus bypass
+[[ "$(hook_command "$OUT")" == *"--context 1m"* ]] || fail 'R11 opus[1m] (opus mode) must record 1m' "$OUT"
+run_claude "$OUT" -- base
+[[ "$(hook_command "$OUT")" != *--context* ]] || fail 'R11 a sonnet launch must not record 1m' "$OUT"
+run_claude "$OUT" -- rich --passthrough --model sonnet
+[[ "$(hook_command "$OUT")" != *--context* ]] || fail 'R11 the final --model (caller sonnet) decides the context' "$OUT"
+run_claude "$OUT" -- base --passthrough --model 'claude-opus-5-5[1m]'
+[[ "$(hook_command "$OUT")" == *"--context 1m"* ]] || fail 'R11 a caller --model ending [1m] must record 1m' "$OUT"
+run_claude "$OUT" -- base --passthrough '--model=claude-opus-5-5[1m]'
+[[ "$(hook_command "$OUT")" == *"--context 1m"* ]] || fail 'R11 --model=<m>[1m] must record 1m' "$OUT"
+CTXID=0b5d1f3e-0000-4000-8000-0000000000c1
+transcript $CTXID claude-opus-5-5 xhigh
+write_context_record() { # <id> [context]
+  local -a ctx=(); [[ -z "${2:-}" ]] || ctx=(--context "$2")
+  printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"%s"}' "$1" \
+    | env HARNESS_SESSION_STATE_HOME="$STATE" "$PY" "$LAUNCHER_DIR/bin/harness-launch-record" claude --source-root "$HARNESS" --isolated 0 "${ctx[@]}"
+}
+write_context_record $CTXID 1m
+run_claude "$OUT" HARNESS_HOST_DEFAULT_MODE=base -- base --passthrough --resume $CTXID
+[[ "$(value_after "$OUT" --model)" == 'claude-opus-5-5[1m]' && "$(count_arg "$OUT" --model)" == 1 ]] || fail 'R11 record context=1m must restore [1m]' "$OUT"
+run_claude "$OUT" -- --resume $CTXID
+[[ "$(value_after "$OUT" --model)" == 'claude-opus-5-5[1m]' ]] || fail 'R11 non-passthrough restore must restore [1m]' "$OUT"
+write_context_record $CTXID
+run_claude "$OUT" -- --resume $CTXID
+[[ "$(value_after "$OUT" --model)" == claude-opus-5-5 ]] || fail 'R11 a record without context must not add [1m]' "$OUT"
+# the transcript already says [1m]: not doubled
+transcript $CTXID claude-opus-5-5 xhigh '{"type":"cost-state","modelUsage":{"claude-opus-5-5[1m]":{}}}'
+write_context_record $CTXID 1m
+run_claude "$OUT" -- --resume $CTXID
+[[ "$(value_after "$OUT" --model)" == 'claude-opus-5-5[1m]' ]] || fail 'R11 [1m] doubled or lost' "$OUT"
+# a record context never invents a model
+rm -f "$CCONF/projects/-tmp-proj/$CTXID.jsonl"
+run_claude "$OUT" -- --resume $CTXID
+has_arg "$OUT" --model && fail 'R11 a record context must not invent a model without a transcript' "$OUT"
+echo 'PASS: R11 1M context is recorded by the launcher and restored'
 
 echo 'PASS: Claude restore fidelity'

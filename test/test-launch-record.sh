@@ -108,6 +108,21 @@ rec claude "$(event SessionStart resume $CID)" -- --source-root /srv/harness --i
 read_rec claude "$CID"
 [[ "$OUT" == $'permission=acceptEdits\nsource_root=/srv/harness\nisolated=1\nharness_session_id='"$SID" ]] || fail "isolated read back: [$OUT]"
 
+# context=1m is carried as a non-grant field: only the value 1m, from --context
+CTX=aaaaaaaa-bbbb-4ccc-8ddd-000000000c01
+rec claude "$(event SessionStart startup $CTX)" -- "${LAUNCH[@]}" --permission plan --context 1m
+read_rec claude $CTX
+[[ "$OUT" == $'permission=plan\nsource_root=/srv/harness\nisolated=0\ncontext=1m' ]] || fail "context=1m not stored/read: [$OUT]"
+for bad in 200k 1M '1m;x' ''; do
+  rec claude "$(event SessionStart startup aaaaaaaa-bbbb-4ccc-8ddd-000000000c02)" -- "${LAUNCH[@]}" --context "$bad"
+  read_rec claude aaaaaaaa-bbbb-4ccc-8ddd-000000000c02
+  [[ "$OUT" == $'source_root=/srv/harness\nisolated=0' ]] || fail "context value [$bad] was kept: [$OUT]"
+done
+# a hand-edited record keeps context=1m only when valid
+printf 'context=1m\ncontext=999\nsource_root=/a\nisolated=0\n' > "$STATE/launch-records/claude-aaaaaaaa-bbbb-4ccc-8ddd-000000000c03"
+read_rec claude aaaaaaaa-bbbb-4ccc-8ddd-000000000c03
+[[ "$OUT" == $'source_root=/a\nisolated=0\ncontext=1m' ]] || fail "reader context filtering: [$OUT]"
+
 # --- Codex record (environment) -------------------------------------------------
 rec codex "$(event SessionStart startup $XID)" HARNESS_LAUNCH_APPROVAL=never HARNESS_LAUNCH_SANDBOX=danger-full-access \
   HARNESS_LAUNCH_SOURCE_ROOT=/srv/harness HARNESS_LAUNCH_ISOLATED=0
