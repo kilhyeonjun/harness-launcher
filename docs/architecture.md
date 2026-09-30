@@ -235,6 +235,7 @@ Security rules:
 - Chrome bridge support accepts current and known legacy native-host names.
 - `node_repl` trusts exact browser-client SHA-256 values.
 - Project-writable `CODEX_HOME` and global `~/.codex` directories are not added as broad trusted code paths.
+- Codex folder trust: generated `config.toml` keeps the user's `[projects."<path>"]` decisions and adds `trust_level = "trusted"` only for the launcher's own roots (the harness root, plus the source and session roots of an isolated session), keyed by physical path. Nested repositories stay untrusted until the user decides.
 - Marketplace synchronization completes before generated config reads plugin versions or browser hashes.
 - Complete marketplace content, not one manifest, determines cache freshness.
 
