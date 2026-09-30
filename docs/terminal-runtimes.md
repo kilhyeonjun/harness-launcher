@@ -418,6 +418,9 @@ path, and links that directory, so upgrades keep working:
 Run `install` again after an upgrade whose changelog mentions new plugin
 events.
 
+For a browser client for herdr panes, see [herdr web ui](herdr-web-ui.md):
+`harness-herdr-web install` sets it up local-only behind a token.
+
 ```toml
 # ~/.config/herdr/config.toml
 [ui.toast]

@@ -2,6 +2,17 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.39.0 — 2026-09-30
+
+- New `harness-herdr-web` (`install`, `check`, `configure`, `token --copy`) runs
+  [herdr web ui](docs/herdr-web-ui.md) `v0.3.34` local-only behind a token. It
+  enforces an effective `HERDR_WEB_TOKEN` of at least 32 characters, `HOST=127.0.0.1`
+  and manual updates across the plugin's `env` and `.env`, and refuses symlinked
+  or foreign-owned files. It probes the running server with an unauthenticated
+  `/api/health?scope=bridge`, warns on a checkout that is not the pinned commit,
+  and fails while Tailscale reports a login for the machine, an unsupported
+  configuration for now.
+
 ## 0.38.1 — 2026-09-30
 
 - Fix: restoring a long Claude session dropped the `[1m]` suffix, so a 1M session

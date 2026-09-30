@@ -10,6 +10,6 @@ for source in "$ROOT"/bin/*; do
   cp "$source" "$SHARE/"
 done
 chmod 755 "$SHARE"/*
-for file in harness-auto harness-codex harness-exec harness-paseo harness-profile; do
+for file in harness-auto harness-codex harness-exec harness-herdr-web harness-paseo harness-profile; do
   ln -s "../share/harness-launcher/$file" "$PREFIX/bin/$file"
 done

@@ -256,6 +256,7 @@ SDK hosts that append their own argv to a command prefix put it after `--passthr
 harness-auto claude base --passthrough --permission-mode plan --effort high
 harness-codex --profile wh app-server          # Codex executable for SDK hosts
 harness-paseo sync --reload                    # Paseo providers from the profile registry
+harness-herdr-web install                      # herdr web ui, local-only behind a token
 ```
 
 A plain Codex `app-server` runs without `-p` behind a JSON-RPC guard that keeps every thread working directory inside the selected harness. See [Paseo integration](docs/paseo-integration.md).
@@ -562,6 +563,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for project scope, test expectations, por
 - [Codex integration](docs/codex-integration.md)
 - [Terminal runtimes](docs/terminal-runtimes.md)
 - [Paseo integration](docs/paseo-integration.md)
+- [herdr web ui](docs/herdr-web-ui.md)
 - [Session titles in cmux](docs/session-titles.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Changelog](CHANGELOG.md)
