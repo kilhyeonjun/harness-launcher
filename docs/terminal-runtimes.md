@@ -230,32 +230,53 @@ Model and effort come from the session file, through `harness-restore-probe`
 Permission and sandbox never come from a transcript or rollout, which the agent
 can write. They come only from the **launch record**:
 
-- The launcher exports the grant it launched the agent with (Claude
-  `--permission-mode`, or Codex `-a`, `-s`, `--full-auto` or the bypass flag) as
-  `HARNESS_LAUNCH_PERMISSION`, `HARNESS_LAUNCH_APPROVAL`, `HARNESS_LAUNCH_SANDBOX`
-  or `HARNESS_LAUNCH_BYPASS`, plus `HARNESS_LAUNCH_SOURCE_ROOT` and
-  `HARNESS_LAUNCH_ISOLATED`, around the agent process only. Inherited values are
-  cleared first.
+- The launcher records what it launched the agent with: for Claude the
+  `--permission-mode`; for Codex `-a`, `-s`, `--full-auto` or the bypass flag, and
+  the launcher-owned profile (`fast|base|sol|astra|plan|rich`, not a caller `-p`),
+  plus the source root, isolation, and whether the launch is nested (below).
 - A `SessionStart` hook the launcher injects runs `harness-launch-record`, which
-  writes `<state>/launch-records/<agent>-<session_id>` (mode 0600, written to a
-  private temp file and renamed, so a symlink at the path is replaced, never
-  followed; a symlinked directory is refused). Keys: `permission`, `approval`,
-  `sandbox`, `bypass`, `source_root`, `isolated=0|1`, `harness_session_id`; each value
+  writes `<state>/launch-records/<agent>-<session_id>` (mode 0600). It opens the
+  `launch-records` directory with `O_DIRECTORY|O_NOFOLLOW`, writes a private temp
+  file and renames it through that descriptor, so a symlink at the path is
+  replaced, never followed and a symlinked directory is refused. The reader
+  opens the same way and also requires a regular file owned by the current user
+  with a single link. Keys: `permission`, `approval`, `sandbox`, `bypass`,
+  `profile=<name>`, `source_root`, `isolated=0|1`, `harness_session_id`; each value
   is checked against a fixed vocabulary before it is written or read.
 - Claude: the hook rides the launcher's own `--settings`, merged with the forced
   thinking setting into one JSON (`{"alwaysThinkingEnabled":true,"hooks":{...}}`).
-  A caller `--settings` after `--passthrough` is passed last and may replace it;
-  the launch then simply has no record.
+  The grant, source root, isolation and nesting are arguments of the hook command
+  (`--permission`, `--source-root`, `--isolated`, `--nested`, ...), and the hook
+  ignores `HARNESS_LAUNCH_*` for Claude: Claude applies the `env` block of
+  `.claude/settings.local.json`, which an agent can write. A caller `--settings`
+  after `--passthrough` is passed last and may replace it; the launch then simply
+  has no record.
 - Codex: the `launch_record` registry row above (opt in with
-  `HARNESS_LAUNCH_RECORD_HOOKS=1`). Isolated Codex homes lack hook trust, so
-  isolated Codex sessions have no record.
+  `HARNESS_LAUNCH_RECORD_HOOKS=1`). Its `hooks.json` row is static, so the hook
+  reads the launcher's environment (`HARNESS_LAUNCH_APPROVAL`, `_SANDBOX`,
+  `_BYPASS`, `HARNESS_LAUNCH_PROFILE`, `_SOURCE_ROOT`, `_ISOLATED`, `_NESTED`),
+  exported around the agent process only, inherited values cleared first.
+  Isolated Codex homes lack hook trust, so isolated Codex sessions have no record.
+- Nested launches. A launch is nested when it runs inside an agent: the launcher
+  sees `CLAUDECODE`, a Codex thread variable, or `HARNESS_LAUNCH_*` inherited from
+  a parent agent before it re-exports anything. A nested launch passes `--nested 1`
+  (Codex: `HARNESS_LAUNCH_NESTED=1`). The hook then keeps or lowers an existing
+  record's grant, never raises it, keeps the record's source root and isolation,
+  and creates a record without a grant when none exists. A top-level launch (your
+  terminal, or a herdr-typed restore from a pane shell with no agent environment)
+  sets or raises, so the relaunch command the hint prints does record its grant.
 - On restore the launcher reapplies the recorded grant, only if the record names
-  this harness root. With no record, which is every session started before this
-  feature, it keeps the launcher default and prints one line with the exact
-  command that relaunches with bypass, for example `<prefix> rich bypass
-  --passthrough --resume <id>` or `<prefix> codex sol bypass --passthrough resume
-  <id>` (the keyword follows the restored model). It never escalates from a
-  session file.
+  this harness root. For Codex it first reapplies the recorded `-p <profile>`,
+  because a profile can carry a grant of its own (`plan` is read-only), and only
+  while `$CODEX_HOME/<profile>.config.toml` still exists as a regular file;
+  otherwise it keeps `base`. Model and effort from the rollout follow the profile.
+  The launcher keeps the default and prints one line with the exact command that
+  relaunches with bypass when there is no record (every session started before this
+  feature), or the record carries no grant and no profile, or the recorded profile
+  is gone, for example `<prefix> rich bypass --passthrough --resume <id>` or
+  `<prefix> codex sol bypass --passthrough resume <id>` (the keyword follows the
+  restored model). Claude modes carry no permission, so there is no Claude profile
+  to restore. It never escalates from a session file.
 - Sessions started from the interactive picker (`launcher.sh`) write no record.
 
 Canonical owner. `harness-launcher` maps a restore id to the isolated session that

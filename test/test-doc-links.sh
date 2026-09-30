@@ -14,10 +14,10 @@ for term in 'herdr > orca > cmux > plain' HERDR_ENV HARNESS_TERMINAL_RUNTIME 'OS
   grep -qF -- "$term" "$ROOT/docs/terminal-runtimes.md" || { echo "FAIL: docs/terminal-runtimes.md must cover: $term" >&2; exit 1; }
 done
 # Restore fidelity (Unreleased): the restore contract and its trust boundary.
-for term in 'Restore fidelity' HARNESS_HOST_DEFAULT_MODE harness-restore-probe harness-launch-record launch-records HARNESS_LAUNCH_RECORD_HOOKS 'isolated=0'; do
+for term in 'Restore fidelity' HARNESS_HOST_DEFAULT_MODE harness-restore-probe harness-launch-record launch-records HARNESS_LAUNCH_RECORD_HOOKS 'isolated=0' '--nested' 'profile=' 'HARNESS_LAUNCH_PROFILE' settings.local.json; do
   grep -qF -- "$term" "$ROOT/docs/terminal-runtimes.md" || { echo "FAIL: docs/terminal-runtimes.md must cover: $term" >&2; exit 1; }
 done
-for term in 'launch record' 'never escalates'; do
+for term in 'launch record' 'never escalates' 'nested launch' 'workspace-write' 'caller `--settings`' 'planted' 'Cellar'; do
   grep -qF -- "$term" "$ROOT/docs/architecture.md" || { echo "FAIL: docs/architecture.md must cover: $term" >&2; exit 1; }
 done
 grep -qF 'docs/terminal-runtimes.md' "$ROOT/README.md" || { echo 'FAIL: README must link docs/terminal-runtimes.md' >&2; exit 1; }

@@ -246,6 +246,21 @@ sandbox grant from a launch record. The two sources have different trust:
   does not stop a process running as the same user from writing the file, exactly
   like every other file in the state directory.
 
+Two details keep the record honest. A Claude hook takes its grant as command
+arguments inside the launcher's `--settings`, never from the environment, because
+Claude applies the agent-writable `env` block of `.claude/settings.local.json`.
+Codex's `hooks.json` row is static, so it reads the launcher's environment, and
+`$CODEX_HOME` (`.harness/codex`) sits inside the workspace-write root, which makes it a
+pre-existing lever inside the same boundary. A nested launch (one running inside an
+agent) may keep or lower a record's grant and never raise it.
+
+Known limits, kept on purpose:
+
+- A nested `codex exec` inherits the parent's `HARNESS_LAUNCH_*` environment.
+- A caller `--settings` after `--passthrough` replaces the launcher's, so that launch has no record.
+- A planted canonical rollout in the source `CODEX_HOME` can steer a restore to the legacy route.
+- The Codex hook row names the Python interpreter by its Cellar path, which changes after `brew upgrade` until the next prepare.
+
 See [Terminal runtimes](terminal-runtimes.md#restore-fidelity) for the argv rules.
 
 ## Browser and plugin trust
