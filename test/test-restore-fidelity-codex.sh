@@ -155,11 +155,11 @@ write_record $ID HARNESS_LAUNCH_BYPASS=1
 run_codex "$OUT" -- resume $ID
 [[ "$(count_arg "$OUT" --dangerously-bypass-approvals-and-sandbox)" == 1 ]] || fail 'X7 recorded bypass not reapplied' "$OUT"
 has_arg "$OUT" -a && fail 'X7 bypass must not add -a' "$OUT"
-# a record with no grant and no profile restores defaults and prints the hint
+# a record with no grant and no profile means the user chose defaults: quiet
 write_record $ID
 run_codex "$OUT" -- resume $ID
 has_arg "$OUT" -a && fail 'X7 a record with no grant must not add -a' "$OUT"
-[[ "$(grep -c relaunch "$OUT.err")" == 1 ]] || fail 'M3 a record with no grant and no profile must print the relaunch hint' "$OUT"
+! grep -Fq relaunch "$OUT.err" || fail 'a record without a grant means default mode; the hint must stay quiet' "$OUT"
 # a record for another harness root is not this session's grant
 write_record $ID HARNESS_LAUNCH_BYPASS=1 HARNESS_LAUNCH_SOURCE_ROOT=/somewhere/else
 run_codex "$OUT" -- resume $ID
@@ -237,17 +237,16 @@ run_codex "$OUT" -- --passthrough -p fast
 [[ "$(env_of "$OUT" HARNESS_LAUNCH_PROFILE)" == '<unset>' ]] || fail 'M3 a caller profile is not the launcher profile' "$OUT"
 echo 'PASS: X11 launched profile recorded and reapplied while it exists'
 
-# X12 (M1): nesting is passed to the hook through the environment.
-run_codex "$OUT" -- sol
-[[ "$(env_of "$OUT" HARNESS_LAUNCH_NESTED)" == 0 ]] || fail 'M1 a top-level launch must not be nested' "$OUT"
-for nested_env in CODEX_THREAD_ID=t-1 CLAUDECODE=1 HARNESS_LAUNCH_BYPASS=1 HARNESS_LAUNCH_SOURCE_ROOT=/parent; do
+# X12 (M1): nesting is decided by the hook from process ancestry, so the launcher
+# neither exports a nesting flag nor lets a stale agent environment change anything.
+for nested_env in NONE=1 CODEX_THREAD_ID=t-1 CLAUDECODE=1 HARNESS_LAUNCH_BYPASS=1; do
   run_codex "$OUT" "$nested_env" -- sol
-  [[ "$(env_of "$OUT" HARNESS_LAUNCH_NESTED)" == 1 ]] || fail "M1 launch with $nested_env must be nested" "$OUT"
+  [[ "$(env_of "$OUT" HARNESS_LAUNCH_NESTED)" == '<unset>' ]] || fail "M1 launcher exported an environment-derived nesting flag ($nested_env)" "$OUT"
 done
 # the herdr path (no agent env) is top-level and restores the recorded grant
 write_record $ID HARNESS_LAUNCH_APPROVAL=never HARNESS_LAUNCH_SANDBOX=danger-full-access HARNESS_LAUNCH_PROFILE=base
 run_codex "$OUT" HARNESS_HOST_DEFAULT_MODE=base -- --passthrough resume $ID
-[[ "$(argv_line "$OUT")" == *"-a never -s danger-full-access resume $ID "* && "$(env_of "$OUT" HARNESS_LAUNCH_NESTED)" == 0 ]] || fail 'M1 herdr restore must reapply the grant as a top-level launch' "$OUT"
+[[ "$(argv_line "$OUT")" == *"-a never -s danger-full-access resume $ID "*  ]] || fail 'M1 herdr restore must reapply the grant' "$OUT"
 echo 'PASS: X12 nested launches are flagged; a herdr restore stays top-level'
 
 echo 'PASS: Codex restore fidelity'

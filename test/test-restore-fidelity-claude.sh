@@ -70,10 +70,31 @@ write_record() { # <id> <permission|""> [source_root] [isolated]
 hook_command() { # <stub-file> : the SessionStart hook command in the launcher --settings
   "$PY" -c 'import json,sys; print(json.loads(sys.argv[1])["hooks"]["SessionStart"][0]["hooks"][0]["command"])' "$(settings_json "$1")"
 }
-run_hook() { # <command> <session-id> <source> [ENV=val ...]
+# Process tables for the hook's ancestry check (test-only arguments appended to
+# the launcher's hook command): a pane-shell launch, and a launch inside an agent.
+cat > "$TMP/ps-clean" <<'PS'
+1000 999 /bin/sh
+998 997 claude
+999 998 /bin/sh
+997 996 -zsh
+996 995 zsh
+995 1 herdr
+1 0 launchd
+PS
+cat > "$TMP/ps-nested" <<'PS'
+1000 999 /bin/sh
+999 998 /bin/sh
+998 997 claude
+997 996 /bin/zsh
+996 900 /bin/zsh
+900 899 claude
+899 1 launchd
+1 0 launchd
+PS
+run_hook() { # <command> <session-id> <source> [ENV=val ...]   (TABLE selects the process table)
   local cmd="$1" id="$2" src="$3"; shift 3
   printf '{"hook_event_name":"SessionStart","source":"%s","session_id":"%s"}' "$src" "$id" \
-    | env HARNESS_SESSION_STATE_HOME="$STATE" "$@" /bin/sh -c "$cmd" > "$TMP/hook.out"
+    | env HARNESS_SESSION_STATE_HOME="$STATE" "$@" /bin/sh -c "$cmd --pstable ${TABLE:-$TMP/ps-clean} --start-pid 1000" > "$TMP/hook.out"
   [[ ! -s "$TMP/hook.out" ]] || fail 'hook printed output (would become session context)'
 }
 record_of() { HARNESS_SESSION_STATE_HOME="$STATE" "$PY" "$LAUNCHER_DIR/bin/harness-launch-record" read claude "$1"; }
@@ -177,12 +198,12 @@ run_claude "$OUT" HARNESS_HOST_DEFAULT_MODE=base -- base --passthrough --resume 
 write_record $ID acceptEdits
 run_claude "$OUT" -- --resume $ID
 [[ "$(value_after "$OUT" --permission-mode)" == acceptEdits ]] || fail 'R8 recorded (narrower) grant not reapplied' "$OUT"
-# a record without a permission (no grant, no profile) restores defaults and
-# still prints the hint: nothing says what the session was allowed to do
+# a record without a permission means the user chose the default mode: restore it
+# quietly (the hint is only for sessions with no record at all)
 write_record $ID ""
 run_claude "$OUT" -- --resume $ID
 has_arg "$OUT" --permission-mode && fail 'R8 a record with no grant must not add a permission mode' "$OUT"
-[[ "$(grep -c 'relaunch' "$OUT.err")" == 1 ]] || fail 'M3 a record with no grant and no profile must print the relaunch hint' "$OUT"
+! grep -Fq 'relaunch' "$OUT.err" || fail 'a record without a grant means default mode; the hint must stay quiet' "$OUT"
 # a record for another harness root is not this session's grant
 write_record $ID bypassPermissions /somewhere/else
 run_claude "$OUT" -- --resume $ID
@@ -205,7 +226,7 @@ json_has "$S" 'd.get("alwaysThinkingEnabled") is True' || fail 'R9 thinking sett
 json_has "$S" 'd["hooks"]["SessionStart"][0]["hooks"][0]["type"] == "command"' || fail 'R9 SessionStart hook missing' "$OUT"
 HOOK="$(hook_command "$OUT")"
 [[ "$HOOK" == *harness-launch-record* && "$HOOK" == *"--permission bypassPermissions"* && "$HOOK" == *"--source-root $HARNESS"* \
-   && "$HOOK" == *"--isolated 0"* && "$HOOK" == *"--nested 0"* ]] || fail "M2 hook command lacks its launch arguments: $HOOK" "$OUT"
+   && "$HOOK" == *"--isolated 0"* && "$HOOK" != *--nested* ]] || fail "M2 hook command lacks its launch arguments: $HOOK" "$OUT"
 NEWID=0b5d1f3e-0000-4000-8000-0000000000aa
 run_hook "$HOOK" $NEWID startup
 [[ "$(record_of $NEWID)" == $'permission=bypassPermissions\nsource_root='"$HARNESS"$'\nisolated=0' ]] || fail 'R9 hook did not write the record'
@@ -226,30 +247,37 @@ run_claude "$OUT" -- --resume $ID
 [[ "$(hook_command "$OUT")" == *"--permission bypassPermissions"* ]] || fail 'R9 restored grant not in the hook command' "$OUT"
 echo 'PASS: R9 the record hook carries the launch grant as arguments, not environment'
 
-# R10 (M1): a launch inside an agent is nested and can never raise a record.
+# R10 (M1): a launch inside an agent is nested and can never raise a record. The
+# launcher no longer guesses from the environment: the hook decides from process
+# ancestry, so a stale agent environment does not make a pane launch nested and
+# `env -u CLAUDECODE` does not make a nested one top-level.
 NEST=0b5d1f3e-0000-4000-8000-0000000000b1
 run_claude "$OUT" -- base --passthrough --permission-mode plan
 run_hook "$(hook_command "$OUT")" $NEST startup
 [[ "$(record_of $NEST)" == *permission=plan* ]] || fail 'R10 setup: plan record missing'
-for nested_env in CLAUDECODE=1 CODEX_THREAD_ID=t-1 HARNESS_LAUNCH_SOURCE_ROOT=/parent HARNESS_LAUNCH_PERMISSION=plan HARNESS_LAUNCH_BYPASS=1; do
+for nested_env in CLAUDECODE=1 CODEX_THREAD_ID=t-1 HARNESS_LAUNCH_SOURCE_ROOT=/parent HARNESS_LAUNCH_BYPASS=1 HARMLESS=1; do
   run_claude "$OUT" "$nested_env" -- rich bypass
   HOOK="$(hook_command "$OUT")"
-  [[ "$HOOK" == *"--nested 1"* ]] || fail "M1 launch with $nested_env must be nested: $HOOK" "$OUT"
-  run_hook "$HOOK" $NEST resume
+  [[ "$HOOK" != *--nested* ]] || fail "M1 the hook command must not carry an environment-derived nesting flag ($nested_env): $HOOK" "$OUT"
+  # top-level ancestry: whatever the environment says, the launch may raise
+  TABLE="$TMP/ps-clean" run_hook "$HOOK" $NEST resume
+  [[ "$(record_of $NEST)" == *permission=bypassPermissions* ]] || fail "M1 a pane launch with a stale $nested_env must stay top-level: $(record_of $NEST)"
+  write_record $NEST plan
+  # nested ancestry: whatever the environment says (even nothing), it cannot raise
+  TABLE="$TMP/ps-nested" run_hook "$HOOK" $NEST resume
   [[ "$(record_of $NEST)" == *permission=plan* && "$(record_of $NEST)" != *bypass* ]] || fail "M1 nested launch ($nested_env) raised the record: $(record_of $NEST)"
 done
 # nested and no record: created without a grant
-run_hook "$HOOK" 0b5d1f3e-0000-4000-8000-0000000000b2 startup
+TABLE="$TMP/ps-nested" run_hook "$HOOK" 0b5d1f3e-0000-4000-8000-0000000000b2 startup
 [[ "$(record_of 0b5d1f3e-0000-4000-8000-0000000000b2)" == $'source_root='"$HARNESS"$'\nisolated=0' ]] || fail 'M1 nested launch created a record with a grant'
-# the herdr path (a pane shell with no agent environment) is top-level and restores
+# the herdr path (a pane shell with no agent ancestor) is top-level and restores
 run_claude "$OUT" HARNESS_HOST_DEFAULT_MODE=base -- base --passthrough --resume $NEST
 [[ "$(value_after "$OUT" --permission-mode)" == plan ]] || fail 'M1 a herdr restore (no agent env) must reapply the recorded grant' "$OUT"
-[[ "$(hook_command "$OUT")" == *"--nested 0"* ]] || fail 'M1 a herdr restore must not be nested' "$OUT"
 # the user's explicit relaunch from the hint is top-level and records the grant
 run_claude "$OUT" -- rich bypass --passthrough --resume $NEST
 HOOK="$(hook_command "$OUT")"
-[[ "$HOOK" == *"--nested 0"* && "$HOOK" == *"--permission bypassPermissions"* ]] || fail "M1 relaunch from the hint is not top-level: $HOOK" "$OUT"
-run_hook "$HOOK" $NEST resume
+[[ "$HOOK" == *"--permission bypassPermissions"* ]] || fail "M1 relaunch from the hint lost its grant: $HOOK" "$OUT"
+TABLE="$TMP/ps-clean" run_hook "$HOOK" $NEST resume
 [[ "$(record_of $NEST)" == *permission=bypassPermissions* ]] || fail 'M1 top-level relaunch did not record the grant'
 echo 'PASS: R10 nested launches never raise a record; top-level restore and relaunch still work'
 

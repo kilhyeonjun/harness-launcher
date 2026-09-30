@@ -339,12 +339,10 @@ _harness_launcher_claude_restore_apply() {
   restore_id="$(_harness_launcher_restore_resume_id claude "${argv[@]}")" || return 0
   skip_tui=true
   _harness_launcher_restore_probe claude "$restore_id" || true
-  # No record, or a record with no grant: nothing says what the session was
-  # allowed to do, so keep the default and offer the relaunch command.
-  if ! _harness_launcher_restore_launch_record claude "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" \
-      || [[ -z "$restore_permission" ]]; then
-    _harness_launcher_restore_hint claude "$restore_id" "$restore_model"
-  fi
+  # Only a session with no record at all gets the hint; a record without a grant
+  # means the user chose the default mode.
+  _harness_launcher_restore_launch_record claude "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" \
+    || _harness_launcher_restore_hint claude "$restore_id" "$restore_model"
   if $passthrough; then
     [[ -z "$restore_model" ]] || claude_passthrough_args+=(--model "$restore_model")
     [[ -z "$restore_effort" ]] || claude_passthrough_args+=(--effort "$restore_effort")
@@ -378,7 +376,7 @@ _harness_launcher_claude_launch_grant() {
 
 # _harness_launcher_export_launch_env <approval> <sandbox> <bypass> <profile>
 #   Codex only; run inside the agent's subshell. Exports the grant and profile
-#   the agent is launched with, its source root, isolation and nesting, for the
+#   the agent is launched with, its source root and isolation, for the
 #   launch-record hook (its hooks.json row is static, so it reads the
 #   environment). Anything inherited from a parent launch is dropped first.
 #   Claude does not use this: its hook takes the same facts as arguments,
@@ -392,14 +390,13 @@ _harness_launcher_export_launch_env() {
   export HARNESS_LAUNCH_SOURCE_ROOT="${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}"
   export HARNESS_LAUNCH_ISOLATED=0
   [[ -z "${HARNESS_SESSION_ROOT:-}" ]] || HARNESS_LAUNCH_ISOLATED=1
-  export HARNESS_LAUNCH_NESTED="$launch_nested"
   return 0
 }
 
 # _harness_launcher_claude_launch_settings <force-thinking:true|false> <permission>
 #   Prints the one launcher-owned --settings JSON: the forced-thinking setting
 #   (xhigh/max) merged with the SessionStart hook that writes the launch record.
-#   The grant, source root, isolation and nesting are ARGUMENTS of the hook
+#   The grant, source root and isolation are ARGUMENTS of the hook
 #   command, not environment, so a forged `env` block in settings.local.json
 #   cannot change them. The hook prints nothing (its stdout would become
 #   session context).
@@ -409,7 +406,7 @@ _harness_launcher_claude_launch_settings() {
   [[ -z "${HARNESS_SESSION_ROOT:-}" ]] || isolated=1
   [[ "$1" == true ]] && out='"alwaysThinkingEnabled":true'
   if [[ -f "$hook" ]] && py="$(harness_python3_resolve 2>/dev/null)"; then
-    args="--source-root ${(q)root} --isolated $isolated --nested $launch_nested"
+    args="--source-root ${(q)root} --isolated $isolated"
     [[ -z "$2" ]] || args+=" --permission ${(q)2}"
     if (( isolated )) && [[ "${HARNESS_SESSION_ID:-}" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
       args+=" --harness-session-id ${(q)HARNESS_SESSION_ID}"
@@ -941,11 +938,6 @@ _harness_launcher_run() {
   # so it never reaches the agent or a nested launch.
   local host_default_mode="${HARNESS_HOST_DEFAULT_MODE-}"
   unset HARNESS_HOST_DEFAULT_MODE
-  # A launch that runs inside an agent is nested: the launcher sees the agent's
-  # own markers (or a parent launch's HARNESS_LAUNCH_*) before it re-exports
-  # anything. The launch-record hook never lets a nested launch raise a grant.
-  local launch_nested=0
-  [[ -z "${CLAUDECODE-}${CODEX_THREAD_ID-}${CODEX_SANDBOX-}${HARNESS_LAUNCH_PERMISSION-}${HARNESS_LAUNCH_APPROVAL-}${HARNESS_LAUNCH_SANDBOX-}${HARNESS_LAUNCH_BYPASS-}${HARNESS_LAUNCH_PROFILE-}${HARNESS_LAUNCH_SOURCE_ROOT-}${HARNESS_LAUNCH_ISOLATED-}${HARNESS_LAUNCH_NESTED-}" ]] || launch_nested=1
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
   local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
@@ -1623,8 +1615,6 @@ _harness_launcher_codex_restore_apply() {
     else
       hint=true
     fi
-  elif [[ -z "$restore_approval$restore_sandbox$restore_bypass" ]]; then
-    hint=true
   fi
   ! $hint || _harness_launcher_restore_hint codex "$restore_id" "$restore_model"
   [[ -z "$restore_model" ]] || codex_restore_args+=(-m "$restore_model")
