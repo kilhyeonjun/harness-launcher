@@ -72,8 +72,27 @@ def valid_model(value):
     return isinstance(value, str) and MODEL.fullmatch(value) is not None
 
 
+LONG_CONTEXT_TOKENS = 200000
+USAGE_FIELDS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+
+
+def context_tokens(message):
+    """Prompt tokens of one turn, or None unless every present count is an int >= 0."""
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    total = 0
+    for field in USAGE_FIELDS:
+        value = usage.get(field, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        total += value
+    return total
+
+
 def probe_claude(path):
     model = effort = None
+    peak = 0
     usage = set()
     for rec in records(path):
         kind = rec.get("type")
@@ -87,11 +106,14 @@ def probe_claude(path):
         if not (valid_model(name) and name.startswith("claude-")):
             continue
         model = name
+        tokens = context_tokens(message)
+        if tokens is not None:
+            peak = max(peak, tokens)
         if isinstance(rec.get("effort"), str) and rec["effort"] in CLAUDE_EFFORTS:
             effort = rec["effort"]
     out = []
     if model:
-        out.append("model=%s%s" % (model, "[1m]" if model + "[1m]" in usage else ""))
+        out.append("model=%s%s" % (model, "[1m]" if peak > LONG_CONTEXT_TOKENS or model + "[1m]" in usage else ""))
     if effort:
         out.append("effort=" + effort)
     return out
