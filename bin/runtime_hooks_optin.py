@@ -4,8 +4,9 @@
 Each registry row is enabled by one literal assignment in
 ``<harness>/config/launcher.env``:
 
-    orca    HARNESS_ORCA_AGENT_HOOKS=1
-    herdr   HARNESS_HERDR_AGENT_HOOKS=1
+    orca           HARNESS_ORCA_AGENT_HOOKS=1
+    herdr          HARNESS_HERDR_AGENT_HOOKS=1
+    launch_record  HARNESS_LAUNCH_RECORD_HOOKS=1
 
 The process environment is ignored on purpose: Claude-side resyncs call the
 prepare script without launcher state, and every caller must resolve the same
@@ -14,7 +15,8 @@ matching pair of quotes, the last assignment wins, and only the value ``1``
 opts in.
 
 Command line: ``runtime_hooks_optin.py HARNESS_DIR`` prints the resolved pair
-as one line, ``orca=<0|1> herdr=<0|1>`` (for example ``orca=1 herdr=0``),
+as one line, ``orca=<0|1> herdr=<0|1> launch_record=<0|1>`` (for example
+``orca=1 herdr=0 launch_record=0``),
 followed by a newline. The shell caller passes that line to the hook generator
 unchanged, so a change to either opt-in changes the argument.
 """
@@ -23,10 +25,11 @@ import os
 import re
 import sys
 
-# Registry order is the order rows are appended to hooks.json: orca, herdr.
+# Registry order is the order rows are appended to hooks.json.
 KEYS = {
     "orca": "HARNESS_ORCA_AGENT_HOOKS",
     "herdr": "HARNESS_HERDR_AGENT_HOOKS",
+    "launch_record": "HARNESS_LAUNCH_RECORD_HOOKS",
 }
 _LINES = {
     name: re.compile(r"^\s*(?:export\s+)?" + key + r"=(.*?)\s*$")
@@ -35,7 +38,7 @@ _LINES = {
 
 
 def resolve(harness_dir):
-    """Return {"orca": bool, "herdr": bool} from the harness's launcher.env."""
+    """Return {row name: bool} for every registry row from launcher.env."""
     values = {name: "" for name in KEYS}
     try:
         with open(os.path.join(harness_dir, "config", "launcher.env"), encoding="utf-8") as stream:

@@ -58,7 +58,7 @@ MANIFEST_PATH = ""
 
 def runtime_agent_hooks():
     # Manifest lives at <harness>/config/codex-surface.json. Keys are the
-    # fingerprint field names: orca_agent_hooks and herdr_agent_hooks.
+    # fingerprint field names: <row>_agent_hooks for every registry row.
     harness_dir = os.path.dirname(os.path.dirname(os.path.abspath(MANIFEST_PATH)))
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:

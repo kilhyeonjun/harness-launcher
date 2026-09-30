@@ -41,10 +41,21 @@ def apps_allowlist() -> str:
     return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
 
 
+def runtime_hook_fields() -> set:
+    """Fingerprint field names of the runtime hook registry rows."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import runtime_hooks_optin
+    finally:
+        sys.path.pop(0)
+    return {f"{name}_agent_hooks" for name in runtime_hooks_optin.KEYS}
+
+
 def runtime_agent_hooks(repo_root) -> dict:
     """Return each runtime hook registry opt-in as "1" or "" for the fingerprint.
 
-    Keys are the fingerprint field names: orca_agent_hooks and herdr_agent_hooks.
+    Keys are the fingerprint field names: `<row>_agent_hooks` for every row of
+    runtime_hooks_optin.KEYS (orca, herdr, launch_record).
     """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
@@ -1918,7 +1929,7 @@ def write_stamp(args: argparse.Namespace) -> None:
     payload = load_inline_json(args.fingerprint_json, "fingerprint")
     # The runtime hook opt-ins are optional so stamps written before they
     # existed stay valid.
-    if set(payload) - {"orca_agent_hooks", "herdr_agent_hooks"} != {
+    if set(payload) - runtime_hook_fields() != {
         "schema_version",
         "digest",
         "skill_profile",
