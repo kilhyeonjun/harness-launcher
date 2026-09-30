@@ -114,7 +114,7 @@ echo "PASS: direct ultracode → --model opus[1m] --effort xhigh (no --effort ul
 
 # 1b. xhigh needs thinking enabled or the API 400s on the first prompt, so the
 #     launch must force it rather than trusting the user's settings.json.
-[[ "$RUN_ARGS" == *'--settings {"alwaysThinkingEnabled":true}'* ]] \
+[[ "$RUN_ARGS" == *'--settings {"alwaysThinkingEnabled":true,'* ]] \
   || { echo "FAIL: direct ultracode must force thinking on for xhigh: $RUN_ARGS"; exit 1; }
 echo "PASS: direct ultracode forces alwaysThinkingEnabled for xhigh"
 

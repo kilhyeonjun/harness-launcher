@@ -76,7 +76,7 @@ extract_has_flag() {
 # must not depend on the user's settings.json for those efforts.
 extract_forces_thinking() {
   local args="$1"
-  if echo "$args" | grep -q -- '--settings {"alwaysThinkingEnabled":true}'; then
+  if echo "$args" | grep -q -- '--settings {"alwaysThinkingEnabled":true,'; then
     echo "true"
   else
     echo "false"
