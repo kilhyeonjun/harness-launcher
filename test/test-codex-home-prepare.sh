@@ -972,6 +972,23 @@ assert apps["asdk_app_testtwo"] == {"enabled": True}, apps
 assert config["features"]["apps"] is True
 PY
 echo "PASS: [features].apps opt-in with per-app allowlist and deny-by-default"
+HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_testone,asdk_app_testtwo" HARNESS_CODEX_SLACK_APPS="asdk_app_testone" "$PREPARE" "$TEST_HARNESS3"
+python3 - "$config3" <<'PYSLACK'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as file:
+    config = tomllib.load(file)
+assert config['approvals_reviewer'] == 'user'
+assert config['approval_policy'] == 'on-request'
+slack = config['apps']['asdk_app_testone']
+assert slack['approvals_reviewer'] == 'user'
+assert slack['tools']['slack_slack_send_message']['approval_mode'] == 'prompt'
+assert slack['tools']['slack_slack_update_canvas']['approval_mode'] == 'prompt'
+assert 'slack_slack_read_thread' not in slack['tools']
+assert 'slack_slack_send_message_draft' not in slack['tools']
+assert config['apps']['asdk_app_testtwo'] == {'enabled': True}
+PYSLACK
+echo "PASS: Slack generated config exact mutation tools require native user approval"
+
 
 # Without the allowlist the harness returns to the deny-by-default shape.
 "$PREPARE" "$TEST_HARNESS3"

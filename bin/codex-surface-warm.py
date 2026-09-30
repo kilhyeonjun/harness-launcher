@@ -73,10 +73,18 @@ def expected_apps():
     app_ids = [app_id for app_id in apps_allowlist().split(",") if app_id]
     if not app_ids:
         return None
-    return {
-        "_default": {"enabled": False},
-        **{app_id: {"enabled": True} for app_id in app_ids},
-    }
+    result = {"_default": {"enabled": False}, **{app_id: {"enabled": True} for app_id in app_ids}}
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("slack_policy", os.path.join(os.path.dirname(__file__), "slack-approval-policy.py"))
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    for app in policy.slack_apps():
+        result[app]["approvals_reviewer"] = "user"
+        result[app]["tools"] = {
+            prefix + mutation: {"approval_mode": "prompt"}
+            for mutation in policy.MUTATIONS for prefix in ("", "slack_", "slack_slack_")
+        }
+    return result
 
 
 def load_object(path):
@@ -141,6 +149,10 @@ def config_matches(
         "tools",
         "projects",
     }
+    if os.environ.get("HARNESS_CODEX_SLACK_APPS", ""):
+        allowed_root_keys.update({"approval_policy", "approvals_reviewer"})
+        if config.get("approval_policy") != "on-request" or config.get("approvals_reviewer") != "user":
+            return False
     if set(config) - allowed_root_keys:
         return False
     # Folder trust: the launcher's own roots plus decisions Codex saved.
@@ -504,13 +516,16 @@ def main():
         "mcp_profile",
         "global_mcp_digest",
         "apps_allowlist",
+        "slack_apps",
         "bundled_marketplace_path",
     ):
-        if stamp.get(key) != fingerprint.get(key):
+        if stamp.get(key, "" if key == "slack_apps" else None) != fingerprint.get(key, "" if key == "slack_apps" else None):
             cold()
     if fingerprint.get("global_mcp_digest") != global_mcp_digest():
         cold()
     if fingerprint.get("apps_allowlist") != apps_allowlist():
+        cold()
+    if fingerprint.get("slack_apps", "") != os.environ.get("HARNESS_CODEX_SLACK_APPS", ""):
         cold()
     for key, expected in runtime_agent_hooks().items():
         if fingerprint.get(key, "") != expected or stamp.get(key, "") != expected:

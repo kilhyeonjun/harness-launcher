@@ -124,10 +124,13 @@ export CMUX_TAB_ID="test-tab"
 export CMUX_SURFACE_ID="test-surface"
 
 # --- 1. base start: session→mode(base)→start -------------------------------
+# Launcher-owned Slack settings may precede native selectors; assertions below
+# retain the exact selector/model/effort sequence after that settings block.
 OUT="$TEST_TEMP/1.out"; STUB="$TEST_TEMP/1.stub"; reset_plan
 run_tui $'1\n2\n1\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --model sonnet --effort high --exclude-dynamic-system-prompt-sections' "$STUB" \
+grep -q 'EXEC:claude .*--model sonnet --effort high --exclude-dynamic-system-prompt-sections' "$STUB" \
   || fail 'base mode should exec claude sonnet/high' "$OUT"
+grep -Fq 'mcp__slack__send_message' "$STUB" || fail 'TUI must carry mandatory Slack ask rules' "$STUB"
 grep -Fqx 'MCP_AUTH:loaded' "$STUB" || fail 'TUI Claude did not inherit harness-local MCP credentials' "$OUT"
 FOREIGN_HARNESS="$TEST_TEMP/foreign-harness"
 mkdir -p "$FOREIGN_HARNESS/.claude"
@@ -181,7 +184,7 @@ echo 'PASS: mode labels match the shared mode table'
 # --- 3. launchpad history row replays identical launch ----------------------
 OUT="$TEST_TEMP/3.out"; STUB="$TEST_TEMP/3.stub"
 run_tui $'2\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --model sonnet --effort high' "$STUB" || fail 'history row should replay same exec' "$OUT"
+grep -q 'EXEC:claude .*--model sonnet --effort high' "$STUB" || fail 'history row should replay same exec' "$OUT"
 [[ "$(grep -c '^EXEC:' "$STUB")" -eq 1 ]] || fail 'history row should exec exactly once' "$OUT"
 grep -q '↩ Claude · direct · new · sonnet · high' "$OUT" || fail 'launchpad should list the history row' "$OUT"
 grep -q '1) ☁️  New — Claude Code 구성' "$OUT" || fail 'New composer entry must be option 1 (above history)' "$OUT"
@@ -191,17 +194,17 @@ echo 'PASS: launchpad history row replays the previous launch'
 # Fable is appended after Custom, preserving existing numbered menu choices.
 OUT="$TEST_TEMP/fable.out"; STUB="$TEST_TEMP/fable.stub"; reset_plan
 run_tui $'1\n8\n1\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --model fable --effort high' "$STUB" || fail 'Fable preset must launch fable/high' "$OUT"
+grep -q 'EXEC:claude .*--model fable --effort high' "$STUB" || fail 'Fable preset must launch fable/high' "$OUT"
 grep -q 'Fable.*fable.*high' "$OUT" || fail 'Fable label must match launch' "$OUT"
 OUT="$TEST_TEMP/fable-custom.out"; STUB="$TEST_TEMP/fable-custom.stub"; reset_plan
 run_tui $'1\n7\n6\n2\n1\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --model fable --effort high' "$STUB" || fail 'Custom Fable high must launch fable/high' "$OUT"
+grep -q 'EXEC:claude .*--model fable --effort high' "$STUB" || fail 'Custom Fable high must launch fable/high' "$OUT"
 echo 'PASS: Fable preset and Custom selection'
 
 # Replaying custom Fable must retain the same provider boundary as the picker.
 OUT="$TEST_TEMP/fable-replay.out"; STUB="$TEST_TEMP/fable-replay.stub"
 run_tui $'2\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --model fable --effort high' "$STUB" || fail 'direct Custom Fable history must replay' "$OUT"
+grep -q 'EXEC:claude .*--model fable --effort high' "$STUB" || fail 'direct Custom Fable history must replay' "$OUT"
 mkdir -p "$TEST_HARNESS/config/.local"
 printf 'KIRO_GATEWAY_URL="https://kiro.test"\n' > "$TEST_HARNESS/config/.local/kiro-gateway.env"
 printf 'CODEX_GATEWAY_URL="https://codex.test"\n' > "$TEST_HARNESS/config/.local/codex-gateway.env"
@@ -218,7 +221,7 @@ echo 'PASS: Custom Fable history respects the direct provider boundary'
 # --- 4. continue session flag ------------------------------------------------
 OUT="$TEST_TEMP/4.out"; STUB="$TEST_TEMP/4.stub"; reset_plan
 run_tui $'2\n2\n1\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --continue --model sonnet' "$STUB" || fail 'continue should add --continue' "$OUT"
+grep -q 'EXEC:claude .*--continue --model sonnet' "$STUB" || fail 'continue should add --continue' "$OUT"
 echo 'PASS: continue session flag preserved'
 
 # --- 5. permission select + replace (no accumulation) ------------------------
@@ -240,7 +243,7 @@ echo 'PASS: chrome toggle adds --chrome'
 write_stub happy
 OUT="$TEST_TEMP/7.out"; STUB="$TEST_TEMP/7.stub"; reset_plan
 run_tui $'1\n2\n5\n1\n' "$OUT" "$STUB"
-grep -q 'EXEC:happy --model sonnet' "$STUB" || fail 'happy toggle should exec happy' "$OUT"
+grep -q 'EXEC:happy .*--model sonnet' "$STUB" || fail 'happy toggle should exec happy' "$OUT"
 grep -q 'EXEC:claude' "$STUB" && fail 'happy launch must not also exec claude' "$OUT"
 [[ "$(grep -c '^EXEC:' "$STUB")" -eq 1 ]] || fail 'happy launch should exec exactly once' "$OUT"
 ! grep -Fxq -- --settings "$STUB.argv" || fail 'happy must get no --settings (its flag passthrough is unverified)' "$STUB.argv"
@@ -249,7 +252,7 @@ echo 'PASS: happy wrapper launch'
 # --- 8. invalid input reprompts instead of exiting (B4) -----------------------
 OUT="$TEST_TEMP/8.out"; STUB="$TEST_TEMP/8.stub"; reset_plan
 run_tui $'9\nx\n\n1\n2\n1\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --model sonnet' "$STUB" || fail 'invalid input should reprompt, then proceed' "$OUT"
+grep -q 'EXEC:claude .*--model sonnet' "$STUB" || fail 'invalid input should reprompt, then proceed' "$OUT"
 echo 'PASS: fallback menu reprompts on invalid input'
 
 # --- 9. q at first menu exits cleanly with no exec ----------------------------
@@ -262,7 +265,7 @@ echo 'PASS: q backs out without launching'
 OUT="$TEST_TEMP/10.out"; STUB="$TEST_TEMP/10.stub"; reset_plan
 # session New → mode ultracode(6) → final Back(6: Start/Perm/Chrome/MCP/Happy/Back) → mode fast(1) → start
 run_tui $'1\n6\n6\n1\n1\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --model haiku' "$STUB" || fail 'fast after back-nav should exec haiku' "$OUT"
+grep -q 'EXEC:claude .*--model haiku' "$STUB" || fail 'fast after back-nav should exec haiku' "$OUT"
 grep -q 'ultracode는 세션 전용' "$OUT" && fail 'ultracode hint must not leak into non-ultracode launch' "$OUT"
 echo 'PASS: no ultracode hint residue after back-navigation'
 
@@ -352,7 +355,7 @@ printf 'RUNTIME=claude\nSUMMARY=Claude · direct · new · sonnet · high\nPROVI
 run_tui $'2\n' "$OUT" "$STUB"
 [[ -f "$TEST_HARNESS/.harness/launcher-last" ]] && fail 'legacy plan file should be removed after migration' "$OUT"
 head -1 "$HISTORY" | grep -q 'MODE=base' || fail 'legacy plan should migrate into history' "$OUT"
-grep -q 'EXEC:claude --model sonnet --effort high' "$STUB" || fail 'migrated history row should replay' "$OUT"
+grep -q 'EXEC:claude .*--model sonnet --effort high' "$STUB" || fail 'migrated history row should replay' "$OUT"
 echo 'PASS: legacy launcher-last migrates into history and replays'
 
 # --- 17. MCP surface light toggle (claude) --------------------------------------
@@ -387,7 +390,7 @@ OUT="$TEST_TEMP/17b.out"; STUB="$TEST_TEMP/17b.stub"; reset_plan
 rm -f "$TEST_HARNESS/.harness/claude/mcp-light.json"
 # final menu is Start / Permission / Chrome / Back under single-full.
 run_tui $'1\n2\n1\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --model sonnet --effort high' "$STUB" \
+grep -q 'EXEC:claude .*--model sonnet --effort high' "$STUB" \
   || fail 'opt-in Claude should launch the full surface' "$OUT"
 grep -q 'MCP surface:' "$OUT" && fail 'opt-in Claude final menu must not expose a surface row' "$OUT"
 head -1 "$HISTORY" | grep -q 'MCP_SURFACE=full' \
@@ -427,7 +430,7 @@ run_tui $'1\n1\n1\n1\n' "$OUT" "$STUB"                    # New Claude(1) → fa
 head -1 "$HISTORY" | grep -q 'MODE=fast' || fail 'newest config should be first in history' "$OUT"
 OUT="$TEST_TEMP/19c.out"; STUB="$TEST_TEMP/19c.stub"
 run_tui $'3\n' "$OUT" "$STUB"                             # older row (base, option 3: New1 fast2 base3) replays…
-grep -q 'EXEC:claude --model sonnet --effort high' "$STUB" || fail 'older history row should replay base' "$OUT"
+grep -q 'EXEC:claude .*--model sonnet --effort high' "$STUB" || fail 'older history row should replay base' "$OUT"
 [[ "$(wc -l < "$HISTORY")" -eq 2 ]] || fail 'replay must dedupe, not append a third row' "$OUT"
 head -1 "$HISTORY" | grep -q 'MODE=base' || fail '…and move to the top of the history' "$OUT"
 reset_plan
@@ -482,7 +485,7 @@ printf 'TS=1\tSUMMARY=Claude · direct · new · haiku · low\tRUNTIME=claude\tP
 # composer at option 1) must be the claude fast row
 run_tui $'2\n' "$OUT" "$STUB"
 grep -q 'Codex · new · base' "$OUT" && fail 'hidden runtime row must not be listed' "$OUT"
-grep -q 'EXEC:claude --model haiku --effort low' "$STUB" || fail 'first visible row must replay the claude entry, not the hidden codex one' "$OUT"
+grep -q 'EXEC:claude .*--model haiku --effort low' "$STUB" || fail 'first visible row must replay the claude entry, not the hidden codex one' "$OUT"
 reset_plan
 echo 'PASS: hidden history rows do not shift replay mapping'
 
@@ -495,7 +498,7 @@ for i in 1 2 3 4 5 6 7 8 9; do
 done
 # New Claude at 1 (composers on top), 9 hist rows below → compose a 10th config (base)
 run_tui $'1\n1\n2\n1\n' "$OUT" "$STUB"
-grep -q 'EXEC:claude --model sonnet' "$STUB" || fail 'composer must still launch with 9 history rows' "$OUT"
+grep -q 'EXEC:claude .*--model sonnet' "$STUB" || fail 'composer must still launch with 9 history rows' "$OUT"
 [[ "$(wc -l < "$HISTORY")" -eq 8 ]] || fail "10th distinct config must trim history to 8 (got $(wc -l < "$HISTORY"))"
 head -1 "$HISTORY" | grep -q 'MODE=base' || fail 'newest config must be first after trimming'
 grep -q 'SUMMARY=cfg7' "$HISTORY" || fail 'entry 7 must survive trimming'
@@ -665,7 +668,7 @@ printf 'RUNTIME=claude\nSUMMARY=LEGACYMARK\nPROVIDER=direct\nSESSION=new\nMODE=r
 run_tui $'2\n' "$OUT" "$STUB"
 [[ -f "$TEST_HARNESS/.harness/launcher-last" ]] && fail 'legacy plan must be deleted even when history exists' "$OUT"
 grep -q 'LEGACYMARK' "$HISTORY" && fail 'legacy plan must NOT be merged into an existing history' "$OUT"
-grep -q 'EXEC:claude --model sonnet' "$STUB" || fail 'existing history must stay replayable' "$OUT"
+grep -q 'EXEC:claude .*--model sonnet' "$STUB" || fail 'existing history must stay replayable' "$OUT"
 reset_plan
 echo 'PASS: legacy plan deleted without merging into existing history'
 

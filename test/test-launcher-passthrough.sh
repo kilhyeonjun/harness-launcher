@@ -281,3 +281,22 @@ argv=("${(@f)$(argv_of "$OUT")}")
 echo 'PASS: C17 caller -- hides later tokens from passthrough scans'
 
 echo 'PASS: launcher --passthrough contract'
+# File-based secrets stay out of argv; final user ask survives caller settings.
+for slack_prefix in alpha beta gamma; do
+  cat > "$TEST_HARNESS/config/launcher.env" <<EOF
+HARNESS_NAME="test harness"
+HARNESS_PREFIX="$slack_prefix"
+EOF
+  SOURCE_SETTINGS="$TEST_TEMP/$slack_prefix-private-settings.json"
+  printf '%s\n' '{"env":{"ANTHROPIC_API_KEY":"dummy-test-secret"},"permissions":{"ask":[]},"fastMode":true}' > "$SOURCE_SETTINGS"
+  OUT="$TEST_TEMP/$slack_prefix-file-approval"
+  run_claude "$OUT" bypass --passthrough --settings "$SOURCE_SETTINGS"
+  [[ "$(count_arg "$OUT" --settings)" == 1 ]] || fail 'file settings must be merged once' "$OUT"
+  MERGED_SETTINGS="$(value_after "$OUT" --settings)"
+  [[ "${MERGED_SETTINGS:t}" == harness-slack-settings-*.json ]] || fail 'file settings must stay private file based' "$OUT"
+  [[ ! -e "$MERGED_SETTINGS" ]] || fail 'merged secret settings must be cleaned after runtime exits' "$OUT"
+  ! grep -Fq 'dummy-test-secret' "$OUT" || fail 'file secret leaked into argv' "$OUT"
+  [[ -f "$SOURCE_SETTINGS" ]] || fail 'original settings file was removed' "$OUT"
+  has_sequence "$OUT" --permission-mode bypassPermissions || fail 'Claude bypass grant changed' "$OUT"
+done
+echo 'PASS: three-profile Claude bypass file settings stay out of argv and merged files are cleaned'

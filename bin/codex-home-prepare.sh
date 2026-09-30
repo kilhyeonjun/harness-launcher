@@ -259,6 +259,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --launcher-file "$GLOBAL_MCP_RESOLVER"
     --launcher-file "$0"
     --launcher-file "$SCRIPT_DIR/harness-common.sh"
+    --launcher-file "$SCRIPT_DIR/slack-approval-policy.py"
     --launcher-file "$SCRIPT_DIR/mcp_paths.py"
     --launcher-file "$SCRIPT_DIR/runtime_hooks_optin.py"
     --launcher-file "$SCRIPT_DIR/harness-launch-record"
@@ -866,6 +867,12 @@ model_context_window = $CODEX_CONTEXT_WINDOW
 model_auto_compact_token_limit = $CODEX_AUTO_COMPACT_TOKEN_LIMIT
 TOML
 
+# Validate explicit private Slack app opt-ins before publishing the config.
+slack_policy_toml="$(python3 "$SCRIPT_DIR/slack-approval-policy.py" toml)" || exit $?
+if [[ -n "$slack_policy_toml" ]]; then
+  printf 'approval_policy = "on-request"\napprovals_reviewer = "user"\n' >> "$tmp_config"
+fi
+
 if [[ "$HARNESS_OBSERVABILITY_ACTIVE" -eq 1 ]]; then
   cat >> "$tmp_config" <<TOML
 [otel]
@@ -906,6 +913,10 @@ if [[ -n "$codex_apps_allowlist" ]]; then
     printf '%s\n' "$codex_apps_allowlist" | tr ',' '\n' | while IFS= read -r codex_app_id; do
       [[ -n "$codex_app_id" ]] || continue
       printf '\n[apps.%s]\nenabled = true\n' "$codex_app_id"
+      case ",${HARNESS_CODEX_SLACK_APPS:-}," in
+        *,"$codex_app_id",*)
+          python3 "$SCRIPT_DIR/slack-approval-policy.py" app-toml "$codex_app_id" || exit $? ;;
+      esac
     done
   } >> "$tmp_config"
 fi

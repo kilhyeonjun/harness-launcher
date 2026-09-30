@@ -8,18 +8,20 @@ both directions and answers client messages whose execution-root fields leave
 the harness with an error instead of forwarding them.
 
 It is a profile-consistency boundary for a trusted local client, not a sandbox:
-free-form `config` overrides and explicit file operations are not inspected.
+only Slack approval keys within `config` are guarded; explicit file operations are not inspected.
 
 Usage: codex-app-server-guard.py --root <harness-root> --server-cwd <dir>
        --prefix <prefix> [--registry <profiles-dir>] -- <argv...>
 """
 
 import json
+import importlib.util
 import os
 import signal
 import subprocess
 import sys
 import threading
+import tomllib
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -72,6 +74,10 @@ EXEMPT_FIELDS = {
     "ThreadResumeParams.path": "rollout file to load; the thread cwd is injected or checked",
     "UserInput.path": "turn input attachment",
 }
+
+_policy_spec = importlib.util.spec_from_file_location("slack_policy", os.path.join(os.path.dirname(__file__), "slack-approval-policy.py"))
+slack_policy = importlib.util.module_from_spec(_policy_spec)
+_policy_spec.loader.exec_module(slack_policy)
 
 INVALID_PARAMS = -32602
 INVALID_REQUEST = -32600
@@ -234,11 +240,58 @@ class Guard:
             return (json.dumps(self.error(rid, INVALID_REQUEST, text)) + "\n").encode(), None
         return None, self.error(rid, INVALID_REQUEST, text)
 
+    @staticmethod
+    def canonical_config_key(key):
+        if not isinstance(key, str):
+            return key
+        try:
+            parsed = tomllib.loads(key + " = 0")
+            parts = []
+            while isinstance(parsed, dict) and len(parsed) == 1:
+                part, parsed = next(iter(parsed.items()))
+                parts.append(part)
+            return ".".join(parts) if parsed == 0 else key
+        except tomllib.TOMLDecodeError:
+            return key
+
+    def protected_slack_key(self, key):
+        key = self.canonical_config_key(key)
+        config = slack_policy.codex_config()
+        if not config or not isinstance(key, str):
+            return False
+        return any(key == target or target.startswith(key + ".") or key.startswith(target + ".") for target in config)
+
+    def slack_config_write(self, node):
+        if isinstance(node, dict):
+            if self.protected_slack_key(node.get("keyPath")):
+                return True
+            return any(self.slack_config_write(value) for value in node.values())
+        if isinstance(node, list):
+            return any(self.slack_config_write(value) for value in node)
+        return False
+
     def filter_message(self, raw, message):
         method = message.get("method")
         rid = message.get("id")
         if isinstance(method, str):
             params = message.get("params")
+            policy = slack_policy.codex_config()
+            if policy and method.startswith("config/") and method.lower().endswith("write") and self.slack_config_write(params):
+                return None, self.error(rid, INVALID_PARAMS, "harness-launcher: Slack user approval policy cannot be overridden")
+            if policy and method in ("thread/start", "thread/resume", "thread/fork", "turn/start") and isinstance(params, dict):
+                params["approvalPolicy"] = "on-request"
+                params["approvalsReviewer"] = "user"
+                if method != "turn/start":
+                    config = params.setdefault("config", {})
+                    if not isinstance(config, dict):
+                        return None, self.error(rid, INVALID_PARAMS, "harness-launcher: Slack policy requires object config")
+                    # Native config maps can contain nested parents and dotted
+                    # children; refuse overlap rather than depend on map order.
+                    if any(self.protected_slack_key(key) and (self.canonical_config_key(key) != key or key not in policy) for key in config):
+                        return None, self.error(rid, INVALID_PARAMS, "harness-launcher: use flattened config fields outside the protected Slack approval policy")
+                    config.update(policy)
+                raw = (json.dumps(message) + "\n").encode()
+
             if method in ("thread/resume", "thread/fork") and "id" in message and isinstance(params, dict) \
                     and params.get("cwd") is None:
                 params["cwd"] = self.server_cwd

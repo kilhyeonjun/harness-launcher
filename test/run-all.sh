@@ -51,7 +51,7 @@ printf '==> test_mcp_paths.py (%s)\n' "$PYTHON_BIN"
 "$PYTHON_BIN" "$ROOT/test/test_mcp_paths.py"
 passed=$((passed + 1))
 
-for python_test in test_codex_app_server_guard.py test_harness_paseo.py test_herdr_harness_plugin.py test_harness_herdr_web.py; do
+for python_test in test_slack_approval_policy.py test_codex_app_server_guard.py test_harness_paseo.py test_herdr_harness_plugin.py test_harness_herdr_web.py; do
   printf '==> %s (%s)\n' "$python_test" "$PYTHON_BIN"
   "$PYTHON_BIN" "$ROOT/test/$python_test"
   passed=$((passed + 1))

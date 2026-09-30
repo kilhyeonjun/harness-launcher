@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.39.3 — 2026-10-01
+
+- Require separate native user approval for public Slack mutations across
+  Claude and explicitly opted-in Codex connectors, including bypass/never,
+  resume, final caller overrides, and guarded stdio app-server turns. Preserve
+  reads, reactions, drafts, existing Claude settings/hooks, and filesystem
+  grants. Private connector ids remain harness-owned configuration.
+
 ## 0.39.2 — 2026-10-01
 
 - herdr plugin: a Codex tab now takes its thread's latest name. A running Codex

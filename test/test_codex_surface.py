@@ -1446,6 +1446,11 @@ out.mkdir(parents=True, exist_ok=True)
             "strict PreToolUse adapter is missing from the launcher-owned fingerprint",
         )
 
+        self.assertIn(
+            os.path.realpath(ROOT / "bin" / "slack-approval-policy.py"),
+            fingerprint_cache.get("files", {}),
+            "Slack policy helper is missing from the launcher-owned fingerprint",
+        )
         warm_samples = []
         for _ in range(5):
             started = time.perf_counter()
@@ -1646,6 +1651,23 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertNotIn("apps", revoked)
         self.prepare()
         self.assertEqual(self.compiler_calls(), 5, "revoked app allowlist was not warm")
+
+        # The private Slack policy is an independent identity axis: same app
+        # allowlist, changed approval policy must rebuild, then stay warm.
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_beta", HARNESS_CODEX_SLACK_APPS="asdk_app_beta")
+        self.assertEqual(self.compiler_calls(), 6)
+        with (self.codex_home / "config.toml").open("rb") as stream:
+            slack = tomllib.load(stream)["apps"]["asdk_app_beta"]
+        self.assertEqual(slack["approvals_reviewer"], "user")
+        self.assertEqual(slack["tools"]["slack_slack_send_message"]["approval_mode"], "prompt")
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_beta", HARNESS_CODEX_SLACK_APPS="asdk_app_beta")
+        self.assertEqual(self.compiler_calls(), 6, "Slack approval policy did not stay warm")
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_beta")
+        self.assertEqual(self.compiler_calls(), 7, "removed Slack policy stayed warm")
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_beta")
+        self.assertEqual(self.compiler_calls(), 7)
+        assert_runtime_preserved()
+
 
     def test_global_allowlist_emits_exact_profile_policies_without_source_drift(self):
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
