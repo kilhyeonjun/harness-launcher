@@ -6,7 +6,7 @@
 # isolated=0 for this harness. An isolated owner still wins, transcripts alone
 # are not proof, and forced isolation keeps rejecting.
 set -e
-unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM HARNESS_HOST_DEFAULT_MODE; unset -m 'HERDR_*' 'ORCA_*' 'CMUX_*' || true
+unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM HARNESS_HOST_DEFAULT_MODE CLAUDECODE CODEX_THREAD_ID; unset -m 'HERDR_*' 'ORCA_*' 'CMUX_*' || true
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"; TMP="${TMP:A}"
@@ -41,8 +41,8 @@ resolve() { # <args...> : sets OUT, RC
 }
 write_record() { # <id> <isolated> [source_root]
   printf '{"hook_event_name":"SessionStart","source":"startup","session_id":"%s"}' "$1" \
-    | env HARNESS_SESSION_STATE_HOME="$STATE" HARNESS_LAUNCH_SOURCE_ROOT="${3:-$HARNESS}" HARNESS_LAUNCH_ISOLATED="$2" \
-        "$PY" "$ROOT/bin/harness-launch-record" claude
+    | env HARNESS_SESSION_STATE_HOME="$STATE" \
+        "$PY" "$ROOT/bin/harness-launch-record" claude --source-root "${3:-$HARNESS}" --isolated "$2"
 }
 source_rollout() { # <id>
   local dir="$HARNESS/.harness/codex/sessions/2026/09/30"
