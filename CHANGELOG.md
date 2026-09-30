@@ -2,6 +2,23 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.39.4 — 2026-10-01
+
+- Fix: after each upgrade, every Codex launch asked to review the launcher's hooks
+  (`20 hooks are new or changed`). A resumed session typed in a shell (the
+  herdr/Orca restore route through `harness-auto`) entered the package through
+  its versioned `Cellar/harness-launcher/<version>` path, and generated hook
+  commands kept that path, so an upgrade changed every command. Until trusted,
+  the hooks did not run, and an unattended restore stopped at the prompt. The
+  same path in a Claude session's launch-record hook broke once `brew cleanup`
+  removed the old keg. `harness_launcher_stable_dir` now maps the keg, the
+  compat `share` link and `opt` to the `opt` path when they are the same
+  directory, for generated Codex hooks, the picker and the shortcut path.
+  A home last prepared through the keg changes its hook commands once more on
+  the next launch; trust them once (a harness autotrust or `t` in the review).
+  Sessions already running keep hooks that name the previous keg: upgrade with
+  `HOMEBREW_NO_INSTALL_CLEANUP=1` and run `brew cleanup` after they restart.
+
 ## 0.39.3 — 2026-10-01
 
 - Require separate native user approval for public Slack mutations across

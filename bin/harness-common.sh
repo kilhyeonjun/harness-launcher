@@ -118,6 +118,30 @@ harness_claude_stdio_is_tty() {
   [ -t 0 ] && [ -t 1 ]
 }
 
+# harness_launcher_stable_dir <dir>
+#   The Homebrew `opt` spelling of a launcher package directory reached through
+#   the compat share link or a versioned Cellar path, when both name the same
+#   directory (-ef); any other directory prints unchanged. Generated hook
+#   commands use this spelling: Codex asks to trust every hook whose command
+#   changed, so a Cellar path re-asked after each upgrade, and a long-running
+#   session's hooks broke once `brew cleanup` removed the old keg. A different
+#   active keg is not an alias and never wins.
+harness_launcher_stable_dir() {
+  local dir="$1" candidate=""
+  case "$dir" in
+    */opt/harness-launcher/share/harness-launcher) ;;
+    */Cellar/harness-launcher/*/share/harness-launcher)
+      candidate="${dir%%/Cellar/harness-launcher/*}/opt/harness-launcher/share/harness-launcher" ;;
+    */share/harness-launcher)
+      candidate="${dir%/share/harness-launcher}/opt/harness-launcher/share/harness-launcher" ;;
+  esac
+  if [ -n "$candidate" ] && [ -d "$candidate" ] && [ "$dir" -ef "$candidate" ]; then
+    printf '%s\n' "$candidate"
+  else
+    printf '%s\n' "$dir"
+  fi
+}
+
 # Launch record (harness-launch-record, a SessionStart hook) — shared by the
 # shortcut path (aliases.zsh) and the interactive picker (launcher.sh), so both
 # record the same facts. Portable across bash 3.2 and zsh.
