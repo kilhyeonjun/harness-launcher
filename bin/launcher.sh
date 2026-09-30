@@ -1052,6 +1052,7 @@ launch_claude() {
 
   local exe="claude"
   [ "$CHOICE_HAPPY" = 1 ] && exe="happy"
+  [ "$exe" != "happy" ] || harness_slack_happy_guard || return $?
   command -v "$exe" >/dev/null 2>&1 || { echo "Error: $exe not found in PATH" >&2; return 1; }
 
   # The launch-record hook, as on the shortcut path (harness_claude_launch_settings).
@@ -1116,8 +1117,10 @@ launch_claude() {
   launch_banner "$PLAN_SUMMARY" "$exe" "${banner_args[@]}"
   harness_claude_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py" "$HARNESS_DIR"
   local HARNESS_SLACK_ARGV=()
-  harness_slack_claude_argv "$LAUNCHER_BIN_DIR/slack-approval-policy.py" "${args[@]}" || return $?
-  args=("${HARNESS_SLACK_ARGV[@]}")
+  if [ "$exe" = "claude" ]; then
+    harness_slack_claude_argv "$LAUNCHER_BIN_DIR/slack-approval-policy.py" "${args[@]}" || return $?
+    args=("${HARNESS_SLACK_ARGV[@]}")
+  fi
   if [ -n "${HARNESS_SLACK_SETTINGS_FILE:-}" ]; then
     trap 'harness_slack_settings_cleanup; rm -rf "$PROBE_DIR"' EXIT
     "$exe" "${args[@]}"
@@ -1127,6 +1130,7 @@ launch_claude() {
 }
 
 launch_codex() {
+  [ "$CHOICE_HAPPY" != 1 ] || harness_slack_happy_guard || return $?
   export HARNESS_CODEX_CONTEXT="$CHOICE_CODEX_CONTEXT"
   if harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY"; then
     unset HARNESS_CODEX_MCP_PROFILE

@@ -501,3 +501,8 @@ existing fields and hooks while adding mandatory Slack ask rules. When the
 caller supplied a settings file, the merge is written to a private `0600`
 temporary file and removed when the runtime exits; file-contained environment
 secrets are never expanded into command-line arguments.
+
+Happy wrappers are rejected when `HARNESS_CODEX_SLACK_APPS` is nonempty: their
+internal settings and approval overrides do not preserve this policy. Use the
+native Claude or Codex launcher. Harnesses without this opt-in keep existing
+Happy behavior.

@@ -1403,6 +1403,15 @@ harness_ultracode_hint() {
   printf '💡 ultracode는 세션 전용입니다 — 시작 후 /effort 에서 ultracode를 선택하면 워크플로우 오케스트레이션이 켜집니다 (지금은 opus[1m] + xhigh로 시작).\n' >&2
 }
 
+# Happy may replace settings or approval policy when starting its own runtime.
+# Fail before launching until that boundary can preserve exact user approvals.
+harness_slack_happy_guard() {
+  if [ -n "${HARNESS_CODEX_SLACK_APPS:-}" ]; then
+    echo "❌ Happy cannot enforce Slack user approval; use the native Claude/Codex runtime." >&2
+    return 1
+  fi
+}
+
 # Both launch surfaces use one policy; shell quoting preserves multiline prompts.
 harness_slack_codex_argv() {
   local policy="$1" py output

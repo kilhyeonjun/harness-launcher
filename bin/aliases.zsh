@@ -1850,6 +1850,7 @@ _harness_launcher_run_codex_cli() {
   # Validate incompatible combinations BEFORE preparing the runtime home, so a
   # rejected launch leaves no work-surface residue in the generated config.
   if $use_happy; then
+    harness_slack_happy_guard || return $?
     command -v happy >/dev/null 2>&1 || {
       echo "❌ happy not found in PATH" >&2
       return 1

@@ -238,6 +238,19 @@ run_tui $'1\n2\n3\n1\n' "$OUT" "$STUB"
 grep -q -- '--chrome' "$STUB" || fail 'chrome toggle should add --chrome' "$OUT"
 echo 'PASS: chrome toggle adds --chrome'
 
+# Slack-enabled Happy cannot prove that its internal runtime keeps our policy.
+write_stub happy
+cat >> "$TEST_HARNESS/config/launcher.env" <<'EOF'
+HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_slacktest"
+HARNESS_CODEX_SLACK_APPS="asdk_app_slacktest"
+EOF
+OUT="$TEST_TEMP/slack-happy.out"; STUB="$TEST_TEMP/slack-happy.stub"; reset_plan
+run_tui $'1\n2\n5\n1\n' "$OUT" "$STUB"
+grep -q 'Happy.*Slack.*native' "$OUT" || fail 'Slack-enabled Happy must report native-runtime requirement' "$OUT"
+[[ -f "$STUB" ]] && grep -q '^EXEC:' "$STUB" && fail 'Slack-enabled Happy must never exec' "$OUT"
+printf 'HARNESS_NAME="test harness"\nHARNESS_PREFIX="test"\n' > "$TEST_HARNESS/config/launcher.env"
+reset_plan
+
 # --- 7. happy toggle routes exec through happy --------------------------------
 # final menu with happy: 1 Start / 2 Permission / 3 Chrome / 4 MCP surface / 5 Happy / 6 Back
 write_stub happy

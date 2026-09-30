@@ -399,6 +399,18 @@ grep -q '^HARNESS_PREFIX:test$' "$STUB3B" || {
   echo "FAIL: case3b — HARNESS_PREFIX was not exported through Happy"; cat "$STUB3B"; exit 1;
 }
 echo "PASS: case3b — runtime=Codex + Happy=yes → exec happy codex"
+cat >> "$TEST_HARNESS/config/launcher.env" <<'EOF'
+HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_slacktest"
+HARNESS_CODEX_SLACK_APPS="asdk_app_slacktest"
+EOF
+STUB_SLACK_HAPPY="$TEST_TEMP/out-slack-happy.txt"
+: > "$STUB_SLACK_HAPPY"
+run_tui $'2\n1\n2\n1\n3\n1\n' "$STUB_SLACK_HAPPY" "$HAPPY_BIN" || true
+! grep -q '^EXEC:' "$STUB_SLACK_HAPPY" || { echo 'FAIL: Slack Happy TUI executed'; exit 1; }
+grep -q 'Happy.*Slack.*native' "$STUB_SLACK_HAPPY.tui.log" || { echo 'FAIL: Slack Happy TUI missing guidance'; cat "$STUB_SLACK_HAPPY.tui.log"; exit 1; }
+printf 'HARNESS_NAME="test harness"\nHARNESS_PREFIX="test"\n' > "$TEST_HARNESS/config/launcher.env"
+echo 'PASS: Slack Happy TUI is rejected'
+
 
 # Case 3c: Happy installed, but non-base Codex mode must not offer Happy prompt
 STUB3C="$TEST_TEMP/out3c-codex-rich-happy-installed.txt"

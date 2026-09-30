@@ -8,7 +8,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
   Claude and explicitly opted-in Codex connectors, including bypass/never,
   resume, final caller overrides, and guarded stdio app-server turns. Preserve
   reads, reactions, drafts, existing Claude settings/hooks, and filesystem
-  grants. Private connector ids remain harness-owned configuration.
+  grants. Private connector ids remain harness-owned configuration. Reject
+  Happy wrappers for Slack-enabled harnesses until their internal runtime can
+  preserve native user approval.
 
 ## 0.39.2 — 2026-10-01
 
