@@ -910,6 +910,6 @@ echo "PASS: three-profile Slack normal/bypass/never resume and caller overrides 
 
 output="$TEST_TEMP/slack-happy-rejected.txt"
 if run_codex_failure "$output" happy; then echo 'FAIL: opted-in Slack Happy succeeded'; exit 1; fi
-! grep -q '^HAPPY_ARGV:' "$TEST_TEMP/output-codex-cli-failure-stub.txt" || { echo 'FAIL: opted-in Slack Happy executed'; exit 1; }
+if grep -q '^HAPPY_ARGV:' "$TEST_TEMP/output-codex-cli-failure-stub.txt"; then echo 'FAIL: opted-in Slack Happy executed'; exit 1; fi
 grep -q 'Happy.*Slack.*native' "$output" || { echo 'FAIL: Happy rejection lacks native-runtime guidance'; exit 1; }
 echo 'PASS: Slack Happy shortcut is rejected'
