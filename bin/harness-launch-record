@@ -2,7 +2,7 @@
 """Launcher-owned launch record: the only source of a restored grant.
 
   harness-launch-record claude [--source-root R] [--isolated 0|1] [--permission P]
-                               [--harness-session-id U]
+                               [--harness-session-id U] [--context 1m]
   harness-launch-record codex                     (settings from the environment)
   harness-launch-record read <claude|codex> <id>  print the validated record
 
@@ -58,9 +58,11 @@ CHECKS = {
     "source_root": lambda v: v.startswith("/") and not re.search(r"[\x00-\x1f\x7f]", v),
     "isolated": lambda v: v in {"0", "1"},
     "harness_session_id": lambda v: UUID.fullmatch(v) is not None,
+    # Not a grant (it only sizes the context window), so no rank rules apply.
+    "context": lambda v: v == "1m",
 }
 ORDER = ("permission", "approval", "sandbox", "bypass", "profile",
-         "source_root", "isolated", "harness_session_id")
+         "source_root", "isolated", "harness_session_id", "context")
 ENV_KEYS = {
     "approval": "HARNESS_LAUNCH_APPROVAL", "sandbox": "HARNESS_LAUNCH_SANDBOX",
     "bypass": "HARNESS_LAUNCH_BYPASS", "profile": "HARNESS_LAUNCH_PROFILE",
@@ -70,6 +72,7 @@ ENV_KEYS = {
 CLAUDE_FLAGS = {
     "--permission": "permission", "--source-root": "source_root",
     "--isolated": "isolated", "--harness-session-id": "harness_session_id",
+    "--context": "context",
 }
 AGENT_NAMES = {"claude", "codex"}
 MAX_HOPS = 64

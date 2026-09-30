@@ -112,6 +112,29 @@ probe claude "$TMP/dicteffort.jsonl"; expect 'L7 dict-valued effort' 'model=clau
 { printf '{"type":"turn_context","payload":{"model":"gpt-6-sol","effort":["low"]}}\n'; } > "$TMP/listcodex.jsonl"
 probe codex "$TMP/listcodex.jsonl"; expect 'L7 list-valued codex effort' 'model=gpt-6-sol'
 
+# 1M evidence from usage: a main-thread turn whose input + cache read + cache
+# creation tokens exceed 200000 can only have run with a 1M context, even when no
+# cost-state record survives in the window.
+usage_line() { # <sidechain true|false> <input> <cache_read> <cache_creation>
+  printf '{"type":"assistant","isSidechain":%s,"message":{"model":"claude-opus-5-5","usage":{"input_tokens":%s,"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s}},"effort":"high"}\n' "$1" "$2" "$3" "$4"
+}
+usage_line false 2 150000 50001 > "$TMP/u-over.jsonl"
+probe claude "$TMP/u-over.jsonl"; expect 'usage total 200003 implies 1M' $'model=claude-opus-5-5[1m]\neffort=high'
+usage_line false 0 100000 100000 > "$TMP/u-exact.jsonl"
+probe claude "$TMP/u-exact.jsonl"; expect 'usage total exactly 200000 is not 1M' $'model=claude-opus-5-5\neffort=high'
+{ usage_line false 5 1000 1000; usage_line true 5 300000 0; } > "$TMP/u-side.jsonl"
+probe claude "$TMP/u-side.jsonl"; expect 'sidechain usage is ignored' $'model=claude-opus-5-5\neffort=high'
+{ usage_line false 5 1000 1000; printf '{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-5-5","usage":{"input_tokens":"999999","cache_read_input_tokens":[300000],"cache_creation_input_tokens":true}},"effort":"high"}\n'; } > "$TMP/u-bad.jsonl"
+probe claude "$TMP/u-bad.jsonl"; expect 'non-int usage is ignored' $'model=claude-opus-5-5\neffort=high'
+{ usage_line false 5 1000 1000; printf '{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-5-5","usage":{"input_tokens":-300000,"cache_read_input_tokens":400000,"cache_creation_input_tokens":0}},"effort":"high"}\n'; } > "$TMP/u-neg.jsonl"
+probe claude "$TMP/u-neg.jsonl"; expect 'a record with a negative usage field is ignored' $'model=claude-opus-5-5\neffort=high'
+# the earlier big turn still counts after a later small one (the maximum, not the last)
+{ usage_line false 2 250000 0; usage_line false 2 1000 0; } > "$TMP/u-max.jsonl"
+probe claude "$TMP/u-max.jsonl"; expect 'the maximum usage counts, not the last' $'model=claude-opus-5-5[1m]\neffort=high'
+# a model that already carries [1m] via cost-state is not doubled
+{ usage_line false 2 250000 0; printf '{"type":"cost-state","modelUsage":{"claude-opus-5-5[1m]":{}}}\n'; } > "$TMP/u-both.jsonl"
+probe claude "$TMP/u-both.jsonl"; expect 'both signals give one [1m]' $'model=claude-opus-5-5[1m]\neffort=high'
+
 # --- Codex rollout -----------------------------------------------------------
 R="$TMP/rollout.jsonl"
 {

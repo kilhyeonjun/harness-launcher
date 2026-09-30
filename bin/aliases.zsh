@@ -265,13 +265,14 @@ _harness_launcher_restore_probe() {
 
 # _harness_launcher_restore_launch_record <claude|codex> <lowercase id> <source-root>
 #   Fills the caller's restore_permission, restore_approval, restore_sandbox,
-#   restore_bypass, restore_profile and restore_isolated from the launch record, only when it
+#   restore_bypass, restore_profile, restore_window (Claude context `1m`, not a
+#   grant) and restore_isolated from the launch record, only when it
 #   names this harness root. Returns 1 (all empty) without a usable record.
 _harness_launcher_restore_launch_record() {
   local agent="$1" id="$2" source_root="$3" py out line key value recorded=""
   local helper="$_HARNESS_LAUNCHER_BIN/harness-launch-record"
   local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
-  restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated="" restore_profile=""
+  restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated="" restore_profile="" restore_window=""
   [[ -f "$helper" ]] || return 1
   py="$(harness_python3_resolve 2>/dev/null)" || return 1
   out="$(HARNESS_SESSION_STATE_HOME="$state_home" "$py" "$helper" read "$agent" "$id" 2>/dev/null)" || return 1
@@ -284,12 +285,13 @@ _harness_launcher_restore_launch_record() {
       sandbox) [[ "$agent" == codex && "$value" == (read-only|workspace-write|danger-full-access) ]] && restore_sandbox="$value" ;;
       bypass) [[ "$agent" == codex && "$value" == 1 ]] && restore_bypass=1 ;;
       profile) [[ "$agent" == codex && "$value" == (fast|base|sol|astra|plan|rich) ]] && restore_profile="$value" ;;
+      context) [[ "$agent" == claude && "$value" == 1m ]] && restore_window=1m ;;
       isolated) [[ "$value" == (0|1) ]] && restore_isolated="$value" ;;
       source_root) [[ "$value" == /* && "$value" != *[[:cntrl:]]* ]] && recorded="$value" ;;
     esac
   done
   if [[ -z "$recorded" || "${recorded:A}" != "${source_root:A}" ]]; then
-    restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated="" restore_profile=""
+    restore_permission="" restore_approval="" restore_sandbox="" restore_bypass="" restore_isolated="" restore_profile="" restore_window=""
     return 1
   fi
   return 0
@@ -335,7 +337,7 @@ _harness_launcher_claude_restore_apply() {
     argv=("${claude_args[@]}")
   fi
   local restore_id restore_model restore_effort restore_context
-  local restore_permission restore_approval restore_sandbox restore_bypass restore_isolated
+  local restore_permission restore_approval restore_sandbox restore_bypass restore_isolated restore_window
   restore_id="$(_harness_launcher_restore_resume_id claude "${argv[@]}")" || return 0
   skip_tui=true
   _harness_launcher_restore_probe claude "$restore_id" || true
@@ -343,6 +345,13 @@ _harness_launcher_claude_restore_apply() {
   # means the user chose the default mode.
   _harness_launcher_restore_launch_record claude "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" \
     || _harness_launcher_restore_hint claude "$restore_id" "$restore_model"
+  # A long 1M session may leave no evidence in the transcript window; the launch
+  # record remembers that the launcher started it with a [1m] model. This only
+  # sizes the context window, it grants nothing.
+  if [[ "$restore_window" == 1m && -n "$restore_model" && "$restore_model" != *"[1m]" \
+        && "${restore_model}[1m]" =~ $_HARNESS_LAUNCHER_MODEL_RE ]]; then
+    restore_model="${restore_model}[1m]"
+  fi
   if $passthrough; then
     [[ -z "$restore_model" ]] || claude_passthrough_args+=(--model "$restore_model")
     [[ -z "$restore_effort" ]] || claude_passthrough_args+=(--effort "$restore_effort")
@@ -393,7 +402,22 @@ _harness_launcher_export_launch_env() {
   return 0
 }
 
-# _harness_launcher_claude_launch_settings <force-thinking:true|false> <permission>
+# _harness_launcher_claude_launch_context
+#   Prints `1m` when the final --model (launcher argv, then passthrough argv; the
+#   last one wins) ends in [1m].
+_harness_launcher_claude_launch_context() {
+  local arg prev="" model=""
+  for arg in "${claude_args[@]}" "${claude_passthrough_opts[@]}"; do
+    case "$arg" in
+      --model=*) model="${arg#--model=}" ;;
+      *) [[ "$prev" == --model ]] && model="$arg" ;;
+    esac
+    prev="$arg"
+  done
+  [[ "$model" == *"[1m]" ]] && print -r -- 1m
+}
+
+# _harness_launcher_claude_launch_settings <force-thinking:true|false> <permission> <context>
 #   Prints the one launcher-owned --settings JSON: the forced-thinking setting
 #   (xhigh/max) merged with the SessionStart hook that writes the launch record.
 #   The grant, source root and isolation are ARGUMENTS of the hook
@@ -408,6 +432,7 @@ _harness_launcher_claude_launch_settings() {
   if [[ -f "$hook" ]] && py="$(harness_python3_resolve 2>/dev/null)"; then
     args="--source-root ${(q)root} --isolated $isolated"
     [[ -z "$2" ]] || args+=" --permission ${(q)2}"
+    [[ "$3" != 1m ]] || args+=" --context 1m"
     if (( isolated )) && [[ "${HARNESS_SESSION_ID:-}" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
       args+=" --harness-session-id ${(q)HARNESS_SESSION_ID}"
     fi
@@ -1321,9 +1346,10 @@ _harness_launcher_run_session() {
     fi
     # One launcher --settings: forced thinking merged with the SessionStart
     # hook that records the launch grant for a later restore.
-    local launch_grant launch_settings
+    local launch_grant launch_settings launch_context
     launch_grant="$(_harness_launcher_claude_launch_grant)"
-    launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant")"
+    launch_context="$(_harness_launcher_claude_launch_context)"
+    launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant" "$launch_context")"
     [[ -z "$launch_settings" ]] || claude_args+=(--settings "$launch_settings")
     # Passthrough argv goes last, after the launcher-owned flags. The boolean
     # --exclude-dynamic-system-prompt-sections then closes the variadic
