@@ -421,8 +421,9 @@ nothing.
 Watcher. herdr 0.9.1 runs plugins on no event for a title or thread-name
 change, so each plugin run makes sure one background watcher runs for its
 herdr session (`harness_herdr_plugin.py watch`, detached; herdr gives a plugin
-one state directory for all sessions, so the watcher and its records are keyed
-by the session's API socket). It subscribes to `pane.updated` over that socket,
+one state directory for all sessions, so the watcher and the per-pane records,
+read offsets and found paths are kept per session API socket, while tab
+ownership stays shared). It subscribes to `pane.updated` over that socket,
 which reports terminal title changes of agent panes (a shell pane's title and
 Codex's blinking marker do not count), and checks the session indexes and
 transcripts behind the current titles once a second for appended title
@@ -431,8 +432,9 @@ also syncs every 15 seconds, and after herdr closes the event stream (a server
 restart) it reports every pane again. Every five minutes it reads plan usage
 through [`harness-herdr-web usage`](herdr-web-ui.md) and reports it on each
 Claude and Codex pane as a `$quota` token, such as `🔴 7d 60% 1.9× →금21시`
-(expires after 15 minutes without a renewal; cleared when the agent leaves or
-the usage cannot be read; absent without herdr web ui). It exits when the
+(expires 15 minutes after the reading it shows, so a reading that cannot be
+renewed disappears; cleared when the agent leaves; absent without herdr web
+ui). It exits when the
 plugin file changes, as on an upgrade (the next plugin run starts the new one),
 when herdr no longer lists the plugin as enabled (`herdr plugin disable` or
 `unlink`), or when herdr has not answered three times in a row. Its errors go

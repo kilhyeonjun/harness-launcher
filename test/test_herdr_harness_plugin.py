@@ -52,8 +52,11 @@ def out(result):
 if args[:2] == ["plugin", "config-dir"]:
     print(os.environ.get("FAKE_CONFIG_DIR", ""))
 elif args[:2] == ["plugin", "list"]:
-    out({"plugins": [{"plugin_id": "harness.launcher", "enabled": state.get("plugin_enabled", True)}],
-         "type": "plugin_list"})
+    if state.get("plugin_list_unknown"):
+        out({"items": [{"id": "harness.launcher"}], "type": "plugin_list"})
+    else:
+        out({"plugins": [{"plugin_id": "harness.launcher", "enabled": state.get("plugin_enabled", True)}],
+             "type": "plugin_list"})
 elif args[:2] == ["workspace", "list"]:
     out({"workspaces": state["workspaces"], "type": "workspace_list"})
 elif args[:2] == ["tab", "list"]:
@@ -533,6 +536,20 @@ class NotificationTest(HerdrPluginTestCase):
                          [pane("w5:p1", "w5:t1", title="other"),
                           pane("w5:p4", "w5:t4", title=LONG_TITLE)])
 
+    def test_another_herdr_session_keeps_this_sessions_statuses(self):
+        # Pane ids repeat across herdr sessions; one session's sync must not prune the other's.
+        self.assertRan(self.h.status("w5:p4", "working"))
+        other_state = self.h.root / "other-state.json"
+        other_state.write_text(json.dumps({"workspaces": [workspace("w1", "other")],
+                                           "tabs": [tab("w1:t1", 1)],
+                                           "panes": [pane("w1:p1", "w1:t1", title="x")]}))
+        other = self.h.env("pane.focused")
+        other.update(HERDR_SOCKET_PATH=str(self.h.root / "other.sock"), FAKE_HERDR_STATE=str(other_state))
+        self.assertRan(subprocess.run([TARGET_PYTHON, str(SCRIPT)], cwd=PLUGIN_DIR, env=other,
+                                      capture_output=True, text=True, timeout=30))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertEqual(len(self.h.notifications()), 1)
+
     def test_working_to_idle_sends_finished_notification_that_focuses_the_pane(self):
         self.assertRan(self.h.status("w5:p4", "working"))
         self.assertRan(self.h.status("w5:p4", "idle"))
@@ -840,14 +857,22 @@ class MetadataTest(HerdrPluginTestCase, SessionRecordsMixin):
 
     def test_named_herdr_sessions_keep_separate_records(self):
         self.assertRan(self.h.run("startup"))
+        other_state = self.h.root / "other-state.json"
+        other_state.write_text(json.dumps({"workspaces": [workspace("w1", "other")],
+                                           "tabs": [tab("w1:t1", 1)],
+                                           "panes": [pane("w1:p1", "w1:t1", title="x")]}))
         other = self.h.env("pane.focused")
-        other["HERDR_SOCKET_PATH"] = str(self.h.root / "other.sock")
+        other.update(HERDR_SOCKET_PATH=str(self.h.root / "other.sock"), FAKE_HERDR_STATE=str(other_state))
         result = subprocess.run([TARGET_PYTHON, str(SCRIPT)], cwd=PLUGIN_DIR, env=other,
                                 capture_output=True, text=True, timeout=30)
         self.assertRan(result)
         self.assertRan(self.h.run("pane.focused"))
-        # one report per session: the second session's run neither repeats nor prunes the first's
-        self.assertEqual(len(self.h.reports()), 2)
+        # the other session's sync (different panes) neither repeats nor prunes this one's
+        own = [report for report in self.h.reports() if report[0] == "w5:p1"]
+        self.assertEqual(len(own), 1)
+        state = json.loads((self.h.state_dir / "state.json").read_text())
+        self.assertEqual(len(state["sessions"]), 2)
+        self.assertTrue(all(session["scans"] or session["meta"] for session in state["sessions"].values()))
 
     def test_metadata_is_cleared_when_the_agent_leaves(self):
         self.assertRan(self.h.run("startup"))
@@ -1036,15 +1061,16 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.addCleanup(events.close)
         return events, sock_path
 
-    def settled(self):
+    def settled(self, timeout=10.0):
         """Wait until the watcher stops listing (its startup syncs are done); return the count."""
-        count = -1
-        while True:
+        count, deadline = -1, time.time() + timeout
+        while time.time() < deadline:
             time.sleep(0.4)
             now = self.h.calls().count(["tab", "list"])
             if now == count:
                 return now
             count = now
+        self.fail("the watcher kept syncing for %.0f s" % timeout)
 
     def test_terminal_title_event_syncs_and_a_blinking_marker_does_not(self):
         events, sock_path = self.events()
@@ -1115,6 +1141,15 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertIsNone(first.poll())
         self.assertIsNone(second.poll())
 
+    def test_an_unknown_plugin_list_format_keeps_the_watcher(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
+        state = json.loads(self.h.herdr_state.read_text())
+        state["plugin_list_unknown"] = True
+        self.h.herdr_state.write_text(json.dumps(state))
+        proc = self.start(HARNESS_HERDR_WATCH_REFRESH_SECONDS="0.2")
+        self.assertTrue(self.until(lambda: self.h.calls().count(["plugin", "list", "--json"]) >= 3))
+        self.assertIsNone(proc.poll())
+
     def test_watcher_exits_when_the_plugin_is_disabled(self):
         self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
         proc = self.start(HARNESS_HERDR_WATCH_REFRESH_SECONDS="0.2")
@@ -1137,9 +1172,11 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
                          [codex_agent("w5:p1", "w5:t1", self.h.root / "x"),
                           pane("w5:p2", "w5:t2", agent="pi", title="other")])
         self.start(FAKE_CONFIG_DIR=str(config))
-        quota = ["w5:p1", "--source", "harness.launcher.usage", "--token", "quota=🔴 7d 100%",
-                 "--ttl-ms", "900000"]
-        self.assertTrue(self.until(lambda: quota in self.h.reports()), self.h.reports())
+        quota = ["w5:p1", "--source", "harness.launcher.usage", "--token", "quota=🔴 7d 100%", "--ttl-ms"]
+        self.assertTrue(self.until(lambda: any(report[:-1] == quota for report in self.h.reports())),
+                        self.h.reports())
+        ttl = int(next(report for report in self.h.reports() if report[:-1] == quota)[-1])
+        self.assertTrue(890000 <= ttl <= 900000, ttl)  # the reading's remaining lifetime
         self.assertFalse([report for report in self.h.reports() if report[0] == "w5:p2" and "quota" in str(report)])
 
     def test_only_one_watcher_runs(self):

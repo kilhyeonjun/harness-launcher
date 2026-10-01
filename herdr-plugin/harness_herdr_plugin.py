@@ -88,6 +88,7 @@ WATCH_LOG_MAX_BYTES = 256 * 1024
 USAGE_SECONDS = 300.0
 QUOTA_TTL_MS = 15 * 60 * 1000
 QUOTA_RETRY_SECONDS = 30.0
+SESSION_KEEP_SECONDS = 7 * 86400
 PLUGIN_ID = "harness.launcher"
 
 
@@ -136,11 +137,18 @@ def session_key():
     return hashlib.sha1((os.environ.get("HERDR_SOCKET_PATH") or "").encode()).hexdigest()[:12]
 
 
-def session_meta(state):
-    meta = state["meta"].get(session_key())
-    if not isinstance(meta, dict):
-        meta = state["meta"][session_key()] = {}
-    return meta
+def session(state):
+    """This herdr session's records: pane statuses (`panes`), reported metadata (`meta`),
+    transcript read offsets (`scans`) and found file paths (`paths`). Pane ids repeat
+    across sessions, and each session prunes only its own records."""
+    entry = state["sessions"].get(session_key())
+    if not isinstance(entry, dict):
+        entry = state["sessions"][session_key()] = {}
+    entry["seen"] = time.time()
+    for key in ("panes", "meta", "scans", "paths"):
+        if not isinstance(entry.get(key), dict):
+            entry[key] = {}
+    return entry
 
 
 @contextmanager
@@ -156,7 +164,8 @@ def locked_state():
             state = {}
         if not isinstance(state, dict):
             state = {}
-        for key in ("tabs", "panes", "meta", "scans", "paths"):
+        state.pop("panes", None)  # before 0.40.0 pane statuses were not per session
+        for key in ("tabs", "sessions"):
             if not isinstance(state.get(key), dict):
                 state[key] = {}
         try:
@@ -508,7 +517,11 @@ def sync_tabs(refresh_model=None, forget=None):
     its server restarts (pane ids repeat) and when an agent leaves a pane."""
     # Read herdr's lists under the lock so a concurrent run cannot act on an older snapshot.
     with locked_state() as state:
-        meta = session_meta(state)
+        records = session(state)
+        for key, other in list(state["sessions"].items()):
+            if not isinstance(other, dict) or time.time() - other.get("seen", 0) > SESSION_KEEP_SECONDS:
+                del state["sessions"][key]  # a herdr session gone for a week
+        meta = records["meta"]
         if forget == "all":
             meta.clear()
         elif forget:
@@ -523,10 +536,10 @@ def sync_tabs(refresh_model=None, forget=None):
         for tab_id in [tab_id for tab_id in owned if tab_id not in live_tabs]:
             del owned[tab_id]
         live_panes = {pane.get("pane_id") for pane in panes}
-        for records in (state["panes"], meta):
-            for pane_id in [pane_id for pane_id in records if pane_id not in live_panes]:
-                del records[pane_id]
-        titles = Titles(state)
+        for kept in (records["panes"], meta):
+            for pane_id in [pane_id for pane_id in kept if pane_id not in live_panes]:
+                del kept[pane_id]
+        titles = Titles(records)
         sync_metadata(panes, titles, meta, refresh_model)
         # An unnamed tab shows its position in the workspace, not its `number`, which
         # keeps counting after a tab closes.
@@ -579,10 +592,11 @@ def record_status(payload):
     if not pane_id or not status:
         return None
     with locked_state() as state:
-        entry = state["panes"].get(pane_id) or {}
+        statuses = session(state)["panes"]
+        entry = statuses.get(pane_id) or {}
         previous = entry.get("status")
         seq = int(entry.get("seq", 0)) + 1
-        state["panes"][pane_id] = {"status": status, "seq": seq}
+        statuses[pane_id] = {"status": status, "seq": seq}
     if status == "blocked" and previous != "blocked":
         kind = "attention"
     elif status == "idle" and previous == "working":
@@ -594,7 +608,7 @@ def record_status(payload):
 
 def still_current(pending):
     with locked_state() as state:
-        return (state["panes"].get(pending["pane_id"]) or {}).get("seq") == pending["seq"]
+        return (session(state)["panes"].get(pending["pane_id"]) or {}).get("seq") == pending["seq"]
 
 
 def notify_delay():
@@ -677,7 +691,7 @@ def announce(pending):
     subtitle = workspace.get("label") or pane.get("workspace_id") or ""
     # The title the last sync reported, which the run that queued this notification made.
     with locked_state() as state:
-        reported = session_meta(state).get(pane_id) or {}
+        reported = session(state)["meta"].get(pane_id) or {}
     message = (reported.get("title") or display_title(pane.get("terminal_title_stripped") or "")
                or pane_id)
     notifier = terminal_notifier()
@@ -792,14 +806,23 @@ def trim_log(path):
 
 
 def plugin_enabled():
-    """False once herdr lists this plugin as disabled or no longer lists it; None if unknown."""
+    """False once herdr lists this plugin as disabled or no longer lists it; None when the
+    list cannot be read or does not look like herdr 0.9.1's (`result.plugins[]` entries
+    with `plugin_id` and `enabled`), so an unexpected format never stops the watcher."""
     try:
-        plugins = herdr("plugin", "list", "--json")["plugins"]
+        plugins = herdr("plugin", "list", "--json").get("plugins")
     except Exception:  # noqa: BLE001 - herdr down is the sync's to notice
         return None
+    if not isinstance(plugins, list):
+        return None
+    entries = [item for item in plugins if isinstance(item, dict) and "plugin_id" in item]
+    if len(entries) != len(plugins):
+        return None
     plugin_id = os.environ.get("HERDR_PLUGIN_ID") or PLUGIN_ID
-    entry = next((item for item in plugins if item.get("plugin_id") == plugin_id), None)
-    return bool(entry and entry.get("enabled", True))
+    entry = next((item for item in entries if item["plugin_id"] == plugin_id), None)
+    if entry is None:
+        return False
+    return entry.get("enabled") is not False
 
 
 def appended_title(path, position):
@@ -847,6 +870,7 @@ class Watcher:
         self.dirty = False
         self.forget = None   # "all" after herdr's socket closed: a restart drops metadata
         self.badges = {}     # agent -> quota text
+        self.fetched_at = 0.0  # monotonic time of the reading in `badges`
         self.reported = {}   # pane id -> quota text reported
         self.renew = set()   # pane ids whose quota is due for renewal
         self.retry_at = {}   # pane id -> monotonic time of the next quota attempt
@@ -941,6 +965,7 @@ class Watcher:
             # herdr closed the stream: a server restart drops every pane's metadata.
             self.disconnect()
             self.forget = "all"
+            self.reported = {}
             self.dirty = True
             return
         self.buffer += chunk
@@ -972,18 +997,25 @@ class Watcher:
                 return
             summary, now = module.current()
             self.badges = module.badges(summary, now)
+            self.fetched_at = time.monotonic()
+            self.renew = set(self.reported)  # report again to renew the TTL
             self.usage_error = None
         except Exception as error:  # noqa: BLE001 - herdr web ui may be absent
-            self.badges = {}  # clear the old numbers instead of renewing them
+            # Keep the last numbers, unrenewed, until they would have expired.
+            if time.monotonic() - self.fetched_at >= QUOTA_TTL_MS / 1000.0:
+                self.badges = {}
             if type(error).__name__ != self.usage_error:
                 log("watch usage: %s" % type(error).__name__)
             self.usage_error = type(error).__name__
-        self.renew = set(self.reported)  # report again to renew the TTL
 
     def report_quota(self):
         """Report each pane's $quota when it changes or is due for renewal; clear it when
-        the pane's agent has no usage any more. A failed report waits before a retry."""
+        the pane's agent has no usage any more. A failed report waits before a retry.
+        A token expires when the reading it shows would."""
         now = time.monotonic()
+        if self.badges and now - self.fetched_at >= QUOTA_TTL_MS / 1000.0:
+            self.badges = {}
+        ttl = str(max(1000, int(QUOTA_TTL_MS - (now - self.fetched_at) * 1000)))
         wanted = {pane.get("pane_id"): self.badges.get(pane.get("agent") or "", "")
                   for pane in self.panes if pane.get("pane_id")}
         for pane_id, badge in wanted.items():
@@ -991,7 +1023,7 @@ class Watcher:
             due = badge != current or (badge and pane_id in self.renew)
             if not due or self.retry_at.get(pane_id, 0) > now:
                 continue
-            change = (["--token", "quota=" + badge, "--ttl-ms", str(QUOTA_TTL_MS)] if badge
+            change = (["--token", "quota=" + badge, "--ttl-ms", ttl] if badge
                       else ["--clear-token", "quota"])
             if herdr_ok("pane", "report-metadata", pane_id, "--source", USAGE_SOURCE, *change):
                 if badge:
