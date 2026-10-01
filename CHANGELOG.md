@@ -2,6 +2,19 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.41.1 — 2026-10-01
+
+- Codex sessions that start together no longer fail with `timed out waiting
+  for Codex home preparation lock`. Preparation of one generated home runs one
+  session at a time, and the wait for it was fixed at 20 seconds: a terminal
+  multiplexer restoring eight Codex panes after a reboot lost two of them. The
+  wait is now 300 seconds, prints one notice after 5 seconds, and can be set
+  by exporting `HARNESS_CODEX_HOME_LOCK_TIMEOUT` (seconds, capped at 3600) in
+  the environment that starts the sessions. The global cache lock under
+  `~/.codex` uses the same limit. A caller that relied on the 20-second
+  failure to stay non-blocking should export a small value. See
+  docs/troubleshooting.md.
+
 ## 0.41.0 — 2026-10-01
 
 - `harness-herdr-web usage --watch` draws Claude and Codex plan usage as a live
