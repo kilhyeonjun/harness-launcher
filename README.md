@@ -258,6 +258,7 @@ harness-codex --profile wh app-server          # Codex executable for SDK hosts
 harness-paseo sync --reload                    # Paseo providers from the profile registry
 harness-herdr-web install                      # herdr web ui, local-only behind a token
 harness-herdr-web usage                        # Claude/Codex plan usage, pace and exhaustion time
+harness-herdr-web usage --watch                # the same as a live board for a herdr popup
 ```
 
 A plain Codex `app-server` runs without `-p` behind a JSON-RPC guard that keeps every thread working directory inside the selected harness. See [Paseo integration](docs/paseo-integration.md).

@@ -456,7 +456,8 @@ def build_parser():
     sub.add_parser("check", help="OK/WARN/FAIL report; exit 1 on FAIL")
     token_parser = sub.add_parser("token", help="copy the token for the first browser login")
     token_parser.add_argument("--copy", action="store_true", required=True)
-    sub.add_parser("usage", help="one line of Claude and Codex plan usage for herdr's tab bar")
+    usage_parser = sub.add_parser("usage", help="one line of Claude and Codex plan usage for herdr's tab bar")
+    usage_parser.add_argument("--watch", action="store_true", help="a live board for a herdr popup; q closes")
     return parser
 
 
@@ -464,7 +465,7 @@ def main(argv):
     args = build_parser().parse_args(argv)
     if args.command == "usage":
         import harness_herdr_usage
-        return harness_herdr_usage.main()
+        return harness_herdr_usage.main(["--watch"] if args.watch else [])
     report = Report()
     try:
         if args.command == "configure":

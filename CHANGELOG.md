@@ -2,6 +2,25 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.41.0 — 2026-10-01
+
+- `harness-herdr-web usage --watch` draws Claude and Codex plan usage as a live
+  board for a herdr popup (`[[keys.command]]` with `type = "popup"`): per
+  window a bar of the used share with a tick at the share of the window
+  elapsed, the pace, the reset time and the time left, plus a red line with
+  the expected exhaustion time or a yellow line with the projected share. It
+  reads again every 60 seconds or on `r`, keeps the last board when a reading
+  fails, and closes on `q`, `Esc` or `Ctrl-C` (`ㄱ` and `ㅂ` work under the
+  Korean input method). Text from the server is stripped of control
+  characters before it reaches the terminal. See docs/herdr-web-ui.md.
+- herdr: the plugin no longer reports a `$quota` token on each Claude and Codex
+  pane. Plan usage belongs to the account, so the sidebar repeated one value on
+  every agent row; the tab bar line and the popup board show it once. Tokens
+  that 0.40.0 reported expire within 15 minutes; remove `$quota` from
+  `[ui.sidebar.agents]` rows copied from the 0.40.0 example.
+- Usage windows that differ only in scope (such as a per-model weekly limit)
+  keep separate pace history and show the scope in their label.
+
 ## 0.40.0 — 2026-10-01
 
 - herdr: a session rename now shows within about a second. Before, the plugin

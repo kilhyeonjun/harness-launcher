@@ -25,7 +25,6 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     tomllib = None
 
 
-BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 PLUGIN_DIR = Path(__file__).resolve().parents[1] / "herdr-plugin"
 SCRIPT = PLUGIN_DIR / "harness_herdr_plugin.py"
 MANIFEST = PLUGIN_DIR / "herdr-plugin.toml"
@@ -924,8 +923,12 @@ class OwnRenameTest(HerdrPluginTestCase):
 
 class UsageServer:
     def __init__(self, providers, token):
+        outer = self
+        self.requests = 0
+
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
+                outer.requests += 1
                 ok = self.path == "/api/usage" and self.headers.get("authorization") == "Bearer " + token
                 data = json.dumps({"providers": providers} if ok else {}).encode()
                 self.send_response(200 if ok else 401)
@@ -992,11 +995,8 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         super().setUp()
         package = self.h.root / "pkg"
         (package / "herdr-plugin").mkdir(parents=True)
-        (package / "bin").mkdir()
         self.script = package / "herdr-plugin" / "harness_herdr_plugin.py"
         shutil.copy(SCRIPT, self.script)
-        for name in ("harness_herdr_usage.py", "harness_herdr_web.py"):
-            shutil.copy(BIN_DIR / name, package / "bin" / name)
         self.procs = []
 
     def tearDown(self):
@@ -1008,7 +1008,6 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         env.update({"HARNESS_HERDR_WATCH_POLL_SECONDS": "0.05",
                     "HARNESS_HERDR_WATCH_REFRESH_SECONDS": "60",
                     "HARNESS_HERDR_WATCH_RECONNECT_SECONDS": "0.2",
-                    "HARNESS_HERDR_USAGE_SECONDS": "3600",
                     "XDG_STATE_HOME": str(self.h.root / "state")})
         env.update(extra)
         return env
@@ -1129,25 +1128,6 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertTrue(self.until(lambda: len(self.h.reports()) == 2), self.h.reports())
         self.assertTrue(self.until(lambda: len(events.requests) == 3))
 
-    def test_quota_is_cleared_when_the_agent_leaves(self):
-        token = "c" * 64
-        server = UsageServer([{"id": "codex", "windows": [{"kind": "week", "used_percent": 10,
-                                                          "resets_at": "2099-01-01T00:00:00Z"}]}], token)
-        self.addCleanup(server.close)
-        config = self.h.root / "web-config"
-        config.mkdir(mode=0o700)
-        (config / "env").write_text("HERDR_WEB_TOKEN=%s\nPORT=%d\n" % (token, server.port))
-        (config / "env").chmod(0o600)
-        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)],
-                         [codex_agent("w5:p1", "w5:t1", self.h.root / "x")])
-        self.start(FAKE_CONFIG_DIR=str(config), HARNESS_HERDR_WATCH_REFRESH_SECONDS="0.2")
-        self.assertTrue(self.until(lambda: any("quota=🟢 7d 10%" in report for report in self.h.reports())))
-        state = self.h.state()
-        state["panes"][0]["agent"] = None
-        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
-        cleared = ["w5:p1", "--source", "harness.launcher.usage", "--clear-token", "quota"]
-        self.assertTrue(self.until(lambda: cleared in self.h.reports()), self.h.reports())
-
     def test_each_herdr_session_runs_its_own_watcher(self):
         self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
         first = self.start()
@@ -1174,7 +1154,7 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.h.herdr_state.write_text(json.dumps(state))
         self.assertEqual(proc.wait(timeout=10), 0)
 
-    def test_usage_is_reported_on_claude_and_codex_panes(self):
+    def test_plan_usage_is_not_reported_per_pane(self):
         token = "c" * 64
         server = UsageServer([{"id": "codex", "windows": [{"kind": "week", "used_percent": 100,
                                                           "resets_at": "2099-01-01T00:00:00Z"}]}], token)
@@ -1183,16 +1163,13 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         config.mkdir(mode=0o700)
         (config / "env").write_text("HERDR_WEB_TOKEN=%s\nPORT=%d\n" % (token, server.port))
         (config / "env").chmod(0o600)
-        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1), tab("w5:t2", 2)],
-                         [codex_agent("w5:p1", "w5:t1", self.h.root / "x"),
-                          pane("w5:p2", "w5:t2", agent="pi", title="other")])
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)],
+                         [codex_agent("w5:p1", "w5:t1", self.h.root / "x")])
         self.start(FAKE_CONFIG_DIR=str(config))
-        quota = ["w5:p1", "--source", "harness.launcher.usage", "--token", "quota=🔴 7d 100%", "--ttl-ms"]
-        self.assertTrue(self.until(lambda: any(report[:-1] == quota for report in self.h.reports())),
-                        self.h.reports())
-        ttl = int(next(report for report in self.h.reports() if report[:-1] == quota)[-1])
-        self.assertTrue(890000 <= ttl <= 900000, ttl)  # the reading's remaining lifetime
-        self.assertFalse([report for report in self.h.reports() if report[0] == "w5:p2" and "quota" in str(report)])
+        self.assertTrue(self.until(lambda: len(self.h.reports()) == 1))
+        self.settled()
+        self.assertNotIn("quota", str(self.h.reports()))
+        self.assertEqual(server.requests, 0)
 
     def test_only_one_watcher_runs(self):
         self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
