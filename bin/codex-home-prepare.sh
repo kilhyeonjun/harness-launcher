@@ -112,6 +112,40 @@ fi
 # surface is changed until the kernel advisory lock has been acquired. Keeping
 # the descriptor open in this shell makes process exit and signals release the
 # lock without PID files, stale-owner heuristics, or cleanup traps.
+#
+# Sessions that start together (a terminal multiplexer restoring its panes
+# after a reboot) queue here, and each preparation takes seconds on a busy
+# machine. The wait therefore covers a whole queue rather than one holder;
+# HARNESS_CODEX_HOME_LOCK_TIMEOUT overrides it: whole seconds, capped at 3600;
+# zero or anything else keeps the default.
+codex_lock_timeout() {
+  local value="${HARNESS_CODEX_HOME_LOCK_TIMEOUT:-}"
+  [[ "$value" =~ ^[0-9]+$ ]] || value=0
+  value="${value#"${value%%[!0]*}"}"
+  if [[ -z "$value" ]]; then
+    value=300
+  elif (( ${#value} > 4 || value > 3600 )); then
+    value=3600
+  fi
+  printf '%s\n' "$value"
+}
+
+# wait_codex_lock <fd> <what>: take the advisory lock on an open descriptor.
+# A short first attempt keeps the uncontended path silent; a longer wait says
+# once what it waits for, so a queued session does not look hung. lockf exits
+# 75 when the wait ran out; any other failure is not contention and is
+# returned at once.
+wait_codex_lock() {
+  local fd="$1" what="$2" timeout quick status=0
+  timeout="$(codex_lock_timeout)"
+  quick=$(( timeout < 5 ? timeout : 5 ))
+  /usr/bin/lockf -s -t "$quick" "$fd" || status=$?
+  [[ "$status" -eq 75 ]] || return "$status"
+  (( timeout > quick )) || return 75
+  echo "Waiting up to ${timeout}s for another Codex session to finish $what..." >&2
+  /usr/bin/lockf -s -t "$(( timeout - quick ))" "$fd"
+}
+
 acquire_codex_home_lock() {
   local lock_file="$CODEX_HOME/.codex-home-prepare.lock"
   [[ -x /usr/bin/lockf ]] || {
@@ -120,7 +154,7 @@ acquire_codex_home_lock() {
   }
   mkdir -p "$CODEX_HOME"
   exec 8>"$lock_file"
-  if ! /usr/bin/lockf -s -t 20 8; then
+  if ! wait_codex_lock 8 "home preparation"; then
     echo "ERROR: timed out waiting for Codex home preparation lock: $lock_file" >&2
     return 1
   fi
@@ -738,7 +772,7 @@ with_global_codex_lock() {
     return 1
   }
   (
-    if ! /usr/bin/lockf -s -t 20 9; then
+    if ! wait_codex_lock 9 "the global cache update"; then
       echo "ERROR: timed out waiting for Codex global cache lock: $lock_file" >&2
       return 1
     fi
@@ -755,7 +789,7 @@ with_global_codex_lock_current_shell() {
     return 1
   }
   exec 9>"$lock_file"
-  if ! /usr/bin/lockf -s -t 20 9; then
+  if ! wait_codex_lock 9 "the global cache update"; then
     exec 9>&-
     echo "ERROR: timed out waiting for Codex global cache lock: $lock_file" >&2
     return 1

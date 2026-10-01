@@ -249,6 +249,35 @@ echo $?
 
 Exit status `0` means the lock is free. Do not delete it as a routine cleanup step.
 
+## Codex start waits for another session
+
+```text
+Waiting up to 300s for another Codex session to finish home preparation...
+```
+
+Preparation of one generated Codex home runs one session at a time. Sessions
+that start together, such as a terminal multiplexer restoring its panes after a
+reboot, queue on `.harness/codex/.codex-home-prepare.lock` and start in turn.
+The notice appears after 5 seconds of waiting; no action is needed.
+
+A session gives up with `timed out waiting for Codex home preparation lock`
+after 300 seconds. Start it again, or raise the limit for a longer queue:
+
+```bash
+export HARNESS_CODEX_HOME_LOCK_TIMEOUT=900
+```
+
+The value is whole seconds, capped at 3600; zero or a non-number keeps 300.
+Export it in the environment that starts the sessions (the shell profile, or
+the environment the multiplexer server runs in). A line in
+`config/launcher.env` is not passed on to preparation.
+
+The limit applies to each lock on its own: the per-home lock first, then the
+global cache lock under `~/.codex`, which one start takes once or twice.
+
+Callers that must not block, such as a hook that refreshes the home in the
+background, can export a small value to fail fast as before.
+
 ## Chrome bridge is not configured
 
 Trigger preparation, then inspect available host configs:

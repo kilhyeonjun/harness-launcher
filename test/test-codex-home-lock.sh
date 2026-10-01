@@ -203,3 +203,102 @@ done
   exit 1
 }
 echo "PASS: SIGTERM releases the per-home preparation lock without stale cleanup"
+
+# Sessions restored together queue on the per-home lock. A waiter must outlast
+# the queue, say once that it waits, and still give up after the configured
+# time when the holder never finishes. The holder owns the lock descriptor
+# itself, so killing it releases the lock and leaves no child behind.
+WAIT_HARNESS="$TMP/wait-harness"
+WAIT_MARKERS="$TMP/wait-markers"
+make_harness "$WAIT_HARNESS"
+mkdir -p "$WAIT_MARKERS" "$WAIT_HARNESS/.harness/codex"
+WAIT_LOCK="$WAIT_HARNESS/.harness/codex/.codex-home-prepare.lock"
+holder_pid=""
+trap '[[ -z "$holder_pid" ]] || kill "$holder_pid" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+
+hold_wait_lock() {
+  rm -f "$TMP/holder-ready"
+  "$BASH_BIN" -c 'exec 8>"$1"; /usr/bin/lockf -s -t 0 8 || exit 1; : > "$2"; exec sleep 300' \
+    _ "$WAIT_LOCK" "$TMP/holder-ready" &
+  holder_pid=$!
+  wait_for_file "$TMP/holder-ready" || {
+    echo "FAIL: the test holder did not take the preparation lock" >&2
+    exit 1
+  }
+}
+
+release_wait_lock() {
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  holder_pid=""
+}
+
+run_wait_prepare() {
+  HOME="$FAKE_HOME" HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$NO_MARKETPLACE" \
+    HARNESS_TEST_COMPILER_MARKERS="$WAIT_MARKERS" "$@" "$BASH_BIN" "$PREPARE" "$WAIT_HARNESS"
+}
+
+hold_wait_lock
+set +e
+started=$SECONDS
+run_wait_prepare env HARNESS_CODEX_HOME_LOCK_TIMEOUT=1 >"$TMP/wait-short.log" 2>&1
+short_rc=$?
+short_elapsed=$((SECONDS - started))
+set -e
+release_wait_lock
+[[ "$short_rc" -ne 0 ]] && grep -q 'timed out waiting for Codex home preparation lock' "$TMP/wait-short.log" || {
+  echo "FAIL: a 1 s lock timeout must fail with the timeout error (rc=$short_rc)" >&2
+  cat "$TMP/wait-short.log" >&2
+  exit 1
+}
+[[ "$short_elapsed" -le 15 ]] || {
+  echo "FAIL: HARNESS_CODEX_HOME_LOCK_TIMEOUT=1 waited ${short_elapsed}s" >&2
+  exit 1
+}
+if grep -q 'Waiting up to' "$TMP/wait-short.log"; then
+  echo "FAIL: a wait no longer than the silent first attempt must not print the notice" >&2
+  exit 1
+fi
+echo "PASS: the lock wait honors HARNESS_CODEX_HOME_LOCK_TIMEOUT"
+
+# Four sessions queue behind one holder. Each value exercises one rule: unset
+# and unparsable use the default, a leading zero is decimal, and a value above
+# the range is capped.
+wait_values=("" "invalid" "0900" "7200")
+wait_expected=(300 300 900 3600)
+wait_pids=()
+hold_wait_lock
+for index in 0 1 2 3; do
+  if [[ -n "${wait_values[$index]}" ]]; then
+    run_wait_prepare env HARNESS_CODEX_HOME_LOCK_TIMEOUT="${wait_values[$index]}" \
+      >"$TMP/wait-queue-$index.log" 2>&1 &
+  else
+    run_wait_prepare env -u HARNESS_CODEX_HOME_LOCK_TIMEOUT >"$TMP/wait-queue-$index.log" 2>&1 &
+  fi
+  wait_pids+=("$!")
+done
+noticed=0
+attempts=0
+while [[ "$noticed" -lt 4 && "$attempts" -lt 1200 ]]; do
+  noticed=0
+  for index in 0 1 2 3; do
+    if grep -q 'Waiting up to' "$TMP/wait-queue-$index.log"; then noticed=$((noticed + 1)); fi
+  done
+  sleep 0.1
+  attempts=$((attempts + 1))
+done
+release_wait_lock
+queue_failed=0
+for index in 0 1 2 3; do
+  wait "${wait_pids[$index]}" || queue_failed=1
+done
+for index in 0 1 2 3; do
+  expected="Waiting up to ${wait_expected[$index]}s for another Codex session to finish home preparation"
+  if [[ "$queue_failed" -ne 0 ]] || ! grep -q "$expected" "$TMP/wait-queue-$index.log" ||
+    [[ "$(grep -c 'Waiting up to' "$TMP/wait-queue-$index.log")" != "1" ]]; then
+    echo "FAIL: queued preparation $index (HARNESS_CODEX_HOME_LOCK_TIMEOUT='${wait_values[$index]}') must wait, report ${wait_expected[$index]}s once and succeed" >&2
+    cat "$TMP/wait-queue-$index.log" >&2
+    exit 1
+  fi
+done
+echo "PASS: queued preparations wait past the holder, report the wait once and all succeed"
