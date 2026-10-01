@@ -2,6 +2,16 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.42.0 — 2026-10-01
+
+- herdr: a tab that holds several agents now shows the first agent's session
+  title followed by the number of other agents, such as `release notes +2`.
+  Before, the plugin labeled only tabs with exactly one pane, so a tab went
+  back to its position number as soon as it was split or another agent was
+  moved into it. A plain shell beside an agent no longer removes the title
+  either. The count stays inside the 20-cell label width. Tabs you named
+  yourself are still left alone.
+
 ## 0.41.1 — 2026-10-01
 
 - Codex sessions that start together no longer fail with `timed out waiting

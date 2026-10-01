@@ -13,12 +13,13 @@ gets it as its herdr metadata title (the sidebar `pane` token), with Korean
 state labels and a `$model` token (model and reasoning effort of the latest
 turn, read when the agent's status changes).
 
-Tab labels: a tab with exactly one pane that runs a detected agent takes that
-agent's session title, cut to TAB_LABEL_CELLS display cells. A tab keeps its
-label when the user named it (the label is neither the default label, the tab's
-position in its workspace, nor the label this plugin set last). A tab the
-plugin labeled goes back to its position label once it no longer holds one
-agent with a usable title.
+Tab labels: a tab that holds a detected agent takes the session title of its
+first agent with a usable title, cut to TAB_LABEL_CELLS display cells; more
+agents in the same tab show as " +N" inside that width, plain shells are not
+counted. A tab keeps its label when the user named it (the label is neither the
+default label, the tab's position in its workspace, nor the label this plugin
+set last). A tab the plugin labeled goes back to its position label once it no
+longer holds an agent with a usable title.
 
 Watcher: herdr has no plugin event for a title change, so each run makes sure
 one background watcher (`watch`) runs. It subscribes to pane.updated over the
@@ -193,19 +194,22 @@ def display_title(title):
     return "" if THREAD_ID.match(text) else text[:TITLE_MAX_CHARS]
 
 
-def tab_label(title):
+def tab_label(title, others=0):
+    """A title cut to the label width; `others` more agents in the tab show as " +N"."""
     text = display_title(title)
     if not text:
         return ""
-    if sum(cells(char) for char in text) <= TAB_LABEL_CELLS:
-        return text
+    suffix = " +%d" % others if others else ""
+    room = TAB_LABEL_CELLS - len(suffix)
+    if sum(cells(char) for char in text) <= room:
+        return text + suffix
     kept, used = "", 0
     for char in text:
-        if used + cells(char) > TAB_LABEL_CELLS - 1:
+        if used + cells(char) > room - 1:
             break
         kept += char
         used += cells(char)
-    return kept.rstrip() + "…"
+    return kept.rstrip() + "…" + suffix
 
 
 def open_owned(path):
@@ -556,12 +560,18 @@ def sync_tabs(refresh_model=None, forget=None):
                 continue  # the user named this tab
             members = panes_by_tab.get(tab_id, [])
             wanted = ""
-            if tab.get("pane_count") == 1 and len(members) == 1 and members[0].get("agent"):
-                wanted = tab_label(titles.title(members[0]))
+            if tab.get("pane_count") == len(members):
+                # The first agent with a usable title names the tab; the other agents
+                # beside it are counted. Plain shells are not.
+                agents = [member for member in members if member.get("agent")]
+                for member in agents:
+                    wanted = tab_label(titles.title(member), len(agents) - 1)
+                    if wanted:
+                        break
             if not wanted:
-                # No single agent title any more (agent exited, tab split, thread-id title):
-                # hand the tab back its position label. herdr cannot clear a tab name, so
-                # the plugin keeps owning that label.
+                # No agent title any more (agent exited, thread-id title, or the tab was
+                # caught mid-change): hand the tab back its position label. herdr cannot
+                # clear a tab name, so the plugin keeps owning that label.
                 wanted = position
             if wanted != current:
                 # Record first: if the rename fails the old label is still the plugin's
