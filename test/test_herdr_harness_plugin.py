@@ -440,13 +440,54 @@ class TabLabelTest(HerdrPluginTestCase):
         self.assertRan(self.h.run("pane.focused"))
         self.assertEqual(self.h.renames(), [["w2:t1", "task"], ["w2:t1", "1"]])
 
-    def test_split_of_a_plugin_labeled_tab_returns_it_to_the_position(self):
+    def test_second_agent_in_a_tab_is_counted_after_the_first_agents_title(self):
         self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
                          [pane("w2:p1", "w2:t1", title="task")])
         self.assertRan(self.h.run("startup"))
         state = self.h.state()
         state["tabs"][0]["pane_count"] = 2
         state["panes"].append(pane("w2:p2", "w2:t1", title="other"))
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.created"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "task"], ["w2:t1", "task +1"]])
+        # The second agent moves out again: the count goes with it.
+        state = self.h.state()
+        state["tabs"][0]["pane_count"] = 1
+        state["panes"].pop()
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.closed"))
+        self.assertEqual(self.h.renames()[-1], ["w2:t1", "task"])
+
+    def test_plain_shell_beside_an_agent_keeps_the_title_without_a_count(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1, pane_count=2)],
+                         [pane("w2:p1", "w2:t1", agent=None, title="~/dev"),
+                          pane("w2:p2", "w2:t1", title="task")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "task"]])
+
+    def test_count_fits_inside_the_label_width(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1, pane_count=3)],
+                         [pane("w2:p1", "w2:t1", title=LONG_TITLE),
+                          pane("w2:p2", "w2:t1", title="b"), pane("w2:p3", "w2:t1", title="c")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "TASK-2545 relay… +2"]])
+
+    def test_first_agent_with_a_usable_title_leads_the_label(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1, pane_count=2)],
+                         [pane("w2:p1", "w2:t1", agent="codex",
+                               title="019e2f6f-76d9-7403-b1c4-5d1f2a3b4c5d"),
+                          pane("w2:p2", "w2:t1", title="task")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "task +1"]])
+
+    def test_tab_whose_pane_count_disagrees_with_the_pane_list_shows_its_position(self):
+        # The two lists are read one after the other; a tab caught mid-change waits
+        # for the next event instead of taking a label from half of its panes.
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [pane("w2:p1", "w2:t1", title="task")])
+        self.assertRan(self.h.run("startup"))
+        state = self.h.state()
+        state["tabs"][0]["pane_count"] = 2
         self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
         self.assertRan(self.h.run("pane.created"))
         self.assertEqual(self.h.renames(), [["w2:t1", "task"], ["w2:t1", "1"]])
@@ -516,11 +557,12 @@ class TabLabelTest(HerdrPluginTestCase):
         self.assertRan(self.h.run("startup"))
         self.assertEqual(self.h.renames(), [["w2:t1", "task"]])
 
-    def test_split_tab_and_plain_shell_tab_are_left_alone(self):
+    def test_tabs_without_an_agent_are_left_alone(self):
         self.h.set_state(
             [workspace("w2", "alpha")],
             [tab("w2:t1", 1, pane_count=2), tab("w2:t2", 2)],
-            [pane("w2:p1", "w2:t1"), pane("w2:p2", "w2:t1"),
+            [pane("w2:p1", "w2:t1", agent=None, title="~/a"),
+             pane("w2:p2", "w2:t1", agent=None, title="~/b"),
              pane("w2:p3", "w2:t2", agent=None, title="~/dev")],
         )
         self.assertRan(self.h.run("startup"))

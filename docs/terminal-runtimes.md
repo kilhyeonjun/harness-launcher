@@ -407,16 +407,18 @@ the pane, the plugin clears them. herdr keeps no pane metadata across a server
 restart, so the plugin reports every pane again at startup, and a pane again
 when an agent is detected in it.
 
-Tab labels. A tab with exactly one pane that runs a detected agent takes the
-agent's session title as its label, cut to 20 display cells (a wide character
-counts as two) with a trailing `…`. The plugin renames a tab only while its label is
+Tab labels. A tab that holds a detected agent takes that agent's session title
+as its label, cut to 20 display cells (a wide character counts as two) with a
+trailing `…`. When a tab holds several agents, the first one with a usable
+title names the tab and the others are counted after it, such as
+`release notes +2`; the count stays inside the 20 cells, and plain shells in
+the tab are not counted. The plugin renames a tab only while its label is
 herdr's default (the tab's position in its workspace, such as `4`) or the
 label the plugin set last; a name you give a tab stays. Rename a tab back to
 its position number to hand it back to the plugin. When a tab it labeled no
-longer holds one agent with a usable title (the agent exited, the tab was
-split, or Codex titled a session by its thread id), the plugin renames it back
-to its position. The `tab.renamed` event of the plugin's own rename does
-nothing.
+longer holds an agent with a usable title (the agent exited, or Codex titled
+the session by its thread id), the plugin renames it back to its position.
+The `tab.renamed` event of the plugin's own rename does nothing.
 
 Watcher. herdr 0.9.1 runs plugins on no event for a title or thread-name
 change, so each plugin run makes sure one background watcher runs for its
