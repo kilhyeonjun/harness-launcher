@@ -873,6 +873,21 @@ class MetadataTest(HerdrPluginTestCase, SessionRecordsMixin):
         state = json.loads((self.h.state_dir / "state.json").read_text())
         self.assertEqual(len(state["sessions"]), 2)
         self.assertTrue(all(session["scans"] or session["meta"] for session in state["sessions"].values()))
+        # ...and the other session's tab still follows its title after this one synced
+        other_herdr = json.loads(other_state.read_text())
+        other_herdr["panes"][0]["terminal_title_stripped"] = "y"
+        other_state.write_text(json.dumps(other_herdr))
+        self.assertRan(subprocess.run([TARGET_PYTHON, str(SCRIPT)], cwd=PLUGIN_DIR, env=other,
+                                      capture_output=True, text=True, timeout=30))
+        self.assertEqual(self.h.renames()[-1], ["w1:t1", "y"])
+
+    def test_tab_labels_set_before_sessions_were_kept_apart_stay_the_plugins(self):
+        (self.h.state_dir / "state.json").write_text(json.dumps({"tabs": {"w5:t1": "옛 라벨"}, "panes": {}}))
+        state = self.h.state()
+        state["tabs"][0]["label"] = "옛 라벨"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertEqual(self.h.renames(), [["w5:t1", "릴리스 노트 검토와…"]])
 
     def test_metadata_is_cleared_when_the_agent_leaves(self):
         self.assertRan(self.h.run("startup"))

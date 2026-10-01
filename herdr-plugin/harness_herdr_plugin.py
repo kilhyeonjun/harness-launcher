@@ -138,13 +138,18 @@ def session_key():
 
 
 def session(state):
-    """This herdr session's records: pane statuses (`panes`), reported metadata (`meta`),
-    transcript read offsets (`scans`) and found file paths (`paths`). Pane ids repeat
-    across sessions, and each session prunes only its own records."""
+    """This herdr session's records: labels the plugin gave tabs (`tabs`), pane statuses
+    (`panes`), reported metadata (`meta`), transcript read offsets (`scans`) and found
+    file paths (`paths`). Tab and pane ids repeat across sessions, and each session
+    prunes only its own records."""
     entry = state["sessions"].get(session_key())
     if not isinstance(entry, dict):
         entry = state["sessions"][session_key()] = {}
     entry["seen"] = time.time()
+    if not isinstance(entry.get("tabs"), dict):
+        # Before 0.40.0 tab labels were one shared record; the first session adopts it.
+        legacy = state.pop("tabs", None)
+        entry["tabs"] = legacy if isinstance(legacy, dict) else {}
     for key in ("panes", "meta", "scans", "paths"):
         if not isinstance(entry.get(key), dict):
             entry[key] = {}
@@ -165,9 +170,8 @@ def locked_state():
         if not isinstance(state, dict):
             state = {}
         state.pop("panes", None)  # before 0.40.0 pane statuses were not per session
-        for key in ("tabs", "sessions"):
-            if not isinstance(state.get(key), dict):
-                state[key] = {}
+        if not isinstance(state.get("sessions"), dict):
+            state["sessions"] = {}
         try:
             yield state
         finally:
@@ -531,7 +535,7 @@ def sync_tabs(refresh_model=None, forget=None):
         panes_by_tab = {}
         for pane in panes:
             panes_by_tab.setdefault(pane.get("tab_id"), []).append(pane)
-        owned = state["tabs"]
+        owned = records["tabs"]
         live_tabs = {tab["tab_id"] for tab in tabs}
         for tab_id in [tab_id for tab_id in owned if tab_id not in live_tabs]:
             del owned[tab_id]
@@ -582,7 +586,7 @@ def own_rename(payload):
     if not tab_id or label is None:
         return False
     with locked_state() as state:
-        return state["tabs"].get(tab_id) == label
+        return session(state)["tabs"].get(tab_id) == label
 
 
 def record_status(payload):
