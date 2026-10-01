@@ -6,6 +6,7 @@ terminal-notifier, osascript, lsappinfo and ps are stubs on PATH.
 """
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -50,6 +51,9 @@ def out(result):
     print(json.dumps({"id": "cli", "result": result}))
 if args[:2] == ["plugin", "config-dir"]:
     print(os.environ.get("FAKE_CONFIG_DIR", ""))
+elif args[:2] == ["plugin", "list"]:
+    out({"plugins": [{"plugin_id": "harness.launcher", "enabled": state.get("plugin_enabled", True)}],
+         "type": "plugin_list"})
 elif args[:2] == ["workspace", "list"]:
     out({"workspaces": state["workspaces"], "type": "workspace_list"})
 elif args[:2] == ["tab", "list"]:
@@ -168,6 +172,7 @@ class PluginHarness:
             "HERDR_SOCKET_PATH": str(self.root / "herdr test.sock"),
             "FAKE_RENAME_FAIL": self.rename_fail,
             "HARNESS_HERDR_WATCH": "0",
+            "HERDR_PLUGIN_ID": "harness.launcher",
         }
         if payload is not None:
             env["HERDR_PLUGIN_EVENT_JSON"] = json.dumps(payload)
@@ -819,6 +824,31 @@ class MetadataTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertRan(self.h.run("startup"))
         self.assertEqual(self.h.reports()[-1][-2:], ["--token", "model=opus-5-5 xhigh"])
 
+    def test_a_restarted_server_gets_the_metadata_again(self):
+        # herdr keeps no pane metadata across a server restart, and pane ids repeat.
+        self.assertRan(self.h.run("startup"))
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(len(self.h.reports()), 2)
+        self.assertEqual(self.h.reports()[0], self.h.reports()[1])
+
+    def test_a_newly_detected_agent_gets_the_metadata_again(self):
+        self.assertRan(self.h.run("startup"))
+        detected = {"event": "pane_agent_detected",
+                    "data": {"type": "pane_agent_detected", "pane_id": "w5:p1", "agent": "codex"}}
+        self.assertRan(self.h.run("pane.agent_detected", detected, "w5:p1"))
+        self.assertEqual(len(self.h.reports()), 2)
+
+    def test_named_herdr_sessions_keep_separate_records(self):
+        self.assertRan(self.h.run("startup"))
+        other = self.h.env("pane.focused")
+        other["HERDR_SOCKET_PATH"] = str(self.h.root / "other.sock")
+        result = subprocess.run([TARGET_PYTHON, str(SCRIPT)], cwd=PLUGIN_DIR, env=other,
+                                capture_output=True, text=True, timeout=30)
+        self.assertRan(result)
+        self.assertRan(self.h.run("pane.focused"))
+        # one report per session: the second session's run neither repeats nor prunes the first's
+        self.assertEqual(len(self.h.reports()), 2)
+
     def test_metadata_is_cleared_when_the_agent_leaves(self):
         self.assertRan(self.h.run("startup"))
         state = self.h.state()
@@ -876,25 +906,38 @@ class UsageServer:
 
 
 class FakeEvents:
-    """A herdr API socket that acknowledges one subscription and pushes lines on demand."""
+    """A herdr API socket: acknowledges each subscription and pushes lines on demand."""
 
     def __init__(self, path):
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(str(path))
-        self.server.listen(1)
+        self.server.listen(4)
         self.requests = []
         self.client = None
         self.ready = threading.Event()
         threading.Thread(target=self.accept, daemon=True).start()
 
     def accept(self):
-        self.client, _ = self.server.accept()
-        self.requests.append(json.loads(self.client.makefile("rb").readline()))
-        self.push({"id": "harness-launcher-watch", "result": {"type": "subscription_started"}})
-        self.ready.set()
+        while True:
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                return
+            self.requests.append(json.loads(client.makefile("rb").readline()))
+            self.client = client
+            self.push({"id": "harness-launcher-watch", "result": {"type": "subscription_started"}})
+            self.ready.set()
 
     def push(self, message):
-        self.client.sendall(json.dumps(message, ensure_ascii=False).encode() + b"\n")
+        self.send(json.dumps(message, ensure_ascii=False).encode() + b"\n")
+
+    def send(self, data):
+        self.client.sendall(data)
+
+    def drop(self):
+        """Close the current subscriber, as herdr does after events_lost or on exit."""
+        self.ready.clear()
+        self.client.close()
 
     def close(self):
         for sock in (self.client, self.server):
@@ -915,12 +958,16 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         for name in ("harness_herdr_usage.py", "harness_herdr_web.py"):
             shutil.copy(BIN_DIR / name, package / "bin" / name)
         self.procs = []
-        self.addCleanup(self.stop_all)
+
+    def tearDown(self):
+        self.stop_all()  # before the temporary home goes away under a running watcher
+        super().tearDown()
 
     def watch_env(self, **extra):
         env = self.h.env("watch")
         env.update({"HARNESS_HERDR_WATCH_POLL_SECONDS": "0.05",
                     "HARNESS_HERDR_WATCH_REFRESH_SECONDS": "60",
+                    "HARNESS_HERDR_WATCH_RECONNECT_SECONDS": "0.2",
                     "HARNESS_HERDR_USAGE_SECONDS": "3600",
                     "XDG_STATE_HOME": str(self.h.root / "state")})
         env.update(extra)
@@ -928,15 +975,21 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
 
     def start(self, **extra):
         proc = subprocess.Popen([TARGET_PYTHON, str(self.script), "watch"], env=self.watch_env(**extra),
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
         self.procs.append(proc)
         return proc
 
     def stop_all(self):
+        """Kill each watcher with the fake herdr it may be running, then let them finish."""
+        import signal
         for proc in self.procs:
-            if proc.poll() is None:
-                proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass  # its group is gone
             proc.wait(timeout=10)
+        time.sleep(0.2)
 
     def until(self, predicate, timeout=10.0):
         deadline = time.time() + timeout
@@ -946,9 +999,10 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
             time.sleep(0.05)
         return predicate()
 
-    def lock_is_held(self):
+    def lock_is_held(self, socket_path=None):
         import fcntl
-        with open(self.h.state_dir / "watch.lock", "a") as lock:
+        key = hashlib.sha1(str(socket_path or self.h.root / "herdr test.sock").encode()).hexdigest()[:12]
+        with open(self.h.state_dir / ("watch-%s.lock" % key), "a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
@@ -975,30 +1029,100 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertTrue(self.until(lambda: self.h.renames()[-1] == ["w2:t1", "바뀐 이름"], timeout=5),
                         self.h.renames())
 
-    def test_terminal_title_event_syncs_and_a_blinking_marker_does_not(self):
+    def events(self):
         sock_path = Path(tempfile.mkdtemp(prefix="hw", dir="/tmp")) / "s.sock"
         self.addCleanup(shutil.rmtree, sock_path.parent, True)
         events = FakeEvents(sock_path)
         self.addCleanup(events.close)
+        return events, sock_path
+
+    def settled(self):
+        """Wait until the watcher stops listing (its startup syncs are done); return the count."""
+        count = -1
+        while True:
+            time.sleep(0.4)
+            now = self.h.calls().count(["tab", "list"])
+            if now == count:
+                return now
+            count = now
+
+    def test_terminal_title_event_syncs_and_a_blinking_marker_does_not(self):
+        events, sock_path = self.events()
         codex = codex_agent("w5:p2", "w5:t2", self.h.root / "x",
                             title="[ . ] Action Required | %s | acme-platform-harness" % THREAD)
-        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1), tab("w5:t2", 2)],
-                         [pane("w2:p1", "w2:t1", title="첫 작업"), codex])
+        shell = dict(pane("w5:p3", "w5:t3", title="~"), agent=None)
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1), tab("w5:t2", 2), tab("w5:t3", 3)],
+                         [pane("w2:p1", "w2:t1", title="첫 작업"), codex, shell])
         self.start(HERDR_SOCKET_PATH=str(sock_path))
         self.assertTrue(events.ready.wait(10))
         self.assertEqual(events.requests[0]["params"], {"subscriptions": [{"type": "pane.updated"}]})
         self.assertTrue(self.until(lambda: ["w2:t1", "첫 작업"] in self.h.renames()))
-        time.sleep(0.5)
-        lists = self.h.calls().count(["tab", "list"])
+        lists = self.settled()
         blink = dict(codex, terminal_title_stripped="[ ! ] Action Required | %s | acme-platform-harness" % THREAD)
         events.push({"event": "pane_updated", "data": {"type": "pane_updated", "pane": blink}})
-        time.sleep(0.5)
-        self.assertEqual(self.h.calls().count(["tab", "list"]), lists)
+        events.push({"event": "pane_updated", "data": {"type": "pane_updated",
+                                                       "pane": dict(shell, terminal_title_stripped="vim")}})
+        self.assertEqual(self.settled(), lists)
         state = self.h.state()
         state["panes"][0]["terminal_title_stripped"] = "다음 작업"
         self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
-        events.push({"event": "pane_updated", "data": {"type": "pane_updated", "pane": state["panes"][0]}})
+        line = json.dumps({"event": "pane_updated", "data": {"type": "pane_updated", "pane": state["panes"][0]}},
+                          ensure_ascii=False).encode() + b"\n"
+        events.send(line[:20])  # one event split across two reads
+        time.sleep(0.2)
+        events.send(line[20:])
         self.assertTrue(self.until(lambda: self.h.renames()[-1] == ["w2:t1", "다음 작업"], timeout=5))
+
+    def test_lost_events_resubscribe_and_a_closed_stream_reports_again(self):
+        events, sock_path = self.events()
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
+        self.start(HERDR_SOCKET_PATH=str(sock_path))
+        self.assertTrue(events.ready.wait(10))
+        self.assertTrue(self.until(lambda: len(self.h.reports()) == 1))
+        events.push({"id": "harness-launcher-watch", "error": {"code": "events_lost", "message": "lost"}})
+        self.assertTrue(self.until(lambda: len(events.requests) == 2))
+        self.assertTrue(events.ready.wait(10))
+        self.settled()
+        self.assertEqual(len(self.h.reports()), 1)  # resynced; nothing changed
+        events.drop()  # herdr went away: its replacement has no pane metadata
+        self.assertTrue(self.until(lambda: len(self.h.reports()) == 2), self.h.reports())
+        self.assertTrue(self.until(lambda: len(events.requests) == 3))
+
+    def test_quota_is_cleared_when_the_agent_leaves(self):
+        token = "c" * 64
+        server = UsageServer([{"id": "codex", "windows": [{"kind": "week", "used_percent": 10,
+                                                          "resets_at": "2099-01-01T00:00:00Z"}]}], token)
+        self.addCleanup(server.close)
+        config = self.h.root / "web-config"
+        config.mkdir(mode=0o700)
+        (config / "env").write_text("HERDR_WEB_TOKEN=%s\nPORT=%d\n" % (token, server.port))
+        (config / "env").chmod(0o600)
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)],
+                         [codex_agent("w5:p1", "w5:t1", self.h.root / "x")])
+        self.start(FAKE_CONFIG_DIR=str(config), HARNESS_HERDR_WATCH_REFRESH_SECONDS="0.2")
+        self.assertTrue(self.until(lambda: any("quota=🟢 7d 10%" in report for report in self.h.reports())))
+        state = self.h.state()
+        state["panes"][0]["agent"] = None
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        cleared = ["w5:p1", "--source", "harness.launcher.usage", "--clear-token", "quota"]
+        self.assertTrue(self.until(lambda: cleared in self.h.reports()), self.h.reports())
+
+    def test_each_herdr_session_runs_its_own_watcher(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
+        first = self.start()
+        second = self.start(HERDR_SOCKET_PATH=str(self.h.root / "other.sock"))
+        self.assertTrue(self.until(lambda: self.lock_is_held() and self.lock_is_held(self.h.root / "other.sock")))
+        self.assertIsNone(first.poll())
+        self.assertIsNone(second.poll())
+
+    def test_watcher_exits_when_the_plugin_is_disabled(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
+        proc = self.start(HARNESS_HERDR_WATCH_REFRESH_SECONDS="0.2")
+        self.assertTrue(self.until(lambda: self.h.renames() != []))
+        state = json.loads(self.h.herdr_state.read_text())
+        state["plugin_enabled"] = False
+        self.h.herdr_state.write_text(json.dumps(state))
+        self.assertEqual(proc.wait(timeout=10), 0)
 
     def test_usage_is_reported_on_claude_and_codex_panes(self):
         token = "c" * 64

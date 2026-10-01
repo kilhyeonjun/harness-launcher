@@ -76,6 +76,13 @@ class DescribeTest(unittest.TestCase):
         self.assertEqual(usage.text(window, NOW), "mo 20% ↻10/11")
         self.assertEqual(window["severity"], usage.GREEN)
 
+    def test_any_fraction_length_parses_on_python_3_9(self):
+        for value in ("2026-10-05T22:00:00.093Z", "2026-10-05T22:00:00.123456789Z",
+                      "2026-10-05T22:00:00.5+00:00", "2026-10-05T22:00:00Z"):
+            with self.subTest(value=value):
+                self.assertIsNotNone(usage.parse_time(value))
+        self.assertIsNone(usage.parse_time("2026-10-05T22:00:00"))  # no zone
+
     def test_unparsable_reset_keeps_the_value(self):
         window = usage.describe("week", 85, "soon", NOW, [])
         self.assertEqual(usage.text(window, NOW), "7d 85%")
@@ -135,14 +142,27 @@ class SummaryTest(unittest.TestCase):
     def test_nothing_to_show(self):
         self.assertEqual(usage.line([], NOW), "usage —")
 
+    def test_a_damaged_store_starts_over(self):
+        store = {"claude:week": "x", "claude:session": {"reset": 5, "samples": [["a"], [1, 2, 3], 5, [1.0, 2]]},
+                 "codex:week": {"samples": "none"}}
+        line = usage.line(usage.summarize(PROVIDERS, NOW, store), NOW)
+        self.assertTrue(line.startswith("🔴 Claude 5h 14%"), line)
+        self.assertEqual(store["claude:week"]["samples"], [[NOW.timestamp(), 60]])
+
 
 class UsageServer:
-    def __init__(self, providers):
+    def __init__(self, providers, redirect=None):
         seen = self.seen = []
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 seen.append((self.path, self.headers.get("authorization"), self.headers.get("x-herdr-machine")))
+                if redirect:
+                    self.send_response(302)
+                    self.send_header("Location", redirect)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 ok = self.path == "/api/usage" and self.headers.get("authorization") == "Bearer " + TOKEN
                 data = json.dumps({"providers": providers} if ok else {"error": "auth"}).encode()
                 self.send_response(200 if ok else 401)
@@ -203,6 +223,17 @@ class CommandTest(unittest.TestCase):
         store = json.loads((self.root / "state" / "harness-launcher" / "herdr-usage.json").read_text())
         self.assertIn("codex:week", store)
         self.assertNotIn(TOKEN, result.stdout + result.stderr)
+
+    def test_a_redirect_is_not_followed_with_the_token(self):
+        elsewhere = UsageServer([])
+        self.addCleanup(elsewhere.close)
+        redirecting = UsageServer([], redirect="http://127.0.0.1:%d/api/usage" % elsewhere.port)
+        self.addCleanup(redirecting.close)
+        self.write_env(redirecting.port)
+        result = self.run_usage()
+        self.assertEqual(result.stdout.strip(), "usage n/a")
+        self.assertEqual(len(redirecting.seen), 1)
+        self.assertEqual(elsewhere.seen, [])
 
     def test_unreachable_web_ui_prints_a_placeholder(self):
         self.server.close()

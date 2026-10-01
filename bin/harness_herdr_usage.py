@@ -19,6 +19,7 @@ import datetime
 import fcntl
 import json
 import os
+import re
 import sys
 import tempfile
 import urllib.request
@@ -84,16 +85,29 @@ def fetch():
     request = urllib.request.Request(
         "http://%s:%d/api/usage" % (web.LOOPBACK, port),
         headers={"authorization": "Bearer " + token, "x-herdr-machine": "1"})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    # urllib would carry the Authorization header along a redirect, to any host.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     with opener.open(request, timeout=FETCH_TIMEOUT) as response:
         providers = json.load(response).get("providers", [])
     return providers if isinstance(providers, list) else []
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # urllib raises HTTPError for the 3xx instead
+
+
+# Python 3.9's fromisoformat takes only 3 or 6 fraction digits and no "Z".
+FRACTION = re.compile(r"\.(\d+)")
+
+
 def parse_time(value):
+    if not isinstance(value, str):
+        return None
+    value = FRACTION.sub(lambda match: "." + (match.group(1) + "000000")[:6], value.replace("Z", "+00:00"), 1)
     try:
-        moment = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (AttributeError, ValueError):
+        moment = datetime.datetime.fromisoformat(value)
+    except ValueError:
         return None
     return moment if moment.tzinfo else None
 
@@ -114,7 +128,9 @@ def record(series, now, used, reset):
     previous = parse_time(series.get("reset", ""))
     current = parse_time(reset)
     history = series.get("samples")
-    history = history if isinstance(history, list) else []
+    history = [sample for sample in (history if isinstance(history, list) else [])
+               if isinstance(sample, list) and len(sample) == 2
+               and all(isinstance(value, (int, float)) for value in sample)]
     new_window = (previous is None or current is None
                   or abs((current - previous).total_seconds()) > RESET_TOLERANCE)
     if new_window or (history and used < history[-1][1]):
@@ -184,7 +200,10 @@ def summarize(providers, now, store):
                 continue
             kind = raw.get("kind")
             reset = raw.get("resets_at") or ""
-            series = store.setdefault("%s:%s" % (provider["id"], kind), {})
+            key = "%s:%s" % (provider["id"], kind)
+            if not isinstance(store.get(key), dict):
+                store[key] = {}
+            series = store[key]
             windows.append(describe(kind, used, reset, now, record(series, now, used, reset)))
         if windows:
             summary.append((provider["id"], windows))

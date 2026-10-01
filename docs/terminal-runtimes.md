@@ -390,8 +390,9 @@ found as `projects/*/<session>.jsonl` under `.harness/claude` from the pane's
 directory upward, then `~/.claude`: a title set from outside the running
 Claude (a harness title hook) reaches its terminal title only at the next
 prompt. Without a custom title the terminal title wins, then Claude's AI title.
-The plugin reads only regular files you own, and reads a transcript once, then
-only what was appended. A trailing `| <name>harness` that Codex adds to its
+The plugin reads only regular files you own, never through a symlink. It reads a
+transcript in full the first time, then only what was appended (the offset is
+kept in its state). A trailing `| <name>harness` that Codex adds to its
 title and the `[ . ] Action Required |` marker it blinks while waiting for
 approval are dropped; a thread id is no title.
 
@@ -401,7 +402,10 @@ and `완료` (the `state_text` token), and a `$model` token with the model and
 reasoning effort of the latest turn (from the Codex rollout's last
 `turn_context` or the last Claude assistant record), for example
 `6.1-sol xhigh` or `opus-5-5 xhigh`. The model is read again when the agent's
-status changes. When the agent leaves the pane, the plugin clears them.
+status changes (from at most the last 32 MiB of the file). When the agent leaves
+the pane, the plugin clears them. herdr keeps no pane metadata across a server
+restart, so the plugin reports every pane again at startup, and a pane again
+when an agent is detected in it.
 
 Tab labels. A tab with exactly one pane that runs a detected agent takes the
 agent's session title as its label, cut to 20 display cells (a wide character
@@ -415,20 +419,26 @@ to its position. The `tab.renamed` event of the plugin's own rename does
 nothing.
 
 Watcher. herdr 0.9.1 runs plugins on no event for a title or thread-name
-change, so each plugin run makes sure one background watcher runs
-(`harness_herdr_plugin.py watch`, detached, one per herdr state directory). It
-subscribes to `pane.updated` over herdr's API socket, which reports terminal
-title changes, and checks the session indexes and transcripts behind the
-current titles once a second for appended title records; either syncs at
-once, so a rename shows within about a second. It also syncs every 15 seconds.
-Every five minutes it reads plan usage through
-[`harness-herdr-web usage`](herdr-web-ui.md) and reports it on each Claude and
-Codex pane as a `$quota` token, such as `🔴 7d 60% 1.9× →금21시` (expires after
-15 minutes without a refresh; absent without herdr web ui). It exits when the
+change, so each plugin run makes sure one background watcher runs for its
+herdr session (`harness_herdr_plugin.py watch`, detached; herdr gives a plugin
+one state directory for all sessions, so the watcher and its records are keyed
+by the session's API socket). It subscribes to `pane.updated` over that socket,
+which reports terminal title changes of agent panes (a shell pane's title and
+Codex's blinking marker do not count), and checks the session indexes and
+transcripts behind the current titles once a second for appended title
+records; either syncs at once, so a rename shows within about a second. It
+also syncs every 15 seconds, and after herdr closes the event stream (a server
+restart) it reports every pane again. Every five minutes it reads plan usage
+through [`harness-herdr-web usage`](herdr-web-ui.md) and reports it on each
+Claude and Codex pane as a `$quota` token, such as `🔴 7d 60% 1.9× →금21시`
+(expires after 15 minutes without a renewal; cleared when the agent leaves or
+the usage cannot be read; absent without herdr web ui). It exits when the
 plugin file changes, as on an upgrade (the next plugin run starts the new one),
-or when herdr has not answered three times in a row. Its errors go to
-`watch.log` in herdr's plugin state directory. `HARNESS_HERDR_WATCH=0` in the
-herdr server environment turns it off.
+when herdr no longer lists the plugin as enabled (`herdr plugin disable` or
+`unlink`), or when herdr has not answered three times in a row. Its errors go
+to `watch-<id>.log` in herdr's plugin state directory. `HARNESS_HERDR_WATCH=0`
+in the herdr server environment keeps a new watcher from starting; disable the
+plugin to stop a running one.
 
 A sidebar that uses these values:
 
@@ -453,8 +463,8 @@ The first row's `state_text` shows only `입력 필요`, in red.
 Notifications. When an agent goes from `working` to `idle`, or to `blocked`,
 the plugin waits one second and, if the state still holds, posts a desktop
 notification. The title is `✅ <agent> 완료` or `⏳ <agent> 입력 필요`, the subtitle
-is the workspace label, and the body is the agent's session title (as for tab
-labels, uncut). Clicking it
+is the workspace label, and the body is the agent's session title as last
+reported (uncut). Clicking it
 activates the terminal app that hosts the herdr client (found from the client's
 process ancestry, so cmux, Ghostty or another app) and runs
 `herdr agent focus <pane>`. A newer notification for the same pane replaces
