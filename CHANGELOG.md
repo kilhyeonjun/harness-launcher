@@ -2,6 +2,36 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.40.0 — 2026-10-01
+
+- herdr: a session rename now shows within about a second. Before, the plugin
+  ran only on status, focus and pane/tab lifecycle events, so a rename made
+  during a long turn showed when the turn ended, and herdr's sidebar kept the
+  Codex terminal title (often the thread id). The plugin now starts one
+  background watcher that subscribes to `pane.updated` over herdr's API socket
+  and checks the Codex session index and Claude transcripts behind the current
+  titles once a second. One watcher runs per herdr session. It exits when the
+  plugin file changes (an upgrade), the plugin is disabled or unlinked, or
+  herdr stops answering; `HARNESS_HERDR_WATCH=0` keeps it from starting.
+- herdr: Claude titles come from the transcript's latest custom title first. A
+  title set by a harness title hook reaches Claude's terminal title only at the
+  next prompt.
+- herdr: each agent pane reports its full title as herdr's metadata title (the
+  sidebar `pane` token), Korean state labels (`state_text`), and a `$model`
+  token with the model and effort of the latest turn, again after a herdr
+  restart. Every five minutes the watcher adds a `$quota` token with that
+  agent's plan usage. See the sidebar example in docs/terminal-runtimes.md.
+- herdr: Codex's blinking `[ . ] Action Required |` marker no longer becomes a
+  tab label, and the `tab.renamed` event of the plugin's own rename no longer
+  runs a sync.
+- `harness-herdr-web usage` prints Claude and Codex plan usage for herdr's tab
+  bar: per window the used share, the burn pace against an even spend, the
+  expected exhaustion time when the current rate runs out before the reset,
+  and the reset. The provider badge is an emoji, because herdr strips colors
+  from status commands. It never follows a redirect with the token.
+  `harness-herdr-web` now calls herdr through `HERDR_BIN_PATH` when set, so it
+  works from herdr's server `PATH`.
+
 ## 0.39.5 — 2026-10-01
 
 - Fix: a Slack-enabled Codex session launched or resumed with `bypass` asked for

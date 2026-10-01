@@ -19,9 +19,23 @@ harness-herdr-web install    # gate, configure, install the pinned release, star
 harness-herdr-web check      # OK/WARN/FAIL report; exit 1 on FAIL
 harness-herdr-web configure  # enforce the managed keys and file modes
 harness-herdr-web token --copy   # put the token on the clipboard for the first browser login
+harness-herdr-web usage      # one line of Claude and Codex plan usage, for herdr's tab bar
 ```
 
 Open `http://127.0.0.1:7317` (or your `PORT`) and paste the token when asked. The session cookie is scoped to `127.0.0.1`, so every local port receives it. `pbcopy` also syncs through Universal Clipboard.
+
+`usage` reads the plugin's `/api/usage` with the token (the plugin caches it for up to five minutes) and prints, for example, `🔴 Claude 5h 14% 0.2× ↻12:10 · 7d 60% 1.9× →금21시 ↻화07시 │ 🟢 Codex 7d 48% 0.8× ↻일03시`. Each window shows the used share, its burn pace against an even spend (`1.0×` uses the window up exactly at its reset), `→` the expected exhaustion time when the current rate runs out before the reset, and `↻` the reset. The rate is the slope over the last three hours of readings, kept in `~/.local/state/harness-launcher/herdr-usage.json` (`$XDG_STATE_HOME` when set), or the window average until such a reading exists; the 5-hour window shows no pace in its first hour. herdr strips escape sequences from status commands, so the provider badge is an emoji: 🔴 runs out before the reset or is used up, 🟡 ends the window at 85% or more or is at 80% now, 🟢 otherwise. It never prints the token, and prints `usage n/a` when the web ui is unreachable. Show it in herdr's tab bar:
+
+```toml
+# ~/.config/herdr/config.toml
+[ui]
+tab_bar_right = [
+  { type = "command", command = "/opt/homebrew/bin/harness-herdr-web usage", interval_seconds = 60, timeout_seconds = 15 },
+  { type = "datetime", format = "%H:%M" },
+]
+```
+
+The [herdr plugin](terminal-runtimes.md#herdr-plugin) shows the same data per agent in the sidebar.
 
 `install` refuses before installing anything in two cases: Tailscale reports a login for this machine, or `bun --version` is below 1.4 (fix with `bun upgrade`). herdr runs plugin commands with its own `PATH`, so `bun` must be reachable from the herdr server as well. If the build fails, check `herdr plugin log devswha.herdr-web-ui`. `install --ref <tag>` installs another ref and warns that the ref is unreviewed.
 
