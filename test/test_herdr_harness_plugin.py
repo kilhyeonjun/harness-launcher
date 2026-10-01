@@ -801,6 +801,15 @@ class MetadataTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertEqual(self.h.reports()[-1][-2:], ["--token", "model=6.1-sol high"])
         self.assertIn("--title", self.h.reports()[-1])
 
+    def test_model_is_found_behind_a_long_turn(self):
+        # A long Codex turn writes megabytes of output after its turn_context.
+        self.codex_turn("gpt-6.1-sol", "high")
+        filler = {"type": "response_item", "payload": {"output": "x" * 4096}}
+        rollout = next((self.h.root / "acme-platform-harness").rglob("rollout-*.jsonl"))
+        jsonl(rollout, [filler] * 400, append=True)  # about 1.6 MiB
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.reports()[-1][-2:], ["--token", "model=6.1-sol high"])
+
     def test_claude_model_and_effort_come_from_the_latest_assistant_record(self):
         harness = self.h.root / "acme-platform-harness"
         self.transcript([assistant("claude-sonnet-5-5", "high"), custom_title("작업"),

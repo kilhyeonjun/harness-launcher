@@ -76,6 +76,7 @@ USAGE_SOURCE = "harness.launcher.usage"
 STATE_LABELS = (("idle", "대기"), ("working", "작업 중"), ("blocked", "입력 필요"), ("done", "완료"))
 MODEL_PREFIX = re.compile(r"^(gpt-|claude-)")
 TAIL_BYTES = 512 * 1024
+TAIL_MAX_BYTES = 32 * 1024 * 1024
 MISSING_RETRY_SECONDS = 60
 TITLE_MARKERS = (b'"thread_name"', b'"custom-title"', b'"ai-title"')
 WATCH_POLL_SECONDS = 1.0
@@ -253,26 +254,33 @@ def scan_titles(path, session, entry):
 
 
 def tail_record(path, kind):
-    """The last record of type `kind` in the file's tail, or None."""
+    """The last record of type `kind` near the end of the file, or None.
+
+    A long Codex turn writes megabytes after its turn_context, so the window grows
+    from TAIL_BYTES fourfold up to TAIL_MAX_BYTES until a record is found."""
     handle = open_owned(path)
     if handle is None:
         return None
+    marker = ('"%s"' % kind).encode()
     with handle:
         size = os.fstat(handle.fileno()).st_size
-        start = max(0, size - TAIL_BYTES)
-        handle.seek(start)
-        lines = handle.read(size - start).split(b"\n")
-    marker = ('"%s"' % kind).encode()
-    for raw in reversed(lines[1:] if start else lines):
-        if marker not in raw:
-            continue
-        try:
-            record = json.loads(raw.decode("utf-8", "replace"))
-        except ValueError:
-            continue
-        if isinstance(record, dict) and record.get("type") == kind:
-            return record
-    return None
+        window = TAIL_BYTES
+        while True:
+            start = max(0, size - window)
+            handle.seek(start)
+            lines = handle.read(size - start).split(b"\n")
+            for raw in reversed(lines[1:] if start else lines):
+                if marker not in raw:
+                    continue
+                try:
+                    record = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if isinstance(record, dict) and record.get("type") == kind:
+                    return record
+            if start == 0 or window >= TAIL_MAX_BYTES:
+                return None
+            window *= 4
 
 
 def model_text(model, effort):
