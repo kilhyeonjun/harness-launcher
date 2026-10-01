@@ -112,9 +112,9 @@ chmod +x "$HAPPY_BIN/happy"
 mkdir -p "$TEST_HARNESS/.harness/codex"
 printf 'model = "gpt-6-luna"\nmodel_reasoning_effort = "low"\n' > "$TEST_HARNESS/.harness/codex/fast.config.toml"
 printf 'model = "gpt-5.6-terra"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/base.config.toml"
-printf 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "medium"\n' > "$TEST_HARNESS/.harness/codex/sol.config.toml"
+printf 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/sol.config.toml"
 printf 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/plan.config.toml"
-printf 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n' > "$TEST_HARNESS/.harness/codex/rich.config.toml"
+printf 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n' > "$TEST_HARNESS/.harness/codex/rich.config.toml"
 
 run_tui() {
   local input="$1" stub_file="$2" extra_path="${3:-}"
@@ -280,9 +280,9 @@ echo "PASS: case1a — Codex TUI uses the explicit worktree"
 for expected in \
   "fast — Quick · shallow — gpt-6-luna · low" \
   "base — Everyday · Recommended — gpt-5.6-terra · medium" \
-  "sol — Stronger · slower — gpt-6.1-sol · medium" \
+  "sol — Stronger · slower — gpt-6.1-sol · high" \
   "plan — Planning · deep — gpt-6.1-sol · high" \
-  "rich — Deep · slowest — gpt-6.1-sol · high"; do
+  "rich — Deep · slowest — gpt-6.1-sol · xhigh"; do
   grep -Fq "$expected" "$STUB1.tui.log" || {
     echo "FAIL: Codex profile intent label missing: $expected"
     cat "$STUB1.tui.log"

@@ -24,7 +24,7 @@ class SlackPolicyTest(unittest.TestCase):
         self.assertFalse(any('reaction' in key or 'draft' in key or 'read_thread' in key for key in config))
 
     def test_final_argv_overrides_cannot_disable_prompt(self):
-        with patch.dict(os.environ, {'HARNESS_CODEX_SLACK_APPS': 'asdk_app_slacktest', 'HARNESS_CODEX_APPS_ALLOWLIST': 'asdk_app_slacktest'}):
+        with patch.dict(os.environ, {'HARNESS_CODEX_SLACK_APPS': 'asdk_app_slacktest', 'HARNESS_CODEX_APPS_ALLOWLIST': 'asdk_app_slacktest', 'CODEX_HOME': ''}):
             args = self.policy.codex_argv(['resume', '-p', 'rich', '--dangerously-bypass-approvals-and-sandbox', '-c', 'approvals_reviewer="guardian_subagent"', '-a', 'never'])
         self.assertNotIn('--dangerously-bypass-approvals-and-sandbox', args)
         self.assertNotIn('never', args)
@@ -46,6 +46,55 @@ class SlackPolicyTest(unittest.TestCase):
         self.assertEqual(args[args.index('--') + 1:], ['--dangerously-bypass-approvals-and-sandbox'])
         self.assertNotIn('sandbox_mode="danger-full-access"', args)
         self.assertLess(args.index('-a'), args.index('--'))
+
+    def full_access_home(self, root):
+        Path(root, 'config.toml').write_text(
+            'approval_policy = "on-request"\n'
+            '[mcp_servers.alpha]\ncommand = "alpha-mcp"\n'
+            '[mcp_servers.beta-kg]\nurl = "https://example.invalid/mcp"\n'
+            '[mcp_servers."bad name"]\ncommand = "x"\n'
+            '[mcp_servers.Slack-Bot]\ncommand = "slack-mcp"\n'
+            '[mcp_servers.gamma]\ncommand = "gamma-mcp"\ndefault_tools_approval_mode = "writes"\n'
+            '[mcp_servers.delta]\ncommand = "delta-mcp"\n'
+            '[apps._default]\nenabled = false\n'
+            '[apps.asdk_app_slacktest]\nenabled = true\n'
+            '[apps.asdk_app_othertest]\nenabled = true\n'
+            '[apps.asdk_app_offtest]\nenabled = false\n')
+        return {'CODEX_HOME': root, 'HARNESS_CODEX_SLACK_APPS': 'asdk_app_slacktest',
+                'HARNESS_CODEX_APPS_ALLOWLIST': 'asdk_app_slacktest,asdk_app_othertest'}
+
+    def test_full_access_keeps_non_slack_tools_unprompted(self):
+        # Codex auto-approves MCP prompts only under never + full disk access;
+        # the forced on-request must not start prompting for other tools.
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, self.full_access_home(root)):
+            for argv in (['--dangerously-bypass-approvals-and-sandbox', 'resume', 'x'],
+                         ['-a', 'on-request', '-s', 'danger-full-access', 'resume', 'x'],
+                         ['--sandbox=danger-full-access', 'resume', 'x']):
+                argv = ['-c', 'mcp_servers.delta.default_tools_approval_mode="prompt"'] + argv
+                args = self.policy.codex_argv(argv)
+                # Slack-named servers, home-level modes and caller overrides keep their policy.
+                self.assertFalse(any('Slack-Bot' in arg or 'mcp_servers.gamma' in arg for arg in args), argv)
+                self.assertNotIn('mcp_servers.delta.default_tools_approval_mode="approve"', args)
+                self.assertIn('mcp_servers.delta.default_tools_approval_mode="prompt"', args)
+                self.assertIn('mcp_servers.alpha.default_tools_approval_mode="approve"', args, argv)
+                self.assertIn('mcp_servers.beta-kg.default_tools_approval_mode="approve"', args, argv)
+                self.assertIn('apps.asdk_app_othertest.default_tools_approval_mode="approve"', args, argv)
+                self.assertFalse(any('bad name' in arg for arg in args), argv)
+                self.assertFalse(any('asdk_app_slacktest.default_tools' in arg for arg in args), argv)
+                self.assertFalse(any('asdk_app_offtest' in arg or '_default' in arg for arg in args), argv)
+                self.assertIn('apps.asdk_app_slacktest.tools.slack_slack_send_message.approval_mode="prompt"', args)
+
+    def test_restricted_sandbox_and_missing_home_add_no_auto_approval(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, self.full_access_home(root)):
+            for argv in (['-a', 'never', '-s', 'read-only'], ['-s', 'workspace-write'], [],
+                         ['--', '--dangerously-bypass-approvals-and-sandbox'],
+                         ['-s', 'danger-full-access', '-s', 'read-only']):
+                args = self.policy.codex_argv(argv)
+                self.assertFalse(any('default_tools_approval_mode' in arg for arg in args), argv)
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {**self.full_access_home(root), 'CODEX_HOME': root + '/missing'}):
+            args = self.policy.codex_argv(['--dangerously-bypass-approvals-and-sandbox'])
+        self.assertIn('approval_policy="on-request"', args)
+        self.assertFalse(any('default_tools_approval_mode' in arg for arg in args))
 
     def test_claude_caller_settings_cannot_remove_ask(self):
         args = self.policy.claude_argv(['--permission-mode', 'bypassPermissions', '--settings', '{"hooks":{"SessionStart":[]},"permissions":{"ask":[]},"alwaysThinkingEnabled":false}', '--', 'prompt'])

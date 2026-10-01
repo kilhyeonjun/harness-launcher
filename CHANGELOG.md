@@ -2,6 +2,25 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.39.5 — 2026-10-01
+
+- Fix: a Slack-enabled Codex session launched or resumed with `bypass` asked for
+  approval on every MCP tool call, such as a read through a company MCP server.
+  0.39.3 turned bypass into `danger-full-access` with `on-request` approval so
+  Slack mutations prompt, but Codex auto-approves MCP prompts only under
+  `never` with full disk access. A final `danger-full-access` launch now sets
+  `default_tools_approval_mode = "approve"` for each MCP server and each enabled
+  non-Slack app in the generated home. Slack apps and Slack-named MCP servers
+  keep their policy and their mutations still prompt; modes already set in the
+  home or by the caller win. The launch record is unchanged, so restoring a
+  recorded `on-request` + `danger-full-access` session applies the same rule.
+- Codex `sol` now uses GPT-6.1 Sol at high effort (was medium) and `rich` at
+  xhigh (was high), one step apart like Claude's `opus` and `rich`. OpenAI's
+  GPT-6.1 Sol announcement (2026-10-01) puts high above medium on every published benchmark
+  (DeepSWE 75.2 vs 73.0) and xhigh ahead of high on long agentic workflows
+  (AutomationBench 35.5 vs 33.2), though below it on DeepSWE (71.9).
+  Subagent tiers are unchanged.
+
 ## 0.39.4 — 2026-10-01
 
 - Fix: after each upgrade, every Codex launch asked to review the launcher's hooks

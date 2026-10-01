@@ -341,12 +341,12 @@ on Codex 0.152.0+ where it defaults to disabled. See [native task progress](docs
 | --- | --- | --- | --- |
 | `fast` | Haiku, low effort | GPT-6 Luna, low effort | Small edits and quick checks |
 | `base` | Sonnet | GPT-5.6 Terra, medium effort | Everyday work — recommended default |
-| `sol` (Codex only) | — | GPT-6.1 Sol, medium effort | Stronger main model — slower |
+| `sol` (Codex only) | — | GPT-6.1 Sol, high effort | Stronger main model — slower |
 | `fable` (Claude direct only) | Fable, high effort | — | Explicit frontier-model selection |
 | `astra` (Codex only) | — | GPT-6 Astra, medium effort | Explicit frontier-model selection |
 | `plan` | Opus Plan | GPT-6.1 Sol, high effort, read-only | Investigation and planning |
 | `opus` (Claude only) | Opus, high effort | — | Strong main model without `rich`'s xhigh cost |
-| `rich` | Opus | GPT-6.1 Sol, high effort | Deep work — slowest normal preset |
+| `rich` | Opus | GPT-6.1 Sol, xhigh effort | Deep work — slowest normal preset |
 
 These are task-oriented operational presets, not claims about OpenAI's model defaults. The launcher deliberately lowers `fast` for speed and raises `plan`/`rich` for deeper work; an unscoped model picker may use a different general starting effort. Model names follow the capabilities exposed by the installed runtime. Generated homes default to a 272,000-token window with a 217,600-token compact threshold; explicit 1M mode requests 1,000,000 with a 414,000 threshold. Launcher-generated custom subagent roles always override to 272,000 with a 217,600-token compact threshold, so a 1M main session does not widen each generated role. Codex model metadata determines the effective window, and neither setting is Astra-specific tuning.
 
