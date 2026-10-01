@@ -62,6 +62,9 @@ class Refused(Exception):
 
 
 def run(argv, input=None, timeout=60):
+    if argv[0] == "herdr":
+        # herdr runs plugins and status commands with a PATH that may lack it.
+        argv = [os.environ.get("HERDR_BIN_PATH") or "herdr"] + argv[1:]
     return subprocess.run(argv, capture_output=True, text=True, input=input, timeout=timeout)
 
 
@@ -453,11 +456,15 @@ def build_parser():
     sub.add_parser("check", help="OK/WARN/FAIL report; exit 1 on FAIL")
     token_parser = sub.add_parser("token", help="copy the token for the first browser login")
     token_parser.add_argument("--copy", action="store_true", required=True)
+    sub.add_parser("usage", help="one line of Claude and Codex plan usage for herdr's tab bar")
     return parser
 
 
 def main(argv):
     args = build_parser().parse_args(argv)
+    if args.command == "usage":
+        import harness_herdr_usage
+        return harness_herdr_usage.main()
     report = Report()
     try:
         if args.command == "configure":

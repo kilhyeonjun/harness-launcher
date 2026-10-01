@@ -5,12 +5,16 @@ HERDR_PLUGIN_EVENT(_JSON), HERDR_BIN_PATH and HERDR_PLUGIN_STATE_DIR. herdr,
 terminal-notifier, osascript, lsappinfo and ps are stubs on PATH.
 """
 
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
+import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 
@@ -20,6 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     tomllib = None
 
 
+BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 PLUGIN_DIR = Path(__file__).resolve().parents[1] / "herdr-plugin"
 SCRIPT = PLUGIN_DIR / "harness_herdr_plugin.py"
 MANIFEST = PLUGIN_DIR / "herdr-plugin.toml"
@@ -43,7 +48,9 @@ state = json.load(open(state_path))
 args = sys.argv[1:]
 def out(result):
     print(json.dumps({"id": "cli", "result": result}))
-if args[:2] == ["workspace", "list"]:
+if args[:2] == ["plugin", "config-dir"]:
+    print(os.environ.get("FAKE_CONFIG_DIR", ""))
+elif args[:2] == ["workspace", "list"]:
     out({"workspaces": state["workspaces"], "type": "workspace_list"})
 elif args[:2] == ["tab", "list"]:
     out({"tabs": state["tabs"], "type": "tab_list"})
@@ -160,6 +167,7 @@ class PluginHarness:
             "HARNESS_HERDR_NOTIFY_DELAY_SECONDS": delay,
             "HERDR_SOCKET_PATH": str(self.root / "herdr test.sock"),
             "FAKE_RENAME_FAIL": self.rename_fail,
+            "HARNESS_HERDR_WATCH": "0",
         }
         if payload is not None:
             env["HERDR_PLUGIN_EVENT_JSON"] = json.dumps(payload)
@@ -186,11 +194,16 @@ class PluginHarness:
                             "agent_status": status, "agent": agent}}
         return self.run("pane.agent_status_changed", payload, pane_id, delay)
 
-    def renames(self):
+    def calls(self):
         if not self.herdr_calls.exists():
             return []
-        calls = [json.loads(line) for line in self.herdr_calls.read_text().splitlines()]
-        return [call[2:] for call in calls if call[:2] == ["tab", "rename"]]
+        return [json.loads(line) for line in self.herdr_calls.read_text().splitlines()]
+
+    def renames(self):
+        return [call[2:] for call in self.calls() if call[:2] == ["tab", "rename"]]
+
+    def reports(self):
+        return [call[2:] for call in self.calls() if call[:2] == ["pane", "report-metadata"]]
 
     def notifications(self, log=None):
         path = log or self.notify_log
@@ -651,6 +664,386 @@ class NotificationTest(HerdrPluginTestCase):
             "event": "pane_agent_status_changed",
             "data": {"pane_id": "w5:p4", "agent_status": "blocked", "agent": "claude"}}, "w5:p4")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+THREAD = "0199aaaa-1111-7222-8333-444455556666"
+SESSION = "5b6c7d8e-1111-4222-8333-444455556666"
+LABELS = ["--state-label", "idle=대기", "--state-label", "working=작업 중",
+          "--state-label", "blocked=입력 필요", "--state-label", "done=완료"]
+
+
+def jsonl(path, records, append=False):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a" if append else "w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def codex_agent(pane_id, tab_id, cwd, title=None):
+    item = pane(pane_id, tab_id, agent="codex", title=title or "%s | acme-platform-harness" % THREAD)
+    item["cwd"] = str(cwd)
+    item["agent_session"] = {"agent": "codex", "kind": "id", "source": "hook", "value": THREAD}
+    return item
+
+
+def claude_agent(pane_id, tab_id, cwd, title=""):
+    item = pane(pane_id, tab_id, agent="claude", title=title)
+    item["cwd"] = str(cwd)
+    item["agent_session"] = {"agent": "claude", "kind": "id", "source": "herdr:claude", "value": SESSION}
+    return item
+
+
+class SessionRecordsMixin:
+    def codex_index(self, records, append=False):
+        index = self.h.root / "acme-platform-harness" / ".harness" / "codex" / "session_index.jsonl"
+        jsonl(index, records, append)
+        return index.parents[2]
+
+    def codex_turn(self, model, effort, append=False):
+        rollout = (self.h.root / "acme-platform-harness" / ".harness" / "codex" / "sessions" / "2026" /
+                   "10" / "01" / ("rollout-2026-10-01T10-00-00-%s.jsonl" % THREAD))
+        jsonl(rollout, [{"type": "turn_context", "payload": {"model": model, "effort": effort}},
+                        {"type": "event_msg", "payload": {"type": "token_count"}}], append)
+
+    def transcript(self, records, append=False):
+        path = (self.h.root / "acme-platform-harness" / ".harness" / "claude" / "projects" /
+                "-acme-platform-harness" / (SESSION + ".jsonl"))
+        jsonl(path, records, append)
+        return path
+
+
+def custom_title(title):
+    return {"type": "custom-title", "customTitle": title, "sessionId": SESSION}
+
+
+def ai_title(title):
+    return {"type": "ai-title", "aiTitle": title, "sessionId": SESSION}
+
+
+def assistant(model, effort):
+    return {"type": "assistant", "sessionId": SESSION, "effort": effort,
+            "message": {"role": "assistant", "model": model, "content": []}}
+
+
+class SessionTitleTest(HerdrPluginTestCase, SessionRecordsMixin):
+    """A rename reaches the agent's own records before its terminal title."""
+
+    def test_claude_custom_title_in_the_transcript_beats_the_terminal_title(self):
+        harness = self.h.root / "acme-platform-harness"
+        self.transcript([ai_title("자동 제목"), {"type": "user", "sessionId": SESSION},
+                         custom_title("세션 이름 변경 반영"), custom_title(""),
+                         dict(custom_title("다른 세션"), sessionId="other")])
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [claude_agent("w2:p1", "w2:t1", harness / "sub", title="옛 터미널 제목")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "세션 이름 변경 반영"]])
+
+    def test_claude_ai_title_only_fills_a_missing_terminal_title(self):
+        harness = self.h.root / "acme-platform-harness"
+        self.transcript([ai_title("자동 제목")])
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1), tab("w2:t2", 2)],
+                         [claude_agent("w2:p1", "w2:t1", harness, title="터미널 제목"),
+                          dict(claude_agent("w2:p2", "w2:t2", harness), pane_id="w2:p2")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "터미널 제목"], ["w2:t2", "자동 제목"]])
+
+    def test_appended_custom_title_is_read_on_the_next_run(self):
+        harness = self.h.root / "acme-platform-harness"
+        path = self.transcript([custom_title("첫 이름")])
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [claude_agent("w2:p1", "w2:t1", harness, title="x")])
+        self.assertRan(self.h.run("startup"))
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(custom_title("둘째 이름"), ensure_ascii=False) + "\n")
+            handle.write('{"type": "custom-title", "customTitle": "쓰는 중')  # partial line
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "첫 이름"], ["w2:t1", "둘째 이름"]])
+
+    def test_codex_approval_marker_is_not_part_of_the_title(self):
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1), tab("w5:t2", 2)],
+                         [codex_agent("w5:p1", "w5:t1", self.h.root / "x",
+                                      title="[ . ] Action Required | %s | acme-platform-harness" % THREAD),
+                          dict(codex_agent("w5:p2", "w5:t2", self.h.root / "x",
+                                           title="[ ! ] Action Required | 배포 점검 | acme-platform-harness"),
+                               agent_session=None)])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.renames(), [["w5:t2", "배포 점검"]])
+
+
+class MetadataTest(HerdrPluginTestCase, SessionRecordsMixin):
+    """Each agent pane gets its full title, Korean state labels and a $model token."""
+
+    def setUp(self):
+        super().setUp()
+        harness = self.codex_index([{"id": THREAD, "thread_name": "릴리스 노트 검토와 배포 체크리스트 정리"}])
+        self.codex_turn("gpt-6.1-sol", "xhigh")
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)],
+                         [codex_agent("w5:p1", "w5:t1", harness)])
+
+    def test_report_carries_the_full_title_labels_and_model(self):
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.reports(), [
+            ["w5:p1", "--source", "harness.launcher", "--agent", "codex",
+             "--title", "릴리스 노트 검토와 배포 체크리스트 정리"] + LABELS + ["--token", "model=6.1-sol xhigh"]])
+        self.assertEqual(self.h.renames(), [["w5:t1", "릴리스 노트 검토와…"]])
+
+    def test_unchanged_metadata_is_not_reported_again(self):
+        self.assertRan(self.h.run("startup"))
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertEqual(len(self.h.reports()), 1)
+
+    def test_model_is_read_again_only_when_the_agent_status_changes(self):
+        self.assertRan(self.h.run("startup"))
+        self.codex_turn("gpt-6.1-sol", "high", append=True)
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertEqual(len(self.h.reports()), 1)
+        self.assertRan(self.h.status("w5:p1", "working", agent="codex"))
+        self.assertEqual(self.h.reports()[-1][-2:], ["--token", "model=6.1-sol high"])
+        self.assertIn("--title", self.h.reports()[-1])
+
+    def test_claude_model_and_effort_come_from_the_latest_assistant_record(self):
+        harness = self.h.root / "acme-platform-harness"
+        self.transcript([assistant("claude-sonnet-5-5", "high"), custom_title("작업"),
+                         assistant("claude-opus-5-5", "xhigh"), {"type": "user", "sessionId": SESSION}])
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [claude_agent("w2:p1", "w2:t1", harness, title="x")])
+        self.assertRan(self.h.run("startup"))
+        self.assertEqual(self.h.reports()[-1][-2:], ["--token", "model=opus-5-5 xhigh"])
+
+    def test_metadata_is_cleared_when_the_agent_leaves(self):
+        self.assertRan(self.h.run("startup"))
+        state = self.h.state()
+        state["panes"][0]["agent"] = None
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertEqual(self.h.reports()[-1], ["w5:p1", "--source", "harness.launcher", "--clear-title",
+                                                "--clear-state-labels", "--clear-token", "model"])
+        self.assertRan(self.h.run("pane.focused"))
+        self.assertEqual(len(self.h.reports()), 2)
+
+
+class OwnRenameTest(HerdrPluginTestCase):
+    def setUp(self):
+        super().setUp()
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [pane("w2:p1", "w2:t1", title="mkt 스킬")])
+        self.assertRan(self.h.run("startup"))
+        self.h.herdr_calls.unlink()
+
+    def renamed(self, label):
+        return self.h.run("tab.renamed", {"event": "tab_renamed",
+                                          "data": {"type": "tab_renamed", "tab_id": "w2:t1", "label": label}})
+
+    def test_the_plugins_own_rename_does_not_run_a_sync(self):
+        self.assertRan(self.renamed("mkt 스킬"))
+        self.assertEqual(self.h.calls(), [])
+
+    def test_a_users_rename_still_syncs(self):
+        self.assertRan(self.renamed("1"))
+        self.assertIn(["tab", "list"], self.h.calls())
+
+
+class UsageServer:
+    def __init__(self, providers, token):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                ok = self.path == "/api/usage" and self.headers.get("authorization") == "Bearer " + token
+                data = json.dumps({"providers": providers} if ok else {}).encode()
+                self.send_response(200 if ok else 401)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+class FakeEvents:
+    """A herdr API socket that acknowledges one subscription and pushes lines on demand."""
+
+    def __init__(self, path):
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(path))
+        self.server.listen(1)
+        self.requests = []
+        self.client = None
+        self.ready = threading.Event()
+        threading.Thread(target=self.accept, daemon=True).start()
+
+    def accept(self):
+        self.client, _ = self.server.accept()
+        self.requests.append(json.loads(self.client.makefile("rb").readline()))
+        self.push({"id": "harness-launcher-watch", "result": {"type": "subscription_started"}})
+        self.ready.set()
+
+    def push(self, message):
+        self.client.sendall(json.dumps(message, ensure_ascii=False).encode() + b"\n")
+
+    def close(self):
+        for sock in (self.client, self.server):
+            if sock is not None:
+                sock.close()
+
+
+class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
+    """The background watcher, run from a copy of the plugin so a test can 'upgrade' it."""
+
+    def setUp(self):
+        super().setUp()
+        package = self.h.root / "pkg"
+        (package / "herdr-plugin").mkdir(parents=True)
+        (package / "bin").mkdir()
+        self.script = package / "herdr-plugin" / "harness_herdr_plugin.py"
+        shutil.copy(SCRIPT, self.script)
+        for name in ("harness_herdr_usage.py", "harness_herdr_web.py"):
+            shutil.copy(BIN_DIR / name, package / "bin" / name)
+        self.procs = []
+        self.addCleanup(self.stop_all)
+
+    def watch_env(self, **extra):
+        env = self.h.env("watch")
+        env.update({"HARNESS_HERDR_WATCH_POLL_SECONDS": "0.05",
+                    "HARNESS_HERDR_WATCH_REFRESH_SECONDS": "60",
+                    "HARNESS_HERDR_USAGE_SECONDS": "3600",
+                    "XDG_STATE_HOME": str(self.h.root / "state")})
+        env.update(extra)
+        return env
+
+    def start(self, **extra):
+        proc = subprocess.Popen([TARGET_PYTHON, str(self.script), "watch"], env=self.watch_env(**extra),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.procs.append(proc)
+        return proc
+
+    def stop_all(self):
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=10)
+
+    def until(self, predicate, timeout=10.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return predicate()
+
+    def lock_is_held(self):
+        import fcntl
+        with open(self.h.state_dir / "watch.lock", "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+        return False
+
+    def test_codex_rename_in_the_index_relabels_without_a_herdr_event(self):
+        harness = self.codex_index([{"id": THREAD, "thread_name": "첫 이름"}])
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)], [codex_agent("w5:p1", "w5:t1", harness)])
+        self.start()
+        self.assertTrue(self.until(lambda: ["w5:t1", "첫 이름"] in self.h.renames()))
+        self.codex_index([{"id": THREAD, "thread_name": "바뀐 이름"}], append=True)
+        self.assertTrue(self.until(lambda: self.h.renames()[-1] == ["w5:t1", "바뀐 이름"], timeout=5),
+                        self.h.renames())
+
+    def test_claude_custom_title_in_the_transcript_relabels_without_a_herdr_event(self):
+        harness = self.h.root / "acme-platform-harness"
+        self.transcript([custom_title("첫 이름")])
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [claude_agent("w2:p1", "w2:t1", harness, title="x")])
+        self.start()
+        self.assertTrue(self.until(lambda: ["w2:t1", "첫 이름"] in self.h.renames()))
+        self.transcript([{"type": "user", "sessionId": SESSION}, custom_title("바뀐 이름")], append=True)
+        self.assertTrue(self.until(lambda: self.h.renames()[-1] == ["w2:t1", "바뀐 이름"], timeout=5),
+                        self.h.renames())
+
+    def test_terminal_title_event_syncs_and_a_blinking_marker_does_not(self):
+        sock_path = Path(tempfile.mkdtemp(prefix="hw", dir="/tmp")) / "s.sock"
+        self.addCleanup(shutil.rmtree, sock_path.parent, True)
+        events = FakeEvents(sock_path)
+        self.addCleanup(events.close)
+        codex = codex_agent("w5:p2", "w5:t2", self.h.root / "x",
+                            title="[ . ] Action Required | %s | acme-platform-harness" % THREAD)
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1), tab("w5:t2", 2)],
+                         [pane("w2:p1", "w2:t1", title="첫 작업"), codex])
+        self.start(HERDR_SOCKET_PATH=str(sock_path))
+        self.assertTrue(events.ready.wait(10))
+        self.assertEqual(events.requests[0]["params"], {"subscriptions": [{"type": "pane.updated"}]})
+        self.assertTrue(self.until(lambda: ["w2:t1", "첫 작업"] in self.h.renames()))
+        time.sleep(0.5)
+        lists = self.h.calls().count(["tab", "list"])
+        blink = dict(codex, terminal_title_stripped="[ ! ] Action Required | %s | acme-platform-harness" % THREAD)
+        events.push({"event": "pane_updated", "data": {"type": "pane_updated", "pane": blink}})
+        time.sleep(0.5)
+        self.assertEqual(self.h.calls().count(["tab", "list"]), lists)
+        state = self.h.state()
+        state["panes"][0]["terminal_title_stripped"] = "다음 작업"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        events.push({"event": "pane_updated", "data": {"type": "pane_updated", "pane": state["panes"][0]}})
+        self.assertTrue(self.until(lambda: self.h.renames()[-1] == ["w2:t1", "다음 작업"], timeout=5))
+
+    def test_usage_is_reported_on_claude_and_codex_panes(self):
+        token = "c" * 64
+        server = UsageServer([{"id": "codex", "windows": [{"kind": "week", "used_percent": 100,
+                                                          "resets_at": "2099-01-01T00:00:00Z"}]}], token)
+        self.addCleanup(server.close)
+        config = self.h.root / "web-config"
+        config.mkdir(mode=0o700)
+        (config / "env").write_text("HERDR_WEB_TOKEN=%s\nPORT=%d\n" % (token, server.port))
+        (config / "env").chmod(0o600)
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1), tab("w5:t2", 2)],
+                         [codex_agent("w5:p1", "w5:t1", self.h.root / "x"),
+                          pane("w5:p2", "w5:t2", agent="pi", title="other")])
+        self.start(FAKE_CONFIG_DIR=str(config))
+        quota = ["w5:p1", "--source", "harness.launcher.usage", "--token", "quota=🔴 7d 100%",
+                 "--ttl-ms", "900000"]
+        self.assertTrue(self.until(lambda: quota in self.h.reports()), self.h.reports())
+        self.assertFalse([report for report in self.h.reports() if report[0] == "w5:p2" and "quota" in str(report)])
+
+    def test_only_one_watcher_runs(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
+        first = self.start()
+        self.assertTrue(self.until(self.lock_is_held))
+        second = self.start()
+        self.assertEqual(second.wait(timeout=10), 0)
+        self.assertIsNone(first.poll())
+
+    def test_watcher_exits_when_the_plugin_is_upgraded(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
+        proc = self.start()
+        self.assertTrue(self.until(lambda: self.h.renames() != []))
+        with open(self.script, "a", encoding="utf-8") as handle:
+            handle.write("\n# upgraded\n")
+        self.assertEqual(proc.wait(timeout=10), 0)
+
+    def test_watcher_exits_when_herdr_stops_answering(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
+        proc = self.start(HARNESS_HERDR_WATCH_REFRESH_SECONDS="0.1")
+        self.assertTrue(self.until(lambda: self.h.renames() != []))
+        self.h.herdr_state.write_text("not json", encoding="utf-8")
+        self.assertEqual(proc.wait(timeout=10), 0)
+        self.assertFalse(self.lock_is_held())
+
+    def test_a_hook_starts_the_watcher_once(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [pane("w2:p1", "w2:t1", title="a")])
+        env = self.watch_env(HARNESS_HERDR_WATCH="1", HARNESS_HERDR_WATCH_REFRESH_SECONDS="0.1")
+        env["HERDR_PLUGIN_EVENT"] = "startup"
+        for _ in range(2):
+            result = subprocess.run([TARGET_PYTHON, str(self.script)], env=env, capture_output=True,
+                                    text=True, timeout=30)
+            self.assertRan(result)
+        self.assertTrue(self.until(self.lock_is_held))
+        self.h.herdr_state.write_text("not json", encoding="utf-8")
+        self.assertTrue(self.until(lambda: not self.lock_is_held(), timeout=15))
 
 
 if __name__ == "__main__":

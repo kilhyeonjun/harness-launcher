@@ -1,17 +1,32 @@
 #!/usr/bin/env python3
-"""herdr plugin: tab labels from agent session titles and desktop notifications.
+"""herdr plugin: session titles, tab labels, sidebar tokens and desktop notifications.
 
 herdr runs this with /usr/bin/python3 (3.9) on startup and on the pane/tab
 events listed in herdr-plugin.toml. The hook never fails: errors go to stderr,
 which herdr keeps in the plugin log, and the exit code stays 0.
 
+Session titles: a rename reaches the agent's own records before its terminal
+title, so the title comes from those first: for Codex the thread's latest name
+in its CODEX_HOME session index, for Claude the latest custom title in its
+transcript, then the terminal title, then Claude's AI title. Each agent pane
+gets it as its herdr metadata title (the sidebar `pane` token), with Korean
+state labels and a `$model` token (model and reasoning effort of the latest
+turn, read when the agent's status changes).
+
 Tab labels: a tab with exactly one pane that runs a detected agent takes that
-agent's session title, cut to TAB_LABEL_CELLS display cells: the terminal title,
-or for Codex the thread's latest name in its CODEX_HOME session index. A tab keeps its
+agent's session title, cut to TAB_LABEL_CELLS display cells. A tab keeps its
 label when the user named it (the label is neither the default label, the tab's
 position in its workspace, nor the label this plugin set last). A tab the
 plugin labeled goes back to its position label once it no longer holds one
 agent with a usable title.
+
+Watcher: herdr has no plugin event for a title change, so each run makes sure
+one background watcher (`watch`) runs. It subscribes to pane.updated over the
+API socket (terminal titles) and checks the session indexes and transcripts
+once a second for appended title records, then syncs at once. Every five
+minutes it reports each Claude and Codex pane's plan usage as a `$quota` token
+when herdr web ui is set up. It exits when this file changes (an upgrade: the
+next run starts the new one) or herdr stops answering.
 
 Notifications: working -> idle announces completion and a switch to blocked
 announces a request for input, after the state held for the notify delay. The
@@ -21,12 +36,15 @@ focuses the agent pane.
 """
 
 import fcntl
+import glob
 import json
 import os
 import plistlib
 import re
+import select
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -35,11 +53,14 @@ import unicodedata
 from contextlib import contextmanager
 
 TAB_LABEL_CELLS = 20
+TITLE_MAX_CHARS = 200
 DEFAULT_NOTIFY_DELAY_SECONDS = 1.0
 MAX_NOTIFY_DELAY_SECONDS = 30.0
 CODEX_HARNESS_SUFFIX = re.compile(r"\s+\|\s+[\w.-]*harness\s*$")
-# Codex titles a session without a task by its thread id, which names nothing.
-THREAD_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+# Codex prefixes its title while a turn waits for approval and blinks the marker.
+CODEX_ACTION_PREFIX = re.compile(r"^\[ . \] Action Required \|\s*")
+# Session ids; Codex titles a session without a task by its thread id, which names nothing.
+THREAD_ID =re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 HOMEBREW_HERDR = re.compile(r"^(.*)/Cellar/herdr/[^/]+/bin/herdr$")
 # The outermost bundle, so an app's nested helper (…/Frameworks/X Helper.app) maps to the app.
 APP_BUNDLE = re.compile(r"^(.*?\.app)/")
@@ -48,6 +69,22 @@ EXPECTED_LIVE_STATUS = {"finished": "idle", "attention": "blocked"}
 CODEX_INDEX = os.path.join(".harness", "codex", "session_index.jsonl")
 CODEX_INDEX_MAX_BYTES = 16 * 1024 * 1024
 CODEX_HOME_DEPTH = 8
+# A harness Claude config directory, looked up the same way; ~/.claude is the last candidate.
+CLAUDE_HOME = os.path.join(".harness", "claude")
+METADATA_SOURCE = "harness.launcher"
+USAGE_SOURCE = "harness.launcher.usage"
+STATE_LABELS = (("idle", "대기"), ("working", "작업 중"), ("blocked", "입력 필요"), ("done", "완료"))
+MODEL_PREFIX = re.compile(r"^(gpt-|claude-)")
+TAIL_BYTES = 512 * 1024
+MISSING_RETRY_SECONDS = 60
+TITLE_MARKERS = (b'"thread_name"', b'"custom-title"', b'"ai-title"')
+WATCH_POLL_SECONDS = 1.0
+WATCH_REFRESH_SECONDS = 15.0
+WATCH_RECONNECT_SECONDS = 5.0
+WATCH_MAX_FAILURES = 3
+WATCH_LOG_MAX_BYTES = 256 * 1024
+USAGE_SECONDS = 300.0
+QUOTA_TTL_MS = 15 * 60 * 1000
 
 
 def log(message):
@@ -77,13 +114,23 @@ def herdr(*args):
     return json.loads(out)["result"]
 
 
+def herdr_ok(*args):
+    """Run a herdr command that answers with nothing; True when it succeeded."""
+    return run([herdr_bin()] + list(args)) is not None
+
+
+def state_dir():
+    path = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser(
+        "~/.local/state/harness-herdr-plugin")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 @contextmanager
 def locked_state():
-    state_dir = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser(
-        "~/.local/state/harness-herdr-plugin")
-    os.makedirs(state_dir, exist_ok=True)
-    path = os.path.join(state_dir, "state.json")
-    with open(os.path.join(state_dir, "state.lock"), "w") as lock:
+    directory = state_dir()
+    path = os.path.join(directory, "state.json")
+    with open(os.path.join(directory, "state.lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             with open(path, encoding="utf-8") as handle:
@@ -92,7 +139,7 @@ def locked_state():
             state = {}
         if not isinstance(state, dict):
             state = {}
-        for key in ("tabs", "panes"):
+        for key in ("tabs", "panes", "meta", "scans", "paths"):
             if not isinstance(state.get(key), dict):
                 state[key] = {}
         try:
@@ -109,9 +156,20 @@ def cells(char):
     return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
 
 
+def clean(value):
+    return "".join(c for c in value if not unicodedata.category(c).startswith("C")).strip()
+
+
+def display_title(title):
+    """A session title without Codex's approval marker and harness suffix; "" for a thread id."""
+    text = CODEX_ACTION_PREFIX.sub("", clean(title))
+    text = CODEX_HARNESS_SUFFIX.sub("", text).strip()
+    return "" if THREAD_ID.match(text) else text[:TITLE_MAX_CHARS]
+
+
 def tab_label(title):
-    text = CODEX_HARNESS_SUFFIX.sub("", title).strip()
-    if THREAD_ID.match(text):
+    text = display_title(title)
+    if not text:
         return ""
     if sum(cells(char) for char in text) <= TAB_LABEL_CELLS:
         return text
@@ -124,70 +182,290 @@ def tab_label(title):
     return kept.rstrip() + "…"
 
 
+def open_owned(path):
+    """A binary handle on a regular file you own, never through a symlink; or None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (OSError, TypeError, ValueError):
+        return None
+    handle = os.fdopen(fd, "rb")
+    info = os.fstat(handle.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        handle.close()
+        return None
+    return handle
+
+
 def thread_names(path, cache):
     """{thread id: latest name} from a Codex session index; the index is append-only."""
     if path in cache:
         return cache[path]
     names = {}
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError:
-        fd = None
-    if fd is not None:
-        with os.fdopen(fd, "rb") as handle:
-            info = os.fstat(handle.fileno())
-            if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid():
-                if info.st_size > CODEX_INDEX_MAX_BYTES:
-                    handle.seek(info.st_size - CODEX_INDEX_MAX_BYTES)
-                    handle.readline()  # partial line
-                for raw in handle:
-                    try:
-                        record = json.loads(raw)
-                    except ValueError:
-                        continue
-                    if (isinstance(record, dict) and isinstance(record.get("id"), str)
-                            and isinstance(record.get("thread_name"), str)):
-                        names[record["id"].lower()] = record["thread_name"]
+    handle = open_owned(path)
+    if handle is not None:
+        with handle:
+            size = os.fstat(handle.fileno()).st_size
+            if size > CODEX_INDEX_MAX_BYTES:
+                handle.seek(size - CODEX_INDEX_MAX_BYTES)
+                handle.readline()  # partial line
+            for raw in handle:
+                try:
+                    record = json.loads(raw)
+                except ValueError:
+                    continue
+                if (isinstance(record, dict) and isinstance(record.get("id"), str)
+                        and isinstance(record.get("thread_name"), str)):
+                    names[record["id"].lower()] = record["thread_name"]
     cache[path] = names
     return names
 
 
-def codex_thread_name(pane, cache):
-    """The latest name of a Codex pane's thread, or "".
+def scan_titles(path, session, entry):
+    """Fold a Claude transcript's custom and AI titles, reading only what was appended
+    since `entry` (this file's previous result, kept in the plugin state)."""
+    handle = open_owned(path)
+    if handle is None:
+        return {"ino": None, "offset": 0, "custom": "", "ai": ""}
+    with handle:
+        info = os.fstat(handle.fileno())
+        if (not isinstance(entry, dict) or entry.get("ino") != info.st_ino
+                or not isinstance(entry.get("offset"), int) or entry["offset"] > info.st_size):
+            entry = {"ino": info.st_ino, "offset": 0, "custom": "", "ai": ""}
+        entry = dict(entry)
+        handle.seek(entry["offset"])
+        for raw in handle:
+            if not raw.endswith(b"\n"):
+                break  # still being written; read it next time
+            entry["offset"] += len(raw)
+            if b'"custom-title"' not in raw and b'"ai-title"' not in raw:
+                continue
+            try:
+                record = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if not isinstance(record, dict) or record.get("sessionId") != session:
+                continue
+            if record.get("type") == "custom-title" and isinstance(record.get("customTitle"), str):
+                entry["custom"] = clean(record["customTitle"]) or entry["custom"]
+            elif record.get("type") == "ai-title" and isinstance(record.get("aiTitle"), str):
+                entry["ai"] = clean(record["aiTitle"]) or entry["ai"]
+    return entry
 
-    Codex renames a thread from another app-server connection (a title hook), which
-    the running TUI never sees, so its terminal title keeps the thread id or the name
-    it resumed with. The first index on the way up from the pane's directory that
-    knows the thread wins; ~/.codex is the last candidate.
-    """
-    session = pane.get("agent_session")
-    thread = session.get("value") if isinstance(session, dict) else None
-    if pane.get("agent") != "codex" or not isinstance(thread, str) or not THREAD_ID.match(thread):
+
+def tail_record(path, kind):
+    """The last record of type `kind` in the file's tail, or None."""
+    handle = open_owned(path)
+    if handle is None:
+        return None
+    with handle:
+        size = os.fstat(handle.fileno()).st_size
+        start = max(0, size - TAIL_BYTES)
+        handle.seek(start)
+        lines = handle.read(size - start).split(b"\n")
+    marker = ('"%s"' % kind).encode()
+    for raw in reversed(lines[1:] if start else lines):
+        if marker not in raw:
+            continue
+        try:
+            record = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record.get("type") == kind:
+            return record
+    return None
+
+
+def model_text(model, effort):
+    if not isinstance(model, str) or not clean(model):
         return ""
-    candidates = []
+    text = MODEL_PREFIX.sub("", clean(model))
+    if isinstance(effort, str) and clean(effort):
+        text += " " + clean(effort)
+    return text[:40]
+
+
+def upward(pane, relative):
+    """`relative` joined to the pane's directories and their parents, nearest first."""
+    found = []
     for start in (pane.get("foreground_cwd"), pane.get("cwd")):
         directory = start if isinstance(start, str) and os.path.isabs(start) else None
         for _ in range(CODEX_HOME_DEPTH):
             if directory is None:
                 break
-            index = os.path.join(directory, CODEX_INDEX)
-            if index not in candidates:
-                candidates.append(index)
+            candidate = os.path.join(directory, relative)
+            if candidate not in found:
+                found.append(candidate)
             parent = os.path.dirname(directory)
             directory = parent if parent != directory else None
-    candidates.append(os.path.join(os.path.expanduser("~"), ".codex", "session_index.jsonl"))
-    for index in candidates:
-        name = thread_names(index, cache).get(thread.lower())
-        if name is not None:
-            return "".join(c for c in name if not unicodedata.category(c).startswith("C")).strip()
-    return ""
+    return found
 
 
-def session_title(pane, cache):
-    return codex_thread_name(pane, cache) or (pane.get("terminal_title_stripped") or "").strip()
+def session_of(pane, agent):
+    session = pane.get("agent_session")
+    value = session.get("value") if isinstance(session, dict) else None
+    if pane.get("agent") != agent or not isinstance(value, str) or not THREAD_ID.match(value):
+        return ""
+    return value
 
 
-def sync_tabs():
+class Titles:
+    """Session titles and models of agent panes, read from the agents' own records.
+
+    `state` is the plugin state: it keeps transcript read offsets and found paths
+    between runs, so a run reads only what was appended since the last one.
+    `watched` collects the files a title came from, or would come from.
+    """
+
+    def __init__(self, state):
+        self.indexes = {}
+        self.scans = state.setdefault("scans", {})
+        self.paths = state.setdefault("paths", {})
+        self.used = set()
+        self.watched = set()
+
+    def codex(self, pane):
+        """(latest thread name, CODEX_HOME or None) of a Codex pane.
+
+        Codex renames a thread from another app-server connection (a title hook),
+        which the running TUI never sees, so its terminal title keeps the thread id
+        or the name it resumed with. The first index on the way up from the pane's
+        directory that knows the thread wins; ~/.codex is the last candidate.
+        """
+        thread = session_of(pane, "codex")
+        if not thread:
+            return "", None
+        home = None
+        candidates = upward(pane, CODEX_INDEX) + [
+            os.path.join(os.path.expanduser("~"), ".codex", "session_index.jsonl")]
+        for index in candidates:
+            names = thread_names(index, self.indexes)
+            if os.path.isfile(index):
+                self.watched.add(index)  # where a first name will appear
+                home = home or os.path.dirname(index)
+            name = names.get(thread.lower())
+            if name is not None:
+                return clean(name), os.path.dirname(index)
+        return "", home
+
+    def found(self, key, finder):
+        """A cached file path for `key`; a miss is retried after a while."""
+        self.used.add(key)
+        known = self.paths.get(key)
+        if isinstance(known, dict):
+            if known.get("path") and os.path.isfile(known["path"]):
+                return known["path"]
+            if not known.get("path") and time.time() - known.get("checked", 0) < MISSING_RETRY_SECONDS:
+                return None
+        path = finder()
+        self.paths[key] = {"path": path, "checked": time.time()}
+        return path
+
+    def claude_transcript(self, pane):
+        session = session_of(pane, "claude")
+        if not session:
+            return None
+
+        def finder():
+            homes = upward(pane, CLAUDE_HOME) + [os.path.join(os.path.expanduser("~"), ".claude")]
+            for home in homes:
+                matches = sorted(glob.glob(os.path.join(glob.escape(home), "projects", "*",
+                                                        session + ".jsonl")))
+                if matches:
+                    return matches[0]
+            return None
+        return self.found("claude:" + session, finder)
+
+    def codex_rollout(self, home, thread):
+        def finder():
+            matches = sorted(glob.glob(os.path.join(glob.escape(home), "sessions", "*", "*", "*",
+                                                    "rollout-*-%s.jsonl" % thread)))
+            return matches[-1] if matches else None
+        return self.found("codex:" + thread, finder)
+
+    def claude(self, pane):
+        """(custom title, AI title) of a Claude pane's transcript."""
+        path = self.claude_transcript(pane)
+        if not path:
+            return "", ""
+        self.watched.add(path)
+        self.used.add(path)
+        entry = scan_titles(path, session_of(pane, "claude"), self.scans.get(path))
+        self.scans[path] = entry
+        return entry["custom"], entry["ai"]
+
+    def title(self, pane):
+        terminal = (pane.get("terminal_title_stripped") or "").strip()
+        agent = pane.get("agent")
+        if agent == "codex":
+            return self.codex(pane)[0] or terminal
+        if agent == "claude":
+            custom, ai = self.claude(pane)
+            return custom or terminal or ai
+        return terminal
+
+    def model(self, pane):
+        """`<model> <effort>` of the pane's latest turn, or ""."""
+        if pane.get("agent") == "codex":
+            home = self.codex(pane)[1]
+            path = home and self.codex_rollout(home, session_of(pane, "codex"))
+            record = tail_record(path, "turn_context") if path else None
+            payload = record.get("payload") if record else None
+            if isinstance(payload, dict):
+                return model_text(payload.get("model"), payload.get("effort"))
+        elif pane.get("agent") == "claude":
+            path = self.claude_transcript(pane)
+            record = tail_record(path, "assistant") if path else None
+            message = record.get("message") if record else None
+            if isinstance(message, dict):
+                return model_text(message.get("model"), record.get("effort"))
+        return ""
+
+    def prune(self):
+        for store in (self.scans, self.paths):
+            for key in [key for key in store if key not in self.used]:
+                del store[key]
+
+
+def report_metadata(pane_id, agent, title, model, previous):
+    """One metadata report per pane: title and state labels (guarded by the agent) and $model.
+
+    herdr replaces a source's title and labels together, so every report carries both."""
+    argv = ["pane", "report-metadata", pane_id, "--source", METADATA_SOURCE]
+    if agent:
+        argv += ["--agent", agent] + (["--title", title] if title else ["--clear-title"])
+        for status, label in STATE_LABELS:
+            argv += ["--state-label", "%s=%s" % (status, label)]
+    else:
+        argv += ["--clear-title", "--clear-state-labels"]
+    if model != previous.get("model", ""):
+        argv += ["--token", "model=" + model] if model else ["--clear-token", "model"]
+    return herdr_ok(*argv)
+
+
+def sync_metadata(panes, titles, meta, refresh_model):
+    for pane in panes:
+        pane_id = pane.get("pane_id")
+        if not pane_id:
+            continue
+        agent = pane.get("agent") or ""
+        previous = meta.get(pane_id) if isinstance(meta.get(pane_id), dict) else {}
+        if not agent:
+            if previous and report_metadata(pane_id, "", "", "", previous):
+                del meta[pane_id]
+            continue
+        same_agent = previous.get("agent") == agent
+        model = previous.get("model", "") if same_agent else ""
+        if refresh_model == pane_id or not same_agent or "model" not in previous:
+            model = titles.model(pane) or model
+        wanted = {"agent": agent, "title": display_title(titles.title(pane)), "model": model}
+        if all(previous.get(key) == value for key, value in wanted.items()):
+            continue
+        if report_metadata(pane_id, agent, wanted["title"], model, previous):
+            meta[pane_id] = wanted
+
+
+def sync_tabs(refresh_model=None):
+    """Sync tab labels and pane metadata; return (panes, files the titles came from)."""
     # Read herdr's lists under the lock so a concurrent run cannot act on an older snapshot.
     with locked_state() as state:
         tabs = herdr("tab", "list")["tabs"]
@@ -196,13 +474,15 @@ def sync_tabs():
         for pane in panes:
             panes_by_tab.setdefault(pane.get("tab_id"), []).append(pane)
         owned = state["tabs"]
-        indexes = {}
         live_tabs = {tab["tab_id"] for tab in tabs}
         for tab_id in [tab_id for tab_id in owned if tab_id not in live_tabs]:
             del owned[tab_id]
         live_panes = {pane.get("pane_id") for pane in panes}
-        for pane_id in [pane_id for pane_id in state["panes"] if pane_id not in live_panes]:
-            del state["panes"][pane_id]
+        for key in ("panes", "meta"):
+            for pane_id in [pane_id for pane_id in state[key] if pane_id not in live_panes]:
+                del state[key][pane_id]
+        titles = Titles(state)
+        sync_metadata(panes, titles, state["meta"], refresh_model)
         # An unnamed tab shows its position in the workspace, not its `number`, which
         # keeps counting after a tab closes.
         positions, seen_in_workspace = {}, {}
@@ -219,7 +499,7 @@ def sync_tabs():
             members = panes_by_tab.get(tab_id, [])
             wanted = ""
             if tab.get("pane_count") == 1 and len(members) == 1 and members[0].get("agent"):
-                wanted = tab_label(session_title(members[0], indexes))
+                wanted = tab_label(titles.title(members[0]))
             if not wanted:
                 # No single agent title any more (agent exited, tab split, thread-id title):
                 # hand the tab back its position label. herdr cannot clear a tab name, so
@@ -233,6 +513,18 @@ def sync_tabs():
                     herdr("tab", "rename", tab_id, wanted)
                 except Exception as error:  # noqa: BLE001 - one tab must not stop the rest
                     log("rename %s: %s" % (tab_id, error))
+        titles.prune()
+        return panes, titles.watched
+
+
+def own_rename(payload):
+    """Whether a tab.renamed event reports the label this plugin set last."""
+    data = payload.get("data") or {}
+    tab_id, label = data.get("tab_id"), data.get("label")
+    if not tab_id or label is None:
+        return False
+    with locked_state() as state:
+        return state["tabs"].get(tab_id) == label
 
 
 def record_status(payload):
@@ -338,7 +630,7 @@ def announce(pending):
     template = "✅ %s 완료" if pending["kind"] == "finished" else "⏳ %s 입력 필요"
     title = template % pending["agent"]
     subtitle = workspace.get("label") or pane.get("workspace_id") or ""
-    message = CODEX_HARNESS_SUFFIX.sub("", session_title(pane, {})).strip() or pane_id
+    message = display_title(Titles({}).title(pane)) or pane_id
     notifier = terminal_notifier()
     if notifier:
         # terminal-notifier runs the click command without herdr's environment, so carry
@@ -400,19 +692,281 @@ def install(argv):
     return 0
 
 
+def env_seconds(name, default):
+    try:
+        value = float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def script_signature():
+    try:
+        info = os.stat(os.path.realpath(__file__))
+    except OSError:
+        return None
+    return info.st_ino, info.st_size, info.st_mtime_ns
+
+
+def usage_module():
+    """bin/harness_herdr_usage.py: beside this directory when installed, in bin/ in the repo."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for directory in (here, os.path.join(here, "bin")):
+        if os.path.isfile(os.path.join(directory, "harness_herdr_usage.py")):
+            if directory not in sys.path:
+                sys.path.insert(0, directory)
+            import harness_herdr_usage
+            return harness_herdr_usage
+    return None
+
+
+def pane_key(pane):
+    """What a pane.updated event must change before the watcher syncs again."""
+    return pane.get("agent") or "", display_title(pane.get("terminal_title_stripped") or "")
+
+
+def appended_title(path, position):
+    """(whether lines appended after `position` hold a title record, new position).
+
+    `position` is [inode, offset]; a replaced or truncated file counts as changed."""
+    handle = open_owned(path)
+    if handle is None:
+        return False, position
+    with handle:
+        info = os.fstat(handle.fileno())
+        inode, offset = position
+        if inode != info.st_ino or offset > info.st_size:
+            return True, [info.st_ino, info.st_size]
+        if info.st_size == offset:
+            return False, position
+        handle.seek(offset)
+        chunk = handle.read(info.st_size - offset)
+    end = chunk.rfind(b"\n")
+    if end < 0:
+        return False, position
+    chunk = chunk[:end + 1]
+    return any(marker in chunk for marker in TITLE_MARKERS), [inode, offset + len(chunk)]
+
+
+def end_position(path):
+    handle = open_owned(path)
+    if handle is None:
+        return [None, 0]
+    with handle:
+        info = os.fstat(handle.fileno())
+    return [info.st_ino, info.st_size]
+
+
+class Watcher:
+    """The background `watch` loop; see the module docstring."""
+
+    def __init__(self):
+        self.poll = env_seconds("HARNESS_HERDR_WATCH_POLL_SECONDS", WATCH_POLL_SECONDS)
+        self.refresh_every = env_seconds("HARNESS_HERDR_WATCH_REFRESH_SECONDS", WATCH_REFRESH_SECONDS)
+        self.usage_every = env_seconds("HARNESS_HERDR_USAGE_SECONDS", USAGE_SECONDS)
+        self.signature = script_signature()
+        self.files = {}      # path -> [inode, offset]
+        self.keys = {}       # pane id -> pane_key()
+        self.panes = []
+        self.sock = None
+        self.buffer = b""
+        self.next_connect = 0.0
+        self.next_refresh = 0.0
+        self.next_usage = 0.0
+        self.failures = 0
+        self.dirty = False
+        self.badges = {}     # agent -> quota text
+        self.reported = {}   # pane id -> quota text reported
+        self.usage_error = None
+
+    def run(self):
+        while True:
+            if script_signature() != self.signature:
+                log("watch: plugin changed; exiting")
+                return
+            now = time.monotonic()
+            if self.dirty or now >= self.next_refresh:
+                self.dirty = False
+                self.next_refresh = now + self.refresh_every
+                if self.sync():
+                    self.failures = 0
+                else:
+                    self.failures += 1
+                    if self.failures >= WATCH_MAX_FAILURES:
+                        log("watch: herdr does not answer; exiting")
+                        return
+            if now >= self.next_usage:
+                self.next_usage = now + self.usage_every
+                self.usage()
+            self.report_quota()
+            if self.sock is None and now >= self.next_connect:
+                self.connect()
+            self.wait(self.poll)
+            self.scan()
+
+    def sync(self):
+        try:
+            panes, watched = sync_tabs()
+        except Exception as error:  # noqa: BLE001 - the loop keeps going
+            log("watch sync: %s" % error)
+            return False
+        self.panes = panes
+        self.files = {path: self.files.get(path) or end_position(path) for path in watched}
+        self.keys = {pane.get("pane_id"): pane_key(pane) for pane in panes}
+        self.reported = {pane_id: text for pane_id, text in self.reported.items() if pane_id in self.keys}
+        return True
+
+    def scan(self):
+        for path, position in list(self.files.items()):
+            changed, self.files[path] = appended_title(path, position)
+            self.dirty = self.dirty or changed
+
+    def connect(self):
+        self.next_connect = time.monotonic() + WATCH_RECONNECT_SECONDS
+        path = os.environ.get("HERDR_SOCKET_PATH")
+        if not path:
+            return
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(2)
+            sock.connect(path)
+            sock.sendall(json.dumps({"id": "harness-launcher-watch", "method": "events.subscribe",
+                                     "params": {"subscriptions": [{"type": "pane.updated"}]}}
+                                    ).encode() + b"\n")
+            sock.setblocking(False)
+        except OSError:
+            sock.close()
+            return
+        self.sock, self.buffer = sock, b""
+        self.dirty = True  # changes before the subscription started
+
+    def disconnect(self):
+        if self.sock is not None:
+            self.sock.close()
+        self.sock, self.buffer = None, b""
+
+    def wait(self, timeout):
+        if self.sock is None:
+            time.sleep(timeout)
+            return
+        try:
+            ready = select.select([self.sock], [], [], timeout)[0]
+            chunk = self.sock.recv(65536) if ready else None
+        except BlockingIOError:
+            return
+        except (OSError, ValueError):
+            chunk = b""
+        if chunk is None:
+            return
+        if not chunk:
+            self.disconnect()
+            return
+        self.buffer += chunk
+        while b"\n" in self.buffer:
+            line, self.buffer = self.buffer.split(b"\n", 1)
+            self.handle(line)
+
+    def handle(self, line):
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(message, dict):
+            return
+        if "error" in message:  # such as events_lost: resubscribe and resync
+            self.disconnect()
+            self.dirty = True
+            return
+        data = message.get("data")
+        pane = data.get("pane") if isinstance(data, dict) else None
+        if isinstance(pane, dict) and self.keys.get(pane.get("pane_id")) != pane_key(pane):
+            self.keys[pane.get("pane_id")] = pane_key(pane)
+            self.dirty = True
+
+    def usage(self):
+        try:
+            module = usage_module()
+            if module is None:
+                return
+            summary, now = module.current()
+            self.badges = module.badges(summary, now)
+            self.reported = {}  # report again to renew the TTL
+            self.usage_error = None
+        except Exception as error:  # noqa: BLE001 - herdr web ui may be absent
+            if type(error).__name__ != self.usage_error:
+                log("watch usage: %s" % type(error).__name__)
+            self.usage_error = type(error).__name__
+
+    def report_quota(self):
+        for pane in self.panes:
+            pane_id, badge = pane.get("pane_id"), self.badges.get(pane.get("agent") or "")
+            if not pane_id or not badge or self.reported.get(pane_id) == badge:
+                continue
+            if herdr_ok("pane", "report-metadata", pane_id, "--source", USAGE_SOURCE,
+                        "--token", "quota=" + badge, "--ttl-ms", str(QUOTA_TTL_MS)):
+                self.reported[pane_id] = badge
+
+
+def watch():
+    with open(os.path.join(state_dir(), "watch.lock"), "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0  # another watcher runs
+        Watcher().run()
+    return 0
+
+
+def ensure_watcher():
+    """Start the watcher unless one runs; a second one started in a race exits at once."""
+    if os.environ.get("HARNESS_HERDR_WATCH", "1") == "0":
+        return
+    directory = state_dir()
+    with open(os.path.join(directory, "watch.lock"), "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return
+    log_path = os.path.join(directory, "watch.log")
+    try:
+        if os.path.getsize(log_path) > WATCH_LOG_MAX_BYTES:
+            os.remove(log_path)
+    except OSError:
+        pass
+    with open(log_path, "a") as output:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "watch"],
+                         cwd=os.path.dirname(os.path.abspath(__file__)), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=output, close_fds=True,
+                         start_new_session=True)
+
+
 def main():
     if sys.argv[1:2] == ["install"]:
         return install(sys.argv[2:])
+    if sys.argv[1:2] == ["watch"]:
+        return watch()
+    event = os.environ.get("HERDR_PLUGIN_EVENT")
+    try:
+        payload = json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON") or "{}")
+    except ValueError:
+        payload = {}
+    payload = payload if isinstance(payload, dict) else {}
     pending = None
-    if os.environ.get("HERDR_PLUGIN_EVENT") == "pane.agent_status_changed":
+    if event == "pane.agent_status_changed":
         try:
-            pending = record_status(json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON") or "{}"))
+            pending = record_status(payload)
         except Exception as error:  # noqa: BLE001 - a hook must never fail
             log("status: %s" % error)
     try:
-        sync_tabs()
+        if not (event == "tab.renamed" and own_rename(payload)):
+            data = payload.get("data") or {}
+            sync_tabs(refresh_model=data.get("pane_id") if event == "pane.agent_status_changed" else None)
     except Exception as error:  # noqa: BLE001
         log("tabs: %s" % error)
+    try:
+        ensure_watcher()
+    except Exception as error:  # noqa: BLE001
+        log("watch: %s" % error)
     if pending:
         try:
             time.sleep(notify_delay())
