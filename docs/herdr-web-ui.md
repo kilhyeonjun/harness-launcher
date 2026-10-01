@@ -20,6 +20,7 @@ harness-herdr-web check      # OK/WARN/FAIL report; exit 1 on FAIL
 harness-herdr-web configure  # enforce the managed keys and file modes
 harness-herdr-web token --copy   # put the token on the clipboard for the first browser login
 harness-herdr-web usage      # one line of Claude and Codex plan usage, for herdr's tab bar
+harness-herdr-web usage --watch  # the same usage as a live board, for a herdr popup
 ```
 
 Open `http://127.0.0.1:7317` (or your `PORT`) and paste the token when asked. The session cookie is scoped to `127.0.0.1`, so every local port receives it. `pbcopy` also syncs through Universal Clipboard.
@@ -35,7 +36,19 @@ tab_bar_right = [
 ]
 ```
 
-The [herdr plugin](terminal-runtimes.md#herdr-plugin) shows the same data per agent in the sidebar.
+`usage --watch` draws the details as a board: per window a bar of the used share with `│` at the share of the window elapsed (fill past the tick runs ahead of an even spend), the used share, the pace, and the reset time with the time left. A window that runs out before its reset gets a red line with the expected exhaustion time; one heading for 85% or more gets a yellow line with the projected share. It reads again every 60 seconds or on `r`, keeps the last board with a warning when a reading fails, and closes on `q`, `Esc` or `Ctrl-C`; under the Korean input method `ㄱ` and `ㅂ` act as `r` and `q`. Text from the server is printed without control characters. Without a terminal it prints the board once. Open it with a key:
+
+```toml
+# ~/.config/herdr/config.toml
+[[keys.command]]
+key = "prefix+u"
+type = "popup"
+command = "/opt/homebrew/bin/harness-herdr-web usage --watch"
+width = "80%"
+height = "60%"
+```
+
+Both read and write the same sample store. Plan usage is per account, so the [herdr plugin](terminal-runtimes.md#herdr-plugin) does not report it per pane.
 
 `install` refuses before installing anything in two cases: Tailscale reports a login for this machine, or `bun --version` is below 1.4 (fix with `bun upgrade`). herdr runs plugin commands with its own `PATH`, so `bun` must be reachable from the herdr server as well. If the build fails, check `herdr plugin log devswha.herdr-web-ui`. `install --ref <tag>` installs another ref and warns that the ref is unreviewed.
 

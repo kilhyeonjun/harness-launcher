@@ -113,10 +113,10 @@ class HistoryTest(unittest.TestCase):
 
 
 PROVIDERS = [
-    {"id": "claude", "windows": [
+    {"id": "claude", "plan": "max", "windows": [
         {"kind": "session", "used_percent": 14, "resets_at": iso(NOW + datetime.timedelta(hours=1, minutes=25))},
         {"kind": "week", "used_percent": 60, "resets_at": iso(NOW + datetime.timedelta(hours=116))}]},
-    {"id": "codex", "windows": [
+    {"id": "codex", "plan": "pro", "windows": [
         {"kind": "week", "used_percent": 48, "resets_at": iso(NOW + datetime.timedelta(hours=65))}]},
     {"id": "cursor", "problem": "expired", "windows": []},
     {"id": "claude-like", "windows": [{"kind": "week", "used_percent": 1}]},
@@ -130,14 +130,23 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(line, "🔴 Claude 5h 14% 0.2× ↻12:10 · 7d 60% 1.9× →금21시 ↻화06시"
                                " │ 🟢 Codex 7d 48% 0.8× ↻일03시")
 
-    def test_badges_name_the_most_pressing_window_without_the_reset(self):
-        self.assertEqual(usage.badges(usage.summarize(PROVIDERS, NOW, {}), NOW),
-                         {"claude": "🔴 7d 60% 1.9× →금21시", "codex": "🟢 7d 48% 0.8×"})
-
     def test_summary_records_samples(self):
         store = {}
         usage.summarize(PROVIDERS, NOW, store)
         self.assertEqual(sorted(store), ["claude:session", "claude:week", "codex:week"])
+
+    def test_a_scoped_window_keeps_its_own_history_and_label(self):
+        reset = iso(NOW + datetime.timedelta(hours=100))
+        store = {}
+        summary = usage.summarize([{"id": "claude", "windows": [
+            {"kind": "week", "scope": None, "used_percent": 60, "resets_at": reset},
+            {"kind": "week", "scope": "opus", "used_percent": 20, "resets_at": reset}]}], NOW, store)
+        self.assertEqual(sorted(store), ["claude:week", "claude:week:opus"])
+        self.assertEqual([window["label"] for window in summary[0][1]], ["7d", "7d opus"])
+
+    def test_accounts_name_the_plan_or_the_problem(self):
+        self.assertEqual(usage.accounts(PROVIDERS + [{"id": "codex", "problem": "expired"}]),
+                         {"claude": {"plan": "max", "problem": None}, "codex": {"plan": None, "problem": "expired"}})
 
     def test_nothing_to_show(self):
         self.assertEqual(usage.line([], NOW), "usage —")
@@ -148,6 +157,131 @@ class SummaryTest(unittest.TestCase):
         line = usage.line(usage.summarize(PROVIDERS, NOW, store), NOW)
         self.assertTrue(line.startswith("🔴 Claude 5h 14%"), line)
         self.assertEqual(store["claude:week"]["samples"], [[NOW.timestamp(), 60]])
+
+
+BOARD = """\
+ 플랜 사용량 · 10:45 기준
+
+ 🔴 Claude  max
+    5h  ██░░░░░░░░░░│░░░░   14%   0.2×  ↻ 12:10 · 1시간 25분 후
+    7d  █████│████░░░░░░░   60%   1.9×  ↻ 화 06:45 · 4일 20시간 후
+        ⚠ 이 속도면 내일 21:25 소진 · 1일 10시간 후
+
+ 🟢 Codex  pro
+    7d  ████████░░│░░░░░░   48%   0.8×  ↻ 일 03:45 · 2일 17시간 후
+
+ █ 사용량 · │ 경과 시간 · 1.0× = 초기화 때 딱 맞게 다 씀
+ q 닫기 · r 새로고침 · 60초마다 갱신"""
+
+
+class DashboardTest(unittest.TestCase):
+    def board(self, **options):
+        summary = usage.summarize(PROVIDERS, NOW, {})
+        options.setdefault("columns", 70)
+        return usage.dashboard(summary, usage.accounts(PROVIDERS), NOW, NOW, **options)
+
+    def test_durations_read_in_the_two_largest_units(self):
+        self.assertEqual(usage.until(20), "1분 후")
+        self.assertEqual(usage.until(25 * 60 + 30), "25분 후")
+        self.assertEqual(usage.until(3600), "1시간 후")
+        self.assertEqual(usage.until(5100), "1시간 25분 후")
+        self.assertEqual(usage.until(34 * 3600 + 40 * 60), "1일 10시간 후")
+        self.assertEqual(usage.until(2 * 86400 + 59), "2일 후")
+
+    def test_times_name_the_day_unless_today(self):
+        def at(hours):
+            return NOW + datetime.timedelta(hours=hours)
+        self.assertEqual(usage.clock(at(1.5), NOW), "12:15")
+        self.assertEqual(usage.clock(at(14), NOW), "내일 00:45")
+        self.assertEqual(usage.clock(at(116), NOW), "화 06:45")
+        self.assertEqual(usage.clock(at(24 * 9), NOW), "10/10 10:45")
+
+    def test_bar_fills_the_used_share_and_marks_the_elapsed_time(self):
+        self.assertEqual(usage.bar(50, 0.25, 10), "██│██░░░░░")
+        self.assertEqual(usage.bar(30, None, 10), "███░░░░░░░")
+        self.assertEqual(usage.bar(120, 1.0, 4), "███│")
+        self.assertEqual(usage.bar(0, 0.0, 4), "│░░░")
+
+    def test_board_lays_out_every_window(self):
+        self.assertEqual("\n".join(self.board()), BOARD)
+
+    def test_board_without_keys_drops_the_key_help(self):
+        self.assertEqual("\n".join(self.board(keys=False)), BOARD.rsplit("\n", 1)[0])
+
+    def test_board_warns_near_and_at_the_limit(self):
+        reset = iso(NOW + datetime.timedelta(hours=84))
+        providers = [{"id": "codex", "windows": [
+            {"kind": "week", "used_percent": 45, "resets_at": reset},
+            {"kind": "week", "scope": "spark", "used_percent": 100, "resets_at": reset}]}]
+        lines = usage.dashboard(usage.summarize(providers, NOW, {}), {}, NOW, NOW, columns=70)
+        self.assertIn("        이 속도면 초기화 때 약 90%", lines)
+        self.assertIn("        다 씀 · 초기화까지 대기", lines)
+
+    def test_board_names_a_provider_it_cannot_read(self):
+        lines = usage.dashboard([], {"claude": {"plan": None, "problem": "expired"}}, NOW, NOW, columns=70)
+        self.assertIn(" ⚪ Claude  확인 불가: expired", lines)
+
+    def test_a_failed_refresh_keeps_the_last_reading(self):
+        later = NOW + datetime.timedelta(minutes=5)
+        lines = usage.dashboard(usage.summarize(PROVIDERS, NOW, {}), usage.accounts(PROVIDERS), later, NOW,
+                                columns=70, error="web ui 연결 안 됨")
+        self.assertEqual(lines[0], " 플랜 사용량 · 10:45 기준 · ⚠ 갱신 실패: web ui 연결 안 됨")
+        self.assertIn("↻ 12:10 · 1시간 20분 후", "\n".join(lines))
+
+    def test_no_reading_explains_where_to_look(self):
+        lines = usage.dashboard(None, {}, NOW, None, columns=70, error="HTTP 401")
+        self.assertEqual(lines[:4], [" 플랜 사용량", "", " 사용량을 불러오지 못했습니다: HTTP 401",
+                                     " 'harness-herdr-web check'로 herdr web ui를 확인하세요."])
+
+    def test_color_marks_severity(self):
+        text = "\n".join(self.board(color=True))
+        self.assertIn("\x1b[31m⚠ 이 속도면", text)
+        self.assertIn("\x1b[32m████████\x1b[0m", text)
+        self.assertEqual(usage.ANSI.sub("", text), BOARD)
+
+    def test_server_text_cannot_steer_the_terminal(self):
+        providers = [{"id": "claude", "plan": "max\x1b]52;c;eA==\x07", "windows": [
+            {"kind": "week", "scope": "op\x9bus", "used_percent": 5,
+             "resets_at": iso(NOW + datetime.timedelta(hours=100))}]},
+            {"id": "codex", "plan": 5, "problem": {"code": "expired"}}]
+        plans = usage.accounts(providers)
+        self.assertEqual(plans, {"claude": {"plan": "max]52;c;eA==", "problem": None},
+                                 "codex": {"plan": "5", "problem": "{'code': 'expired'}"}})
+        summary = usage.summarize(providers, NOW, {})
+        self.assertEqual(summary[0][1][0]["label"], "7d opus")
+        text = "\n".join(usage.dashboard(summary, plans, NOW, NOW, columns=70))
+        self.assertNotRegex(text, "[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+
+    def test_odd_window_values_still_draw(self):
+        providers = [{"id": "codex", "windows": [
+            {"kind": None, "used_percent": 5}, {"kind": 7, "used_percent": 6},
+            {"kind": "week", "used_percent": float("nan")}, {"kind": "week", "used_percent": float("inf")}]}]
+        lines = usage.dashboard(usage.summarize(providers, NOW, {}), {}, NOW, NOW, columns=70)
+        self.assertEqual([line.split()[0] for line in lines if line.startswith("    ")], ["None", "7"])
+
+    def test_a_past_time_reads_as_passed(self):
+        later = NOW + datetime.timedelta(hours=2)
+        lines = usage.dashboard(usage.summarize(PROVIDERS, NOW, {}), usage.accounts(PROVIDERS), later, NOW,
+                                columns=70, error="HTTP 500")
+        self.assertIn("↻ 12:10 · 지남", "\n".join(lines))
+
+    def test_a_steep_pace_keeps_its_column(self):
+        recent = [[(NOW - datetime.timedelta(minutes=40)).timestamp(), 0]]
+        window = usage.describe("week", 90, iso(NOW + datetime.timedelta(hours=100)), NOW, recent)
+        self.assertGreater(window["pace"], 100)
+        row = usage.board_rows(window, NOW, 2, 10, lambda value, *styles: value)[0]
+        self.assertIn("   90%   >99×  ↻", row)
+
+    def test_an_empty_reading_says_so(self):
+        lines = usage.dashboard([], {}, NOW, NOW, columns=70, keys=False)
+        self.assertEqual(lines[2], " 표시할 사용량이 없습니다.")
+
+    def test_errors_read_without_details(self):
+        import urllib.error
+        self.assertEqual(usage.reason(urllib.error.HTTPError("u", 401, "x", {}, None)), "HTTP 401")
+        self.assertEqual(usage.reason(urllib.error.URLError("refused")), "web ui 연결 안 됨")
+        self.assertEqual(usage.reason(usage.web.Refused("herdr web ui has no token")), "herdr web ui has no token")
+        self.assertEqual(usage.reason(ValueError("bad json")), "응답 형식 오류")
 
 
 class UsageServer:
@@ -209,10 +343,90 @@ class CommandTest(unittest.TestCase):
         env.write_text("HERDR_WEB_TOKEN=%s\nHOST=127.0.0.1\nPORT=%d\n" % (TOKEN, port))
         env.chmod(0o600)
 
-    def run_usage(self):
-        env = {"HOME": str(self.root), "PATH": "/usr/bin:/bin", "HERDR_BIN_PATH": str(self.herdr),
-               "FAKE_CONFIG_DIR": str(self.config), "XDG_STATE_HOME": str(self.root / "state")}
-        return subprocess.run([str(WRAPPER), "usage"], env=env, capture_output=True, text=True, timeout=60)
+    def usage_env(self):
+        return {"HOME": str(self.root), "PATH": "/usr/bin:/bin", "HERDR_BIN_PATH": str(self.herdr),
+                "FAKE_CONFIG_DIR": str(self.config), "XDG_STATE_HOME": str(self.root / "state")}
+
+    def run_usage(self, *args):
+        return subprocess.run([str(WRAPPER), "usage", *args], env=self.usage_env(),
+                              capture_output=True, text=True, timeout=60)
+
+    def test_watch_without_a_terminal_prints_the_board_once(self):
+        self.write_env(self.server.port)
+        result = self.run_usage("--watch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("\n 🟢 Codex\n    7d  ", result.stdout)
+        self.assertNotIn("\x1b", result.stdout)
+        self.assertNotIn("q 닫기", result.stdout)
+
+    def board(self):
+        """`usage --watch` on a pty: (process, send, read_until, output)."""
+        import fcntl
+        import pty
+        import select
+        import struct
+        import termios
+        import time
+        self.write_env(self.server.port)
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 90, 0, 0))
+        proc = subprocess.Popen([str(WRAPPER), "usage", "--watch"], env=self.usage_env(),
+                                stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        os.close(slave)
+        self.addCleanup(os.close, master)
+
+        def stop():
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        self.addCleanup(stop)
+        output = bytearray()
+
+        def read_until(predicate, timeout=20):
+            deadline = time.monotonic() + timeout
+            while not predicate() and time.monotonic() < deadline:
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        output.extend(os.read(master, 65536))
+                    except OSError:
+                        break
+            return predicate()
+
+        return proc, lambda data: os.write(master, data), read_until, output
+
+    def test_watch_redraws_on_r_and_closes_on_esc(self):
+        proc, send, read_until, output = self.board()
+        self.assertTrue(read_until(lambda: "Codex".encode() in output), output)
+        self.assertIn(b"\x1b[?1049h", output)
+        self.assertLess(output.index("불러오는 중".encode()), output.index("Codex".encode()))
+        send(b"r")
+        self.assertTrue(read_until(lambda: len(self.server.seen) == 2), self.server.seen)
+        send("ㄱ".encode())  # r under the Korean input method
+        self.assertTrue(read_until(lambda: len(self.server.seen) == 3), self.server.seen)
+        send(b"\x1b[A")  # an arrow key is not Esc
+        read_until(lambda: False, timeout=0.5)
+        self.assertIsNone(proc.poll())
+        send(b"\x1b")
+        self.assertTrue(read_until(lambda: proc.poll() is not None, timeout=10))
+        self.assertEqual(proc.returncode, 0)
+        read_until(lambda: b"\x1b[?1049l" in output, timeout=2)
+        self.assertIn(b"\x1b[?1049l", output)
+        self.assertNotIn(TOKEN.encode(), output)
+
+    def test_watch_closes_on_korean_q(self):
+        proc, send, read_until, output = self.board()
+        self.assertTrue(read_until(lambda: "Codex".encode() in output), output)
+        send("ㅂ".encode())  # q under the Korean input method
+        self.assertTrue(read_until(lambda: proc.poll() is not None, timeout=10))
+        self.assertEqual(proc.returncode, 0)
+
+    def test_watch_restores_the_terminal_on_sigterm(self):
+        proc, send, read_until, output = self.board()
+        self.assertTrue(read_until(lambda: "Codex".encode() in output), output)
+        proc.terminate()
+        self.assertTrue(read_until(lambda: proc.poll() is not None, timeout=10))
+        read_until(lambda: b"\x1b[?25h\x1b[?1049l" in output, timeout=2)
+        self.assertIn(b"\x1b[?25h\x1b[?1049l", output)
 
     def test_prints_the_usage_line_with_the_token_and_records_samples(self):
         self.write_env(self.server.port)
@@ -245,7 +459,7 @@ class CommandTest(unittest.TestCase):
 
 
 class SystemPythonTest(unittest.TestCase):
-    """The herdr plugin imports this module with /usr/bin/python3."""
+    """herdr's tab bar and popup may run this module with /usr/bin/python3."""
 
     @unittest.skipUnless(os.path.exists(SYSTEM_PYTHON), "no system python")
     def test_module_runs_under_system_python(self):
@@ -256,6 +470,19 @@ class SystemPythonTest(unittest.TestCase):
         result = subprocess.run([SYSTEM_PYTHON, "-c", script], capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertRegex(result.stdout, r"^7d 60% 1\.\d× →")
+
+    @unittest.skipUnless(os.path.exists(SYSTEM_PYTHON), "no system python")
+    def test_board_renders_under_system_python(self):
+        script = ("import sys, datetime; sys.path.insert(0, %r); import harness_herdr_usage as u; "
+                  "now = datetime.datetime(2026, 10, 1, 10, 45, tzinfo=datetime.timezone.utc); "
+                  "p = [{'id': 'codex', 'plan': 'pro', 'windows': [{'kind': 'week', 'used_percent': 60, "
+                  "'resets_at': '2026-10-05T22:00:00.093Z'}]}]; "
+                  "print(chr(10).join(u.dashboard(u.summarize(p, now, {}), u.accounts(p), now, now, color=True)))"
+                  % str(BIN))
+        result = subprocess.run([SYSTEM_PYTHON, "-c", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Codex", result.stdout)
+        self.assertIn("\x1b[31m⚠ 이 속도면", result.stdout)
 
 
 if __name__ == "__main__":

@@ -429,13 +429,7 @@ Codex's blinking marker do not count), and checks the session indexes and
 transcripts behind the current titles once a second for appended title
 records; either syncs at once, so a rename shows within about a second. It
 also syncs every 15 seconds, and after herdr closes the event stream (a server
-restart) it reports every pane again. Every five minutes it reads plan usage
-through [`harness-herdr-web usage`](herdr-web-ui.md) and reports it on each
-Claude and Codex pane as a `$quota` token, such as `🔴 7d 60% 1.9× →금21시`
-(expires 15 minutes after the reading it shows, so a reading that cannot be
-renewed disappears; cleared when the agent leaves; absent without herdr web
-ui). It exits when the
-plugin file changes, as on an upgrade (the next plugin run starts the new one),
+restart) it reports every pane again. It exits when the plugin file changes, as on an upgrade (the next plugin run starts the new one),
 when herdr no longer lists the plugin as enabled (`herdr plugin disable` or
 `unlink`), or when herdr has not answered three times in a row. Its errors go
 to `watch-<id>.log` in herdr's plugin state directory. `HARNESS_HERDR_WATCH=0`
@@ -456,11 +450,13 @@ rows = [
     { token = "pane", bold = true },
     { token = "state_text", fg = "#f38ba8", bold = true, rules = [{ equals = "입력 필요" }, { contains = "", hide = true }] },
   ],
-  [{ token = "workspace", dim = true }, { token = "agent", dim = true }, { token = "$model", dim = true }, "$quota"],
+  [{ token = "workspace", dim = true }, { token = "agent", dim = true }, { token = "$model", dim = true }],
 ]
 ```
 
-The first row's `state_text` shows only `입력 필요`, in red.
+The first row's `state_text` shows only `입력 필요`, in red. Plan usage belongs
+to the account, not a pane: put [`harness-herdr-web usage`](herdr-web-ui.md) in
+the tab bar and its `--watch` board in a popup.
 
 Notifications. When an agent goes from `working` to `idle`, or to `blocked`,
 the plugin waits one second and, if the state still holds, posts a desktop

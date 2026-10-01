@@ -23,10 +23,10 @@ agent with a usable title.
 Watcher: herdr has no plugin event for a title change, so each run makes sure
 one background watcher (`watch`) runs. It subscribes to pane.updated over the
 API socket (terminal titles) and checks the session indexes and transcripts
-once a second for appended title records, then syncs at once. Every five
-minutes it reports each Claude and Codex pane's plan usage as a `$quota` token
-when herdr web ui is set up. It exits when this file changes (an upgrade: the
-next run starts the new one) or herdr stops answering.
+once a second for appended title records, then syncs at once. It exits when
+this file changes (an upgrade: the next run starts the new one) or herdr stops
+answering. Plan usage is not per pane: `harness-herdr-web usage` serves the tab
+bar and a popup.
 
 Notifications: working -> idle announces completion and a switch to blocked
 announces a request for input, after the state held for the notify delay. The
@@ -73,7 +73,6 @@ CODEX_HOME_DEPTH = 8
 # A harness Claude config directory, looked up the same way; ~/.claude is the last candidate.
 CLAUDE_HOME = os.path.join(".harness", "claude")
 METADATA_SOURCE = "harness.launcher"
-USAGE_SOURCE = "harness.launcher.usage"
 STATE_LABELS = (("idle", "대기"), ("working", "작업 중"), ("blocked", "입력 필요"), ("done", "완료"))
 MODEL_PREFIX = re.compile(r"^(gpt-|claude-)")
 TAIL_BYTES = 512 * 1024
@@ -85,9 +84,6 @@ WATCH_REFRESH_SECONDS = 15.0
 WATCH_RECONNECT_SECONDS = 5.0
 WATCH_MAX_FAILURES = 3
 WATCH_LOG_MAX_BYTES = 256 * 1024
-USAGE_SECONDS = 300.0
-QUOTA_TTL_MS = 15 * 60 * 1000
-QUOTA_RETRY_SECONDS = 30.0
 SESSION_KEEP_SECONDS = 7 * 86400
 PLUGIN_ID = "harness.launcher"
 
@@ -775,18 +771,6 @@ def script_signature():
     return info.st_ino, info.st_size, info.st_mtime_ns
 
 
-def usage_module():
-    """bin/harness_herdr_usage.py: beside this directory when installed, in bin/ in the repo."""
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for directory in (here, os.path.join(here, "bin")):
-        if os.path.isfile(os.path.join(directory, "harness_herdr_usage.py")):
-            if directory not in sys.path:
-                sys.path.insert(0, directory)
-            import harness_herdr_usage
-            return harness_herdr_usage
-    return None
-
-
 def pane_key(pane):
     """What a pane.updated event must change before the watcher syncs again; a shell's
     own title changes (each command) do not count."""
@@ -858,27 +842,18 @@ class Watcher:
     def __init__(self, log_path):
         self.poll = env_seconds("HARNESS_HERDR_WATCH_POLL_SECONDS", WATCH_POLL_SECONDS)
         self.refresh_every = env_seconds("HARNESS_HERDR_WATCH_REFRESH_SECONDS", WATCH_REFRESH_SECONDS)
-        self.usage_every = env_seconds("HARNESS_HERDR_USAGE_SECONDS", USAGE_SECONDS)
         self.reconnect_every = env_seconds("HARNESS_HERDR_WATCH_RECONNECT_SECONDS", WATCH_RECONNECT_SECONDS)
         self.log_path = log_path
         self.signature = script_signature()
         self.files = {}      # path -> [inode, offset]
         self.keys = {}       # pane id -> pane_key()
-        self.panes = []
         self.sock = None
         self.buffer = b""
         self.next_connect = 0.0
         self.next_refresh = 0.0
-        self.next_usage = 0.0
         self.failures = 0
         self.dirty = False
         self.forget = None   # "all" after herdr's socket closed: a restart drops metadata
-        self.badges = {}     # agent -> quota text
-        self.fetched_at = 0.0  # monotonic time of the reading in `badges`
-        self.reported = {}   # pane id -> quota text reported
-        self.renew = set()   # pane ids whose quota is due for renewal
-        self.retry_at = {}   # pane id -> monotonic time of the next quota attempt
-        self.usage_error = None
 
     def run(self):
         while True:
@@ -890,6 +865,7 @@ class Watcher:
                 if plugin_enabled() is False:
                     log("watch: plugin disabled or removed; exiting")
                     return
+                trim_log(self.log_path)
             if self.dirty or now >= self.next_refresh:
                 self.dirty = False
                 self.next_refresh = now + self.refresh_every
@@ -900,11 +876,6 @@ class Watcher:
                     if self.failures >= WATCH_MAX_FAILURES:
                         log("watch: herdr does not answer; exiting")
                         return
-            if now >= self.next_usage:
-                self.next_usage = now + self.usage_every
-                self.usage()
-                trim_log(self.log_path)
-            self.report_quota()
             if self.sock is None and now >= self.next_connect:
                 self.connect()
             self.wait(self.poll)
@@ -917,7 +888,6 @@ class Watcher:
             log("watch sync: %s" % error)
             return False
         self.forget = None
-        self.panes = panes
         # Start where the sync stopped reading, so nothing written in between is missed.
         self.files = {path: self.files.get(path) or position for path, position in watched.items()}
         self.keys = {pane.get("pane_id"): pane_key(pane) for pane in panes}
@@ -969,7 +939,6 @@ class Watcher:
             # herdr closed the stream: a server restart drops every pane's metadata.
             self.disconnect()
             self.forget = "all"
-            self.reported = {}
             self.dirty = True
             return
         self.buffer += chunk
@@ -993,55 +962,6 @@ class Watcher:
         if isinstance(pane, dict) and self.keys.get(pane.get("pane_id")) != pane_key(pane):
             self.keys[pane.get("pane_id")] = pane_key(pane)
             self.dirty = True
-
-    def usage(self):
-        try:
-            module = usage_module()
-            if module is None:
-                return
-            summary, now = module.current()
-            self.badges = module.badges(summary, now)
-            self.fetched_at = time.monotonic()
-            self.renew = set(self.reported)  # report again to renew the TTL
-            self.usage_error = None
-        except Exception as error:  # noqa: BLE001 - herdr web ui may be absent
-            # Keep the last numbers, unrenewed, until they would have expired.
-            if time.monotonic() - self.fetched_at >= QUOTA_TTL_MS / 1000.0:
-                self.badges = {}
-            if type(error).__name__ != self.usage_error:
-                log("watch usage: %s" % type(error).__name__)
-            self.usage_error = type(error).__name__
-
-    def report_quota(self):
-        """Report each pane's $quota when it changes or is due for renewal; clear it when
-        the pane's agent has no usage any more. A failed report waits before a retry.
-        A token expires when the reading it shows would."""
-        now = time.monotonic()
-        if self.badges and now - self.fetched_at >= QUOTA_TTL_MS / 1000.0:
-            self.badges = {}
-        ttl = str(max(1000, int(QUOTA_TTL_MS - (now - self.fetched_at) * 1000)))
-        wanted = {pane.get("pane_id"): self.badges.get(pane.get("agent") or "", "")
-                  for pane in self.panes if pane.get("pane_id")}
-        for pane_id, badge in wanted.items():
-            current = self.reported.get(pane_id, "")
-            due = badge != current or (badge and pane_id in self.renew)
-            if not due or self.retry_at.get(pane_id, 0) > now:
-                continue
-            change = (["--token", "quota=" + badge, "--ttl-ms", ttl] if badge
-                      else ["--clear-token", "quota"])
-            if herdr_ok("pane", "report-metadata", pane_id, "--source", USAGE_SOURCE, *change):
-                if badge:
-                    self.reported[pane_id] = badge
-                else:
-                    self.reported.pop(pane_id, None)
-                self.renew.discard(pane_id)
-                self.retry_at.pop(pane_id, None)
-            else:
-                self.retry_at[pane_id] = now + QUOTA_RETRY_SECONDS
-        for records in (self.reported, self.retry_at):
-            for pane_id in [pane_id for pane_id in records if pane_id not in wanted]:
-                del records[pane_id]
-        self.renew &= set(wanted)
 
 
 def watch():
