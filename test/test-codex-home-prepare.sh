@@ -151,11 +151,12 @@ grep -q '^model = "gpt-6.1-sol"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL:
 grep -q '^model = "gpt-6.1-sol"' "$CODEX_HOME/rich.config.toml" || { echo "FAIL: rich model should use GPT-6.1 Sol"; exit 1; }
 grep -q '^model_reasoning_effort = "low"' "$CODEX_HOME/fast.config.toml" || { echo "FAIL: fast effort wrong"; exit 1; }
 grep -q '^model_reasoning_effort = "medium"' "$CODEX_HOME/base.config.toml" || { echo "FAIL: base effort wrong"; exit 1; }
+grep -q '^model_reasoning_effort = "high"' "$CODEX_HOME/sol.config.toml" || { echo "FAIL: sol effort wrong"; exit 1; }
 grep -q '^model_reasoning_effort = "high"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan effort wrong"; exit 1; }
 grep -q '^sandbox_mode = "read-only"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan sandbox_mode missing"; exit 1; }
 grep -q '^approval_policy = "on-request"' "$CODEX_HOME/plan.config.toml" || { echo "FAIL: plan approval_policy missing"; exit 1; }
-grep -q '^model_reasoning_effort = "high"' "$CODEX_HOME/rich.config.toml" || { echo "FAIL: rich effort wrong"; exit 1; }
-echo "PASS: per-profile *.config.toml files (top-level keys; fast/base/plan/rich)"
+grep -q '^model_reasoning_effort = "xhigh"' "$CODEX_HOME/rich.config.toml" || { echo "FAIL: rich effort wrong"; exit 1; }
+echo "PASS: per-profile *.config.toml files (top-level keys; fast/base/sol/plan/rich)"
 
 # mcp_servers schema (HTTP, stdio, env)
 grep -q '^\[mcp_servers.atlassian\]' "$config" || { echo "FAIL: atlassian section missing"; exit 1; }

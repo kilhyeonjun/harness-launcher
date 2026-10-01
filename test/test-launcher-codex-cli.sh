@@ -890,6 +890,9 @@ echo "PASS: codex CLI happy continue blocked (Happy Codex cannot map codex resum
 echo "✓ All codex CLI native tests passed"
 
 # Explicit Slack app opt-ins demand native user approval across every prefix.
+# A full-access (bypass) launch keeps other MCP servers unprompted, as Codex
+# does under never + full access; Slack-named servers keep their policy.
+printf '[mcp_servers.fixture-mcp]\ncommand = "fixture"\n[mcp_servers.slack]\ncommand = "slack-mcp"\n' > "$TEST_HARNESS/.harness/codex/config.toml"
 for slack_prefix in alpha beta gamma; do
   for safety in base bypass never; do
     cat > "$TEST_HARNESS/config/launcher.env" <<EOF
@@ -904,8 +907,15 @@ EOF
     [[ "$argv" == *'apps.asdk_app_slacktest.tools.slack_slack_send_message.approval_mode="prompt"'* && "$argv" == *'apps.asdk_app_slacktest.approvals_reviewer="user"'* && "$argv" == *'apps.asdk_app_slacktest.links={}'* ]] || { echo "FAIL: Slack $slack_prefix/$safety missing exact-tool approval: $argv"; exit 1; }
     [[ "$argv" != *'--dangerously-bypass-approvals-and-sandbox'* && "$argv" != *'-a never'* && "$argv" == *'-a on-request'* ]] || { echo "FAIL: Slack approval disabled: $argv"; exit 1; }
     [[ "$argv" != *'reaction.approval_mode'* && "$argv" != *'draft.approval_mode'* && "$argv" != *'read_thread.approval_mode'* ]] || { echo "FAIL: read/draft/reaction gained prompts"; exit 1; }
+    [[ "$argv" != *'mcp_servers.slack.'* ]] || { echo "FAIL: Slack MCP server auto-approved: $argv"; exit 1; }
+    if [[ "$safety" == bypass ]]; then
+      [[ "$argv" == *'mcp_servers.fixture-mcp.default_tools_approval_mode="approve"'* ]] || { echo "FAIL: bypass MCP tools prompt: $argv"; exit 1; }
+    else
+      [[ "$argv" != *'default_tools_approval_mode'* ]] || { echo "FAIL: $safety auto-approved MCP tools: $argv"; exit 1; }
+    fi
   done
 done
+rm -f "$TEST_HARNESS/.harness/codex/config.toml"
 echo "PASS: three-profile Slack normal/bypass/never resume and caller overrides retain user approval"
 
 output="$TEST_TEMP/slack-happy-rejected.txt"

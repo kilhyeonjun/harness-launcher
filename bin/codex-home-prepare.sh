@@ -1334,7 +1334,7 @@ write_profile base \
   'model_reasoning_effort = "medium"'
 write_profile sol \
   'model = "gpt-6.1-sol"' \
-  'model_reasoning_effort = "medium"'
+  'model_reasoning_effort = "high"'
 write_profile astra \
   'model = "gpt-6-astra"' \
   'model_reasoning_effort = "medium"'
@@ -1345,7 +1345,7 @@ write_profile plan \
   'approval_policy = "on-request"'
 write_profile rich \
   'model = "gpt-6.1-sol"' \
-  'model_reasoning_effort = "high"'
+  'model_reasoning_effort = "xhigh"'
 
 # 4. Materialize harness-approved bundled Codex plugins. The config entries
 # above make them enabled, but Codex reports a plugin as installed only when

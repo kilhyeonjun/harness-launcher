@@ -107,12 +107,12 @@ Current routing:
 | default | GPT-5.6 Terra | medium | Runtime defaults | Everyday work — recommended default |
 | fast | GPT-6 Luna | low | Runtime defaults | Quick, shallow work |
 | base | GPT-5.6 Terra | medium | Runtime defaults | Everyday work — recommended default |
-| sol | GPT-6.1 Sol | medium | Runtime defaults | Stronger main model — slower |
+| sol | GPT-6.1 Sol | high | Runtime defaults | Stronger main model — slower |
 | astra | GPT-6 Astra | medium | Runtime defaults | Explicit frontier-model selection |
 | plan | GPT-6.1 Sol | high | read-only, on-request | Deep planning — slower |
-| rich | GPT-6.1 Sol | high | Runtime defaults | Deep work — slowest normal preset |
+| rich | GPT-6.1 Sol | xhigh | Runtime defaults | Deep work — slowest normal preset |
 
-These profiles are task-oriented operational presets, not OpenAI default-effort claims. This launcher deliberately uses Luna/low for the speed preset and Sol/high for the deep plan and rich presets; an unscoped model picker may use a different general starting effort. Effort can still be overridden independently in native Codex. Reserve max or multi-agent ultra execution for exceptional workloads rather than normal profile defaults.
+These profiles are task-oriented operational presets, not OpenAI default-effort claims. This launcher deliberately uses Luna/low for the speed preset, Sol/high for the sol and plan presets, and Sol/xhigh for rich, one step apart like Claude's `opus` (high) and `rich` (xhigh); an unscoped model picker may use a different general starting effort. Effort can still be overridden independently in native Codex. Reserve max or multi-agent ultra execution for exceptional workloads rather than normal profile defaults.
 
 `<prefix> codex fast`, `<prefix> codex sol`, and `<prefix> codex astra`
 select their native profiles explicitly. The Profile menu keeps its original
@@ -375,7 +375,7 @@ command through `/hooks` when Codex requests it.
 ```text
 <prefix> codex                 new session with base profile
 <prefix> codex fast            new session with fast profile
-<prefix> codex sol             new session with GPT-6.1 Sol at medium effort
+<prefix> codex sol             new session with GPT-6.1 Sol at high effort
 <prefix> codex astra           new session with Astra at medium effort
 <prefix> codex base 1m         explicit long-context session
 <prefix> codex [profile] work   new session with the work MCP surface (any profile)
@@ -487,7 +487,20 @@ covered; reads, reactions, and message drafts are excluded.
 
 Caller flags, profiles, and resumed grants cannot disable those prompts. A
 Slack-enabled `bypass` launch retains `danger-full-access` but changes approval
-to `on-request`; a plain `never` launch keeps its sandbox. Per-account `links`
+to `on-request`; a plain `never` launch keeps its sandbox. Codex auto-approves
+MCP tool prompts only under `never` with full disk access, so a final
+`danger-full-access` launch (bypass, or a resumed bypass recorded as
+`on-request` with `danger-full-access`) also sets
+`default_tools_approval_mode = "approve"` for each MCP server and each enabled
+non-Slack app in the generated `config.toml`. Without this, every MCP tool call
+asked for approval. Slack apps and MCP servers whose name contains `slack` keep
+their own policy (a Slack MCP server registered under another name is not
+recognized, so name it accordingly); a server or app mode already set in `config.toml` or by a
+caller `-c`, and explicit per-tool modes, still win; an unreadable home adds
+nothing. The record cannot tell a resumed bypass from an explicit
+`-a on-request -s danger-full-access`, so the explicit form is treated the same
+way, and the mode is fixed at launch: lowering `/permissions` later does not
+bring MCP prompts back. Per-account `links`
 policy overrides are cleared only in the final runtime configuration, forcing
 every connected account through the app's user reviewer. This does not modify
 saved connector credentials or account metadata. The existing stdio app-server

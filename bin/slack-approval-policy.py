@@ -45,6 +45,57 @@ def codex_config():
     return result
 
 
+def final_sandbox(options):
+    sandbox = None
+    for index, arg in enumerate(options):
+        if arg in ('-s', '--sandbox') and index + 1 < len(options):
+            sandbox = options[index + 1]
+        elif arg.startswith('--sandbox='):
+            sandbox = arg.split('=', 1)[1]
+        elif arg.startswith('-s') and len(arg) > 2 and not arg.startswith('--'):
+            sandbox = arg[2:]
+    return sandbox
+
+
+def full_access_auto_approval(options):
+    """Approve modes for the generated home's MCP servers and non-Slack apps.
+
+    Codex auto-approves MCP prompts only under approval `never` with full disk
+    access. Slack forces `on-request`, so a full-access launch keeps that
+    behavior explicitly. Slack apps and Slack-named MCP servers keep their own
+    policy, and a mode already set in the home or by the caller wins. An
+    unreadable home adds nothing, so tools prompt instead.
+    """
+    home = os.environ.get('CODEX_HOME', '')
+    if not home:
+        return {}
+    try:
+        import tomllib
+        with open(os.path.join(home, 'config.toml'), 'rb') as file:
+            config = tomllib.load(file)
+    except (ImportError, OSError, ValueError):
+        return {}
+    caller = {value.split('=', 1)[0].strip() for flag, value in zip(options, options[1:])
+              if flag in ('-c', '--config')}
+    caller |= {arg.split('=', 1)[1].split('=', 1)[0].strip() for arg in options if arg.startswith('--config=')}
+    safe = re.compile(r'[A-Za-z0-9_-]+')
+    slack = set(slack_apps())
+    result = {}
+
+    def approve(key, table):
+        if 'default_tools_approval_mode' not in table and key not in caller:
+            result[key] = 'approve'
+
+    for name, server in sorted((config.get('mcp_servers') or {}).items()):
+        if isinstance(server, dict) and safe.fullmatch(name) and 'slack' not in name.lower():
+            approve(f'mcp_servers.{name}.default_tools_approval_mode', server)
+    for app, settings in sorted((config.get('apps') or {}).items()):
+        if (app != '_default' and app not in slack and isinstance(settings, dict)
+                and settings.get('enabled') is True and safe.fullmatch(app)):
+            approve(f'apps.{app}.default_tools_approval_mode', settings)
+    return result
+
+
 def codex_argv(args):
     config = codex_config()
     if not config:
@@ -53,6 +104,8 @@ def codex_argv(args):
     # filesystem grant, and make approvals available for the Slack prompt.
     options = args[:args.index('--')] if '--' in args else args
     bypass = '--dangerously-bypass-approvals-and-sandbox' in options
+    if bypass or final_sandbox(options) == 'danger-full-access':
+        config = {**config, **full_access_auto_approval(options)}
     result = []
     index = 0
     while index < len(args):
