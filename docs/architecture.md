@@ -342,16 +342,32 @@ legacy routes do not change.
   profile, on a throwaway copy of the candidate that the broker deletes and
   never reads back; the broker commits and pushes from the candidate itself
   (no hooks, fsmonitor or external drivers), so nothing a test writes into
-  the copy's `.git` or work tree runs or is delivered. The profile allows:
-  no network at all, except unix sockets inside the verifier's temp dir (no
-  loopback services, no Docker socket); writes only to the copy, a fresh
-  per-verify temp dir outside `HOME` (`TMPDIR` under `/private/tmp`, removed
-  afterwards), `/dev/null`, `/dev/tty` and `/dev/fd`; no reads of anything
-  under `HOME` or the state home except the copy, the temp dir, the trusted
-  verifier and toolchains (`PATH` entries under `HOME`, mise's installs,
-  cache and `~/.config/mise/config.toml`), and never `~/.ssh`, `~/.hermes`,
-  `~/buzz`, `~/.config/gh`, `~/.aws`, `~/.claude`, `~/Library/Keychains`,
-  `~/.git-credentials`, `~/.netrc`, `~/.config/git` or the source checkout.
+  the copy's `.git` or work tree runs or is delivered. The profile denies by
+  default and allows only: fork, and exec of binaries under `/usr`, `/bin`,
+  `/sbin`, `/System`, `/Library/Developer`, the Homebrew prefix, mise and
+  other `PATH` directories (never `/` or a directory holding `HOME` or the
+  state home), the copy, the temp dir and the trusted verifier; reads of
+  those trees plus `/Library/Developer`, `/Library/Frameworks`,
+  `/Library/Apple` and `/Library/Perl` (not Application Support,
+  Preferences, Logs or Keychains), `/private/var/db/timezone`,
+  `/private/var/select`, `/dev` and a few `/private/etc` files (`hosts`,
+  `passwd`, `group`, `localtime`, `services`, `protocols`, `shells`, `ssl`),
+  with the Homebrew `etc` and `var` denied except its OpenSSL and CA config;
+  file metadata anywhere (path resolution: `stat`, not directory listings);
+  `sysctl` reads except the process table (`kern.proc`); no network at all,
+  except unix sockets inside the verifier's temp dir (no loopback services,
+  no Docker socket, no `PF_SYSTEM` kernel-control sockets); writes only
+  to the copy, a fresh per-verify temp dir outside `HOME` (`TMPDIR` under
+  `/private/tmp`, removed afterwards), `/dev/null`, `/dev/tty`,
+  `/dev/dtracehelper` and `/dev/fd`. The state home (other sessions'
+  worktrees, records and trusted git dirs) is denied even when a `PATH`
+  directory holds it, with only the copy and the trusted verifier inside it
+  allowed again. Nothing under `HOME` or the state home is
+  readable except the copy, the temp dir, the trusted verifier and toolchains
+  (mise's installs, cache and `~/.config/mise/config.toml`, `PATH`
+  directories), and never `~/.ssh`, `~/.hermes`, `~/buzz`, `~/.config/gh`,
+  `~/.aws`, `~/.claude`, `~/Library/Keychains`, `~/.git-credentials`,
+  `~/.netrc`, `~/.config/git` or the source checkout.
   User git config is not readable; the verifier gets a generated global git
   config (`GIT_CONFIG_GLOBAL`, identity only), and neither the copy nor the
   trusted clone keeps a remote, so no remote URL with credentials is
