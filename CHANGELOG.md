@@ -2,6 +2,19 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.44.1 — 2026-10-07
+
+- The headless verifier sandbox denies by default. The 0.44.0 profile started
+  from `(allow default)`, so reads outside `HOME` (`/private/etc`,
+  `/private/var/folders`, the Homebrew `etc` and `var`), the `sysctl`
+  process table and exec of any binary were open. The profile now allows
+  only what the repository verifier and its tests were observed to need:
+  fork and exec under system and toolchain prefixes and the verifier's own
+  dirs; reads of system and toolchain trees, a few `/private/etc` files and
+  the Homebrew OpenSSL and CA config; file metadata; `sysctl` reads except
+  `kern.proc`; plus the 0.44.0 network, write, mach-service, signal and
+  credential rules.
+
 ## 0.44.0 — 2026-10-07
 
 - `harness-headless` runs the repository verifier in a sandbox. The verifier

@@ -527,16 +527,18 @@ time.sleep(600)
 PY
 listener=$!
 for _ in $(seq 50); do [[ -s "$TMP/listen-port" ]] && break; sleep 0.1; done
-printf 'LOOP_PORT=%s\nOUTSIDE_PID=%s\nLAUNCHCTL_MARKER=%s\nLAUNCHCTL_LABEL=%s\n' \
-  "$(cat "$TMP/listen-port")" "$listener" "$TMP/launchctl-ran" "harness-breach-$$" > "$TMP/breach.env"
+# Outside HOME, in no allowed tree: a token file and a copied binary.
+mkdir -p "$TMP/outside"; printf 'outside-%s\n' token > "$TMP/outside/token"; printf '#!/bin/sh\necho "$@"\n' > "$TMP/outside/echo-copy"; chmod +x "$TMP/outside/echo-copy"
+printf 'LOOP_PORT=%s\nOUTSIDE_PID=%s\nLAUNCHCTL_MARKER=%s\nLAUNCHCTL_LABEL=%s\nOUTSIDE_TOKEN=%s\nOUTSIDE_BIN=%s\n' \
+  "$(cat "$TMP/listen-port")" "$listener" "$TMP/launchctl-ran" "harness-breach-$$" "$TMP/outside/token" "$TMP/outside/echo-copy" > "$TMP/breach.env"
 cat > "$TMP/breach.sh" <<'EOF'
 #!/bin/bash
 # An agent-written test that reaches for the network, local services, HOME,
 # secrets, the keychain, git credentials, launchd, LaunchServices, AppleEvents
 # and processes outside the sandbox. It "passes" only if it got everything.
 source "$(dirname "$0")/breach.env"
-LOOP_PORT="$LOOP_PORT" OUTSIDE_PID="$OUTSIDE_PID" python3 - <<'PY'
-import errno, os, signal, socket
+LOOP_PORT="$LOOP_PORT" OUTSIDE_PID="$OUTSIDE_PID" OUTSIDE_TOKEN="$OUTSIDE_TOKEN" python3 - <<'PY'
+import ctypes, ctypes.util, errno, os, signal, socket
 home = os.environ['HOME']
 def probe(name, f):
     try:
@@ -559,6 +561,14 @@ for name, path in (('read-ssh', '.ssh/id_fixture'), ('read-history', '.zsh_histo
                    ('read-session-record', '.local/state/harness-launcher/sessions/other/journal')):
     probe(name, lambda path=path: open(os.path.join(home, path)).read())
 probe('signal-outside', lambda: os.kill(int(os.environ['OUTSIDE_PID']), 0))
+probe('read-outside-token', lambda: open(os.environ['OUTSIDE_TOKEN']).read())
+def process_table():
+    # sysctl({CTL_KERN, KERN_PROC, KERN_PROC_ALL}): the process list ps reads.
+    libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+    mib, size = (ctypes.c_int * 3)(1, 14, 0), ctypes.c_size_t(0)
+    if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value == 0:
+        raise OSError(ctypes.get_errno() or errno.EPERM, 'kern.proc')
+probe('process-table', process_table)
 PY
 check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then echo "PROBE $name ALLOWED"; else echo "PROBE $name blocked"; fi; }
 check security security find-generic-password -s harness-breach-probe -w
@@ -572,12 +582,17 @@ check nested-sandbox /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/
 check osascript /usr/bin/osascript -e 'tell application "Finder" to get version'
 check open /usr/bin/open -g -j -a Calculator
 check launchctl /bin/launchctl submit -l "$LAUNCHCTL_LABEL" -- /usr/bin/touch "$LAUNCHCTL_MARKER"
+check exec-outside "$OUTSIDE_BIN" hi
 exit 1
 EOF
 # Control: outside the sandbox the same reads and writes succeed.
-control="$(python3 - "$FAKE_HOME" "$(cat "$TMP/listen-port")" <<'PY' 2>&1 || true
-import os, socket, sys
+control="$("$TMP/outside/echo-copy" EXEC-OK; python3 - "$FAKE_HOME" "$(cat "$TMP/listen-port")" "$TMP/outside/token" <<'PY' 2>&1 || true
+import ctypes, ctypes.util, os, socket, sys
 home, port = sys.argv[1], int(sys.argv[2])
+open(sys.argv[3]).read()
+libc = ctypes.CDLL(ctypes.util.find_library('c'))
+mib, size = (ctypes.c_int * 3)(1, 14, 0), ctypes.c_size_t(0)
+assert libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) == 0 and size.value > 0
 open(os.path.join(home, 'breach-wrote-home'), 'w').close()
 open(os.path.join(home, '.ssh/id_fixture')).read()
 socket.create_connection(('127.0.0.1', port), timeout=5).close()
@@ -585,7 +600,7 @@ s = socket.socket(socket.AF_UNIX); s.connect(os.path.join(home, '.orbstack/run/d
 print('CONTROL-OK')
 PY
 )"
-grep -q CONTROL-OK <<< "$control" || fail "breach control must reach HOME and the listeners unsandboxed: $control"
+grep -q EXEC-OK <<< "$control" && grep -q CONTROL-OK <<< "$control" || fail "breach control must reach HOME and the listeners unsandboxed: $control"
 rm -f "$FAKE_HOME/breach-wrote-home"
 echo breach > "$TMP/mode"
 remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
@@ -599,6 +614,7 @@ expect_status failed
 for blocked in 'network EPERM' 'loopback EPERM' 'docker-socket EPERM' 'write-home EPERM' 'read-ssh EPERM' \
     'read-history EPERM' 'read-cookies EPERM' 'read-session-record EPERM' 'signal-outside EPERM' \
     'read-git-credentials EPERM' 'read-xdg-git-credentials EPERM' 'read-netrc EPERM' 'read-gitconfig EPERM' \
+    'read-outside-token EPERM' 'process-table EPERM' 'exec-outside blocked' \
     'env-credentials blocked' 'copy-remote blocked' 'git-config-token blocked' \
     'security blocked' 'git-credential blocked' 'nested-sandbox blocked' 'osascript blocked' 'open blocked' 'launchctl blocked'; do
   grep -q "^PROBE $blocked\$" "$RESULT.log" || fail "the verifier sandbox must block: $blocked"
