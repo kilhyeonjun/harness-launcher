@@ -76,6 +76,14 @@ case "\$mode" in
     git add -f .claude/settings.local.json config/.local/planted projects/planted normal.txt
     git -c user.name=t -c user.email=t@example.invalid commit -qm planted
     echo "\$ok" ;;
+  nested)
+    printf 'edit %s\n' "\$\$" > nested-edit.txt
+    git init -q sub
+    echo "\$ok" ;;
+  unreadable)
+    printf 'edit %s\n' "\$\$" > unreadable-edit.txt
+    printf 'x\n' > locked.txt && chmod 000 locked.txt
+    echo "\$ok" ;;
   linger)
     printf 'linger %s\n' "\$\$" > linger.txt
     # Outside claude's process group, cwd in the session root.
@@ -238,6 +246,17 @@ expect_status delivered
 [[ -s "$TMP/linger.pid" ]] || fail 'linger process did not start'
 ! kill -0 "$(cat "$TMP/linger.pid")" 2>/dev/null || fail 'a process left in the session root must be killed before delivery'
 echo 'PASS: harness-headless delivers the work tree through a launcher-owned git dir'
+
+# --- a failed stage is never reported as no_changes -------------------------------
+for mode in nested unreadable; do
+  echo "$mode" > "$TMP/mode"
+  remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
+  headless || fail "$mode run must exit 0"
+  expect_status failed
+  [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail "$mode run must deliver nothing"
+  [[ "$(field session_id)" != null ]] && grep -qv state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail "$mode session must be kept"
+done
+echo 'PASS: harness-headless fails closed when the work tree cannot be staged'
 
 # --- an INTEGRATING journal after close is recovered once, whatever the exit code --
 python3 - "$ROOT/bin" "$TMP/m1" <<'PY' || fail 'INTEGRATING after close must be recovered'

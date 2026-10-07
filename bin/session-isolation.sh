@@ -307,8 +307,10 @@ transition() {
 # the session (HEAD moved off the base). Call use_session_git first.
 session_has_changes() {
   if [[ -n "$ROOT_GIT_DIR" ]]; then
-    # The work tree holds the final content, committed or not.
-    root_git "$1" add -A -- . "${EXCLUDED_PATHSPEC[@]}"
+    # The work tree holds the final content, committed or not. A failed stage
+    # leaves the index at base, so it counts as changed (submit then fails
+    # closed) instead of reading as clean and dropping the edits.
+    root_git "$1" add -A -- . "${EXCLUDED_PATHSPEC[@]}" || return 0
     ! root_git "$1" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$2" -- . "${EXCLUDED_PATHSPEC[@]}"
     return
   fi
