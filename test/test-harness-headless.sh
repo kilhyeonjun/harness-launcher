@@ -189,7 +189,7 @@ printf '%s\n' '{"_note":"bridge policy","permissions":{"deny":["Read(//secret/**
 
 headless() {
   rm -f "$TMP/claude-argv" "$TMP/claude-env" "$TMP/claude-pwd"
-  ${HEADLESS_EXEC:+exec} env -i PATH="$TMP/failgit:$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+  ${HEADLESS_EXEC:+exec} env -i PATH="${EXTRA_PATH:+$EXTRA_PATH:}$TMP/failgit:$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
     HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" \
     ANTHROPIC_API_KEY=leak-api BUZZ_TOKEN=leak-buzz TELEGRAM_BOT_TOKEN=leak-telegram \
     "$PREFIX/bin/harness-headless" hh --prompt-file "$PROMPT" --result-file "$RESULT" \
@@ -529,15 +529,22 @@ listener=$!
 for _ in $(seq 50); do [[ -s "$TMP/listen-port" ]] && break; sleep 0.1; done
 # Outside HOME, in no allowed tree: a token file and a copied binary.
 mkdir -p "$TMP/outside"; printf 'outside-%s\n' token > "$TMP/outside/token"; printf '#!/bin/sh\necho "$@"\n' > "$TMP/outside/echo-copy"; chmod +x "$TMP/outside/echo-copy"
-printf 'LOOP_PORT=%s\nOUTSIDE_PID=%s\nLAUNCHCTL_MARKER=%s\nLAUNCHCTL_LABEL=%s\nOUTSIDE_TOKEN=%s\nOUTSIDE_BIN=%s\n' \
-  "$(cat "$TMP/listen-port")" "$listener" "$TMP/launchctl-ran" "harness-breach-$$" "$TMP/outside/token" "$TMP/outside/echo-copy" > "$TMP/breach.env"
+# The breach run's state home sits inside a PATH directory, beside another
+# session's record and trusted git dir.
+BREACH_STATE="$TMP/xdg/state"
+mkdir -p "$BREACH_STATE/sessions/other/trusted.git" "$TMP/xdg/bin"
+printf 'other-session-%s\n' record > "$BREACH_STATE/sessions/other/journal"
+printf '[remote "origin"]\n\turl = https://example.invalid/other.git\n' > "$BREACH_STATE/sessions/other/trusted.git/config"
+printf 'LOOP_PORT=%s\nOUTSIDE_PID=%s\nLAUNCHCTL_MARKER=%s\nLAUNCHCTL_LABEL=%s\nOUTSIDE_TOKEN=%s\nOUTSIDE_BIN=%s\nOTHER_SESSION=%s\n' \
+  "$(cat "$TMP/listen-port")" "$listener" "$TMP/launchctl-ran" "harness-breach-$$" "$TMP/outside/token" "$TMP/outside/echo-copy" \
+  "$BREACH_STATE/sessions/other" > "$TMP/breach.env"
 cat > "$TMP/breach.sh" <<'EOF'
 #!/bin/bash
 # An agent-written test that reaches for the network, local services, HOME,
 # secrets, the keychain, git credentials, launchd, LaunchServices, AppleEvents
 # and processes outside the sandbox. It "passes" only if it got everything.
 source "$(dirname "$0")/breach.env"
-LOOP_PORT="$LOOP_PORT" OUTSIDE_PID="$OUTSIDE_PID" OUTSIDE_TOKEN="$OUTSIDE_TOKEN" python3 - <<'PY'
+LOOP_PORT="$LOOP_PORT" OUTSIDE_PID="$OUTSIDE_PID" OUTSIDE_TOKEN="$OUTSIDE_TOKEN" OTHER_SESSION="$OTHER_SESSION" python3 - <<'PY'
 import ctypes, ctypes.util, errno, os, signal, socket
 home = os.environ['HOME']
 def probe(name, f):
@@ -562,6 +569,12 @@ for name, path in (('read-ssh', '.ssh/id_fixture'), ('read-history', '.zsh_histo
     probe(name, lambda path=path: open(os.path.join(home, path)).read())
 probe('signal-outside', lambda: os.kill(int(os.environ['OUTSIDE_PID']), 0))
 probe('read-outside-token', lambda: open(os.environ['OUTSIDE_TOKEN']).read())
+probe('read-other-session', lambda: open(os.path.join(os.environ['OTHER_SESSION'], 'journal')).read())
+probe('read-other-trusted-git', lambda: open(os.path.join(os.environ['OTHER_SESSION'], 'trusted.git/config')).read())
+probe('list-state-home', lambda: os.listdir(os.path.dirname(os.environ['OTHER_SESSION'])))
+probe('list-home', lambda: os.listdir(home))
+probe('read-library-prefs', lambda: open('/Library/Preferences/SystemConfiguration/preferences.plist', 'rb').read())
+probe('pf-system-socket', lambda: socket.socket(socket.PF_SYSTEM, socket.SOCK_DGRAM, socket.SYSPROTO_CONTROL).close())
 def process_table():
     # sysctl({CTL_KERN, KERN_PROC, KERN_PROC_ALL}): the process list ps reads.
     libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
@@ -604,7 +617,9 @@ grep -q EXEC-OK <<< "$control" && grep -q CONTROL-OK <<< "$control" || fail "bre
 rm -f "$FAKE_HOME/breach-wrote-home"
 echo breach > "$TMP/mode"
 remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
+STATE_MAIN="$STATE"; STATE="$BREACH_STATE"; EXTRA_PATH="$TMP/xdg"
 headless || fail 'breach run must exit 0'
+STATE="$STATE_MAIN"; unset EXTRA_PATH
 sleep 1
 /bin/launchctl remove "harness-breach-$$" 2>/dev/null || true
 pkill -x Calculator 2>/dev/null || true
@@ -615,6 +630,8 @@ for blocked in 'network EPERM' 'loopback EPERM' 'docker-socket EPERM' 'write-hom
     'read-history EPERM' 'read-cookies EPERM' 'read-session-record EPERM' 'signal-outside EPERM' \
     'read-git-credentials EPERM' 'read-xdg-git-credentials EPERM' 'read-netrc EPERM' 'read-gitconfig EPERM' \
     'read-outside-token EPERM' 'process-table EPERM' 'exec-outside blocked' \
+    'read-other-session EPERM' 'read-other-trusted-git EPERM' 'list-state-home EPERM' 'list-home EPERM' \
+    'read-library-prefs EPERM' 'pf-system-socket EPERM' \
     'env-credentials blocked' 'copy-remote blocked' 'git-config-token blocked' \
     'security blocked' 'git-credential blocked' 'nested-sandbox blocked' 'osascript blocked' 'open blocked' 'launchctl blocked'; do
   grep -q "^PROBE $blocked\$" "$RESULT.log" || fail "the verifier sandbox must block: $blocked"

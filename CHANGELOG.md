@@ -13,7 +13,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
   dirs; reads of system and toolchain trees, a few `/private/etc` files and
   the Homebrew OpenSSL and CA config; file metadata; `sysctl` reads except
   `kern.proc`; plus the 0.44.0 network, write, mach-service, signal and
-  credential rules.
+  credential rules. The state home is denied explicitly (so a `PATH`
+  directory that holds it does not expose other sessions), `/Library` reads
+  are limited to its toolchain parts, and `PF_SYSTEM` kernel-control sockets
+  are no longer allowed.
 
 ## 0.44.0 — 2026-10-07
 

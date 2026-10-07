@@ -578,22 +578,29 @@ sbpl_str() { local value="${1//\\/\\\\}"; printf '"%s"' "${value//\"/\\\"}"; }
 # profile, deny by default. Allowed: fork, and exec of binaries under system
 # and toolchain prefixes or the copy, temp dir and trusted verifier; reads of
 # system and toolchain trees (Homebrew without etc/var except its OpenSSL and
-# CA config, mise, PATH directories other than / and HOME or its ancestors), a
+# CA config, mise, PATH directories other than / or ones holding HOME or the
+# state home), a
 # few /private/etc files, the copy, the temp dir and the
-# trusted verifier; metadata reads anywhere (path resolution); writes only to
-# the copy and the temp dir; unix sockets only inside the temp dir; sysctl
-# reads except the process table; mach services in SANDBOX_MACH_ALLOW;
-# signals and process inspection within the sandbox. Credential stores and the
-# source checkout are denied even inside an allowed tree. No user git config
-# is readable (the verifier gets a generated one).
-SANDBOX_SYSTEM_READ=(/usr /bin /sbin /System /Library /private/var/db/timezone /private/var/select /dev)
+# trusted verifier; metadata reads anywhere (path resolution: stat, not
+# directory listings); writes only to the copy and the temp dir; network
+# only for unix sockets inside the temp dir; sysctl reads except
+# the process table; mach services in SANDBOX_MACH_ALLOW; signals and process
+# inspection within the sandbox. The state home (other sessions' worktrees,
+# records and trusted git dirs) is denied even if a PATH directory holds it,
+# then the copy and the trusted verifier inside it are allowed again.
+# Credential stores and the source checkout are denied even inside an allowed
+# tree. No user git config is readable (the verifier gets a generated one).
+# /Library: only the toolchain parts, not Application Support, Preferences,
+# Managed Preferences, Logs or Keychains.
+SANDBOX_SYSTEM_READ=(/usr /bin /sbin /System /Library/Developer /Library/Frameworks /Library/Apple /Library/Perl
+  /private/var/db/timezone /private/var/select /dev)
 SANDBOX_SYSTEM_EXEC=(/usr /bin /sbin /System /Library/Developer /private/var/select)
 SANDBOX_ETC_READ=(/private/etc/hosts /private/etc/passwd /private/etc/group /private/etc/localtime
   /private/etc/services /private/etc/protocols /private/etc/shells /private/etc/ssl)
 SANDBOX_TOOL_PREFIXES=(/opt/homebrew /usr/local)
 verifier_sandbox_profile() {
-  local copy tmp home source="$4" trusted path entry name prefix
-  copy="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; trusted="$(phys "$5")"
+  local copy tmp home source="$4" trusted state path entry name prefix
+  copy="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; trusted="$(phys "$5")"; state="$(phys "$(state_home)")"
   local -a read=("${SANDBOX_SYSTEM_READ[@]}" "${SANDBOX_ETC_READ[@]}" "$copy" "$tmp" "$trusted"
     "$home/.config/mise/config.toml" "$home/.local/share/mise" "$home/.cache/mise" "$home/.CFUserTextEncoding")
   local -a exec=("${SANDBOX_SYSTEM_EXEC[@]}" "$copy" "$tmp" "$trusted" "$home/.local/share/mise") deny=() etc_allow=()
@@ -608,8 +615,9 @@ verifier_sandbox_profile() {
   for entry in "${path_entries[@]}"; do
     [[ -d "$entry" ]] || continue
     entry="$(phys "$entry")"
-    # A PATH directory is a toolchain, unless it is / or HOME or holds HOME.
-    [[ "$entry" != / && "$home/" != "$entry/"* ]] || continue
+    # A PATH directory is a toolchain, unless it is / or holds HOME or the
+    # state home.
+    [[ "$entry" != / && "$home/" != "$entry/"* && "$state/" != "$entry/"* ]] || continue
     read+=("$entry"); exec+=("$entry")
   done
   for path in "$home/.ssh" "$home/.hermes" "$home/buzz" "$home/.config/gh" "$home/.aws" "$home/.claude" \
@@ -627,6 +635,12 @@ verifier_sandbox_profile() {
   printf ' (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (subpath "/dev/fd"))\n'
   printf '(allow file-ioctl (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (subpath "/dev/fd"))\n'
   printf '(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center"))\n'
+  # The state home, then the verifier's own dirs inside it again.
+  printf '(deny file-read* file-write* process-exec* (subpath %s) (subpath %s))\n' \
+    "$(sbpl_str "$(state_home)")" "$(sbpl_str "$state")"
+  printf '(allow file-read* process-exec* (subpath %s) (subpath %s) (subpath %s))\n' \
+    "$(sbpl_str "$copy")" "$(sbpl_str "$tmp")" "$(sbpl_str "$trusted")"
+  printf '(allow file-write* (subpath %s) (subpath %s))\n' "$(sbpl_str "$copy")" "$(sbpl_str "$tmp")"
   printf '(deny file-read* file-write* process-exec*'
   for path in "${deny[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
   printf ')\n'
@@ -635,7 +649,9 @@ verifier_sandbox_profile() {
     for path in "${etc_allow[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
     printf ')\n'
   fi
-  printf '(allow system-socket)\n'
+  # No system-socket: it gates PF_SYSTEM kernel-control sockets, which no
+  # verifier needs. Ordinary socket() calls are not gated; every network*
+  # operation on them is denied except AF_UNIX inside the temp dir.
   printf '(allow network* (local unix-socket (subpath %s)))\n' "$(sbpl_str "$tmp")"
   printf '(allow network* (remote unix-socket (subpath %s)))\n' "$(sbpl_str "$tmp")"
   printf '(allow sysctl-read)\n(deny sysctl-read (sysctl-name-prefix "kern.proc"))\n'
