@@ -42,11 +42,23 @@ create() {
   git -C "$root" remote remove origin
   git -C "$root" checkout -q --detach "$sha"
   rm -rf "$root/config/.local"
-  if [[ -d "$source/projects" ]]; then rm -rf "$root/projects"; ln -s "$source/projects" "$root/projects"; fi
+  # HARNESS_HEADLESS=1 (set only by harness-headless): no write path back to
+  # the canonical root. Local files are copied, projects/ is never a link, and
+  # the settings env block (MCP secrets Claude would export) is dropped.
+  local headless="${HARNESS_HEADLESS:-0}"
+  if [[ "$headless" == 1 ]]; then [[ ! -L "$root/projects" ]] || rm -f "$root/projects"
+  elif [[ -d "$source/projects" ]]; then rm -rf "$root/projects"; ln -s "$source/projects" "$root/projects"; fi
   for local_file in .mcp.local.json mcp.local.json .claude/settings.local.json; do
     if [[ -f "$source/$local_file" && ! -e "$root/$local_file" ]]; then
       mkdir -p "$(dirname "$root/$local_file")"
-      ln -s "$source/$local_file" "$root/$local_file"
+      if [[ "$headless" != 1 ]]; then
+        ln -s "$source/$local_file" "$root/$local_file"
+      elif [[ "$local_file" == .claude/settings.local.json ]]; then
+        "${HARNESS_PYTHON_BIN:-python3}" -c 'import json,sys; s=json.load(open(sys.argv[1])); s.pop("env",None); json.dump(s,open(sys.argv[2],"w"))' \
+          "$source/$local_file" "$root/$local_file"
+      else
+        cp "$source/$local_file" "$root/$local_file"
+      fi
     fi
   done
   printf '%s\n' "$source" > "$dir/source-root"

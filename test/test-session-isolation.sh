@@ -362,3 +362,21 @@ grep -qx state=DELIVERED "$STATE/sessions/$postpush_race_id/journal" || { echo '
 git --git-dir="$REMOTE" merge-base --is-ancestor "$(<"$STATE/sessions/$postpush_race_id/delivered-sha")" main || { echo 'FAIL: acknowledged delivery must remain in remote history'; exit 1; }
 
 echo 'PASS: isolated sessions retain clean canonical base and durable recovery state'
+
+# Headless clone variant: machine-local files are copied, never linked back to
+# the canonical root; the settings env block (secrets) is dropped; projects/
+# is not linked. Interactive clones keep the symlinks.
+mkdir -p "$SOURCE/.claude"
+printf '%s\n' '{"env":{"LOCAL_SECRET":"leak"},"permissions":{"allow":["Read"]}}' > "$SOURCE/.claude/settings.local.json"
+printf '%s\n' '{"mcpServers":{"docs":{"command":"echo"}}}' > "$SOURCE/.mcp.local.json"
+interactive_root="$(create | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+[[ -L "$interactive_root/.claude/settings.local.json" && -L "$interactive_root/.mcp.local.json" && -L "$interactive_root/projects" ]] || { echo 'FAIL: interactive clones must keep linking machine-local files'; exit 1; }
+headless_root="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$(command -v python3)" create | sed -n "s/^HARNESS_SESSION_ROOT=//p")"
+[[ -n "$headless_root" && ! -e "$headless_root/projects" && ! -L "$headless_root/projects" ]] || { echo 'FAIL: headless clones must not link projects/'; exit 1; }
+[[ -f "$headless_root/.mcp.local.json" && ! -L "$headless_root/.mcp.local.json" ]] || { echo 'FAIL: headless clones must copy .mcp.local.json'; exit 1; }
+cmp -s "$SOURCE/.mcp.local.json" "$headless_root/.mcp.local.json" || { echo 'FAIL: headless MCP copy must match the source'; exit 1; }
+[[ -f "$headless_root/.claude/settings.local.json" && ! -L "$headless_root/.claude/settings.local.json" ]] || { echo 'FAIL: headless clones must copy settings.local.json'; exit 1; }
+! grep -q LOCAL_SECRET "$headless_root/.claude/settings.local.json" || { echo 'FAIL: headless settings copy must drop the env block'; exit 1; }
+grep -q '"Read"' "$headless_root/.claude/settings.local.json" || { echo 'FAIL: headless settings copy must keep non-env settings'; exit 1; }
+
+echo 'PASS: headless clones copy machine-local files without links or env secrets'
