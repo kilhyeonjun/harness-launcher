@@ -26,6 +26,37 @@ reopen_session() {
   transition "$id" OPEN
   write_heartbeat "$dir"
 }
+# headless_local_files <source> <root>
+#   HARNESS_HEADLESS=1 (set only by harness-headless): no write path back to the
+#   canonical root. projects/ is never a link, local files are copied (the
+#   settings env block of MCP secrets is dropped), and a symlink on any path
+#   component under <root> refuses the clone instead of being followed.
+headless_local_files() {
+  local source="$1" root="$2" local_file part path tmp py="${HARNESS_PYTHON_BIN:-}"
+  [[ ! -L "$root/projects" ]] || rm -f "$root/projects"
+  for local_file in .mcp.local.json mcp.local.json .claude/settings.local.json; do
+    [[ -f "$source/$local_file" ]] || continue
+    path="$root"
+    for part in ${local_file//\// }; do
+      path="$path/$part"
+      [[ ! -L "$path" ]] || { echo "harness-session: headless clone refused: symlink at $local_file" >&2; return 2; }
+    done
+    [[ ! -e "$root/$local_file" ]] || continue
+    mkdir -p "$(dirname "$root/$local_file")" || return 2
+    tmp="$(mktemp "$(dirname "$root/$local_file")/.headless-local.XXXXXX")" || return 2
+    if [[ "$local_file" == .claude/settings.local.json ]]; then
+      # Absolute interpreter (resolved by the launcher) in isolated mode: no
+      # cwd, PYTHON* or user-site module can replace the stdlib json.
+      [[ "$py" == /* && -x "$py" ]] || { echo 'harness-session: headless clone refused: HARNESS_PYTHON_BIN must be an absolute interpreter' >&2; rm -f "$tmp"; return 2; }
+      "$py" -I -c 'import json,sys; s=json.load(open(sys.argv[1])); s.pop("env",None); json.dump(s,open(sys.argv[2],"w"))' \
+        "$source/$local_file" "$tmp" || { rm -f "$tmp"; return 2; }
+    else
+      cat "$source/$local_file" > "$tmp" || { rm -f "$tmp"; return 2; }
+    fi
+    # rename replaces, never follows, whatever is at the target.
+    mv -f "$tmp" "$root/$local_file" || { rm -f "$tmp"; return 2; }
+  done
+}
 create() {
   local source="$1" root state id base sha dir local_file
   source="$(cd "$source" && pwd -P)"
@@ -42,25 +73,17 @@ create() {
   git -C "$root" remote remove origin
   git -C "$root" checkout -q --detach "$sha"
   rm -rf "$root/config/.local"
-  # HARNESS_HEADLESS=1 (set only by harness-headless): no write path back to
-  # the canonical root. Local files are copied, projects/ is never a link, and
-  # the settings env block (MCP secrets Claude would export) is dropped.
-  local headless="${HARNESS_HEADLESS:-0}"
-  if [[ "$headless" == 1 ]]; then [[ ! -L "$root/projects" ]] || rm -f "$root/projects"
-  elif [[ -d "$source/projects" ]]; then rm -rf "$root/projects"; ln -s "$source/projects" "$root/projects"; fi
-  for local_file in .mcp.local.json mcp.local.json .claude/settings.local.json; do
-    if [[ -f "$source/$local_file" && ! -e "$root/$local_file" ]]; then
-      mkdir -p "$(dirname "$root/$local_file")"
-      if [[ "$headless" != 1 ]]; then
+  if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
+    headless_local_files "$source" "$root" || { rm -rf "$root" "$dir"; return 2; }
+  else
+    if [[ -d "$source/projects" ]]; then rm -rf "$root/projects"; ln -s "$source/projects" "$root/projects"; fi
+    for local_file in .mcp.local.json mcp.local.json .claude/settings.local.json; do
+      if [[ -f "$source/$local_file" && ! -e "$root/$local_file" ]]; then
+        mkdir -p "$(dirname "$root/$local_file")"
         ln -s "$source/$local_file" "$root/$local_file"
-      elif [[ "$local_file" == .claude/settings.local.json ]]; then
-        "${HARNESS_PYTHON_BIN:-python3}" -c 'import json,sys; s=json.load(open(sys.argv[1])); s.pop("env",None); json.dump(s,open(sys.argv[2],"w"))' \
-          "$source/$local_file" "$root/$local_file"
-      else
-        cp "$source/$local_file" "$root/$local_file"
       fi
-    fi
-  done
+    done
+  fi
   printf '%s\n' "$source" > "$dir/source-root"
   printf '%s\n' "$root" > "$dir/session-root"
   printf '%s\n' "$sha" > "$dir/base-sha"

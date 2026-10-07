@@ -380,3 +380,48 @@ cmp -s "$SOURCE/.mcp.local.json" "$headless_root/.mcp.local.json" || { echo 'FAI
 grep -q '"Read"' "$headless_root/.claude/settings.local.json" || { echo 'FAIL: headless settings copy must keep non-env settings'; exit 1; }
 
 echo 'PASS: headless clones copy machine-local files without links or env secrets'
+
+# Headless clone hardening: no cwd module hijack, no symlink-following writes.
+PY_ABS="$(command -v python3)"
+mkdir -p "$TMP/hijack"
+printf '%s\n' "open('$TMP/hijack-ran', 'w').write('x')" 'from importlib import import_module' > "$TMP/hijack/json.py"
+hijack_root="$(cd "$TMP/hijack" && HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+[[ -n "$hijack_root" && ! -e "$TMP/hijack-ran" ]] || { echo 'FAIL: headless settings copy must ignore a json.py in the cwd'; exit 1; }
+grep -q '"Read"' "$hijack_root/.claude/settings.local.json" || { echo 'FAIL: hijack-safe copy must still write settings'; exit 1; }
+
+headless_link_source() {
+  local name="$1" src="$TMP/$1"
+  mkdir -p "$src"
+  git -C "$src" init -q -b main
+  git -C "$src" config user.email test@example.invalid
+  git -C "$src" config user.name test
+  printf '%s\n' "$src"
+}
+expect_headless_refusal() {
+  local src="$1" label="$2" before after
+  before="$(find "$STATE/sessions" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+  if HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$src" >/dev/null 2>"$TMP/refusal.err"; then
+    echo "FAIL: headless create must refuse $label"; exit 1
+  fi
+  grep -q 'headless clone refused' "$TMP/refusal.err" || { echo "FAIL: $label refusal must be explained"; exit 1; }
+  after="$(find "$STATE/sessions" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+  [[ "$before" == "$after" ]] || { echo "FAIL: refused headless create must not leave a session record"; exit 1; }
+}
+# Tracked dangling symlink at .claude/settings.local.json.
+dangling_src="$(headless_link_source dangling-src)"
+mkdir -p "$dangling_src/.claude" "$TMP/outside-dangling"
+ln -s "$TMP/outside-dangling/settings.local.json" "$dangling_src/.claude/settings.local.json"
+git -C "$dangling_src" add -A && git -C "$dangling_src" commit -qm link
+rm "$dangling_src/.claude/settings.local.json"; printf '%s\n' '{}' > "$dangling_src/.claude/settings.local.json"
+expect_headless_refusal "$dangling_src" 'a dangling settings symlink'
+[[ ! -e "$TMP/outside-dangling/settings.local.json" ]] || { echo 'FAIL: headless copy wrote through a dangling symlink'; exit 1; }
+# Tracked symlinked .claude directory.
+dir_src="$(headless_link_source dir-src)"
+mkdir -p "$TMP/outside-dir"
+ln -s "$TMP/outside-dir" "$dir_src/.claude"
+git -C "$dir_src" add -A && git -C "$dir_src" commit -qm link
+rm "$dir_src/.claude"; mkdir -p "$dir_src/.claude"; printf '%s\n' '{}' > "$dir_src/.claude/settings.local.json"
+expect_headless_refusal "$dir_src" 'a symlinked .claude directory'
+[[ ! -e "$TMP/outside-dir/settings.local.json" ]] || { echo 'FAIL: headless copy wrote through a symlinked parent'; exit 1; }
+
+echo 'PASS: headless clones ignore cwd modules and refuse symlinked local-file paths'
