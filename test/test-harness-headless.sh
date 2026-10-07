@@ -131,7 +131,13 @@ headless() {
     --lock-file "$LOCK" --budget-usd 2 --timeout-min "${TIMEOUT_MIN:-1}" "$@"
 }
 field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))[sys.argv[2]]; print("null" if v is None else v)' "$RESULT" "$1"; }
-fail() { echo "FAIL: $*" >&2; [[ -f "$RESULT" ]] && sed 's/^/  /' "$RESULT" >&2; exit 1; }
+# On failure, print the result and the launcher/Claude/broker log next to it.
+fail() {
+  echo "FAIL: $*" >&2
+  [[ -f "$RESULT" ]] && sed 's/^/  /' "$RESULT" >&2
+  [[ -f "$RESULT.log" ]] && { echo "  --- $RESULT.log" >&2; sed 's/^/  | /' "$RESULT.log" >&2; }
+  exit 1
+}
 expect_status() { [[ "$(field status)" == "$1" && "$(field version)" == 1 ]] || fail "expected status $1 (version 1)"; }
 
 # --- delivered -----------------------------------------------------------------
