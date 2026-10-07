@@ -2,6 +2,36 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.43.0 — 2026-10-07
+
+- New `harness-headless` runs one unattended Claude task in a fresh isolated
+  session and writes one JSON result (`delivered`, `no_changes`, `conflict`,
+  `failed`, `timeout`, `budget`, or `refused`). It keeps only an environment
+  allowlist, enforces a launcher-owned sandbox (strict network allowlist,
+  read denies for credential directories and the source root) and permission
+  denies, accepts only additive caller settings, kills the process group
+  on timeout, holds a caller lock for its whole run, and delivers a successful
+  change through `harness-session close`. See docs/architecture.md.
+- `harness-exec <harness> --isolated ...` no longer injects the current
+  directory as `--cwd`. A non-interactive `--isolated -p` run now works in the
+  session root instead of the canonical checkout. Other routes are unchanged.
+- Headless isolated sessions (`HARNESS_HEADLESS=1`) clone without hardlinks,
+  copy machine-local MCP and settings files instead of linking them, drop the
+  settings `env` block, never link `projects/`, refuse a clone with a symlink
+  on those paths, and keep a launcher-owned git dir in the session record.
+  Broker git on a headless session uses only that git dir with the session
+  root as work tree, never the session's own `.git`, so its config, hooks,
+  modules and alternates cannot run anything. Before delivery,
+  `harness-headless` kills processes left with a cwd or open file in the
+  session root.
+- Isolated sessions with commits past their base now count as changed, so
+  committed work is delivered instead of being closed as clean. An
+  interactive submission whose commits touch an excluded machine-local path (`config/.local`,
+  `projects`, `.mcp.local.json`, `mcp.local.json`, `.claude/settings.local.json`)
+  is refused with exit 7; such paths that are only staged are unstaged. Broker
+  git on a session root disables fsmonitor, hooks, submodule recursion, the
+  untracked cache and external diff drivers.
+
 ## 0.42.0 — 2026-10-01
 
 - herdr: a tab that holds several agents now shows the first agent's session

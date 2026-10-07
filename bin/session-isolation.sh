@@ -18,6 +18,40 @@ write_heartbeat() {
   mv -f "$tmp" "$dir/heartbeat"
 }
 field() { sed -n "s/^$2=//p" "$1" | head -n 1; }
+# Broker git on a session root: nothing named by the session's own config may
+# run (fsmonitor, hooks, external diff, submodule recursion).
+session_git() {
+  git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c submodule.recurse=false \
+    -c diff.external= -c core.untrackedCache=false "$@"
+}
+EXCLUDED_PATHSPEC=(':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json')
+# Headless sessions (record marker `headless`, written at clone time) never
+# let broker git read the session's own .git: it runs on a launcher-owned git
+# dir in the record (`trusted.git`, base commit plus its own index) with the
+# session root as work tree and no system or global config. Anything the agent
+# put in the session .git (config, hooks, modules, alternates) is never read,
+# and work-tree attributes name filter or diff drivers that are not defined.
+# ROOT_GIT_DIR is set by use_session_git; empty means an interactive session.
+ROOT_GIT_DIR=""
+use_session_git() {
+  local dir; dir="$(session_dir "$1")"; ROOT_GIT_DIR=""
+  [[ -e "$dir/headless" ]] || return 0
+  if [[ ! -d "$dir/trusted.git" || -L "$dir/trusted.git" ]]; then
+    echo "harness-session: refused: headless session $1 has no trusted git directory" >&2
+    return 6
+  fi
+  ROOT_GIT_DIR="$dir/trusted.git"
+}
+# root_git <root> <git args...>: broker git on a session work tree.
+root_git() {
+  local root="$1"; shift
+  if [[ -n "$ROOT_GIT_DIR" ]]; then
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      session_git -C "$root" --git-dir="$ROOT_GIT_DIR" --work-tree="$root" "$@"
+  else
+    session_git -C "$root" "$@"
+  fi
+}
 reopen_session() {
   local id="$1" dir
   dir="$(session_dir "$id")"
@@ -25,6 +59,37 @@ reopen_session() {
   rm -f "$dir/pending-sha" "$dir/push-ack" "$dir/.candidate-manifest"
   transition "$id" OPEN
   write_heartbeat "$dir"
+}
+# headless_local_files <source> <root>
+#   HARNESS_HEADLESS=1 (set only by harness-headless): no write path back to the
+#   canonical root. projects/ is never a link, local files are copied (the
+#   settings env block of MCP secrets is dropped), and a symlink on any path
+#   component under <root> refuses the clone instead of being followed.
+headless_local_files() {
+  local source="$1" root="$2" local_file part path tmp py="${HARNESS_PYTHON_BIN:-}"
+  [[ ! -L "$root/projects" ]] || rm -f "$root/projects"
+  for local_file in .mcp.local.json mcp.local.json .claude/settings.local.json; do
+    [[ -f "$source/$local_file" ]] || continue
+    path="$root"
+    for part in ${local_file//\// }; do
+      path="$path/$part"
+      [[ ! -L "$path" ]] || { echo "harness-session: headless clone refused: symlink at $local_file" >&2; return 2; }
+    done
+    [[ ! -e "$root/$local_file" ]] || continue
+    mkdir -p "$(dirname "$root/$local_file")" || return 2
+    tmp="$(mktemp "$(dirname "$root/$local_file")/.headless-local.XXXXXX")" || return 2
+    if [[ "$local_file" == .claude/settings.local.json ]]; then
+      # Absolute interpreter (resolved by the launcher) in isolated mode: no
+      # cwd, PYTHON* or user-site module can replace the stdlib json.
+      [[ "$py" == /* && -x "$py" ]] || { echo 'harness-session: headless clone refused: HARNESS_PYTHON_BIN must be an absolute interpreter' >&2; rm -f "$tmp"; return 2; }
+      "$py" -I -c 'import json,sys; s=json.load(open(sys.argv[1])); s.pop("env",None); json.dump(s,open(sys.argv[2],"w"))' \
+        "$source/$local_file" "$tmp" || { rm -f "$tmp"; return 2; }
+    else
+      cat "$source/$local_file" > "$tmp" || { rm -f "$tmp"; return 2; }
+    fi
+    # rename replaces, never follows, whatever is at the target.
+    mv -f "$tmp" "$root/$local_file" || { rm -f "$tmp"; return 2; }
+  done
 }
 create() {
   local source="$1" root state id base sha dir local_file
@@ -38,20 +103,35 @@ create() {
   sha="$(git -C "$source" rev-parse "$base^{commit}")"
   id="$(new_id)"; dir="$state/sessions/$id"; root="$state/worktrees/$id"
   mkdir -p "$dir"
-  git clone -q --no-checkout "$source" "$root"
+  local -a clone_flags=(-q --no-checkout)
+  [[ "${HARNESS_HEADLESS:-0}" != 1 ]] || clone_flags+=(--no-hardlinks)
+  git clone "${clone_flags[@]}" "$source" "$root"
   git -C "$root" remote remove origin
   git -C "$root" checkout -q --detach "$sha"
   rm -rf "$root/config/.local"
-  if [[ -d "$source/projects" ]]; then rm -rf "$root/projects"; ln -s "$source/projects" "$root/projects"; fi
-  for local_file in .mcp.local.json mcp.local.json .claude/settings.local.json; do
-    if [[ -f "$source/$local_file" && ! -e "$root/$local_file" ]]; then
-      mkdir -p "$(dirname "$root/$local_file")"
-      ln -s "$source/$local_file" "$root/$local_file"
-    fi
-  done
+  if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
+    headless_local_files "$source" "$root" || { rm -rf "$root" "$dir"; return 2; }
+  else
+    if [[ -d "$source/projects" ]]; then rm -rf "$root/projects"; ln -s "$source/projects" "$root/projects"; fi
+    for local_file in .mcp.local.json mcp.local.json .claude/settings.local.json; do
+      if [[ -f "$source/$local_file" && ! -e "$root/$local_file" ]]; then
+        mkdir -p "$(dirname "$root/$local_file")"
+        ln -s "$source/$local_file" "$root/$local_file"
+      fi
+    done
+  fi
   printf '%s\n' "$source" > "$dir/source-root"
   printf '%s\n' "$root" > "$dir/session-root"
   printf '%s\n' "$sha" > "$dir/base-sha"
+  if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
+    # Before the agent runs: the base commit and a matching index, owned by
+    # the launcher record and outside the sandbox's writable paths.
+    git init -q --bare "$dir/trusted.git"
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" fetch -q --no-tags "$root" "+HEAD:refs/heads/base"
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" read-tree "$sha"
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" update-index -q --refresh >/dev/null 2>&1 || true
+    : > "$dir/headless"
+  fi
   printf '1\n' > "$dir/lease-v1"
   : > "$dir/runtime.lock"
   write_journal "$dir" OPEN ""
@@ -223,14 +303,26 @@ transition() {
   case "$old:$next" in OPEN:SUBMITTED|OPEN:CLOSED|SUBMITTED:INTEGRATING|INTEGRATING:SUBMITTED|INTEGRATING:DELIVERED|INTEGRATING:CONFLICT|OPEN:ABANDONED|ABANDONED:OPEN|CONFLICT:OPEN|CLOSED:OPEN) ;; *) echo "invalid transition: $old -> $next" >&2; return 2;; esac
   write_journal "$dir" "$next" "$identity"
 }
+# session_has_changes <root> [base-sha]: worktree changes, or commits made in
+# the session (HEAD moved off the base). Call use_session_git first.
 session_has_changes() {
-  [[ -n "$(git -C "$1" status --porcelain --untracked-files=all -- . ':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json')" ]]
+  if [[ -n "$ROOT_GIT_DIR" ]]; then
+    # The work tree holds the final content, committed or not. A failed stage
+    # leaves the index at base, so it counts as changed (submit then fails
+    # closed) instead of reading as clean and dropping the edits.
+    root_git "$1" add -A -- . "${EXCLUDED_PATHSPEC[@]}" || return 0
+    ! root_git "$1" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$2" -- . "${EXCLUDED_PATHSPEC[@]}"
+    return
+  fi
+  [[ -n "${2:-}" && "$(session_git -C "$1" rev-parse HEAD 2>/dev/null)" != "$2" ]] && return 0
+  [[ -n "$(session_git -C "$1" status --porcelain --ignore-submodules=all --untracked-files=all -- . "${EXCLUDED_PATHSPEC[@]}")" ]]
 }
 exit_session() {
   local id="$1" dir root state
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; state="$(field "$dir/journal" state)"
   if [[ "$state" == OPEN ]]; then
-    if session_has_changes "$root"; then transition "$id" ABANDONED; else transition "$id" CLOSED; fi
+    use_session_git "$id" || { transition "$id" ABANDONED; return 6; }
+    if session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" ABANDONED; else transition "$id" CLOSED; fi
   fi
 }
 recover_unlocked() {
@@ -290,9 +382,9 @@ write_index_manifest() {
   : > "$output"
   while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     if [[ "$status" == D* ]]; then printf 'D\0-\0-\0%s\0' "$path" >> "$output"; continue; fi
-    read -r mode oid stage path2 < <(git -C "$root" ls-files -s -- "$path")
+    read -r mode oid stage path2 < <(root_git "$root" ls-files -s -- "$path")
     printf 'F\0%s\0%s\0%s\0' "$mode" "$oid" "$path" >> "$output"
-  done < <(git -C "$root" diff --cached --name-status --no-renames -z "$base")
+  done < <(root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z "$base" -- . "${EXCLUDED_PATHSPEC[@]}")
 }
 submission_identity() {
   local dir="$1"
@@ -303,8 +395,20 @@ submit() {
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; base="$(<"$dir/base-sha")"; state="$(field "$dir/journal" state)"
   [[ "$state" == SUBMITTED ]] && return 0
   [[ "$state" == OPEN ]] || { echo "cannot submit $state session" >&2; return 2; }
-  git -C "$root" add -A -- . ':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json'
-  git -C "$root" diff --cached --binary "$base" > "$dir/submission.patch"
+  use_session_git "$id" || return 6
+  root_git "$root" add -A -- . "${EXCLUDED_PATHSPEC[@]}"
+  if [[ -z "$ROOT_GIT_DIR" ]]; then
+    # Interactive: committed work is in the index already, so the add
+    # pathspec cannot keep excluded paths out. Staged-only excluded paths (a
+    # raw `git add -A` picks up the machine-local links) are unstaged;
+    # committed ones refuse instead of being silently dropped. A headless
+    # index only ever receives the pathspec-filtered work tree.
+    local touched
+    session_git -C "$root" reset -q -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json 2>/dev/null || true
+    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json)"
+    [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
+  fi
+  root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"
   [[ -s "$dir/submission.patch" ]] || { echo 'empty submission' >&2; return 2; }
   write_index_manifest "$root" "$base" "$dir/.manifest"
   mv -f "$dir/.manifest" "$dir/manifest"
@@ -431,7 +535,8 @@ integrate() { with_lock integrate_unlocked "$@"; }
 close_session() {
   local id="$1" dir state root
   dir="$(session_dir "$id")"; state="$(field "$dir/journal" state)"; root="$(<"$dir/session-root")"
-  if [[ "$state" == OPEN ]] && ! session_has_changes "$root"; then transition "$id" CLOSED; return 0; fi
+  use_session_git "$id" || return 6
+  if [[ "$state" == OPEN ]] && ! session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" CLOSED; return 0; fi
   [[ "$state" == OPEN ]] && submit "$id"
   [[ "$(field "$dir/journal" state)" == SUBMITTED ]] || { echo "cannot close $state session" >&2; return 2; }
   integrate "$id"

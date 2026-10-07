@@ -362,3 +362,162 @@ grep -qx state=DELIVERED "$STATE/sessions/$postpush_race_id/journal" || { echo '
 git --git-dir="$REMOTE" merge-base --is-ancestor "$(<"$STATE/sessions/$postpush_race_id/delivered-sha")" main || { echo 'FAIL: acknowledged delivery must remain in remote history'; exit 1; }
 
 echo 'PASS: isolated sessions retain clean canonical base and durable recovery state'
+
+# Headless clone variant: machine-local files are copied, never linked back to
+# the canonical root; the settings env block (secrets) is dropped; projects/
+# is not linked. Interactive clones keep the symlinks.
+mkdir -p "$SOURCE/.claude"
+printf '%s\n' '{"env":{"LOCAL_SECRET":"leak"},"permissions":{"allow":["Read"]}}' > "$SOURCE/.claude/settings.local.json"
+printf '%s\n' '{"mcpServers":{"docs":{"command":"echo"}}}' > "$SOURCE/.mcp.local.json"
+interactive_root="$(create | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+[[ -L "$interactive_root/.claude/settings.local.json" && -L "$interactive_root/.mcp.local.json" && -L "$interactive_root/projects" ]] || { echo 'FAIL: interactive clones must keep linking machine-local files'; exit 1; }
+headless_root="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$(command -v python3)" create | sed -n "s/^HARNESS_SESSION_ROOT=//p")"
+[[ -n "$headless_root" && ! -e "$headless_root/projects" && ! -L "$headless_root/projects" ]] || { echo 'FAIL: headless clones must not link projects/'; exit 1; }
+[[ -f "$headless_root/.mcp.local.json" && ! -L "$headless_root/.mcp.local.json" ]] || { echo 'FAIL: headless clones must copy .mcp.local.json'; exit 1; }
+cmp -s "$SOURCE/.mcp.local.json" "$headless_root/.mcp.local.json" || { echo 'FAIL: headless MCP copy must match the source'; exit 1; }
+[[ -f "$headless_root/.claude/settings.local.json" && ! -L "$headless_root/.claude/settings.local.json" ]] || { echo 'FAIL: headless clones must copy settings.local.json'; exit 1; }
+! grep -q LOCAL_SECRET "$headless_root/.claude/settings.local.json" || { echo 'FAIL: headless settings copy must drop the env block'; exit 1; }
+grep -q '"Read"' "$headless_root/.claude/settings.local.json" || { echo 'FAIL: headless settings copy must keep non-env settings'; exit 1; }
+
+echo 'PASS: headless clones copy machine-local files without links or env secrets'
+
+# Headless clone hardening: no cwd module hijack, no symlink-following writes.
+PY_ABS="$(command -v python3)"
+mkdir -p "$TMP/hijack"
+printf '%s\n' "open('$TMP/hijack-ran', 'w').write('x')" 'from importlib import import_module' > "$TMP/hijack/json.py"
+hijack_root="$(cd "$TMP/hijack" && HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+[[ -n "$hijack_root" && ! -e "$TMP/hijack-ran" ]] || { echo 'FAIL: headless settings copy must ignore a json.py in the cwd'; exit 1; }
+grep -q '"Read"' "$hijack_root/.claude/settings.local.json" || { echo 'FAIL: hijack-safe copy must still write settings'; exit 1; }
+
+headless_link_source() {
+  local name="$1" src="$TMP/$1"
+  mkdir -p "$src"
+  git -C "$src" init -q -b main
+  git -C "$src" config user.email test@example.invalid
+  git -C "$src" config user.name test
+  printf '%s\n' "$src"
+}
+expect_headless_refusal() {
+  local src="$1" label="$2" before after
+  before="$(find "$STATE/sessions" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+  if HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$src" >/dev/null 2>"$TMP/refusal.err"; then
+    echo "FAIL: headless create must refuse $label"; exit 1
+  fi
+  grep -q 'headless clone refused' "$TMP/refusal.err" || { echo "FAIL: $label refusal must be explained"; exit 1; }
+  after="$(find "$STATE/sessions" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+  [[ "$before" == "$after" ]] || { echo "FAIL: refused headless create must not leave a session record"; exit 1; }
+}
+# Tracked dangling symlink at .claude/settings.local.json.
+dangling_src="$(headless_link_source dangling-src)"
+mkdir -p "$dangling_src/.claude" "$TMP/outside-dangling"
+ln -s "$TMP/outside-dangling/settings.local.json" "$dangling_src/.claude/settings.local.json"
+git -C "$dangling_src" add -A && git -C "$dangling_src" commit -qm link
+rm "$dangling_src/.claude/settings.local.json"; printf '%s\n' '{}' > "$dangling_src/.claude/settings.local.json"
+expect_headless_refusal "$dangling_src" 'a dangling settings symlink'
+[[ ! -e "$TMP/outside-dangling/settings.local.json" ]] || { echo 'FAIL: headless copy wrote through a dangling symlink'; exit 1; }
+# Tracked symlinked .claude directory.
+dir_src="$(headless_link_source dir-src)"
+mkdir -p "$TMP/outside-dir"
+ln -s "$TMP/outside-dir" "$dir_src/.claude"
+git -C "$dir_src" add -A && git -C "$dir_src" commit -qm link
+rm "$dir_src/.claude"; mkdir -p "$dir_src/.claude"; printf '%s\n' '{}' > "$dir_src/.claude/settings.local.json"
+expect_headless_refusal "$dir_src" 'a symlinked .claude directory'
+[[ ! -e "$TMP/outside-dir/settings.local.json" ]] || { echo 'FAIL: headless copy wrote through a symlinked parent'; exit 1; }
+
+echo 'PASS: headless clones ignore cwd modules and refuse symlinked local-file paths'
+
+# Headless clones own their object files (no hardlinks into the source) and a
+# launcher-owned git dir in the record.
+nolink_root="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+linked="$(find "$nolink_root/.git/objects" -type f -links +1 | head -n 1)"
+[[ -z "$linked" ]] || { echo "FAIL: headless clone objects must not be hardlinked: $linked"; exit 1; }
+nolink_id="${nolink_root##*/}"
+[[ -e "$STATE/sessions/$nolink_id/headless" && -d "$STATE/sessions/$nolink_id/trusted.git" ]] || { echo 'FAIL: headless create must write the marker and trusted git dir'; exit 1; }
+
+# Interactive broker git never runs fsmonitor or hooks from the session config.
+fsm_out="$(create)"; fsm_root="$(printf '%s\n' "$fsm_out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; fsm_id="$(printf '%s\n' "$fsm_out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf '#!/bin/sh\ntouch "%s"\n' "$TMP/fsmonitor-ran" > "$TMP/fsmonitor.sh"; chmod +x "$TMP/fsmonitor.sh"
+git -C "$fsm_root" config core.fsmonitor "$TMP/fsmonitor.sh"
+printf 'fsm\n' > "$fsm_root/fsm.txt"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$fsm_id"
+[[ ! -e "$TMP/fsmonitor-ran" ]] || { echo 'FAIL: broker git must disable core.fsmonitor on the session root'; exit 1; }
+
+echo 'PASS: headless clones own their objects and broker git ignores session config hooks'
+
+# Headless broker git never reads the session .git.
+headless_session() {
+  local out; out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"
+  hs_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; hs_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+}
+payload="$TMP/payload-ran"
+printf '#!/bin/sh\ntouch "%s"\ncat\n' "$payload" > "$TMP/payload.sh"; chmod +x "$TMP/payload.sh"
+deliver_headless() {
+  HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$hs_id"
+  HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$hs_id" >/dev/null
+  HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$hs_id"
+  grep -qx state=DELIVERED "$STATE/sessions/$hs_id/journal" || { echo "FAIL: headless session $hs_id was not delivered"; exit 1; }
+}
+# Agent commit plus working-tree change, with payloads in .git/config,
+# .git/config.worktree, hooks, .git/modules and .gitattributes.
+headless_session
+printf 'committed\n' > "$hs_root/hl-committed.txt"
+git -C "$hs_root" add hl-committed.txt && git -C "$hs_root" -c user.name=t -c user.email=t@example.invalid commit -qm agent
+printf 'worktree\n' > "$hs_root/hl-worktree.txt"
+# Committed excluded paths are dropped by the pathspec, never delivered.
+mkdir -p "$hs_root/config/.local" "$hs_root/projects"
+printf 'secret\n' > "$hs_root/.claude/settings.local.json"; printf 'secret\n' > "$hs_root/config/.local/x"; printf 'secret\n' > "$hs_root/projects/x"
+git -C "$hs_root" add -f .claude/settings.local.json config/.local/x projects/x
+git -C "$hs_root" -c user.name=t -c user.email=t@example.invalid commit -qm planted
+# Payloads last: nothing after this point may run git on the session itself.
+printf '* filter=evil diff=evil\n' > "$hs_root/.gitattributes"
+printf '[filter "evil"]\n\tclean = %s\n\tprocess = %s\n[diff "evil"]\n\ttextconv = %s\n[core]\n\tfsmonitor = %s\n\thooksPath = %s\n' \
+  "$TMP/payload.sh" "$TMP/payload.sh" "$TMP/payload.sh" "$TMP/payload.sh" "$TMP" >> "$hs_root/.git/config"
+printf '[core]\n\tfsmonitor = %s\n' "$TMP/payload.sh" > "$hs_root/.git/config.worktree"
+printf '#!/bin/sh\ntouch "%s"\n' "$payload" > "$hs_root/.git/hooks/pre-commit"; chmod +x "$hs_root/.git/hooks/pre-commit"
+mkdir -p "$hs_root/.git/modules/x"; printf '[core]\n\tfsmonitor = %s\n' "$TMP/payload.sh" > "$hs_root/.git/modules/x/config"
+deliver_headless
+[[ ! -e "$payload" ]] || { echo 'FAIL: a session git config, hook, module or attribute payload ran'; exit 1; }
+for delivered_path in hl-committed.txt hl-worktree.txt; do
+  git --git-dir="$REMOTE" show "main:$delivered_path" >/dev/null || { echo "FAIL: $delivered_path must be delivered"; exit 1; }
+done
+for excluded in .claude/settings.local.json config/.local/x projects/x; do
+  ! git --git-dir="$REMOTE" cat-file -e "main:$excluded" 2>/dev/null || { echo "FAIL: excluded $excluded was delivered"; exit 1; }
+done
+# A symlinked session .git does not affect broker git.
+headless_session
+printf 'linked\n' > "$hs_root/hl-linked.txt"
+mv "$hs_root/.git" "$TMP/moved-git-$hs_id"; mkdir -p "$TMP/evil-git"; ln -s "$TMP/evil-git" "$hs_root/.git"
+deliver_headless
+git --git-dir="$REMOTE" show main:hl-linked.txt >/dev/null || { echo 'FAIL: a symlinked .git must not stop headless delivery'; exit 1; }
+[[ -z "$(ls -A "$TMP/evil-git")" ]] || { echo 'FAIL: broker git wrote through a symlinked session .git'; exit 1; }
+# Headless marker without its trusted git dir fails closed.
+headless_session
+printf 'x\n' > "$hs_root/hl-missing.txt"
+rm -rf "$STATE/sessions/$hs_id/trusted.git"
+rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$hs_id" 2>/dev/null || rc=$?
+[[ "$rc" == 6 ]] || { echo "FAIL: a headless record without trusted.git must refuse (rc=$rc)"; exit 1; }
+rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$hs_id" 2>/dev/null || rc=$?
+[[ "$rc" == 6 ]] || { echo "FAIL: close must refuse without trusted.git (rc=$rc)"; exit 1; }
+
+echo 'PASS: headless broker git uses the launcher-owned git dir, never the session .git'
+
+# Interactive: committed changes under excluded paths refuse the submission; normal commits deliver.
+for excluded in .claude/settings.local.json config/.local/x projects/x; do
+  out="$(create)"; ex_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ex_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+  rm -rf "$ex_root/projects"
+  mkdir -p "$(dirname "$ex_root/$excluded")"; printf 'secret\n' > "$ex_root/$excluded"
+  git -C "$ex_root" add -f -- "$excluded"
+  git -C "$ex_root" -c user.name=t -c user.email=t@example.invalid commit -qm planted
+  before="$(git --git-dir="$REMOTE" rev-parse main)"
+  rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ex_id" 2>"$TMP/excluded.err" || rc=$?
+  [[ "$rc" == 7 ]] || { echo "FAIL: committing $excluded must refuse with exit 7 (got $rc)"; exit 1; }
+  grep -q 'excluded path' "$TMP/excluded.err" || { echo 'FAIL: excluded-path refusal must be explained'; exit 1; }
+  [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$before" ]] || { echo "FAIL: $excluded reached the remote"; exit 1; }
+done
+out="$(create)"; ok_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ok_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'committed\n' > "$ok_root/committed-normal.txt"
+git -C "$ok_root" add committed-normal.txt && git -C "$ok_root" -c user.name=t -c user.email=t@example.invalid commit -qm normal
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ok_id"
+git --git-dir="$REMOTE" show main:committed-normal.txt >/dev/null || { echo 'FAIL: committed normal paths must be delivered'; exit 1; }
+
+echo 'PASS: submissions touching excluded paths are refused; committed work is delivered'

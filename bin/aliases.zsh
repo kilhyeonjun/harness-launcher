@@ -522,6 +522,8 @@ _harness_launcher_prepare_codex_apps_allowlist() {
 _harness_launcher_claude_mcp_local_args() {
   local rendered
   reply=()
+  # harness-headless passes --strict-mcp-config with no MCP servers.
+  [[ "${HARNESS_HEADLESS:-0}" != 1 ]] || return 0
   rendered="$(harness_claude_mcp_runtime_config "$1" "$_HARNESS_LAUNCHER_BIN")" || return $?
   [[ -z "$rendered" ]] || reply=(--mcp-config "$rendered")
 }
@@ -1324,6 +1326,9 @@ _harness_launcher_run_session() {
     launch_context="$(_harness_launcher_claude_launch_context)"
     launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant" "$launch_context")" || return $?
     [[ -z "$launch_settings" ]] || claude_args+=(--settings "$launch_settings")
+    if [[ "${HARNESS_HEADLESS:-0}" == 1 && -n "${HARNESS_SESSION_ROOT:-}" ]]; then
+      claude_args+=(--settings "$(harness_headless_session_settings "${HARNESS_SESSION_ROOT:A}")")
+    fi
     # Passthrough argv goes last, after the launcher-owned flags. The boolean
     # --exclude-dynamic-system-prompt-sections then closes the variadic
     # --mcp-config value list, so neither a caller prompt nor a caller `--`

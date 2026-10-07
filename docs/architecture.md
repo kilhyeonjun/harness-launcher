@@ -188,7 +188,8 @@ the UUID workspace remains recoverable after an unclean exit.
 Profiles may default only fresh interactive direct-Claude and native-Codex
 routes into this boundary. The router classifies arguments before allocating a
 UUID: non-interactive, batch, help, diagnostics, gateway/Kiro, and no-argument
-TUI routes remain legacy, while generic continuation commands require either an
+TUI routes remain legacy (an explicit `--isolated` still isolates them and
+runs in the session root), while generic continuation commands require either an
 exact `--isolated-session <uuid>` or an intentional `--no-isolated` rollback.
 Argument classification stops at the prompt/freeform boundary so prompt text
 that resembles a launcher switch cannot alter isolation.
@@ -224,6 +225,113 @@ reconciles a proven pushed candidate to `DELIVERED` or returns an unpushed
 submission to `SUBMITTED`. Clean close or normal exit records terminal `CLOSED`.
 
 Manifest-enabled homes also keep an atomic successful-input fingerprint plus a source-identity watch snapshot. The lean warm path validates watched file identities, semantic TOML policy, launcher-owned output hashes, product-plugin skill digests, explicit-only policies, skill/plugin directory topology, every managed skill link, and the normalized global-MCP definition digest before returning; it does not rescan plugin tests/docs/assets. Changing selected global definitions or allowlist membership therefore invalidates the warm path. Unexpected generated-home skill routes force a cold rebuild and reversible quarantine, and marker membership alone never proves ownership. Auth contents, sessions, hook trust state, and generated output mtimes remain runtime state and do not invalidate source generation. A cold rebuild leaves the live success stamp in place while it prepares a candidate transaction, then publishes the replacement success stamp last.
+
+### Headless isolated runs
+
+`harness-headless <profile> --prompt-file F --result-file R --lock-file L --budget-usd N --timeout-min M [--settings-file S] [--model X]`
+runs one unattended Claude task for a registered profile. It is the only
+non-interactive route that works inside an isolated session. Interactive and
+legacy routes do not change.
+
+- **Lock and lifetime.** It holds an exclusive `flock` on `L` from start until
+  the result file is in place, including delivery, and stays in the
+  foreground. A held lock exits 75 and leaves `R` alone; any other lock error
+  exits 2 with a `refused` result when `R` is writable. `SIGTERM`, `SIGINT` and
+  `SIGHUP` kill the run's process group, write a `failed` result (`exit_code`
+  128 + signal), and only then release the lock.
+- **Environment.** Only `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `LANG` and
+  `LC_*` pass through, plus `HARNESS_SESSION_STATE_HOME` and
+  `XDG_STATE_HOME` so the launcher finds the same session state. It adds
+  `HARNESS_HEADLESS=1`, `HARNESS_PYTHON_BIN` (the resolved interpreter),
+  `GIT_TERMINAL_PROMPT=0`, and `TMPDIR` and `CLAUDE_CODE_TMPDIR` both set to a
+  fresh `/private/tmp/hh-*` directory (0700, owned by the user, short enough
+  for Claude's per-uid socket directory), so the shared
+  `/private/tmp/claude-<uid>` can stay write-denied. That directory is
+  removed before delivery and on every exit path. With `HARNESS_HEADLESS=1` the launcher does not
+  export the harness `.claude/settings.local.json` `env` block, does not derive
+  a per-harness `GH_TOKEN`, and passes no `--mcp-config`.
+- **Session.** It calls `harness-exec <harness> --isolated --passthrough ...`,
+  so the launcher creates the journal and lease itself and the run directory
+  is the session root. The headless clone uses `git clone --no-hardlinks`,
+  copies `.mcp.local.json`, `mcp.local.json` and `.claude/settings.local.json`
+  (without its `env` block) instead of linking them, never links `projects/`,
+  and refuses a symlink on any of those paths. Before the agent starts it
+  writes a `headless` marker and a launcher-owned bare git dir
+  (`trusted.git`, the base commit and a matching index) into the session
+  record, outside every sandbox write path.
+- **Claude.** `claude -p --output-format json --max-budget-usd N
+  --permission-mode acceptEdits --strict-mcp-config [--model X]`, with the
+  prompt on stdin, in its own process group without a controlling terminal.
+  The launcher merges every `--settings` into one (dicts merge, lists are
+  unions, the last scalar wins): its launch-record settings, the session
+  settings, the caller's `S`, and the mandatory containment, passed last.
+  - `disableAllHooks: true` (project hooks run outside the sandbox) and
+    `disableBypassPermissionsMode: "disable"`. Hooks are off, so headless runs
+    write no launch record; a later `resume` of such a Claude session gets the
+    default permissions.
+  - `sandbox`: `enabled`, `failIfUnavailable`, `allowUnsandboxedCommands:
+    false`, `autoAllowBashIfSandboxed`, `network.strictAllowlist` with an empty
+    `network.allowedDomains`; `filesystem.denyRead` for `~/.hermes`, `~/buzz`,
+    `~/.ssh`, `~/.config/gh`, `~/.aws`, `~/.claude`, the source root and the
+    caller's paths; `filesystem.denyWrite` for `/private/tmp/claude-<uid>`,
+    `/tmp/claude-<uid>` and the session `.git/config`, `.git/hooks` and
+    `.git/info`; `filesystem.allowWrite` for the run's temp directory.
+  - `permissions.deny`: `Read` on every `denyRead` path; `Edit`, `Write` and
+    `NotebookEdit` on those paths, `~/Library/LaunchAgents`, the temp
+    directories and the session git config, hooks and info; `WebFetch`;
+    `WebSearch`; Bash rules matching `harness-session`, `session-isolation.sh`,
+    `auto-deliver`, `git push`, `sudo` and `launchctl` anywhere in the
+    command; and `hermes`, `buzz` and `rm -rf` as prefixes.
+  - `S` may contain only `_note`, `permissions.deny`,
+    `sandbox.filesystem.denyRead` and `sandbox.network.allowedDomains` (string
+    lists, added to the mandatory ones). Any other key is `refused`.
+- **Timeout.** After `M` minutes (fractions allowed) the whole process group
+  gets `SIGTERM`, then `SIGKILL`. Status `timeout`, `exit_code` 124. The
+  session is left for its owner.
+- **Delivery.** After Claude exits, `harness-headless` kills its process
+  group and then every remaining process of the user whose cwd or open file
+  is inside the session root or the run's temp directory (one `lsof`
+  snapshot), and removes that temp directory. Only then does the broker run,
+  with the caller's `TMPDIR` and no `CLAUDE_CODE_TMPDIR`, so broker git and
+  the repository verifier never write or execute files where the sandboxed
+  agent could write. Broker git on a headless
+  session (`exit`, `submit`, `close`; decided only by the marker) never reads
+  the session's `.git`: it runs `git --git-dir=<record>/trusted.git
+  --work-tree=<session root>` with `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_GLOBAL=/dev/null`, `core.fsmonitor=false`,
+  `core.hooksPath=/dev/null`, `submodule.recurse=false`, an empty
+  `diff.external` and `core.untrackedCache=false`. The session's config,
+  hooks, modules and alternates are never read, and a work-tree
+  `.gitattributes` names filter or diff drivers that are not defined, so they
+  are no-ops. The work tree holds the final content whether or not the agent
+  committed, so `add -A` with the excluded-path pathspec (`config/.local`,
+  `projects`, `.mcp.local.json`, `mcp.local.json`,
+  `.claude/settings.local.json`) captures it all and drops those paths.
+  Without global config, global excludes (for example a global `.DS_Store`
+  ignore) do not apply; the repository `.gitignore` does. A marker without
+  its `trusted.git` refuses (exit 6, status `refused`). A changed session goes
+  to `ABANDONED`, a clean one to `CLOSED`. A changed session is recovered and
+  closed through the broker. A journal still `INTEGRATING` after close is
+  recovered once. `DELIVERED` gives `delivered` with the `delivered-sha`
+  readback commit; close exit 3 or 5 gives `conflict` (session kept);
+  anything else is `failed`.
+- **Result.** Written atomically (temp file and rename) to `R`, always with
+  `"version": 1`:
+  `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.
+  `budget` is Claude subtype `error_max_budget_usd`; `failed` covers other
+  Claude errors, a missing Claude result, signals and delivery failures.
+  `refused` (`exit_code` 2 before launch) means the run could not start
+  without input or broke containment: an unknown profile, a host
+  without `/usr/bin/lockf` (delivery could never lock), an empty or
+  unreadable prompt, a non-positive budget or timeout, a settings key outside
+  the allowed set, a refused headless clone, or a headless record without its
+  trusted git dir.
+  Launcher and Claude stderr go to `R.log`. The command exits 0 whenever `R`
+  was written and nonzero otherwise.
+
+Bash deny rules match command text and are guardrails only; containment
+comes from the mandatory sandbox. User and project settings files still merge
+under the flag settings.
 
 ### Restore fidelity and the launch record
 

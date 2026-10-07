@@ -314,3 +314,46 @@ if ! grep -Fqx "HARNESS_RUN_DIR:$WORKTREE_REAL" "$TUI_LOG"; then
 fi
 
 echo "PASS: harness-exec forwards the explicit worktree to the launchpad"
+
+# F1: an explicit --isolated launch runs in the session root. harness-exec
+# must not inject the caller's cwd (or the canonical root) as --cwd, or the
+# isolated run would work in the canonical checkout.
+GIT_HARNESS="$TMP/git harness"
+mkdir -p "$GIT_HARNESS/config" "$GIT_HARNESS/sub"
+git -C "$GIT_HARNESS" init -q -b main
+git -C "$GIT_HARNESS" config user.email test@example.invalid
+git -C "$GIT_HARNESS" config user.name test
+printf '%s\n' 'HARNESS_NAME="git harness"' 'HARNESS_PREFIX="gh"' > "$GIT_HARNESS/config/launcher.env"
+git -C "$GIT_HARNESS" add config/launcher.env && git -C "$GIT_HARNESS" commit -qm initial
+GIT_HARNESS_SUB_REAL="$(cd "$GIT_HARNESS/sub" && pwd -P)"
+cat > "$STUB_BIN/claude" <<'EOF2'
+#!/usr/bin/env bash
+printf 'PWD:%s\nRUN:%s\nSESSION:%s\n' "$PWD" "${HARNESS_RUN_DIR:-}" "${HARNESS_SESSION_ROOT:-}" > "$HARNESS_EXEC_CLAUDE_LOG"
+EOF2
+chmod +x "$STUB_BIN/claude"
+run_git_harness() {
+  : > "$CLAUDE_LOG"
+  (
+    cd "$GIT_HARNESS/sub"
+    PATH="$STUB_BIN:/usr/bin:/bin" HOME="$FAKE_HOME" \
+      HARNESS_SESSION_STATE_HOME="$TMP/session-state" \
+      HARNESS_EXEC_CLAUDE_LOG="$CLAUDE_LOG" \
+      "$PREFIX/bin/harness-exec" "$GIT_HARNESS" "$@" 2>/dev/null
+  )
+}
+run_git_harness --isolated --passthrough -p 'batch task'
+session_root="$(sed -n 's/^SESSION://p' "$CLAUDE_LOG")"
+[[ -n "$session_root" && "$session_root" == "$TMP/session-state/worktrees/"* ]] || {
+  echo 'FAIL: explicit --isolated -p did not create an isolated session' >&2; sed 's/^/  /' "$CLAUDE_LOG" >&2; exit 1; }
+grep -Fqx "PWD:$session_root" "$CLAUDE_LOG" && grep -Fqx "RUN:$session_root" "$CLAUDE_LOG" || {
+  echo 'FAIL: explicit --isolated must run in the session root, not the injected caller cwd' >&2
+  sed 's/^/  /' "$CLAUDE_LOG" >&2; exit 1; }
+
+echo "PASS: harness-exec --isolated runs a non-interactive launch in the session root"
+
+run_git_harness --passthrough -p 'batch task'
+grep -Fqx "PWD:$GIT_HARNESS_SUB_REAL" "$CLAUDE_LOG" && grep -Fqx 'SESSION:' "$CLAUDE_LOG" || {
+  echo 'FAIL: legacy non-interactive routing must keep the caller cwd and no session' >&2
+  sed 's/^/  /' "$CLAUDE_LOG" >&2; exit 1; }
+
+echo "PASS: harness-exec keeps the caller cwd for legacy non-interactive launches"
