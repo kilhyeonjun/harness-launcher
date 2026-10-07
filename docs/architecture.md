@@ -245,8 +245,9 @@ legacy routes do not change.
   `HARNESS_HEADLESS=1`, `HARNESS_PYTHON_BIN` (the resolved interpreter),
   `GIT_TERMINAL_PROMPT=0`, and `TMPDIR` and `CLAUDE_CODE_TMPDIR` both set to a
   fresh `/private/tmp/hh-*` directory (0700, owned by the user, short enough
-  for Claude's per-uid socket directory). That directory is removed on every
-  exit path, so the shared `/private/tmp/claude-<uid>` can stay write-denied. With `HARNESS_HEADLESS=1` the launcher does not
+  for Claude's per-uid socket directory), so the shared
+  `/private/tmp/claude-<uid>` can stay write-denied. That directory is
+  removed before delivery and on every exit path. With `HARNESS_HEADLESS=1` the launcher does not
   export the harness `.claude/settings.local.json` `env` block, does not derive
   a per-harness `GH_TOKEN`, and passes no `--mcp-config`.
 - **Session.** It calls `harness-exec <harness> --isolated --passthrough ...`,
@@ -289,7 +290,11 @@ legacy routes do not change.
   session is left for its owner.
 - **Delivery.** After Claude exits, `harness-headless` kills its process
   group and then every remaining process of the user whose cwd or open file
-  is inside the session root (one `lsof` snapshot). Broker git on a headless
+  is inside the session root or the run's temp directory (one `lsof`
+  snapshot), and removes that temp directory. Only then does the broker run,
+  with the caller's `TMPDIR` and no `CLAUDE_CODE_TMPDIR`, so broker git and
+  the repository verifier never write or execute files where the sandboxed
+  agent could write. Broker git on a headless
   session (`exit`, `submit`, `close`; decided only by the marker) never reads
   the session's `.git`: it runs `git --git-dir=<record>/trusted.git
   --work-tree=<session root>` with `GIT_CONFIG_NOSYSTEM=1`,

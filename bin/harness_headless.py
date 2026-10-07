@@ -97,6 +97,15 @@ def child_env(run_tmp):
     return env
 
 
+def broker_env(env):
+    """The run environment without the run's temp base: broker git and the
+    repository verifier write and execute their own temp files, which must
+    never sit in a directory the sandboxed agent could write."""
+    env = {k: v for k, v in env.items() if k != 'CLAUDE_CODE_TMPDIR'}
+    env['TMPDIR'] = tempfile.gettempdir()
+    return env
+
+
 def state_home(env):
     if env.get('HARNESS_SESSION_STATE_HOME'):
         return Path(env['HARNESS_SESSION_STATE_HOME'])
@@ -207,9 +216,10 @@ def kill_group(pgid):
             time.sleep(2)
 
 
-def kill_lingering(root):
+def kill_lingering(*roots):
     """SIGKILL every process of this user whose cwd or an open file is inside
-    the session root, so nothing changes the work tree while the broker reads it.
+    one of roots (the session root and the run's temp base), so nothing changes
+    the work tree or broker inputs while the broker reads them.
     ponytail: one lsof snapshot; a process with no cwd or open file under the
     root at that instant, or one started after it, escapes. Upgrade path: run
     the agent as a dedicated macOS user and kill all of that user's processes."""
@@ -218,13 +228,14 @@ def kill_lingering(root):
         return []
     out = subprocess.run([lsof, '-nP', '-w', '-u', str(os.getuid()), '-Fpn'], stdin=subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout
-    prefix, pid, victims = root.rstrip('/') + '/', None, set()
+    roots = [r.rstrip('/') for r in roots if r]
+    pid, victims = None, set()
     for line in out.splitlines():
         if line.startswith('p'):
             pid = int(line[1:])
         elif line.startswith('n') and pid not in (None, os.getpid()):
             name = line[1:]
-            if name == root or name.startswith(prefix):
+            if any(name == r or name.startswith(r + '/') for r in roots):
                 victims.add(pid)
     for victim in victims:
         try:
@@ -328,6 +339,10 @@ def run(args, result, run_tmp):
         log_text = Path(log_path).read_text(errors='replace')
         sid = launched_session(log_text, state, hdir)
         result['session_id'] = sid
+        # Before any broker step: nothing from the run survives near the work
+        # tree or the temp base, and the temp base is gone.
+        kill_lingering(str(state / 'worktrees' / sid) if sid else None, run_tmp)
+        shutil.rmtree(run_tmp, ignore_errors=True)
         # A clone refusal can only precede the launcher's session announcement.
         announced = SESSION_LINE.search(log_text)
         launcher_text = log_text[:announced.start()] if announced else log_text
@@ -355,8 +370,7 @@ def run(args, result, run_tmp):
             result['status'] = 'failed'
             result['summary'] = 'isolated session id was not announced by the launcher'
         else:
-            kill_lingering(str(state / 'worktrees' / sid))
-            result['status'], result['commit'], reason = deliver(sid, state, env, hdir, log)
+            result['status'], result['commit'], reason = deliver(sid, state, broker_env(env), hdir, log)
             if reason:
                 result['summary'] = reason
 
@@ -393,9 +407,10 @@ def main(argv):
         return 2
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, _terminate)
-    # Short, user-owned, 0700, not a symlink, outside the shared claude-<uid>.
-    run_tmp = tempfile.mkdtemp(prefix='hh-', dir='/private/tmp')
+    run_tmp = None
     try:
+        # Short, user-owned, 0700, not a symlink, outside the shared claude-<uid>.
+        run_tmp = tempfile.mkdtemp(prefix='hh-', dir='/private/tmp')
         run(args, result, run_tmp)
     except Refused as exc:
         result.update(status='refused', summary=str(exc)[:SUMMARY_MAX], exit_code=EXIT_REFUSED)
@@ -407,7 +422,8 @@ def main(argv):
         result.update(status='failed', summary=f'harness-headless error: {exc}'[:SUMMARY_MAX])
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, signal.SIG_IGN)
-    shutil.rmtree(run_tmp, ignore_errors=True)
+    if run_tmp:
+        shutil.rmtree(run_tmp, ignore_errors=True)
     result['ended_at'] = int(time.time())
     try:
         write_result(args.result_file, result)

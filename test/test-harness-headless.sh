@@ -29,6 +29,9 @@ printf '%s\n' 'github_user: tester' > "$SOURCE/config/config.yaml"
 printf '%s\n' tracked > "$SOURCE/tracked.txt"
 cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
 #!/usr/bin/env bash
+# Records the broker environment the repository verifier runs with.
+printf 'TMPDIR=%s CLAUDE_CODE_TMPDIR=%s\n' "\${TMPDIR:-}" "\${CLAUDE_CODE_TMPDIR:-}" >> "$TMP/verifier-env"
+[[ ! -s "$TMP/run-tmp" || ! -e "\$(cat "$TMP/run-tmp")" ]] || echo 'RUN_TMP_PRESENT' >> "$TMP/verifier-env"
 [[ ! -e "$TMP/verify-fail" ]] || exit 92
 EOF
 chmod +x "$SOURCE/core/bin/auto-deliver.sh"
@@ -49,6 +52,7 @@ cat > "$STUB/claude" <<EOF
 #!/usr/bin/env bash
 printf '%s\0' "\$@" > "$TMP/claude-argv"
 env > "$TMP/claude-env"
+printf '%s\n' "\${CLAUDE_CODE_TMPDIR:-}" > "$TMP/run-tmp"
 stat -f '%Lp %u' "\${CLAUDE_CODE_TMPDIR:-/nonexistent}" > "$TMP/claude-tmpdir-stat" 2>/dev/null
 printf '%s\n' "\$PWD" > "$TMP/claude-pwd"
 cat > "$TMP/claude-stdin"
@@ -90,6 +94,9 @@ case "\$mode" in
     # Outside claude's process group, cwd in the session root.
     perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' sleep 300 > /dev/null 2>&1 &
     echo \$! > "$TMP/linger.pid"
+    # Another one parked in the run's private temp base.
+    (cd "\$CLAUDE_CODE_TMPDIR" && exec perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' sleep 300 > /dev/null 2>&1) &
+    echo \$! > "$TMP/linger-tmp.pid"
     echo "\$ok" ;;
   gitcfgonly)
     printf '[filter "evil"]\n\tclean = touch %s\n' "$TMP/filter-ran" >> .git/config
@@ -249,6 +256,11 @@ headless || fail 'linger run must exit 0'
 expect_status delivered
 [[ -s "$TMP/linger.pid" ]] || fail 'linger process did not start'
 ! kill -0 "$(cat "$TMP/linger.pid")" 2>/dev/null || fail 'a process left in the session root must be killed before delivery'
+[[ -s "$TMP/linger-tmp.pid" ]] && ! kill -0 "$(cat "$TMP/linger-tmp.pid")" 2>/dev/null || fail 'a process left in the run temp base must be killed before delivery'
+[[ -s "$TMP/verifier-env" ]] || fail 'the repository verifier did not run'
+! grep -q 'TMPDIR=/private/tmp/hh-' "$TMP/verifier-env" || fail 'broker git and the verifier must not use the run temp base'
+! grep -q 'CLAUDE_CODE_TMPDIR=[^ ]' "$TMP/verifier-env" || fail 'the broker env must not carry CLAUDE_CODE_TMPDIR'
+! grep -q RUN_TMP_PRESENT "$TMP/verifier-env" || fail 'the run temp base must be removed before delivery starts'
 echo 'PASS: harness-headless delivers the work tree through a launcher-owned git dir'
 
 # --- a failed stage is never reported as no_changes -------------------------------
@@ -311,7 +323,7 @@ echo 'PASS: harness-headless reports conflict and leaves the session'
 echo hang > "$TMP/mode"
 rm -f "$TMP/child.pid" "$TMP/grandchild.pid"
 start=$SECONDS
-TIMEOUT_MIN=0.03 headless || fail 'timeout run must exit 0'
+TIMEOUT_MIN=0.1 headless || fail 'timeout run must exit 0'
 expect_status timeout
 timeout_tmp="$(sed -n 's/^CLAUDE_CODE_TMPDIR=//p' "$TMP/claude-env")"
 [[ -n "$timeout_tmp" && ! -e "$timeout_tmp" ]] || fail 'the temp base must be removed after a timeout'
@@ -425,3 +437,18 @@ for weak in '{"permissions":{"allow":["Bash"]}}' '{"permissions":{"ask":["Bash"]
 done
 if "$PREFIX/bin/harness-headless" hh --prompt-file "$PROMPT" 2>/dev/null; then fail 'missing required options must exit nonzero'; fi
 echo 'PASS: harness-headless refuses runs that would need interactive input'
+
+# --- a temp-base failure still writes a result -------------------------------------
+rm -f "$RESULT"
+python3 - "$ROOT/bin" hh --prompt-file "$PROMPT" --result-file "$RESULT" --lock-file "$LOCK" \
+  --budget-usd 1 --timeout-min 1 <<'PY' || fail 'a mkdtemp failure must still exit 0 with a result'
+import sys, tempfile
+sys.path.insert(0, sys.argv[1])
+import harness_headless
+def boom(*a, **k):
+    raise OSError(28, 'No space left on device')
+tempfile.mkdtemp = boom
+raise SystemExit(harness_headless.main(sys.argv[2:]))
+PY
+expect_status failed
+echo 'PASS: harness-headless writes a result when the temp base cannot be created'
