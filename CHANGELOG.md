@@ -36,6 +36,12 @@ Notable changes are recorded here. This project follows semantic versioning for 
   stops the close, keeps the session, and delivers nothing; `harness-headless`
   reports `failed`. A headless clone whose `projects` link cannot be removed
   is refused.
+- The filesystem alias check probes the source checkout's volume as well as
+  the session volume, so a state home on a case-sensitive volume no longer
+  lets a name the source volume folds onto `projects/` through. A delivered
+  path that looks like pathspec magic (`:name`) is read back as itself
+  instead of leaving the session stuck in `INTEGRATING`, and inherited git
+  pathspec and git-dir variables no longer reach broker git.
 
 ## 0.43.0 — 2026-10-07
 

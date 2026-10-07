@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ISOLATION="$ROOT/bin/session-isolation.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap '[[ ! -d "$TMP/csmnt" ]] || hdiutil detach -quiet -force "$TMP/csmnt" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 SOURCE="$TMP/source"
 STATE="$TMP/state"
@@ -635,3 +635,46 @@ create_refused_row ' checkout -q --detach ' 'chflags -h uchg "$2/projects"' head
 find "$STATE" -exec chflags -h nouchg {} + 2>/dev/null; chmod -R u+w "$STATE"
 
 echo 'PASS: injected git and filesystem failures on the delivery path fail closed'
+
+# A path that looks like pathspec magic is delivered and read back as itself.
+out="$(create)"; mg_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; mg_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'magic\n' > "$mg_root/:magic"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$mg_id" 2>"$TMP/magic.err" || { cat "$TMP/magic.err"; echo 'FAIL: a path named like pathspec magic must be delivered'; exit 1; }
+grep -qx state=DELIVERED "$STATE/sessions/$mg_id/journal" || { echo 'FAIL: magic-named path session must end DELIVERED'; exit 1; }
+git --git-dir="$REMOTE" cat-file -e 'main::magic' || { echo 'FAIL: :magic must reach the remote'; exit 1; }
+
+# The state home may sit on another volume than the source checkout the work
+# lands in. A name only the source volume folds onto an excluded entry is
+# still excluded. Needs a case-sensitive APFS image; skipped where hdiutil
+# cannot attach one.
+CSIMG="$TMP/cs.sparseimage"
+if hdiutil create -quiet -size 64m -fs 'Case-sensitive APFS' -type SPARSE -volname hlcs "$TMP/cs" >/dev/null 2>&1 \
+    && hdiutil attach -quiet -nobrowse -mountpoint "$TMP/csmnt" "$CSIMG" >/dev/null 2>&1; then
+  CS_STATE="$TMP/csmnt/state"
+  [[ ! -e "$CS_STATE" ]] && mkdir -p "$CS_STATE/x" && [[ ! -e "$CS_STATE/X" ]] || { echo 'FAIL: the image must be case-sensitive'; exit 1; }
+  for mode in headless interactive; do
+    if [[ "$mode" == headless ]]; then
+      out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" create "$SOURCE")"
+    else
+      out="$(HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" create "$SOURCE")"
+    fi
+    cs_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; cs_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+    rm -rf "$cs_root/projects"; mkdir -p "$cs_root/$alias_path"; printf 'cs\n' > "$cs_root/$alias_path/x"
+    printf 'cs normal\n' > "$cs_root/cs-$mode.txt"
+    before="$(git --git-dir="$REMOTE" rev-parse main)"
+    if [[ "$mode" == headless ]]; then
+      HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" exit "$cs_id"
+      HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" recover "$cs_id" >/dev/null
+      HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" close "$cs_id" || { echo 'FAIL: headless close on a case-sensitive state volume'; exit 1; }
+      git --git-dir="$REMOTE" show "main:cs-$mode.txt" >/dev/null || { echo 'FAIL: normal path beside a source-volume alias must be delivered'; exit 1; }
+    else
+      # Untracked: unstaged back to HEAD, so the submission is the normal file.
+      HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" close "$cs_id" || { echo 'FAIL: interactive close on a case-sensitive state volume'; exit 1; }
+    fi
+    ! git --git-dir="$REMOTE" cat-file -e "main:$alias_path/x" 2>/dev/null || { echo "FAIL: $mode delivered a source-volume alias of projects/"; exit 1; }
+  done
+  hdiutil detach -quiet "$TMP/csmnt" || hdiutil detach -quiet -force "$TMP/csmnt"
+  echo 'PASS: names the source volume folds onto an excluded entry are excluded across volumes'
+else
+  echo 'SKIP: no case-sensitive APFS image (hdiutil unavailable)'
+fi

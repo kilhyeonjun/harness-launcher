@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Durable, opt-in isolated harness session repositories.
 set -euo pipefail
+# Inherited git variables would change what every pathspec, index and git
+# dir below means (GIT_LITERAL_PATHSPECS turns the icase fences into literals).
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  GIT_COMMON_DIR GIT_NAMESPACE GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
 
 state_home() { printf '%s\n' "${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"; }
 session_dir() { printf '%s/sessions/%s\n' "$(state_home)" "$1"; }
@@ -62,34 +66,45 @@ stage_worktree() {
   fi
 }
 # excluded_aliases <root> <base>: NUL-separated staged paths (changed from
-# base) that this filesystem resolves to an excluded entry: case, Unicode case
-# folding and normalization are decided by a probe tree of the excluded
-# entries on the same volume as the session roots, so every layer agrees with
-# what a checkout would actually write.
+# base) that a filesystem resolves to an excluded entry: case, Unicode case
+# folding and normalization are decided by probe trees of the excluded
+# entries, one on the session volume (state home) and one on the volume of
+# the source checkout the work lands in (its git dir), so every layer agrees
+# with what a checkout on either would actually write.
 excluded_aliases() {
-  local root="$1" base="$2" probe path first second
-  probe="$(mktemp -d "$(state_home)/probe.XXXXXX")" || return 1
+  local root="$1" base="$2" staged probe path first second hit
+  local -a probes=()
+  [[ -n "$SOURCE_GIT_DIR" ]] || { echo 'harness-session: no source git dir to probe' >&2; return 1; }
+  staged="$(mktemp "$(state_home)/staged.XXXXXX")" || return 1
   # Callers test the status, so errexit is off here: every step is checked,
   # and the staged list is a file, not a process substitution whose failure
   # would read as "no paths".
-  { mkdir -p "$probe/projects" "$probe/config/.local" "$probe/.claude" \
-      && : > "$probe/mcp.local.json" && : > "$probe/.mcp.local.json" && : > "$probe/.claude/settings.local.json" \
-      && root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only --no-renames -z "$base" > "$probe.staged"
-  } || { rm -rf "$probe" "$probe.staged"; return 1; }
+  for probe in "$(state_home)" "$SOURCE_GIT_DIR"; do
+    probe="$(mktemp -d "$probe/harness-probe.XXXXXX")" || { rm -rf "$staged" "${probes[@]}"; return 1; }
+    probes+=("$probe")
+    { mkdir -p "$probe/projects" "$probe/config/.local" "$probe/.claude" \
+        && : > "$probe/mcp.local.json" && : > "$probe/.mcp.local.json" && : > "$probe/.claude/settings.local.json"
+    } || { rm -rf "$staged" "${probes[@]}"; return 1; }
+  done
+  root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only --no-renames -z "$base" > "$staged" \
+    || { rm -rf "$staged" "${probes[@]}"; return 1; }
   while IFS= read -r -d '' path; do
-    first="${path%%/*}"
-    if [[ -e "$probe/$first" ]] && { [[ "$probe/$first" -ef "$probe/projects" ]] \
-        || [[ "$probe/$first" -ef "$probe/mcp.local.json" ]] || [[ "$probe/$first" -ef "$probe/.mcp.local.json" ]]; }; then
-      printf '%s\0' "$path"; continue
-    fi
-    [[ "$path" == */* ]] || continue
-    second="${path#*/}"; second="$first/${second%%/*}"
-    if [[ -e "$probe/$second" ]] && { [[ "$probe/$second" -ef "$probe/config/.local" ]] \
-        || [[ "$probe/$second" -ef "$probe/.claude/settings.local.json" ]]; }; then
-      printf '%s\0' "$path"
-    fi
-  done < "$probe.staged"
-  rm -rf "$probe" "$probe.staged"
+    first="${path%%/*}"; second=""
+    if [[ "$path" == */* ]]; then second="${path#*/}"; second="$first/${second%%/*}"; fi
+    hit=0
+    for probe in "${probes[@]}"; do
+      if [[ -e "$probe/$first" ]] && { [[ "$probe/$first" -ef "$probe/projects" ]] \
+          || [[ "$probe/$first" -ef "$probe/mcp.local.json" ]] || [[ "$probe/$first" -ef "$probe/.mcp.local.json" ]]; }; then
+        hit=1; break
+      fi
+      if [[ -n "$second" && -e "$probe/$second" ]] && { [[ "$probe/$second" -ef "$probe/config/.local" ]] \
+          || [[ "$probe/$second" -ef "$probe/.claude/settings.local.json" ]]; }; then
+        hit=1; break
+      fi
+    done
+    [[ "$hit" == 0 ]] || printf '%s\0' "$path"
+  done < "$staged"
+  rm -rf "$staged" "${probes[@]}"
 }
 # Headless sessions (record marker `headless`, written at clone time) never
 # let broker git read the session's own .git: it runs on a launcher-owned git
@@ -98,9 +113,12 @@ excluded_aliases() {
 # put in the session .git (config, hooks, modules, alternates) is never read,
 # and work-tree attributes name filter or diff drivers that are not defined.
 # ROOT_GIT_DIR is set by use_session_git; empty means an interactive session.
-ROOT_GIT_DIR=""
+ROOT_GIT_DIR="" SOURCE_GIT_DIR=""
 use_session_git() {
   local dir; dir="$(session_dir "$1")"; ROOT_GIT_DIR=""
+  # The canonical checkout's git dir: excluded_aliases probes its volume.
+  local source; source="$(<"$dir/source-root")" && [[ -n "$source" ]] || return 1
+  SOURCE_GIT_DIR="$(git -C "$source" rev-parse --path-format=absolute --git-common-dir)" || return 1
   [[ -e "$dir/headless" ]] || return 0
   if [[ ! -d "$dir/trusted.git" || -L "$dir/trusted.git" ]]; then
     echo "harness-session: refused: headless session $1 has no trusted git directory" >&2
@@ -386,6 +404,7 @@ transition() {
 # is checked and an error is never read as "no changes". Call use_session_git first.
 session_has_changes() {
   local rc=0 head out
+  [[ -n "${2:-}" ]] || return 2
   if [[ -n "$ROOT_GIT_DIR" ]]; then
     # The work tree holds the final content, committed or not.
     stage_worktree "$1" "$2" || return 2
@@ -411,7 +430,7 @@ exit_session() {
   fi
 }
 recover_unlocked() {
-  local id="$1" dir state source remote pending readback kind mode hash path actual_mode actual_type actual_oid actual_path
+  local id="$1" dir state source remote pending readback kind mode hash path actual_mode actual_type actual_oid actual_path entry
   dir="$(session_dir "$id")"; state="$(field "$dir/journal" state)"
   if [[ "$state" == INTEGRATING ]]; then
     source="$(<"$dir/source-root")"; remote="$(git -C "$source" remote get-url origin)"
@@ -423,7 +442,7 @@ recover_unlocked() {
         git -C "$readback" merge-base --is-ancestor "$pending" HEAD || { rm -rf "$readback"; transition "$id" SUBMITTED "$(field "$dir/journal" identity)"; printf 'HARNESS_SESSION_ROOT=%s\nstate=SUBMITTED\n' "$(<"$dir/session-root")"; return 0; }
         while IFS= read -r -d '' kind && IFS= read -r -d '' mode && IFS= read -r -d '' hash && IFS= read -r -d '' path; do
           if [[ "$kind" == D ]]; then git -C "$readback" cat-file -e "$pending:$path" 2>/dev/null && { rm -rf "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }; continue; fi
-          read -r actual_mode actual_type actual_oid actual_path < <(git -C "$readback" ls-tree "$pending" -- "$path")
+          actual_mode=""; actual_oid=""; entry="$(git -C "$readback" ls-tree "$pending" -- ":(literal)$path")"; [[ -z "$entry" ]] || read -r actual_mode actual_type actual_oid actual_path <<< "$entry"
           [[ "$actual_mode" == "$mode" && "$actual_oid" == "$hash" ]] || { rm -rf "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }
         done < "$dir/.candidate-manifest"
         printf '%s\n' "$pending" > "$dir/delivered-sha"
@@ -537,9 +556,8 @@ verify_submission_identity() {
 run_repository_verifier() {
   local candidate="$1" id="$2" remote="$3" baseline="$4" trusted verifier help_output
   local -a verifier_args
-  trusted="$(mktemp -d "$(state_home)/verifier.XXXXXX")"
-  git clone -q "$remote" "$trusted"
-  git -C "$trusted" checkout -q --detach "$baseline"
+  trusted="$(mktemp -d "$(state_home)/verifier.XXXXXX")" || return 2
+  { git clone -q "$remote" "$trusted" && git -C "$trusted" checkout -q --detach "$baseline"; } || { rm -rf "$trusted"; return 2; }
   verifier="$trusted/core/bin/auto-deliver.sh"
   [[ -f "$verifier" ]] || { echo 'ERROR: repository-owned core/bin/auto-deliver.sh verifier is required' >&2; rm -rf "$trusted"; return 2; }
   verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push)
@@ -569,7 +587,7 @@ write_index_pathset() {
   done < <(git -C "$repo" diff --cached --name-status --no-renames -z "$base")
 }
 integrate_unlocked() {
-  local id="$1" dir source remote attempt candidate current delivered readback
+  local id="$1" dir source remote attempt candidate current delivered readback kind mode hash path actual_mode actual_type actual_oid actual_path entry
   dir="$(session_dir "$id")"; source="$(<"$dir/source-root")"
   remote="$(git -C "$source" remote get-url origin)"
   [[ "$remote" == "$(<"$dir/remote-url")" ]] || { transition "$id" INTEGRATING "$(field "$dir/journal" identity)"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
@@ -607,7 +625,7 @@ integrate_unlocked() {
       git -C "$readback" merge-base --is-ancestor "$delivered" HEAD || { rm -rf "$candidate" "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }
       while IFS= read -r -d '' kind && IFS= read -r -d '' mode && IFS= read -r -d '' hash && IFS= read -r -d '' path; do
         if [[ "$kind" == D ]]; then git -C "$readback" cat-file -e "$delivered:$path" 2>/dev/null && { rm -rf "$candidate" "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }; continue; fi
-        read -r actual_mode actual_type actual_oid actual_path < <(git -C "$readback" ls-tree "$delivered" -- "$path")
+        actual_mode=""; actual_oid=""; entry="$(git -C "$readback" ls-tree "$delivered" -- ":(literal)$path")"; [[ -z "$entry" ]] || read -r actual_mode actual_type actual_oid actual_path <<< "$entry"
         [[ "$actual_mode" == "$mode" && "$actual_oid" == "$hash" ]] || { rm -rf "$candidate" "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }
       done < "$dir/.candidate-manifest"
       printf '%s\n' "$delivered" > "$dir/delivered-sha"

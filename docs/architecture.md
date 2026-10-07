@@ -314,8 +314,9 @@ legacy routes do not change.
   can negate ignore rules in `.gitignore` and write `Projects/` or
   `config/.LOCAL/`. Git folds only ASCII case, while APFS also folds Unicode
   (`projectſ` with U+017F is `projects` on disk), so every staged path is
-  also checked against a probe tree of the excluded entries on the same
-  volume; a path the filesystem resolves to an excluded entry is reset (or,
+  also checked against probe trees of the excluded entries on the session
+  volume and on the source checkout's volume (they differ when the state
+  home is elsewhere); a path the filesystem resolves to an excluded entry is reset (or,
   for an interactive commit, refused) the same way. Names the filesystem
   keeps distinct, such as `projects.` or `projects` with a trailing space,
   are ordinary paths, and a symlink into `projects/` is delivered as the
