@@ -597,6 +597,18 @@ class NotificationTest(HerdrPluginTestCase):
         self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
         self.assertEqual(len(self.h.notifications()), 1)
 
+    def test_held_finish_out_of_sight_still_arrives_after_the_pane_turns_idle(self):
+        # A finish in a tab out of sight is `done`; once the user has seen the pane, its next
+        # change reports `idle`. That is the same finished turn, so the held notice survives it.
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "done"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertEqual(self.h.notifications(), [])
+        self.activity("settled")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+
     def test_expired_activity_is_uncertainty_and_never_a_finished_notification(self):
         self.activity("waiting")
         self.assertRan(self.h.status("w5:p4", "working"))
@@ -1066,6 +1078,52 @@ class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
         self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
         self.assertEqual(len(self.h.notifications()), 1)
+
+    def test_turn_in_a_tab_out_of_sight_ending_on_a_choice_shows_it(self):
+        # herdr reports a finished turn the user has not seen as `done`, not `idle`
+        # (app/api_helpers.rs pane_agent_status), so a tab out of sight ends working -> done.
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.answer("1. 새 worktree ← 추천\n2. 그대로 진행")
+        self.assertRan(self.h.status("w5:p1", "done"))
+        self.assertEqual(self.decisions(), [self.SET])
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "🔘 claude 결정 필요")
+        sent = len(self.h.notifications())
+        self.assertRan(self.h.status("w5:p1", "idle"))  # the user looks at it: still waiting
+        self.assertEqual(self.decisions(), [self.SET])
+        self.assertEqual(len(self.h.notifications()), sent)
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
+
+    def test_idle_recorded_before_the_done_event_settles_keeps_the_choice(self):
+        # Events run in separate processes. Here the pane's `idle` (the user saw it) is recorded
+        # between the `done` event's record_status and its settle_decision: same finished turn.
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.answer("A ← 추천")
+        state = self.h.state()
+        state["panes"][0]["agent_status"] = "idle"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+
+        def event(status):
+            return {"event": "pane_agent_status_changed",
+                    "data": {"type": "pane_agent_status_changed", "pane_id": "w5:p1",
+                             "workspace_id": "w5", "agent_status": status, "agent": "claude"}}
+
+        env = self.h.env("pane.agent_status_changed", pane_id="w5:p1")
+        code = ("import json, sys; sys.path.insert(0, %r); import harness_herdr_plugin as p; "
+                "done, idle = json.loads(sys.argv[1]), json.loads(sys.argv[2]); "
+                "pending = p.record_status(done); p.record_status(idle); p.settle_decision(done, pending)"
+                % str(PLUGIN_DIR))
+        result = subprocess.run([TARGET_PYTHON, "-c", code, json.dumps(event("done")), json.dumps(event("idle"))],
+                                cwd=PLUGIN_DIR, env=env, capture_output=True, text=True, timeout=30)
+        self.assertRan(result)
+        self.assertEqual(self.decisions(), [self.SET])
+
+    def test_plain_turn_in_a_tab_out_of_sight_says_done(self):
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.answer("배포했습니다.")
+        self.assertRan(self.h.status("w5:p1", "done"))
+        self.assertEqual(self.decisions(), [])
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 응답 종료")
 
     def test_every_choice_in_one_session_is_shown(self):
         self.turn("A ← 추천")

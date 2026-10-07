@@ -407,11 +407,11 @@ the pane, the plugin clears them. herdr keeps no pane metadata across a server
 restart, so the plugin reports every pane again at startup, and a pane again
 when an agent is detected in it.
 
-Decision. herdr's own status says `idle` both when a turn is done and when it
-ended by asking you to choose. When a Claude turn ends and its last answer marks
+Decision. herdr's own status says `idle` (or `done`, before you have seen the
+pane) both when a turn is done and when it ended by asking you to choose. When a Claude turn ends and its last answer marks
 a recommended option with `← 추천` (outside a code block), the plugin sets a
-`$decision` token to `결정 필요`; the next status other than `idle` (you
-answered, or the agent asks for input) or a turn that ends without the mark
+`$decision` token to `결정 필요`; the next status other than `idle` or `done`
+(you answered, or the agent asks for input) or a turn that ends without the mark
 clears it. herdr's state labels accept only its own statuses, so this is a token,
 not a label.
 
@@ -470,7 +470,8 @@ shows `결정 필요`, in yellow. Plan usage belongs
 to the account, not a pane: put [`harness-herdr-web usage`](herdr-web-ui.md) in
 the tab bar and its `--watch` board in a popup.
 
-Notifications. When an agent goes from `working` to `idle`, or to `blocked`,
+Notifications. When an agent goes from `working` to `idle` or `done` (herdr's
+status for a finished turn in a pane the user has not seen yet), or to `blocked`,
 the plugin waits one second and, if the state still holds, posts a desktop
 notification. The title is `✅ <agent> 응답 종료`, `🔘 <agent> 결정 필요` (a turn
 that ended on a choice) or `⏳ <agent> 입력 필요`: an

@@ -29,7 +29,8 @@ this file changes (an upgrade: the next run starts the new one) or herdr stops
 answering. Plan usage is not per pane: `harness-herdr-web usage` serves the tab
 bar and a popup.
 
-Notifications: working -> idle announces completion and a switch to blocked
+Notifications: working -> idle or done (a finish the user has not seen yet)
+announces completion and a switch to blocked
 announces a request for input, after the state held for the notify delay. The
 visible tab stays silent while its host terminal app is frontmost, as herdr's
 own toasts do. Clicking the notification activates the host terminal app and
@@ -66,7 +67,10 @@ THREAD_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 HOMEBREW_HERDR = re.compile(r"^(.*)/Cellar/herdr/[^/]+/bin/herdr$")
 # The outermost bundle, so an app's nested helper (…/Frameworks/X Helper.app) maps to the app.
 APP_BUNDLE = re.compile(r"^(.*?\.app)/")
-EXPECTED_LIVE_STATUS = {"finished": "idle", "attention": "blocked"}
+EXPECTED_LIVE_STATUS = {"attention": "blocked"}
+# herdr reports a finished turn as `done` until the user sees the pane, `idle` after
+# (app/api_helpers.rs pane_agent_status); a tab out of sight finishes working -> done.
+FINISHED = ("idle", "done")
 # A harness Codex home, looked up from the pane's directory upward.
 CODEX_INDEX = os.path.join(".harness", "codex", "session_index.jsonl")
 CODEX_INDEX_MAX_BYTES = 16 * 1024 * 1024
@@ -612,6 +616,11 @@ def own_rename(payload):
         return session(state)["tabs"].get(tab_id) == label
 
 
+def same_status(a, b):
+    """`done` and `idle` are one finished turn: seen by the user or not yet."""
+    return a == b or (a in FINISHED and b in FINISHED)
+
+
 def record_status(payload):
     data = payload.get("data") or {}
     pane_id = data.get("pane_id") or os.environ.get("HERDR_PANE_ID")
@@ -622,12 +631,12 @@ def record_status(payload):
         statuses = session(state)["panes"]
         entry = statuses.get(pane_id) or {}
         previous = entry.get("status")
-        seq = int(entry.get("seq", 0)) + (previous != status)
+        seq = int(entry.get("seq", 0)) + (not same_status(previous, status))
         entry.update(status=status, seq=seq)
         statuses[pane_id] = entry
     if status == "blocked" and previous != "blocked":
         kind = "attention"
-    elif status == "idle" and previous == "working":
+    elif status in FINISHED and previous == "working":
         kind = "finished"
     else:
         return None
@@ -637,26 +646,26 @@ def record_status(payload):
 def settle_decision(payload, pending):
     """Show `$decision` while a Claude turn that ended on a choice waits for the answer.
 
-    A finished turn sets or clears it from its last answer; any status but idle (the
+    A finished turn sets or clears it from its last answer; any status but idle or done (the
     user answered, or the agent asks for input) clears it; another idle keeps it."""
     data = payload.get("data") or {}
     pane_id = data.get("pane_id") or os.environ.get("HERDR_PANE_ID")
     status = data.get("agent_status")
     finished = bool(pending) and pending["kind"] == "finished"
-    if not pane_id or not status or (status == "idle" and not finished):
+    if not pane_id or not status or (status in FINISHED and not finished):
         return
     wanted = False
     if finished and pending["agent"] == "claude":
         pane = next((item for item in herdr("pane", "list")["panes"]
                      if item.get("pane_id") == pane_id), None)
         # A stale idle event read while the agent works again sets nothing.
-        live = pane and pane.get("agent_status") == "idle"
+        live = pane and pane.get("agent_status") in FINISHED
         transcript = live and Titles({}).claude_transcript(pane)
         wanted = bool(transcript) and ends_on_choice(transcript)
     with locked_state() as state:
         entry = session(state)["panes"].get(pane_id)
         # Events run in separate processes: a newer status settles it instead.
-        if not entry or entry.get("status") != status or (finished and entry.get("seq") != pending["seq"]):
+        if not entry or not same_status(entry.get("status"), status) or (finished and entry.get("seq") != pending["seq"]):
             return
         if bool(entry.get("decision")) != wanted:
             argv = ["pane", "report-metadata", pane_id, "--source", METADATA_SOURCE]
@@ -798,7 +807,7 @@ def announce(pending):
                  if item.get("pane_id") == pane_id), None)
     # Events run in separate processes and can take the lock out of order; announce only
     # what herdr still reports for the pane.
-    valid = ("idle", "done") if pending["kind"] == "finished" else (EXPECTED_LIVE_STATUS[pending["kind"]],)
+    valid = FINISHED if pending["kind"] == "finished" else (EXPECTED_LIVE_STATUS[pending["kind"]],)
     if pane is None or pane.get("agent_status") not in valid:
         return
     if defer_finished(pending, pane):
