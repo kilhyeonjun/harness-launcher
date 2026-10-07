@@ -7,7 +7,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - New `harness-headless` runs one unattended Claude task in a fresh isolated
   session and writes one JSON result (`delivered`, `no_changes`, `conflict`,
   `failed`, `timeout`, `budget`, or `refused`). It keeps only an environment
-  allowlist, adds launcher-enforced permission denies, kills the process group
+  allowlist, enforces a launcher-owned sandbox (strict network allowlist,
+  read denies for credential directories and the source root) and permission
+  denies, accepts only additive caller settings, kills the process group
   on timeout, holds a caller lock for its whole run, and delivers a successful
   change through `harness-session close`. See docs/architecture.md.
 - `harness-exec <harness> --isolated ...` no longer injects the current

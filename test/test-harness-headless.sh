@@ -74,7 +74,7 @@ esac
 EOF
 chmod +x "$STUB/gh" "$STUB/claude"
 printf '%s\n' 'Fix the typo.' > "$PROMPT"
-printf '%s\n' '{"permissions":{"deny":["Read(//secret/**)"]},"sandbox":{"enabled":true,"network":{"allowedDomains":["example.com"],"strictAllowlist":true}}}' > "$TMP/caller-settings.json"
+printf '%s\n' '{"_note":"bridge policy","permissions":{"deny":["Read(//secret/**)"]},"sandbox":{"filesystem":{"denyRead":["/secret"]},"network":{"allowedDomains":["example.com"]}}}' > "$TMP/caller-settings.json"
 
 headless() {
   rm -f "$TMP/claude-argv" "$TMP/claude-env" "$TMP/claude-pwd"
@@ -113,14 +113,38 @@ for a, b in (('--output-format', 'json'), ('--max-budget-usd', '2'), ('--permiss
 assert '-p' in argv and argv[-1] == 'Fix the typo.\n' and argv[-2] == '--', argv
 settings = json.loads(argv[argv.index('--settings') + 1])
 deny = settings['permissions']['deny']
-for rule in ('Edit(/%s/**)' % source, 'Write(/%s/**)' % source, 'Write(/%s/.ssh/**)' % home,
-             'Edit(/%s/.config/gh/**)' % home, 'Write(/%s/.hermes/**)' % home, 'Write(/%s/buzz/**)' % home,
-             'Write(/%s/.claude/**)' % home, 'WebFetch', 'WebSearch', 'Bash(*git push*)', 'Bash(*harness-session*)',
-             'Bash(*session-isolation.sh*)', 'Bash(*auto-deliver*)', 'Bash(*sudo*)', 'Bash(*launchctl*)',
-             'Read(//secret/**)'):
+homes = ['%s/%s' % (home, d) for d in ('.hermes', 'buzz', '.ssh', '.config/gh', '.aws', '.claude')]
+rules = ['%s(/%s/**)' % (tool, path) for path in [source] + homes for tool in ('Edit', 'Write', 'NotebookEdit')]
+rules += ['Read(/%s/**)' % path for path in homes]
+rules += ['WebFetch', 'WebSearch', 'Read(//secret/**)']
+rules += ['Bash(*%s*)' % w for w in ('harness-session', 'session-isolation.sh', 'auto-deliver', 'git push', 'sudo', 'launchctl')]
+for rule in rules:
     assert rule in deny, (rule, deny)
-assert settings['sandbox'] == {'enabled': True, 'network': {'allowedDomains': ['example.com'], 'strictAllowlist': True}}, settings
+sandbox = settings['sandbox']
+assert sandbox['enabled'] is True and sandbox['failIfUnavailable'] is True and sandbox['allowUnsandboxedCommands'] is False, sandbox
+assert sandbox['network'] == {'strictAllowlist': True, 'allowedDomains': ['example.com']}, sandbox
+assert set(sandbox['filesystem']['denyRead']) == set(homes + [source, '/secret']), sandbox
+assert set(sandbox) == {'enabled', 'failIfUnavailable', 'allowUnsandboxedCommands', 'network', 'filesystem'}, sandbox
 assert 'harness-launch-record' in json.dumps(settings['hooks']), settings
+PY
+# Merge order: the launcher's settings merge is last-wins for scalars, so the
+# mandatory block (passed last) beats any weaker earlier --settings.
+python3 - "$ROOT/bin" "$SOURCE" "$FAKE_HOME" <<'PY' || fail 'mandatory settings must win the launcher merge'
+import importlib.util, json, sys
+bin_dir, source, home = sys.argv[1:]
+sys.path.insert(0, bin_dir)
+import harness_headless
+spec = importlib.util.spec_from_file_location('policy', bin_dir + '/slack-approval-policy.py')
+policy = importlib.util.module_from_spec(spec); spec.loader.exec_module(policy)
+weak = {'sandbox': {'enabled': False, 'failIfUnavailable': False, 'allowUnsandboxedCommands': True,
+                    'network': {'strictAllowlist': False}}, 'permissions': {'deny': []}}
+mandatory = harness_headless.mandatory_settings(source, home)
+argv = policy.claude_argv(['--settings', json.dumps(weak), '--settings', json.dumps(mandatory), '-p'])
+merged = json.loads(argv[argv.index('--settings') + 1])
+sandbox = merged['sandbox']
+assert sandbox['enabled'] is True and sandbox['failIfUnavailable'] is True, sandbox
+assert sandbox['allowUnsandboxedCommands'] is False and sandbox['network']['strictAllowlist'] is True, sandbox
+assert set(mandatory['permissions']['deny']) <= set(merged['permissions']['deny'])
 PY
 for leak in leak-api leak-buzz leak-telegram leak-local gh-token-leak; do
   ! grep -q "$leak" "$TMP/claude-env" || fail "secret $leak reached the claude environment"
@@ -217,5 +241,19 @@ env -i PATH="$STUB:/usr/bin:/bin" HOME="$FAKE_HOME" HARNESS_PROFILE_HOME="$PROFI
   --lock-file "$LOCK" --budget-usd 1 --timeout-min 1 || fail 'refused clone must still write a result'
 expect_status refused
 [[ ! -e "$TMP/claude-argv" && ! -e "$TMP/linked-outside/settings.local.json" ]] || fail 'refused clone must not launch claude or write outside'
+# Caller settings may only add restrictions; anything else is refused.
+for weak in '{"permissions":{"allow":["Bash"]}}' '{"permissions":{"ask":["Bash"]}}' \
+  '{"permissions":{"defaultMode":"bypassPermissions"}}' '{"permissions":{"additionalDirectories":["/"]}}' \
+  '{"hooks":{}}' '{"env":{"A":"b"}}' '{"apiKeyHelper":"x"}' '{"enableAllProjectMcpServers":true}' \
+  '{"sandbox":{"enabled":false}}' '{"sandbox":{"allowUnsandboxedCommands":true}}' \
+  '{"sandbox":{"excludedCommands":["git"]}}' '{"sandbox":{"autoAllowBashIfSandboxed":true}}' \
+  '{"sandbox":{"network":{"strictAllowlist":false}}}' '{"sandbox":{"filesystem":{"allowWrite":["/"]}}}' \
+  '{"sandbox":{"filesystem":{"allowRead":["/"]}}}' '{"sandbox":{"enableWeakerNestedSandbox":true}}' \
+  '{"permissions":{"deny":"Bash"}}' '{"sandbox":{"network":{"allowedDomains":[1]}}}' '[]'; do
+  printf '%s\n' "$weak" > "$TMP/weak.json"
+  rm -f "$TMP/claude-argv"
+  headless --settings-file "$TMP/weak.json" || fail "weak settings run must write a result: $weak"
+  [[ "$(field status)" == refused && ! -e "$TMP/claude-argv" ]] || fail "caller settings must be refused: $weak"
+done
 if "$PREFIX/bin/harness-headless" hh --prompt-file "$PROMPT" 2>/dev/null; then fail 'missing required options must exit nonzero'; fi
 echo 'PASS: harness-headless refuses runs that would need interactive input'

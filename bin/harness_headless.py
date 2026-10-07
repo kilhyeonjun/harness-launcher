@@ -25,7 +25,7 @@ SESSION_LINE = re.compile(r'^harness-launcher: isolated session (' + UUID + r');
 ENV_ALLOW = ('HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'TMPDIR')
 # Launcher state location only, so `harness-session` sees the same sessions.
 ENV_LAUNCHER = ('HARNESS_SESSION_STATE_HOME', 'XDG_STATE_HOME')
-HOME_DENY = ('.hermes', 'buzz', '.claude', '.ssh', '.config/gh')
+HOME_DENY = ('.hermes', 'buzz', '.ssh', '.config/gh', '.aws', '.claude')
 BASH_DENY = ('harness-session', 'session-isolation.sh', 'auto-deliver', 'git push', 'sudo', 'launchctl')
 SUMMARY_MAX = 3000
 EXIT_TIMEOUT = 124
@@ -87,13 +87,45 @@ def state_home(env):
 
 
 def mandatory_settings(source, home):
-    paths = dict.fromkeys([source, os.path.realpath(source)] +
-                          [os.path.join(home, d) for d in HOME_DENY])
-    deny = [f'{tool}(/{path}/**)' for path in paths for tool in ('Edit', 'Write')]
+    """Launcher-owned containment. Passed last, so the launcher's settings
+    merge (dicts deep-merged, lists unioned, scalars last-wins) keeps every
+    value here over any earlier --settings."""
+    homes = list(dict.fromkeys(os.path.join(home, d) for d in HOME_DENY))
+    sources = list(dict.fromkeys([source, os.path.realpath(source)]))
+    deny = [f'{tool}(/{path}/**)' for path in sources + homes for tool in ('Edit', 'Write', 'NotebookEdit')]
+    deny += [f'Read(/{path}/**)' for path in homes]
     deny += ['WebFetch', 'WebSearch']
     for word in BASH_DENY:
         deny += [f'Bash({word}:*)', f'Bash(*{word}*)']
-    return {'permissions': {'deny': deny}}
+    # The session clone has its own Git directory and copied local files, so
+    # the canonical source root can be read-denied too.
+    return {'permissions': {'deny': deny},
+            'sandbox': {'enabled': True, 'failIfUnavailable': True, 'allowUnsandboxedCommands': False,
+                        'network': {'strictAllowlist': True, 'allowedDomains': []},
+                        'filesystem': {'denyRead': homes + sources}}}
+
+
+def _strings(value):
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+# The only caller settings accepted: additions that restrict further, plus the
+# network allowlist. Any other key could weaken containment.
+CALLER_SHAPE = {'_note': str, 'permissions': {'deny': _strings},
+                'sandbox': {'filesystem': {'denyRead': _strings}, 'network': {'allowedDomains': _strings}}}
+
+
+def validate_caller(value, shape=CALLER_SHAPE, where='settings'):
+    if not isinstance(value, dict):
+        raise Refused(f'--settings-file {where} must be a JSON object')
+    for key, item in value.items():
+        rule = shape.get(key)
+        if rule is None:
+            raise Refused(f'--settings-file key is not allowed: {where}.{key}')
+        if isinstance(rule, dict):
+            validate_caller(item, rule, f'{where}.{key}')
+        elif not (isinstance(item, rule) if isinstance(rule, type) else rule(item)):
+            raise Refused(f'--settings-file value has the wrong type: {where}.{key}')
 
 
 def claude_result(stdout):
@@ -194,9 +226,8 @@ def run(args, result):
         try:
             caller = json.loads(Path(args.settings_file).read_text())
         except (OSError, ValueError):
-            caller = None
-        if not isinstance(caller, dict):
             raise Refused('--settings-file must contain a JSON object')
+        validate_caller(caller)
 
     env = child_env()
     state = state_home(env)

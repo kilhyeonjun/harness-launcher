@@ -252,7 +252,7 @@ When the external terminal starts inside the harness, no `--cwd .` is needed. If
 
 An explicit leading `--isolated` is not given the current directory: `harness-exec <harness> --isolated --passthrough -p ...` runs in the isolated session root.
 
-Bridges that run one unattended task at a time use `harness-headless`. It never prompts, keeps only an environment allowlist, runs Claude in a fresh isolated session with launcher-enforced permission denies, delivers a successful change through `harness-session close`, and always writes one JSON result:
+Bridges that run one unattended task at a time use `harness-headless`. It never prompts, keeps only an environment allowlist, runs Claude in a fresh isolated session under a launcher-owned sandbox and permission denies (caller settings may only add restrictions or allowed network domains), delivers a successful change through `harness-session close`, and always writes one JSON result:
 
 ```bash
 harness-headless <profile> --prompt-file task.md --result-file result.json \

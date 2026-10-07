@@ -253,12 +253,20 @@ non-interactive route that works inside an isolated session.
   --permission-mode bypassPermissions --strict-mcp-config [--model X]`, with
   the prompt after `--`. stdin is `/dev/null` and the run has its own process
   group with no controlling terminal. The launcher merges every `--settings`
-  into one: its launch-record hook, the caller's `S` (any `sandbox` object is
-  kept), and mandatory denies: `Edit`/`Write` on the source root, `~/.hermes`,
-  `~/buzz`, `~/.claude`, `~/.ssh`, `~/.config/gh`; `WebFetch`; `WebSearch`; and
-  Bash rules matching `harness-session`, `session-isolation.sh`,
-  `auto-deliver`, `git push`, `sudo` and `launchctl`. Permission arrays are
-  unions, so the caller can add rules but not remove these.
+  into one (dicts merge, lists are unions, the last scalar wins): its
+  launch-record hook, the caller's `S`, and the mandatory containment, passed
+  last so it wins. Mandatory: `sandbox` with `enabled`, `failIfUnavailable`,
+  `allowUnsandboxedCommands: false`, `network.strictAllowlist` and an empty
+  `network.allowedDomains`, and `filesystem.denyRead` for `~/.hermes`,
+  `~/buzz`, `~/.ssh`, `~/.config/gh`, `~/.aws`, `~/.claude` and the source root
+  (the session clone has its own Git directory and copied local files, so it
+  never needs to read the source root). `permissions.deny` holds
+  `Edit`/`Write`/`NotebookEdit` on the source root and those directories,
+  `Read` on those directories, `WebFetch`, `WebSearch`, and Bash rules matching
+  `harness-session`, `session-isolation.sh`, `auto-deliver`, `git push`, `sudo`
+  and `launchctl`. `S` may contain only `_note`, `permissions.deny`,
+  `sandbox.filesystem.denyRead` and `sandbox.network.allowedDomains` (string
+  lists, added to the mandatory ones). Any other key is `refused`.
 - **Timeout.** After `M` minutes (fractions allowed) the whole process group
   gets `SIGTERM`, then `SIGKILL`. Status `timeout`, `exit_code` 124. The
   session is left for its owner.
@@ -274,12 +282,13 @@ non-interactive route that works inside an isolated session.
   Claude errors, a missing Claude result, and delivery failures. `refused`
   (`exit_code` 2) means the run could not start without input: an unknown
   profile, an empty or unreadable prompt, a non-positive budget or timeout, a
-  settings file that is not a JSON object, or a refused headless clone.
+  settings file with a key outside the allowed set, or a refused headless clone.
   Launcher and Claude stderr go to `R.log`. The command exits 0 whenever `R`
   was written and nonzero otherwise.
 
-Denies and hooks are guardrails, not a sandbox: Bash rules match command
-text. Callers that need containment pass a `sandbox` block in `S`.
+Bash deny rules match command text and are guardrails only; containment
+comes from the mandatory sandbox. User and project settings files still merge
+under the flag settings.
 
 ### Restore fidelity and the launch record
 
