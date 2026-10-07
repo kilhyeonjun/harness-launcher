@@ -222,8 +222,11 @@ every step (index copy, `add`, `diff`) and on the rename that publishes the
 patch only after git wrote it; the patch, `discarded-at` and the record
 directory are flushed with `F_FULLFSYNC` (plain `fsync` where that fails, which
 does not flush the drive cache) before the journal changes. Any failure, or an
-interrupt (the discard's temporary files are removed), refuses and changes
-nothing. Only then does the journal become `DISCARDED`, keeping the
+interrupt (the discard's temporary files are removed), refuses and leaves
+the journal unchanged; an interrupt after the patch was published can leave
+`discarded.patch` and `discarded-at` in the `ABANDONED` or `CONFLICT`
+record, which the next `discard` or reopen replaces. Only then does the
+journal become `DISCARDED`, keeping the
 identity a `CONFLICT` carried. `DISCARDED` is reachable only through
 `discard`: `harness-session transition <uuid> DISCARDED` refuses, and every
 reopen to `OPEN` removes a leftover `discarded.patch` and `discarded-at`.
@@ -348,7 +351,8 @@ legacy routes do not change.
   changes and recovered it, right before `close`. Every outcome other than
   `delivered` leaves no `commit-message` in the record (timeout, budget,
   failed, refused, `no_changes`, `conflict`, and refusals or failures inside
-  delivery remove or never write it), so a session resumed and closed later
+  delivery remove or never write it; only a SIGKILL of `harness-headless`
+  during `close` can leave it behind), so a session resumed and closed later
   by its owner gets the generic message. A
   `printf` or `echo` command whose text trips a Bash deny rule (it contains
   `harness-session`, `git push` or another denied word) is refused by the

@@ -19,7 +19,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
   lines. The message is copied into the launcher-owned session record only
   while the broker closes a session with changes, and the broker commits with
   it plus a `Harness-Session: <uuid>` trailer; every outcome other than
-  `delivered` leaves no message in the record. Anything else falls back to the
+  `delivered` leaves no message in the record (short of a SIGKILL during
+  `close`). Anything else falls back to the
   generic message; the run log names which was used. The agent's `.git` is
   never read, and the result file is unchanged (version 1).
 - New `harness-session discard <uuid>` retires an `ABANDONED` or `CONFLICT`
@@ -31,7 +32,7 @@ Notable changes are recorded here. This project follows semantic versioning for 
   submit would use: it holds the tracked content as that index tracks it
   (force-added ignored files kept, `git rm --cached` removals kept) plus
   untracked, non-ignored files; other gitignored files and machine-local paths
-  are left out. It refuses without changing anything
+  are left out. It refuses and leaves the journal unchanged
   if that patch cannot be written completely, and then moves the session to
   the new terminal state `DISCARDED`. `gc` retires `DISCARDED` work trees
   after the retention period, like `CLOSED` and `DELIVERED`; `resume` and
