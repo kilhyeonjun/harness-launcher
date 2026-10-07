@@ -18,17 +18,41 @@ write_heartbeat() {
   mv -f "$tmp" "$dir/heartbeat"
 }
 field() { sed -n "s/^$2=//p" "$1" | head -n 1; }
-# Broker git on a session root: never run fsmonitor or hooks named by the
-# session's own config.
-session_git() { git -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"; }
-# Headless sessions record their .git/config hash at clone time; any change
-# means the agent escaped containment, so no broker git may run on the root.
-config_intact() {
-  local id="$1" dir root
-  dir="$(session_dir "$id")"; [[ -f "$dir/git-config.sha256" ]] || return 0
-  root="$(<"$dir/session-root")"
-  [[ "$(shasum -a 256 < "$root/.git/config" 2>/dev/null | awk '{print $1}')" == "$(<"$dir/git-config.sha256")" ]] && return 0
-  echo "harness-session: refused: session $id git config changed since clone" >&2
+# Broker git on a session root: nothing named by the session's own config may
+# run (fsmonitor, hooks, external diff, submodule recursion).
+session_git() {
+  git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c submodule.recurse=false \
+    -c diff.external= -c core.untrackedCache=false "$@"
+}
+EXCLUDED_PATHSPEC=(':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json')
+# restore_trusted_git_state <id>
+#   Headless sessions only (a git-config.trusted copy exists in the record).
+#   Runs before every broker git command on the session root: refuses a
+#   symlinked .git component, puts the clone-time .git/config back, and removes
+#   config.worktree, commondir, hooks, alternates and .git/modules. A config
+#   that differed is recorded as git-config-tampered; recover and close then
+#   refuse (exit 6) even though the restore made git safe to run.
+restore_trusted_git_state() {
+  local id="$1" dir root git part tmp
+  dir="$(session_dir "$id")"; [[ -f "$dir/git-config.trusted" ]] || return 0
+  root="$(<"$dir/session-root")"; git="$root/.git"
+  for part in "$git" "$git/config" "$git/config.worktree" "$git/commondir" "$git/hooks" "$git/info" "$git/modules" "$git/objects" "$git/objects/info"; do
+    if [[ -L "$part" ]]; then
+      : > "$dir/git-config-tampered"
+      echo "harness-session: refused: symlink at ${part#"$root"/} in session $id" >&2
+      return 6
+    fi
+  done
+  [[ -d "$git" && -d "$git/objects" ]] || { : > "$dir/git-config-tampered"; echo "harness-session: refused: session $id has no git directory" >&2; return 6; }
+  cmp -s "$dir/git-config.trusted" "$git/config" || : > "$dir/git-config-tampered"
+  tmp="$(mktemp "$git/.trusted-config.XXXXXX")" && cat "$dir/git-config.trusted" > "$tmp" && mv -f "$tmp" "$git/config" || return 6
+  rm -rf "$git/config.worktree" "$git/commondir" "$git/modules" "$git/objects/info/alternates" "$git/objects/info/http-alternates"
+  rm -rf "$git/hooks" && mkdir "$git/hooks" || return 6
+}
+# not_tampered <id>: refuse delivery of a session whose git state was tampered.
+not_tampered() {
+  [[ ! -e "$(session_dir "$1")/git-config-tampered" ]] && return 0
+  echo "harness-session: refused: session $1 changed its git configuration; inspect before delivery" >&2
   return 6
 }
 reopen_session() {
@@ -102,7 +126,10 @@ create() {
   printf '%s\n' "$source" > "$dir/source-root"
   printf '%s\n' "$root" > "$dir/session-root"
   printf '%s\n' "$sha" > "$dir/base-sha"
-  [[ "${HARNESS_HEADLESS:-0}" != 1 ]] || shasum -a 256 < "$root/.git/config" | awk '{print $1}' > "$dir/git-config.sha256"
+  if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
+    cp "$root/.git/config" "$dir/git-config.trusted"
+    shasum -a 256 < "$root/.git/config" | awk '{print $1}' > "$dir/git-config.sha256"
+  fi
   printf '1\n' > "$dir/lease-v1"
   : > "$dir/runtime.lock"
   write_journal "$dir" OPEN ""
@@ -278,13 +305,13 @@ transition() {
 # the session (HEAD moved off the base).
 session_has_changes() {
   [[ -n "${2:-}" && "$(session_git -C "$1" rev-parse HEAD 2>/dev/null)" != "$2" ]] && return 0
-  [[ -n "$(session_git -C "$1" status --porcelain --untracked-files=all -- . ':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json')" ]]
+  [[ -n "$(session_git -C "$1" status --porcelain --ignore-submodules=all --untracked-files=all -- . "${EXCLUDED_PATHSPEC[@]}")" ]]
 }
 exit_session() {
   local id="$1" dir root state
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; state="$(field "$dir/journal" state)"
   if [[ "$state" == OPEN ]]; then
-    config_intact "$id" 2>/dev/null || { transition "$id" ABANDONED; return 0; }
+    restore_trusted_git_state "$id" || { transition "$id" ABANDONED; return 6; }
     if session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" ABANDONED; else transition "$id" CLOSED; fi
   fi
 }
@@ -319,7 +346,7 @@ recover_unlocked() {
   reopen_session "$id"
   printf 'HARNESS_SESSION_ROOT=%s\nstate=OPEN\n' "$(<"$dir/session-root")"
 }
-recover() { config_intact "$1" || return $?; with_lock recover_unlocked "$1"; }
+recover() { restore_trusted_git_state "$1" && not_tampered "$1" || return 6; with_lock recover_unlocked "$1"; }
 heartbeat_epoch() { date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || printf '0\n'; }
 heartbeat_session() {
   local dir="$(session_dir "$1")" state
@@ -347,7 +374,7 @@ write_index_manifest() {
     if [[ "$status" == D* ]]; then printf 'D\0-\0-\0%s\0' "$path" >> "$output"; continue; fi
     read -r mode oid stage path2 < <(session_git -C "$root" ls-files -s -- "$path")
     printf 'F\0%s\0%s\0%s\0' "$mode" "$oid" "$path" >> "$output"
-  done < <(session_git -C "$root" diff --no-ext-diff --cached --name-status --no-renames -z "$base")
+  done < <(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z "$base" -- . "${EXCLUDED_PATHSPEC[@]}")
 }
 submission_identity() {
   local dir="$1"
@@ -358,8 +385,17 @@ submit() {
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; base="$(<"$dir/base-sha")"; state="$(field "$dir/journal" state)"
   [[ "$state" == SUBMITTED ]] && return 0
   [[ "$state" == OPEN ]] || { echo "cannot submit $state session" >&2; return 2; }
-  session_git -C "$root" add -A -- . ':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json'
-  session_git -C "$root" diff --no-ext-diff --no-textconv --cached --binary "$base" > "$dir/submission.patch"
+  restore_trusted_git_state "$id" && not_tampered "$id" || return 6
+  session_git -C "$root" add -A -- . "${EXCLUDED_PATHSPEC[@]}"
+  # Committed work is in the index already, so the add pathspec cannot keep
+  # excluded paths out. Staged-only excluded paths (a raw `git add -A` picks
+  # up the machine-local links) are unstaged; committed ones refuse instead
+  # of being silently dropped.
+  local touched
+  session_git -C "$root" reset -q -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json 2>/dev/null || true
+  touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json)"
+  [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
+  session_git -C "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"
   [[ -s "$dir/submission.patch" ]] || { echo 'empty submission' >&2; return 2; }
   write_index_manifest "$root" "$base" "$dir/.manifest"
   mv -f "$dir/.manifest" "$dir/manifest"
@@ -486,7 +522,7 @@ integrate() { with_lock integrate_unlocked "$@"; }
 close_session() {
   local id="$1" dir state root
   dir="$(session_dir "$id")"; state="$(field "$dir/journal" state)"; root="$(<"$dir/session-root")"
-  config_intact "$id" || return $?
+  restore_trusted_git_state "$id" && not_tampered "$id" || return 6
   if [[ "$state" == OPEN ]] && ! session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" CLOSED; return 0; fi
   [[ "$state" == OPEN ]] && submit "$id"
   [[ "$(field "$dir/journal" state)" == SUBMITTED ]] || { echo "cannot close $state session" >&2; return 2; }

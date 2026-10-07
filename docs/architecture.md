@@ -253,8 +253,8 @@ legacy routes do not change.
   is the session root. The headless clone uses `git clone --no-hardlinks`,
   copies `.mcp.local.json`, `mcp.local.json` and `.claude/settings.local.json`
   (without its `env` block) instead of linking them, never links `projects/`,
-  and refuses a symlink on any of those paths. It records the SHA-256 of the
-  session `.git/config` in the session record.
+  and refuses a symlink on any of those paths. It keeps a trusted copy and the
+  SHA-256 of the session `.git/config` in the session record.
 - **Claude.** `claude -p --output-format json --max-budget-usd N
   --permission-mode acceptEdits --strict-mcp-config [--model X]`, with the
   prompt on stdin, in its own process group without a controlling terminal.
@@ -284,16 +284,26 @@ legacy routes do not change.
 - **Timeout.** After `M` minutes (fractions allowed) the whole process group
   gets `SIGTERM`, then `SIGKILL`. Status `timeout`, `exit_code` 124. The
   session is left for its owner.
-- **Delivery.** When Claude exits, the launcher moves a changed session
-  (worktree changes or commits past the base) to `ABANDONED` and a clean one
-  to `CLOSED`. If the session `.git/config` no longer matches its clone-time
-  hash, no broker git runs on the root and the status is `refused`. Otherwise
-  a changed session is recovered and closed through the broker, whose git
-  commands on the root run with `core.fsmonitor=false` and
-  `core.hooksPath=/dev/null`. A journal still `INTEGRATING` after close is
-  recovered once. `DELIVERED` gives `delivered` with the `delivered-sha`
-  readback commit; close exit 3 or 5 gives `conflict` (session kept); anything
-  else is `failed`.
+- **Delivery.** Before every broker git command on a headless root (`exit`,
+  `recover`, `submit`, `close`), the broker restores the trusted git state:
+  it refuses a symlinked `.git` component, puts the trusted `.git/config`
+  back, and removes `config.worktree`, `commondir`, `.git/modules`, the hooks
+  and any alternates. A filter or diff driver defined only in the session's
+  config is therefore gone before git runs; an attribute naming an undefined
+  driver is a no-op. Broker git on any session root runs with
+  `core.fsmonitor=false`, `core.hooksPath=/dev/null`, `submodule.recurse=false`,
+  an empty `diff.external` and `core.untrackedCache=false`, with
+  `--ignore-submodules=all` and `--no-ext-diff --no-textconv` where they
+  apply. A config that differed is recorded as tampering and the run is
+  `refused` (session kept). When Claude exits, the launcher moves a changed
+  session (worktree changes or commits past the base) to `ABANDONED` and a
+  clean one to `CLOSED`. A changed session is recovered and closed through
+  the broker. A journal still `INTEGRATING` after close is recovered once.
+  `DELIVERED` gives `delivered` with the `delivered-sha` readback commit;
+  close exit 3 or 5 gives `conflict`, exit 6 (tampering) or 7 (the session
+  committed an excluded path: `config/.local`, `projects`, `.mcp.local.json`,
+  `mcp.local.json` or `.claude/settings.local.json`) gives `refused`, all
+  with the session kept; anything else is `failed`.
 - **Result.** Written atomically (temp file and rename) to `R`, always with
   `"version": 1`:
   `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.
@@ -302,7 +312,8 @@ legacy routes do not change.
   `refused` (`exit_code` 2 before launch) means the run could not start
   without input or broke containment: an unknown profile, an empty or
   unreadable prompt, a non-positive budget or timeout, a settings key outside
-  the allowed set, a refused headless clone, or a changed session git config.
+  the allowed set, a refused headless clone, a changed session git config, or
+  a committed excluded path.
   Launcher and Claude stderr go to `R.log`. The command exits 0 whenever `R`
   was written and nonzero otherwise.
 

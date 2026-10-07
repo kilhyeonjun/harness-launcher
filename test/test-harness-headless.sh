@@ -68,6 +68,13 @@ case "\$mode" in
     printf 'committed %s\n' "\$\$" > committed.txt
     git add committed.txt && git -c user.name=t -c user.email=t@example.invalid commit -qm agent
     echo "\$ok" ;;
+  excluded)
+    printf '{"env":{"PLANTED":"x"}}\n' > .claude/settings.local.json
+    git add -f .claude/settings.local.json && git -c user.name=t -c user.email=t@example.invalid commit -qm planted
+    echo "\$ok" ;;
+  gitcfgonly)
+    printf '[filter "evil"]\n\tclean = touch %s\n' "$TMP/filter-ran" >> .git/config
+    echo "\$ok" ;;
   gitcfg)
     printf 'tamper %s\n' "\$\$" > tamper.txt
     printf '[core]\n\tfsmonitor = touch %s\n' "$TMP/fsmonitor-ran" >> .git/config
@@ -201,6 +208,16 @@ remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
 headless || fail 'tampered run must exit 0'
 expect_status refused
 [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" && ! -e "$TMP/fsmonitor-ran" ]] || fail 'a changed session git config must stop delivery before any git runs'
+echo gitcfgonly > "$TMP/mode"
+headless || fail 'config-only tamper run must exit 0'
+expect_status refused
+[[ ! -e "$TMP/filter-ran" ]] || fail 'a repo-config filter must not run'
+echo excluded > "$TMP/mode"
+remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
+headless || fail 'excluded-path run must exit 0'
+expect_status refused
+[[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail 'committed excluded paths must not be pushed'
+grep -q 'excluded paths' "$RESULT" || fail 'excluded-path refusal must say why'
 echo 'PASS: harness-headless delivers commits and refuses a tampered session git config'
 
 # --- an INTEGRATING journal after close is recovered once, whatever the exit code --
@@ -224,7 +241,7 @@ def run(cmd, **kw):
     return types.SimpleNamespace(returncode=0)
 h.subprocess.run = run
 h.config_intact = lambda *a: True
-assert h.deliver(sid, state, {}, '/', None) == ('delivered', 'a' * 40), calls
+assert h.deliver(sid, state, {}, '/', None) == ('delivered', 'a' * 40, None), calls
 assert calls == ['recover', 'close', 'recover'], calls
 PY
 echo 'PASS: harness-headless recovers an INTEGRATING session once after close'

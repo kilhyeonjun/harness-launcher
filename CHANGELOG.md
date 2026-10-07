@@ -18,10 +18,16 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - Headless isolated sessions (`HARNESS_HEADLESS=1`) clone without hardlinks,
   copy machine-local MCP and settings files instead of linking them, drop the
   settings `env` block, never link `projects/`, refuse a clone with a symlink
-  on those paths, and refuse delivery when the session `.git/config` changed.
+  on those paths, restore their trusted git configuration (and drop
+  `config.worktree`, hooks, alternates and `.git/modules`) before every broker
+  git command, and refuse delivery when the session changed its git config.
 - Isolated sessions with commits past their base now count as changed, so
-  committed work is delivered instead of being closed as clean. Broker git on
-  a session root runs with `core.fsmonitor=false` and `core.hooksPath=/dev/null`.
+  committed work is delivered instead of being closed as clean. A submission
+  whose commits touch an excluded machine-local path (`config/.local`,
+  `projects`, `.mcp.local.json`, `mcp.local.json`, `.claude/settings.local.json`)
+  is refused with exit 7; such paths that are only staged are unstaged. Broker
+  git on a session root disables fsmonitor, hooks, submodule recursion, the
+  untracked cache and external diff drivers.
 
 ## 0.42.0 — 2026-10-01
 

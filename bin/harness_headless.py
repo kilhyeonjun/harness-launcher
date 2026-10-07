@@ -204,8 +204,11 @@ def kill_group(pgid):
 
 
 def config_intact(state, sid):
-    """The session .git/config still matches the hash recorded at clone time."""
+    """No recorded tampering (the broker restores the trusted git state and
+    marks a changed config) and .git/config matches its clone-time hash."""
     record = state / 'sessions' / sid
+    if (record / 'git-config-tampered').exists():
+        return False
     try:
         expected = (record / 'git-config.sha256').read_text().strip()
         root = (record / 'session-root').read_text().strip()
@@ -215,8 +218,12 @@ def config_intact(state, sid):
     return bool(expected) and actual == expected
 
 
+TAMPERED = 'session git configuration changed during the run; delivery refused, session kept'
+EXCLUDED = 'the run committed machine-local or excluded paths; delivery refused, session kept'
+
+
 def deliver(sid, state, env, cwd, log):
-    """Broker delivery after a successful run: (status, commit)."""
+    """Broker delivery after a successful run: (status, commit, reason)."""
     iso = str(BIN / 'session-isolation.sh')
 
     def session(*args):
@@ -225,16 +232,21 @@ def deliver(sid, state, env, cwd, log):
 
     def delivered():
         sha = (state / 'sessions' / sid / 'delivered-sha').read_text().strip()
-        return 'delivered', sha
+        return 'delivered', sha, None
 
+    # Tampering is checked first: it may have left nothing else to deliver.
+    if not config_intact(state, sid):
+        return 'refused', None, TAMPERED
     current = journal_state(state, sid)
     if current == 'CLOSED':
-        return 'no_changes', None
-    if not config_intact(state, sid):
-        # Escaped containment: no broker git may run on this root.
-        return 'refused', None
-    if current != 'ABANDONED' or session('recover') != 0:
-        return 'failed', None
+        return 'no_changes', None, None
+    if current != 'ABANDONED':
+        return 'failed', None, None
+    rc = session('recover')
+    if rc == 6:
+        return 'refused', None, TAMPERED
+    if rc != 0:
+        return 'failed', None, None
     rc = session('close')
     after = journal_state(state, sid)
     if after == 'INTEGRATING':
@@ -245,10 +257,12 @@ def deliver(sid, state, env, cwd, log):
     if after == 'DELIVERED':
         return delivered()
     if rc == 0 and after == 'CLOSED':
-        return 'no_changes', None
+        return 'no_changes', None, None
+    if rc in (6, 7):
+        return 'refused', None, TAMPERED if rc == 6 else EXCLUDED
     if rc in (3, 5):
-        return 'conflict', None
-    return 'failed', None
+        return 'conflict', None, None
+    return 'failed', None, None
 
 
 def run(args, result):
@@ -336,9 +350,9 @@ def run(args, result):
             result['status'] = 'failed'
             result['summary'] = 'isolated session id was not announced by the launcher'
         else:
-            result['status'], result['commit'] = deliver(sid, state, env, hdir, log)
-            if result['status'] == 'refused':
-                result['summary'] = "session git config changed during the run; delivery refused, session kept"
+            result['status'], result['commit'], reason = deliver(sid, state, env, hdir, log)
+            if reason:
+                result['summary'] = reason
 
 
 def write_result(path, result):

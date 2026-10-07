@@ -451,3 +451,77 @@ if HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$tamper_id" 2>/dev/nu
 [[ ! -e "$TMP/fsmonitor-ran" ]] || { echo 'FAIL: a tampered headless session ran git'; exit 1; }
 
 echo 'PASS: headless clones own their objects and broker git ignores session config hooks'
+
+# Trusted git state is restored before every broker git run on a headless root.
+headless_session() {
+  local out; out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"
+  hs_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; hs_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+}
+payload="$TMP/payload-ran"
+printf '#!/bin/sh\ntouch "%s"\ncat\n' "$payload" > "$TMP/payload.sh"; chmod +x "$TMP/payload.sh"
+broker_runs() {
+  HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$hs_id" 2>/dev/null || true
+  HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$hs_id" >/dev/null 2>&1 || true
+  HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$hs_id" >/dev/null 2>&1 || true
+}
+# Filter driver in repo config.
+headless_session
+printf '* filter=evil\n' > "$hs_root/.gitattributes"
+printf 'changed\n' > "$hs_root/tracked.txt"
+printf '[filter "evil"]\n\tclean = %s\n\tsmudge = %s\n' "$TMP/payload.sh" "$TMP/payload.sh" >> "$hs_root/.git/config"
+broker_runs
+[[ ! -e "$payload" ]] || { echo 'FAIL: a repo-config filter driver ran during broker git'; exit 1; }
+[[ -e "$STATE/sessions/$hs_id/git-config-tampered" ]] || { echo 'FAIL: a changed git config must be recorded as tampering'; exit 1; }
+cmp -s "$hs_root/.git/config" "$STATE/sessions/$hs_id/git-config.trusted" || { echo 'FAIL: the trusted git config must be restored'; exit 1; }
+if HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$hs_id" 2>/dev/null; then echo 'FAIL: a tampered session must not be delivered'; exit 1; fi
+# config.worktree, hooks and alternates are removed.
+headless_session
+printf '[core]\n\tfsmonitor = %s\n' "$TMP/payload.sh" > "$hs_root/.git/config.worktree"
+printf '#!/bin/sh\ntouch "%s"\n' "$payload" > "$hs_root/.git/hooks/pre-commit"; chmod +x "$hs_root/.git/hooks/pre-commit"
+printf '%s\n' "$TMP/elsewhere/objects" > "$hs_root/.git/objects/info/alternates"
+printf 'x\n' > "$hs_root/wt.txt"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$hs_id"
+[[ ! -e "$hs_root/.git/config.worktree" && ! -e "$hs_root/.git/objects/info/alternates" && -z "$(ls -A "$hs_root/.git/hooks")" ]] || { echo 'FAIL: config.worktree, hooks and alternates must be removed'; exit 1; }
+[[ ! -e "$payload" ]] || { echo 'FAIL: worktree config payload ran'; exit 1; }
+# Submodule payload.
+headless_session
+git init -q "$hs_root/sub"
+git -C "$hs_root/sub" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m s
+git -C "$hs_root/sub" config core.fsmonitor "$TMP/payload.sh"
+printf '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n' > "$hs_root/.gitmodules"
+git -C "$hs_root" update-index --add --cacheinfo "160000,$(git -C "$hs_root/sub" rev-parse HEAD),sub"
+mkdir -p "$hs_root/.git/modules/x"; printf '[core]\n\tfsmonitor = %s\n' "$TMP/payload.sh" > "$hs_root/.git/modules/x/config"
+printf 'y\n' > "$hs_root/sub/dirty"
+broker_runs
+[[ ! -e "$payload" && ! -e "$hs_root/.git/modules" ]] || { echo 'FAIL: submodule payloads must not run and .git/modules must be removed'; exit 1; }
+# A symlinked .git/hooks refuses without running git or touching its target.
+headless_session
+mkdir -p "$TMP/hooks-target"; : > "$TMP/hooks-target/keep"
+rm -rf "$hs_root/.git/hooks"; ln -s "$TMP/hooks-target" "$hs_root/.git/hooks"
+if HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$hs_id" 2>/dev/null; then echo 'FAIL: a symlinked .git/hooks must refuse'; exit 1; fi
+[[ -e "$TMP/hooks-target/keep" && -e "$STATE/sessions/$hs_id/git-config-tampered" ]] || { echo 'FAIL: refusal must not follow the link and must be recorded'; exit 1; }
+grep -qx state=ABANDONED "$STATE/sessions/$hs_id/journal" || { echo 'FAIL: a refused headless session stays ABANDONED'; exit 1; }
+if HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$hs_id" 2>/dev/null; then echo 'FAIL: close must refuse after a refusal'; exit 1; fi
+
+echo 'PASS: headless roots get trusted git state restored before every broker git run'
+
+# Committed changes under excluded paths refuse the submission; normal commits deliver.
+for excluded in .claude/settings.local.json config/.local/x projects/x; do
+  out="$(create)"; ex_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ex_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+  rm -rf "$ex_root/projects"
+  mkdir -p "$(dirname "$ex_root/$excluded")"; printf 'secret\n' > "$ex_root/$excluded"
+  git -C "$ex_root" add -f -- "$excluded"
+  git -C "$ex_root" -c user.name=t -c user.email=t@example.invalid commit -qm planted
+  before="$(git --git-dir="$REMOTE" rev-parse main)"
+  rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ex_id" 2>"$TMP/excluded.err" || rc=$?
+  [[ "$rc" == 7 ]] || { echo "FAIL: committing $excluded must refuse with exit 7 (got $rc)"; exit 1; }
+  grep -q 'excluded path' "$TMP/excluded.err" || { echo 'FAIL: excluded-path refusal must be explained'; exit 1; }
+  [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$before" ]] || { echo "FAIL: $excluded reached the remote"; exit 1; }
+done
+out="$(create)"; ok_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ok_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'committed\n' > "$ok_root/committed-normal.txt"
+git -C "$ok_root" add committed-normal.txt && git -C "$ok_root" -c user.name=t -c user.email=t@example.invalid commit -qm normal
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ok_id"
+git --git-dir="$REMOTE" show main:committed-normal.txt >/dev/null || { echo 'FAIL: committed normal paths must be delivered'; exit 1; }
+
+echo 'PASS: submissions touching excluded paths are refused; committed work is delivered'
