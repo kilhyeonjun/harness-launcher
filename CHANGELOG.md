@@ -395,7 +395,7 @@ Notable changes are recorded here. This project follows semantic versioning for 
   fingerprint, and prepare script import it, so a missing module makes every
   Codex home preparation fail.
 
-## 0.43.0 — 2026-10-07
+## Unreleased
 
 - `docs/orca-integration.md` no longer recommends one Orca profile per trust
   boundary. Orca profiles share one PTY daemon and readable terminal history on
