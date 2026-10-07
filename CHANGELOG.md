@@ -2,6 +2,22 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.43.1 — 2026-10-07
+
+- `harness-headless` and `harness-session close` no longer fail when the
+  harness `.gitignore` ignores the machine-local files the session holds
+  (`.claude/settings.local.json`, `mcp.local.json`, and the like). Staging
+  named those paths in an exclude pathspec, and `git add -A` exits 1 when a
+  pathspec names an ignored file, so every headless run in such a harness
+  ended `failed` after the agent had finished, and interactive `close`
+  stopped the same way. Staging now adds the whole work tree and then resets
+  the excluded paths: headless sessions reset them to the base (their
+  launcher-owned git dir also ignores them), so an edit to a tracked file
+  under an excluded path is not delivered; interactive sessions unstage them
+  as before and still refuse excluded paths they committed. A real staging
+  failure, such as a nested repository with no commit or an unreadable file,
+  still ends `failed`.
+
 ## 0.43.0 — 2026-10-07
 
 - New `harness-headless` runs one unattended Claude task in a fresh isolated
