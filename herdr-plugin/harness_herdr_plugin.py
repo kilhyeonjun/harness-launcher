@@ -71,11 +71,6 @@ EXPECTED_LIVE_STATUS = {"attention": "blocked"}
 # herdr reports a finished turn as `done` until the user sees the pane, `idle` after
 # (app/api_helpers.rs pane_agent_status); a tab out of sight finishes working -> done.
 FINISHED = ("idle", "done")
-
-
-def same_status(a, b):
-    """`done` and `idle` are one finished turn: seen by the user or not yet."""
-    return a == b or (a in FINISHED and b in FINISHED)
 # A harness Codex home, looked up from the pane's directory upward.
 CODEX_INDEX = os.path.join(".harness", "codex", "session_index.jsonl")
 CODEX_INDEX_MAX_BYTES = 16 * 1024 * 1024
@@ -619,6 +614,11 @@ def own_rename(payload):
         return False
     with locked_state() as state:
         return session(state)["tabs"].get(tab_id) == label
+
+
+def same_status(a, b):
+    """`done` and `idle` are one finished turn: seen by the user or not yet."""
+    return a == b or (a in FINISHED and b in FINISHED)
 
 
 def record_status(payload):
