@@ -25,35 +25,32 @@ session_git() {
     -c diff.external= -c core.untrackedCache=false "$@"
 }
 EXCLUDED_PATHSPEC=(':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json')
-# restore_trusted_git_state <id>
-#   Headless sessions only (a git-config.trusted copy exists in the record).
-#   Runs before every broker git command on the session root: refuses a
-#   symlinked .git component, puts the clone-time .git/config back, and removes
-#   config.worktree, commondir, hooks, alternates and .git/modules. A config
-#   that differed is recorded as git-config-tampered; recover and close then
-#   refuse (exit 6) even though the restore made git safe to run.
-restore_trusted_git_state() {
-  local id="$1" dir root git part tmp
-  dir="$(session_dir "$id")"; [[ -f "$dir/git-config.trusted" ]] || return 0
-  root="$(<"$dir/session-root")"; git="$root/.git"
-  for part in "$git" "$git/config" "$git/config.worktree" "$git/commondir" "$git/hooks" "$git/info" "$git/modules" "$git/objects" "$git/objects/info"; do
-    if [[ -L "$part" ]]; then
-      : > "$dir/git-config-tampered"
-      echo "harness-session: refused: symlink at ${part#"$root"/} in session $id" >&2
-      return 6
-    fi
-  done
-  [[ -d "$git" && -d "$git/objects" ]] || { : > "$dir/git-config-tampered"; echo "harness-session: refused: session $id has no git directory" >&2; return 6; }
-  cmp -s "$dir/git-config.trusted" "$git/config" || : > "$dir/git-config-tampered"
-  tmp="$(mktemp "$git/.trusted-config.XXXXXX")" && cat "$dir/git-config.trusted" > "$tmp" && mv -f "$tmp" "$git/config" || return 6
-  rm -rf "$git/config.worktree" "$git/commondir" "$git/modules" "$git/objects/info/alternates" "$git/objects/info/http-alternates"
-  rm -rf "$git/hooks" && mkdir "$git/hooks" || return 6
+# Headless sessions (record marker `headless`, written at clone time) never
+# let broker git read the session's own .git: it runs on a launcher-owned git
+# dir in the record (`trusted.git`, base commit plus its own index) with the
+# session root as work tree and no system or global config. Anything the agent
+# put in the session .git (config, hooks, modules, alternates) is never read,
+# and work-tree attributes name filter or diff drivers that are not defined.
+# ROOT_GIT_DIR is set by use_session_git; empty means an interactive session.
+ROOT_GIT_DIR=""
+use_session_git() {
+  local dir; dir="$(session_dir "$1")"; ROOT_GIT_DIR=""
+  [[ -e "$dir/headless" ]] || return 0
+  if [[ ! -d "$dir/trusted.git" || -L "$dir/trusted.git" ]]; then
+    echo "harness-session: refused: headless session $1 has no trusted git directory" >&2
+    return 6
+  fi
+  ROOT_GIT_DIR="$dir/trusted.git"
 }
-# not_tampered <id>: refuse delivery of a session whose git state was tampered.
-not_tampered() {
-  [[ ! -e "$(session_dir "$1")/git-config-tampered" ]] && return 0
-  echo "harness-session: refused: session $1 changed its git configuration; inspect before delivery" >&2
-  return 6
+# root_git <root> <git args...>: broker git on a session work tree.
+root_git() {
+  local root="$1"; shift
+  if [[ -n "$ROOT_GIT_DIR" ]]; then
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      session_git -C "$root" --git-dir="$ROOT_GIT_DIR" --work-tree="$root" "$@"
+  else
+    session_git -C "$root" "$@"
+  fi
 }
 reopen_session() {
   local id="$1" dir
@@ -127,8 +124,13 @@ create() {
   printf '%s\n' "$root" > "$dir/session-root"
   printf '%s\n' "$sha" > "$dir/base-sha"
   if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
-    cp "$root/.git/config" "$dir/git-config.trusted"
-    shasum -a 256 < "$root/.git/config" | awk '{print $1}' > "$dir/git-config.sha256"
+    # Before the agent runs: the base commit and a matching index, owned by
+    # the launcher record and outside the sandbox's writable paths.
+    git init -q --bare "$dir/trusted.git"
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" fetch -q --no-tags "$root" "+HEAD:refs/heads/base"
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" read-tree "$sha"
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" update-index -q --refresh >/dev/null 2>&1 || true
+    : > "$dir/headless"
   fi
   printf '1\n' > "$dir/lease-v1"
   : > "$dir/runtime.lock"
@@ -302,8 +304,14 @@ transition() {
   write_journal "$dir" "$next" "$identity"
 }
 # session_has_changes <root> [base-sha]: worktree changes, or commits made in
-# the session (HEAD moved off the base).
+# the session (HEAD moved off the base). Call use_session_git first.
 session_has_changes() {
+  if [[ -n "$ROOT_GIT_DIR" ]]; then
+    # The work tree holds the final content, committed or not.
+    root_git "$1" add -A -- . "${EXCLUDED_PATHSPEC[@]}"
+    ! root_git "$1" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$2" -- . "${EXCLUDED_PATHSPEC[@]}"
+    return
+  fi
   [[ -n "${2:-}" && "$(session_git -C "$1" rev-parse HEAD 2>/dev/null)" != "$2" ]] && return 0
   [[ -n "$(session_git -C "$1" status --porcelain --ignore-submodules=all --untracked-files=all -- . "${EXCLUDED_PATHSPEC[@]}")" ]]
 }
@@ -311,7 +319,7 @@ exit_session() {
   local id="$1" dir root state
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; state="$(field "$dir/journal" state)"
   if [[ "$state" == OPEN ]]; then
-    restore_trusted_git_state "$id" || { transition "$id" ABANDONED; return 6; }
+    use_session_git "$id" || { transition "$id" ABANDONED; return 6; }
     if session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" ABANDONED; else transition "$id" CLOSED; fi
   fi
 }
@@ -346,7 +354,7 @@ recover_unlocked() {
   reopen_session "$id"
   printf 'HARNESS_SESSION_ROOT=%s\nstate=OPEN\n' "$(<"$dir/session-root")"
 }
-recover() { restore_trusted_git_state "$1" && not_tampered "$1" || return 6; with_lock recover_unlocked "$1"; }
+recover() { with_lock recover_unlocked "$1"; }
 heartbeat_epoch() { date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || printf '0\n'; }
 heartbeat_session() {
   local dir="$(session_dir "$1")" state
@@ -372,9 +380,9 @@ write_index_manifest() {
   : > "$output"
   while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     if [[ "$status" == D* ]]; then printf 'D\0-\0-\0%s\0' "$path" >> "$output"; continue; fi
-    read -r mode oid stage path2 < <(session_git -C "$root" ls-files -s -- "$path")
+    read -r mode oid stage path2 < <(root_git "$root" ls-files -s -- "$path")
     printf 'F\0%s\0%s\0%s\0' "$mode" "$oid" "$path" >> "$output"
-  done < <(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z "$base" -- . "${EXCLUDED_PATHSPEC[@]}")
+  done < <(root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z "$base" -- . "${EXCLUDED_PATHSPEC[@]}")
 }
 submission_identity() {
   local dir="$1"
@@ -385,17 +393,20 @@ submit() {
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; base="$(<"$dir/base-sha")"; state="$(field "$dir/journal" state)"
   [[ "$state" == SUBMITTED ]] && return 0
   [[ "$state" == OPEN ]] || { echo "cannot submit $state session" >&2; return 2; }
-  restore_trusted_git_state "$id" && not_tampered "$id" || return 6
-  session_git -C "$root" add -A -- . "${EXCLUDED_PATHSPEC[@]}"
-  # Committed work is in the index already, so the add pathspec cannot keep
-  # excluded paths out. Staged-only excluded paths (a raw `git add -A` picks
-  # up the machine-local links) are unstaged; committed ones refuse instead
-  # of being silently dropped.
-  local touched
-  session_git -C "$root" reset -q -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json 2>/dev/null || true
-  touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json)"
-  [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
-  session_git -C "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"
+  use_session_git "$id" || return 6
+  root_git "$root" add -A -- . "${EXCLUDED_PATHSPEC[@]}"
+  if [[ -z "$ROOT_GIT_DIR" ]]; then
+    # Interactive: committed work is in the index already, so the add
+    # pathspec cannot keep excluded paths out. Staged-only excluded paths (a
+    # raw `git add -A` picks up the machine-local links) are unstaged;
+    # committed ones refuse instead of being silently dropped. A headless
+    # index only ever receives the pathspec-filtered work tree.
+    local touched
+    session_git -C "$root" reset -q -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json 2>/dev/null || true
+    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json)"
+    [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
+  fi
+  root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"
   [[ -s "$dir/submission.patch" ]] || { echo 'empty submission' >&2; return 2; }
   write_index_manifest "$root" "$base" "$dir/.manifest"
   mv -f "$dir/.manifest" "$dir/manifest"
@@ -522,7 +533,7 @@ integrate() { with_lock integrate_unlocked "$@"; }
 close_session() {
   local id="$1" dir state root
   dir="$(session_dir "$id")"; state="$(field "$dir/journal" state)"; root="$(<"$dir/session-root")"
-  restore_trusted_git_state "$id" && not_tampered "$id" || return 6
+  use_session_git "$id" || return 6
   if [[ "$state" == OPEN ]] && ! session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" CLOSED; return 0; fi
   [[ "$state" == OPEN ]] && submit "$id"
   [[ "$(field "$dir/journal" state)" == SUBMITTED ]] || { echo "cannot close $state session" >&2; return 2; }

@@ -253,8 +253,10 @@ legacy routes do not change.
   is the session root. The headless clone uses `git clone --no-hardlinks`,
   copies `.mcp.local.json`, `mcp.local.json` and `.claude/settings.local.json`
   (without its `env` block) instead of linking them, never links `projects/`,
-  and refuses a symlink on any of those paths. It keeps a trusted copy and the
-  SHA-256 of the session `.git/config` in the session record.
+  and refuses a symlink on any of those paths. Before the agent starts it
+  writes a `headless` marker and a launcher-owned bare git dir
+  (`trusted.git`, the base commit and a matching index) into the session
+  record, outside every sandbox write path.
 - **Claude.** `claude -p --output-format json --max-budget-usd N
   --permission-mode acceptEdits --strict-mcp-config [--model X]`, with the
   prompt on stdin, in its own process group without a controlling terminal.
@@ -284,26 +286,29 @@ legacy routes do not change.
 - **Timeout.** After `M` minutes (fractions allowed) the whole process group
   gets `SIGTERM`, then `SIGKILL`. Status `timeout`, `exit_code` 124. The
   session is left for its owner.
-- **Delivery.** Before every broker git command on a headless root (`exit`,
-  `recover`, `submit`, `close`), the broker restores the trusted git state:
-  it refuses a symlinked `.git` component, puts the trusted `.git/config`
-  back, and removes `config.worktree`, `commondir`, `.git/modules`, the hooks
-  and any alternates. A filter or diff driver defined only in the session's
-  config is therefore gone before git runs; an attribute naming an undefined
-  driver is a no-op. Broker git on any session root runs with
-  `core.fsmonitor=false`, `core.hooksPath=/dev/null`, `submodule.recurse=false`,
-  an empty `diff.external` and `core.untrackedCache=false`, with
-  `--ignore-submodules=all` and `--no-ext-diff --no-textconv` where they
-  apply. A config that differed is recorded as tampering and the run is
-  `refused` (session kept). When Claude exits, the launcher moves a changed
-  session (worktree changes or commits past the base) to `ABANDONED` and a
-  clean one to `CLOSED`. A changed session is recovered and closed through
-  the broker. A journal still `INTEGRATING` after close is recovered once.
-  `DELIVERED` gives `delivered` with the `delivered-sha` readback commit;
-  close exit 3 or 5 gives `conflict`, exit 6 (tampering) or 7 (the session
-  committed an excluded path: `config/.local`, `projects`, `.mcp.local.json`,
-  `mcp.local.json` or `.claude/settings.local.json`) gives `refused`, all
-  with the session kept; anything else is `failed`.
+- **Delivery.** After Claude exits, `harness-headless` kills its process
+  group and then every remaining process of the user whose cwd or open file
+  is inside the session root (one `lsof` snapshot). Broker git on a headless
+  session (`exit`, `submit`, `close`; decided only by the marker) never reads
+  the session's `.git`: it runs `git --git-dir=<record>/trusted.git
+  --work-tree=<session root>` with `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_GLOBAL=/dev/null`, `core.fsmonitor=false`,
+  `core.hooksPath=/dev/null`, `submodule.recurse=false`, an empty
+  `diff.external` and `core.untrackedCache=false`. The session's config,
+  hooks, modules and alternates are never read, and a work-tree
+  `.gitattributes` names filter or diff drivers that are not defined, so they
+  are no-ops. The work tree holds the final content whether or not the agent
+  committed, so `add -A` with the excluded-path pathspec (`config/.local`,
+  `projects`, `.mcp.local.json`, `mcp.local.json`,
+  `.claude/settings.local.json`) captures it all and drops those paths.
+  Without global config, global excludes (for example a global `.DS_Store`
+  ignore) do not apply; the repository `.gitignore` does. A marker without
+  its `trusted.git` refuses (exit 6, status `refused`). A changed session goes
+  to `ABANDONED`, a clean one to `CLOSED`. A changed session is recovered and
+  closed through the broker. A journal still `INTEGRATING` after close is
+  recovered once. `DELIVERED` gives `delivered` with the `delivered-sha`
+  readback commit; close exit 3 or 5 gives `conflict` (session kept);
+  anything else is `failed`.
 - **Result.** Written atomically (temp file and rename) to `R`, always with
   `"version": 1`:
   `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.
@@ -312,8 +317,8 @@ legacy routes do not change.
   `refused` (`exit_code` 2 before launch) means the run could not start
   without input or broke containment: an unknown profile, an empty or
   unreadable prompt, a non-positive budget or timeout, a settings key outside
-  the allowed set, a refused headless clone, a changed session git config, or
-  a committed excluded path.
+  the allowed set, a refused headless clone, or a headless record without its
+  trusted git dir.
   Launcher and Claude stderr go to `R.log`. The command exits 0 whenever `R`
   was written and nonzero otherwise.
 

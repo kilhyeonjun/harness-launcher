@@ -67,17 +67,28 @@ case "\$mode" in
   commit)
     printf 'committed %s\n' "\$\$" > committed.txt
     git add committed.txt && git -c user.name=t -c user.email=t@example.invalid commit -qm agent
+    printf 'uncommitted %s\n' "\$\$" > uncommitted.txt
     echo "\$ok" ;;
   excluded)
     printf '{"env":{"PLANTED":"x"}}\n' > .claude/settings.local.json
-    git add -f .claude/settings.local.json && git -c user.name=t -c user.email=t@example.invalid commit -qm planted
+    mkdir -p config/.local projects && printf 'x\n' > config/.local/planted && printf 'x\n' > projects/planted
+    printf 'normal %s\n' "\$\$" > normal.txt
+    git add -f .claude/settings.local.json config/.local/planted projects/planted normal.txt
+    git -c user.name=t -c user.email=t@example.invalid commit -qm planted
+    echo "\$ok" ;;
+  linger)
+    printf 'linger %s\n' "\$\$" > linger.txt
+    # Outside claude's process group, cwd in the session root.
+    perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' sleep 300 > /dev/null 2>&1 &
+    echo \$! > "$TMP/linger.pid"
     echo "\$ok" ;;
   gitcfgonly)
     printf '[filter "evil"]\n\tclean = touch %s\n' "$TMP/filter-ran" >> .git/config
     echo "\$ok" ;;
   gitcfg)
     printf 'tamper %s\n' "\$\$" > tamper.txt
-    printf '[core]\n\tfsmonitor = touch %s\n' "$TMP/fsmonitor-ran" >> .git/config
+    printf '* filter=evil\n' > .gitattributes
+    printf '[core]\n\tfsmonitor = touch %s\n[filter "evil"]\n\tclean = touch %s\n' "$TMP/fsmonitor-ran" "$TMP/filter-ran" >> .git/config
     echo "\$ok" ;;
   budget) echo '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":2.01,"num_turns":9,"session_id":"'\$sid'"}'; exit 1 ;;
   error) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"total_cost_usd":0.5,"num_turns":2,"result":"boom","session_id":"'\$sid'"}'; exit 1 ;;
@@ -198,27 +209,35 @@ grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail 'cle
 [[ "$(field commit)" == null ]] || fail 'no_changes has no commit'
 echo 'PASS: harness-headless reports no_changes for a clean session'
 
-# --- committed work and a tampered git config -------------------------------------
+# --- committed work, session git payloads, excluded paths, lingering processes ------
 echo commit > "$TMP/mode"
 headless || fail 'commit run must exit 0'
 expect_status delivered
 git --git-dir="$REMOTE" show main:committed.txt >/dev/null || fail 'committed agent work must be delivered'
+git --git-dir="$REMOTE" show main:uncommitted.txt >/dev/null || fail 'uncommitted agent work must be delivered with it'
 echo gitcfg > "$TMP/mode"
-remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
-headless || fail 'tampered run must exit 0'
-expect_status refused
-[[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" && ! -e "$TMP/fsmonitor-ran" ]] || fail 'a changed session git config must stop delivery before any git runs'
+headless || fail 'git payload run must exit 0'
+expect_status delivered
+[[ ! -e "$TMP/fsmonitor-ran" && ! -e "$TMP/filter-ran" ]] || fail 'session git config and attribute payloads must never run'
+git --git-dir="$REMOTE" show main:tamper.txt >/dev/null || fail 'work-tree content is still delivered'
 echo gitcfgonly > "$TMP/mode"
-headless || fail 'config-only tamper run must exit 0'
-expect_status refused
+headless || fail 'config-only run must exit 0'
+expect_status no_changes
 [[ ! -e "$TMP/filter-ran" ]] || fail 'a repo-config filter must not run'
 echo excluded > "$TMP/mode"
-remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
 headless || fail 'excluded-path run must exit 0'
-expect_status refused
-[[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail 'committed excluded paths must not be pushed'
-grep -q 'excluded paths' "$RESULT" || fail 'excluded-path refusal must say why'
-echo 'PASS: harness-headless delivers commits and refuses a tampered session git config'
+expect_status delivered
+git --git-dir="$REMOTE" show main:normal.txt >/dev/null || fail 'normal committed paths must be delivered'
+for excluded in .claude/settings.local.json config/.local/planted projects/planted; do
+  ! git --git-dir="$REMOTE" cat-file -e "main:$excluded" 2>/dev/null || fail "excluded $excluded was delivered"
+done
+echo linger > "$TMP/mode"
+rm -f "$TMP/linger.pid"
+headless || fail 'linger run must exit 0'
+expect_status delivered
+[[ -s "$TMP/linger.pid" ]] || fail 'linger process did not start'
+! kill -0 "$(cat "$TMP/linger.pid")" 2>/dev/null || fail 'a process left in the session root must be killed before delivery'
+echo 'PASS: harness-headless delivers the work tree through a launcher-owned git dir'
 
 # --- an INTEGRATING journal after close is recovered once, whatever the exit code --
 python3 - "$ROOT/bin" "$TMP/m1" <<'PY' || fail 'INTEGRATING after close must be recovered'
@@ -240,7 +259,6 @@ def run(cmd, **kw):
         (d / 'delivered-sha').write_text('a' * 40 + '\n'); journal('DELIVERED')
     return types.SimpleNamespace(returncode=0)
 h.subprocess.run = run
-h.config_intact = lambda *a: True
 assert h.deliver(sid, state, {}, '/', None) == ('delivered', 'a' * 40, None), calls
 assert calls == ['recover', 'close', 'recover'], calls
 PY

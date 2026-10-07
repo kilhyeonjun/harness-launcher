@@ -5,7 +5,6 @@ docs/architecture.md "Headless isolated runs" for the contract.
 """
 import argparse
 import fcntl
-import hashlib
 import json
 import math
 import os
@@ -203,23 +202,34 @@ def kill_group(pgid):
             time.sleep(2)
 
 
-def config_intact(state, sid):
-    """No recorded tampering (the broker restores the trusted git state and
-    marks a changed config) and .git/config matches its clone-time hash."""
-    record = state / 'sessions' / sid
-    if (record / 'git-config-tampered').exists():
-        return False
-    try:
-        expected = (record / 'git-config.sha256').read_text().strip()
-        root = (record / 'session-root').read_text().strip()
-        actual = hashlib.sha256(Path(root, '.git', 'config').read_bytes()).hexdigest()
-    except OSError:
-        return False
-    return bool(expected) and actual == expected
+def kill_lingering(root):
+    """SIGKILL every process of this user whose cwd or an open file is inside
+    the session root, so nothing changes the work tree while the broker reads it.
+    ponytail: one lsof snapshot; a process with no cwd or open file under the
+    root at that instant, or one started after it, escapes. Upgrade path: run
+    the agent as a dedicated macOS user and kill all of that user's processes."""
+    lsof = '/usr/sbin/lsof'
+    if not os.path.exists(lsof):
+        return []
+    out = subprocess.run([lsof, '-nP', '-w', '-u', str(os.getuid()), '-Fpn'], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True).stdout
+    prefix, pid, victims = root.rstrip('/') + '/', None, set()
+    for line in out.splitlines():
+        if line.startswith('p'):
+            pid = int(line[1:])
+        elif line.startswith('n') and pid not in (None, os.getpid()):
+            name = line[1:]
+            if name == root or name.startswith(prefix):
+                victims.add(pid)
+    for victim in victims:
+        try:
+            os.kill(victim, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return sorted(victims)
 
 
-TAMPERED = 'session git configuration changed during the run; delivery refused, session kept'
-EXCLUDED = 'the run committed machine-local or excluded paths; delivery refused, session kept'
+NO_TRUSTED_GIT = 'headless session record has no trusted git directory; delivery refused, session kept'
 
 
 def deliver(sid, state, env, cwd, log):
@@ -234,18 +244,10 @@ def deliver(sid, state, env, cwd, log):
         sha = (state / 'sessions' / sid / 'delivered-sha').read_text().strip()
         return 'delivered', sha, None
 
-    # Tampering is checked first: it may have left nothing else to deliver.
-    if not config_intact(state, sid):
-        return 'refused', None, TAMPERED
     current = journal_state(state, sid)
     if current == 'CLOSED':
         return 'no_changes', None, None
-    if current != 'ABANDONED':
-        return 'failed', None, None
-    rc = session('recover')
-    if rc == 6:
-        return 'refused', None, TAMPERED
-    if rc != 0:
+    if current != 'ABANDONED' or session('recover') != 0:
         return 'failed', None, None
     rc = session('close')
     after = journal_state(state, sid)
@@ -258,8 +260,8 @@ def deliver(sid, state, env, cwd, log):
         return delivered()
     if rc == 0 and after == 'CLOSED':
         return 'no_changes', None, None
-    if rc in (6, 7):
-        return 'refused', None, TAMPERED if rc == 6 else EXCLUDED
+    if rc == 6:
+        return 'refused', None, NO_TRUSTED_GIT
     if rc in (3, 5):
         return 'conflict', None, None
     return 'failed', None, None
@@ -350,6 +352,7 @@ def run(args, result):
             result['status'] = 'failed'
             result['summary'] = 'isolated session id was not announced by the launcher'
         else:
+            kill_lingering(str(state / 'worktrees' / sid))
             result['status'], result['commit'], reason = deliver(sid, state, env, hdir, log)
             if reason:
                 result['summary'] = reason
