@@ -2,6 +2,47 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.43.1 — 2026-10-07
+
+- `harness-headless` and `harness-session close` no longer fail when the
+  harness `.gitignore` ignores the machine-local files the session holds
+  (`.claude/settings.local.json`, `mcp.local.json`, and the like). Staging
+  named those paths in an exclude pathspec, and `git add -A` exits 1 when a
+  pathspec names an ignored file, so every headless run in such a harness
+  ended `failed` after the agent had finished, and interactive `close`
+  stopped the same way. Staging now adds the whole work tree and then resets
+  the excluded paths: headless sessions reset them to the base (their
+  launcher-owned git dir also ignores them), so an edit to a tracked file
+  under an excluded path is not delivered; interactive sessions unstage them
+  as before and still refuse excluded paths they committed. Both kinds of
+  session list the excluded paths in their own `info/exclude`, so staging
+  never reads inside them. The excluded-path fence now matches case
+  variants (`Projects/`, `config/.LOCAL/`, `MCP.local.json`), and names the
+  filesystem folds onto an excluded entry even where git does not (on APFS,
+  `projectſ` with U+017F is `projects`), so a session that negates the
+  ignore rules still cannot deliver them; an interactive session that
+  committed one is refused. A real staging failure elsewhere, such as a nested
+  repository with no commit or an unreadable file, still ends `failed`.
+- Headless session creation no longer fails when the user's git config sets
+  a hooks-only `init.templateDir`; the launcher-owned git dir is created
+  without user templates or config.
+- Session delivery fails closed when a broker git call fails. Before, a
+  failed listing of staged paths read as "nothing to exclude" (a Unicode
+  alias of `projects/` could be delivered), a failed change check read as "no
+  changes" (the session was closed and its work reported as `no_changes`), a
+  failed check for committed excluded paths let an interactive submission
+  through, and a failed tree listing after the commit was read as deletions
+  and pushed before the readback reported a conflict. Each of these now
+  stops the close, keeps the session, and delivers nothing; `harness-headless`
+  reports `failed`. A headless clone whose `projects` link cannot be removed
+  is refused.
+- The filesystem alias check probes the source checkout's volume as well as
+  the session volume, so a state home on a case-sensitive volume no longer
+  lets a name the source volume folds onto `projects/` through. A delivered
+  path that looks like pathspec magic (`:name`) is read back as itself
+  instead of leaving the session stuck in `INTEGRATING`, and inherited git
+  pathspec and git-dir variables no longer reach broker git.
+
 ## 0.43.0 — 2026-10-07
 
 - New `harness-headless` runs one unattended Claude task in a fresh isolated

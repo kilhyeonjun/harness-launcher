@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ISOLATION="$ROOT/bin/session-isolation.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap '[[ ! -d "$TMP/csmnt" ]] || hdiutil detach -quiet -force "$TMP/csmnt" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 SOURCE="$TMP/source"
 STATE="$TMP/state"
@@ -502,7 +502,7 @@ rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$hs_id" 2>/dev/nul
 echo 'PASS: headless broker git uses the launcher-owned git dir, never the session .git'
 
 # Interactive: committed changes under excluded paths refuse the submission; normal commits deliver.
-for excluded in .claude/settings.local.json config/.local/x projects/x; do
+for excluded in .claude/settings.local.json config/.local/x projects/x config/.LOCAL/y Projects/y $'project\xc5\xbf/y'; do
   out="$(create)"; ex_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ex_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
   rm -rf "$ex_root/projects"
   mkdir -p "$(dirname "$ex_root/$excluded")"; printf 'secret\n' > "$ex_root/$excluded"
@@ -520,4 +520,161 @@ git -C "$ok_root" add committed-normal.txt && git -C "$ok_root" -c user.name=t -
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ok_id"
 git --git-dir="$REMOTE" show main:committed-normal.txt >/dev/null || { echo 'FAIL: committed normal paths must be delivered'; exit 1; }
 
+# Interactive close when the harness .gitignore ignores the machine-local links.
+git clone -q "$REMOTE" "$TMP/ignore-clone"
+printf '%s\n' '.claude/settings.local.json' 'mcp.local.json' '/projects' > "$TMP/ignore-clone/.gitignore"
+git -C "$TMP/ignore-clone" add .gitignore
+git -C "$TMP/ignore-clone" -c user.name=t -c user.email=t@example.invalid commit -qm ignore-local
+git -C "$TMP/ignore-clone" push -q origin HEAD:main
+printf '{}\n' > "$SOURCE/mcp.local.json"
+out="$(create)"; ig_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ig_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+[[ -L "$ig_root/mcp.local.json" && -L "$ig_root/.claude/settings.local.json" ]] || { echo 'FAIL: fixture must link the gitignored local files'; exit 1; }
+printf 'ignored-layout\n' > "$ig_root/ignored-layout.txt"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ig_id"
+git --git-dir="$REMOTE" show main:ignored-layout.txt >/dev/null || { echo 'FAIL: interactive close must deliver beside gitignored local links'; exit 1; }
+! git --git-dir="$REMOTE" cat-file -e main:mcp.local.json 2>/dev/null || { echo 'FAIL: a gitignored local link was delivered'; exit 1; }
+# Headless, same layout. (An interactive test above wrote through its
+# settings link into the source copy; give it valid JSON again.)
+printf '{}\n' > "$SOURCE/.claude/settings.local.json"
+headless_session
+printf 'headless-ignored\n' > "$hs_root/headless-ignored.txt"
+deliver_headless
+git --git-dir="$REMOTE" show main:headless-ignored.txt >/dev/null || { echo 'FAIL: headless close must deliver beside gitignored local copies'; exit 1; }
+! git --git-dir="$REMOTE" cat-file -e main:mcp.local.json 2>/dev/null || { echo 'FAIL: a gitignored local copy was delivered'; exit 1; }
+
+# A user git template without info/ (hooks-only init.templateDir) must not
+# break headless create; the trusted git dir ignores user config entirely.
+mkdir -p "$TMP/tplhome" "$TMP/tpl/hooks"
+printf '#!/bin/sh\ntouch "%s"\n' "$TMP/template-hook-ran" > "$TMP/tpl/hooks/post-checkout"; chmod +x "$TMP/tpl/hooks/post-checkout"
+printf '[init]\n\ttemplateDir = %s\n' "$TMP/tpl" > "$TMP/tplhome/.gitconfig"
+tpl_out="$(HOME="$TMP/tplhome" HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE")" || { echo 'FAIL: headless create must survive a hooks-only git template'; exit 1; }
+tpl_id="$(printf '%s\n' "$tpl_out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+grep -qx '/projects' "$STATE/sessions/$tpl_id/trusted.git/info/exclude" || { echo 'FAIL: trusted.git must ignore the excluded paths'; exit 1; }
+[[ ! -e "$STATE/sessions/$tpl_id/trusted.git/hooks/post-checkout" ]] || { echo 'FAIL: user template hooks must not reach trusted.git'; exit 1; }
+# Interactive add never reads into non-ignored excluded paths.
+out="$(create)"; il_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; il_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+mkdir -p "$il_root/config/.local"; printf 'x\n' > "$il_root/config/.local/locked"; chmod 000 "$il_root/config/.local/locked"
+git init -q "$il_root/config/.local/nested"
+printf 'beside-local\n' > "$il_root/beside-local.txt"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$il_id" || { echo 'FAIL: unreadable content under an excluded path must not stop interactive close'; exit 1; }
+git --git-dir="$REMOTE" show main:beside-local.txt >/dev/null || { echo 'FAIL: interactive close beside excluded content must deliver'; exit 1; }
+chmod 600 "$il_root/config/.local/locked"
+
 echo 'PASS: submissions touching excluded paths are refused; committed work is delivered'
+
+# Fail closed: a git failure injected anywhere on the delivery path stops the
+# close, keeps the work (never CLOSED as if empty) and delivers nothing.
+# FAIL_GIT makes matching git calls exit 128; AFTER_GIT runs AFTER_CMD (with
+# the git arguments) after a matching call succeeds.
+REAL_GIT="$(command -v git)"
+mkdir -p "$TMP/failgit"
+cat > "$TMP/failgit/git" <<EOF
+#!/bin/bash
+if [[ -n "\${FAIL_GIT:-}" && " \$* " == *"\$FAIL_GIT"* ]]; then echo "injected git failure: \$FAIL_GIT" >&2; exit 128; fi
+"$REAL_GIT" "\$@"; rc=\$?
+if [[ -n "\${AFTER_GIT:-}" && " \$* " == *"\$AFTER_GIT"* ]]; then bash -c "\$AFTER_CMD" _ "\$@"; fi
+exit \$rc
+EOF
+chmod +x "$TMP/failgit/git"
+FAILPATH="$TMP/failgit:$PATH"
+# <mode> <commit|worktree> <FAIL_GIT pattern> <path>...
+fail_closed_row() {
+  local mode="$1" how="$2" pattern="$3" out id root before rc=0 path state; shift 3
+  if [[ "$mode" == headless ]]; then out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"; else out="$(create)"; fi
+  root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+  rm -rf "$root/projects"
+  for path; do mkdir -p "$(dirname "$root/$path")"; printf 'fail-closed\n' > "$root/$path"; done
+  if [[ "$how" == commit ]]; then
+    git -C "$root" add -f -- "$@"; git -C "$root" -c user.name=t -c user.email=t@example.invalid commit -qm fail-closed
+  fi
+  before="$(git --git-dir="$REMOTE" rev-parse main)"
+  if [[ "$mode" == headless ]]; then
+    PATH="$FAILPATH" FAIL_GIT="$pattern" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$id" 2>>"$TMP/fail-closed.err" || :
+    PATH="$FAILPATH" FAIL_GIT="$pattern" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$id" >/dev/null 2>>"$TMP/fail-closed.err" || :
+  fi
+  PATH="$FAILPATH" FAIL_GIT="$pattern" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$id" 2>>"$TMP/fail-closed.err" || rc=$?
+  state="$(sed -n 's/^state=//p' "$STATE/sessions/$id/journal")"
+  [[ "$rc" != 0 ]] || { echo "FAIL: $mode close with failing git '$pattern' must fail (state $state)"; exit 1; }
+  [[ "$state" != CLOSED && "$state" != DELIVERED ]] || { echo "FAIL: $mode close with failing git '$pattern' ended $state"; exit 1; }
+  [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$before" ]] || { echo "FAIL: $mode close with failing git '$pattern' delivered"; exit 1; }
+}
+alias_path=$'project\xc5\xbf/x'
+fail_closed_row headless worktree '--name-only --no-renames -z' fc1.txt "$alias_path"
+fail_closed_row headless worktree '--cached --quiet' fc2.txt
+fail_closed_row headless worktree '--name-status' fc3.txt
+fail_closed_row headless worktree 'ls-tree' fc4.txt
+fail_closed_row headless worktree 'icase)' fc5.txt
+fail_closed_row interactive commit '--name-only' fc6.txt projects/x
+fail_closed_row interactive worktree 'status --porcelain' fc7.txt
+fail_closed_row interactive worktree 'reset -q' fc8.txt
+fail_closed_row interactive worktree 'icase)' fc9.txt
+fail_closed_row interactive commit 'ls-tree' fc10.txt
+
+# Clone-time fences that cannot be applied refuse the session.
+journals() { find "$STATE/sessions" -name journal | wc -l | tr -d ' '; }
+# <AFTER_GIT pattern> <AFTER_CMD> <headless|interactive> [source]
+create_refused_row() {
+  local count rc=0
+  count="$(journals)"
+  if [[ "$3" == headless ]]; then
+    PATH="$FAILPATH" AFTER_GIT="$1" AFTER_CMD="$2" HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "${4:-$SOURCE}" >/dev/null 2>>"$TMP/fail-closed.err" || rc=$?
+  else
+    PATH="$FAILPATH" AFTER_GIT="$1" AFTER_CMD="$2" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "${4:-$SOURCE}" >/dev/null 2>>"$TMP/fail-closed.err" || rc=$?
+  fi
+  [[ "$rc" != 0 && "$(journals)" == "$count" ]] || { echo "FAIL: create must refuse when '$2' follows git '$1' (rc=$rc)"; exit 1; }
+}
+# Read-only info/exclude: the interactive clone exclude cannot be written.
+create_refused_row ' clone ' 'chmod a-w "${@: -1}/.git/info/exclude" "${@: -1}/.git/info" 2>/dev/null' interactive
+# Read-only trusted.git: its info/exclude cannot be written.
+create_refused_row ' init -q --bare ' 'chmod a-w "${@: -1}"' headless
+# A tracked projects symlink that cannot be removed refuses the headless clone.
+LINKSRC="$TMP/linksrc"
+git init -q -b main "$LINKSRC"; ln -s "$TMP" "$LINKSRC/projects"
+git -C "$LINKSRC" add projects; git -C "$LINKSRC" -c user.name=t -c user.email=t@example.invalid commit -qm link
+create_refused_row ' checkout -q --detach ' 'chflags -h uchg "$2/projects"' headless "$LINKSRC"
+find "$STATE" -exec chflags -h nouchg {} + 2>/dev/null; chmod -R u+w "$STATE"
+
+echo 'PASS: injected git and filesystem failures on the delivery path fail closed'
+
+# A path that looks like pathspec magic is delivered and read back as itself.
+out="$(create)"; mg_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; mg_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'magic\n' > "$mg_root/:magic"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$mg_id" 2>"$TMP/magic.err" || { cat "$TMP/magic.err"; echo 'FAIL: a path named like pathspec magic must be delivered'; exit 1; }
+grep -qx state=DELIVERED "$STATE/sessions/$mg_id/journal" || { echo 'FAIL: magic-named path session must end DELIVERED'; exit 1; }
+git --git-dir="$REMOTE" cat-file -e 'main::magic' || { echo 'FAIL: :magic must reach the remote'; exit 1; }
+
+# The state home may sit on another volume than the source checkout the work
+# lands in. A name only the source volume folds onto an excluded entry is
+# still excluded. Needs a case-sensitive APFS image; skipped where hdiutil
+# cannot attach one.
+CSIMG="$TMP/cs.sparseimage"
+if hdiutil create -quiet -size 64m -fs 'Case-sensitive APFS' -type SPARSE -volname hlcs "$TMP/cs" >/dev/null 2>&1 \
+    && hdiutil attach -quiet -nobrowse -mountpoint "$TMP/csmnt" "$CSIMG" >/dev/null 2>&1; then
+  CS_STATE="$TMP/csmnt/state"
+  [[ ! -e "$CS_STATE" ]] && mkdir -p "$CS_STATE/x" && [[ ! -e "$CS_STATE/X" ]] || { echo 'FAIL: the image must be case-sensitive'; exit 1; }
+  for mode in headless interactive; do
+    if [[ "$mode" == headless ]]; then
+      out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" create "$SOURCE")"
+    else
+      out="$(HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" create "$SOURCE")"
+    fi
+    cs_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; cs_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+    rm -rf "$cs_root/projects"; mkdir -p "$cs_root/$alias_path"; printf 'cs\n' > "$cs_root/$alias_path/x"
+    printf 'cs normal\n' > "$cs_root/cs-$mode.txt"
+    before="$(git --git-dir="$REMOTE" rev-parse main)"
+    if [[ "$mode" == headless ]]; then
+      HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" exit "$cs_id"
+      HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" recover "$cs_id" >/dev/null
+      HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" close "$cs_id" || { echo 'FAIL: headless close on a case-sensitive state volume'; exit 1; }
+      git --git-dir="$REMOTE" show "main:cs-$mode.txt" >/dev/null || { echo 'FAIL: normal path beside a source-volume alias must be delivered'; exit 1; }
+    else
+      # Untracked: unstaged back to HEAD, so the submission is the normal file.
+      HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" close "$cs_id" || { echo 'FAIL: interactive close on a case-sensitive state volume'; exit 1; }
+    fi
+    ! git --git-dir="$REMOTE" cat-file -e "main:$alias_path/x" 2>/dev/null || { echo "FAIL: $mode delivered a source-volume alias of projects/"; exit 1; }
+  done
+  hdiutil detach -quiet "$TMP/csmnt" || hdiutil detach -quiet -force "$TMP/csmnt"
+  echo 'PASS: names the source volume folds onto an excluded entry are excluded across volumes'
+else
+  echo 'SKIP: no case-sensitive APFS image (hdiutil unavailable)'
+fi

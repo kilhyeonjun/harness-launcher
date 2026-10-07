@@ -27,6 +27,9 @@ git -C "$SOURCE" config user.name test
 printf '%s\n' 'HARNESS_NAME="headless"' 'HARNESS_PREFIX="hh"' > "$SOURCE/config/launcher.env"
 printf '%s\n' 'github_user: tester' > "$SOURCE/config/config.yaml"
 printf '%s\n' tracked > "$SOURCE/tracked.txt"
+printf '%s\n' '.claude/settings.local.json' 'mcp.local.json' > "$SOURCE/.gitignore"
+printf '%s\n' base > "$SOURCE/projects/keep.txt"
+printf '%s\n' base > "$SOURCE/projects/drop.txt"
 cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
 #!/usr/bin/env bash
 # Records the broker environment the repository verifier runs with.
@@ -40,6 +43,7 @@ git -C "$SOURCE" remote add origin "$REMOTE"
 git -C "$SOURCE" push -q origin main
 printf '%s\n' '{"env":{"LOCAL_SETTINGS_SECRET":"leak-local"}}' > "$SOURCE/.claude/settings.local.json"
 printf '%s\n' '{"mcpServers":{"docs":{"command":"echo"}}}' > "$SOURCE/.mcp.local.json"
+printf '%s\n' '{"mcpServers":{"local":{"command":"echo"}}}' > "$SOURCE/mcp.local.json"
 SOURCE_REAL="$(cd "$SOURCE" && pwd -P)"
 printf '%s\n' "$SOURCE" > "$PROFILES/profiles/hh"
 
@@ -80,6 +84,39 @@ case "\$mode" in
     printf 'normal %s\n' "\$\$" > normal.txt
     git add -f .claude/settings.local.json config/.local/planted projects/planted normal.txt
     git -c user.name=t -c user.email=t@example.invalid commit -qm planted
+    echo "\$ok" ;;
+  variants)
+    # One table row: <expect>|<kind>|<path>. The canonical excluded entries are
+    # removed first so the variant is created under its own spelling, and the
+    # path is negated in .gitignore so only the launcher's fence stands.
+    rm -rf projects config/.local mcp.local.json .mcp.local.json .claude/settings.local.json
+    while IFS='|' read -r expect kind path; do
+      [[ -n "\$kind" ]] || continue
+      printf '!/%s\n' "\$path" >> .gitignore
+      case "\$kind" in
+        file) mkdir -p "\$(dirname "\$path")"; printf 'variant\n' > "\$path" ;;
+        dir) mkdir -p "\$path"; printf 'variant\n' > "\$path/a" ;;
+        link) mkdir -p projects; ln -s projects "\$path"; printf 'through-link\n' > "\$path/x" ;;
+      esac
+    done < "$TMP/variants"
+    printf 'normal %s\n' "\$\$" > variants-normal.txt
+    echo "\$ok" ;;
+  casevariants)
+    # Negations override info/exclude; case variants dodge case-sensitive
+    # pathspecs. None of these may be delivered.
+    printf '%s\n' '!/Projects' '!/PROJECTS' '!/config/.LOCAL' '!/.claude/Settings.Local.json' '!/MCP.local.json' '!/.MCP.Local.json' >> .gitignore
+    mkdir -p PROJECTS config/.LOCAL .claude
+    printf 'v\n' > PROJECTS/variant.txt
+    printf 'v\n' > config/.LOCAL/variant.txt
+    printf '{"v":1}\n' > .claude/Settings.Local.json
+    printf '{"v":1}\n' > MCP.local.json
+    printf '{"v":1}\n' > .MCP.Local.json
+    printf 'normal %s\n' "\$\$" > casevariants-normal.txt
+    echo "\$ok" ;;
+  trackedexcluded)
+    printf 'agent edit\n' > projects/keep.txt
+    rm projects/drop.txt
+    printf 'normal %s\n' "\$\$" > trackedexcluded-normal.txt
     echo "\$ok" ;;
   nested)
     printf 'edit %s\n' "\$\$" > nested-edit.txt
@@ -124,7 +161,7 @@ printf '%s\n' '{"_note":"bridge policy","permissions":{"deny":["Read(//secret/**
 
 headless() {
   rm -f "$TMP/claude-argv" "$TMP/claude-env" "$TMP/claude-pwd"
-  ${HEADLESS_EXEC:+exec} env -i PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+  ${HEADLESS_EXEC:+exec} env -i PATH="$TMP/failgit:$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
     HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" \
     ANTHROPIC_API_KEY=leak-api BUZZ_TOKEN=leak-buzz TELEGRAM_BOT_TOKEN=leak-telegram \
     "$PREFIX/bin/harness-headless" hh --prompt-file "$PROMPT" --result-file "$RESULT" \
@@ -134,7 +171,7 @@ field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))[sys.argv[2
 # On failure, print the result and the launcher/Claude/broker log next to it.
 fail() {
   echo "FAIL: $*" >&2
-  [[ -f "$RESULT" ]] && sed 's/^/  /' "$RESULT" >&2
+  [[ -f "$RESULT" ]] && { sed 's/^/  /' "$RESULT"; echo; } >&2
   [[ -f "$RESULT.log" ]] && { echo "  --- $RESULT.log" >&2; sed 's/^/  | /' "$RESULT.log" >&2; }
   exit 1
 }
@@ -153,7 +190,7 @@ grep -qx state=DELIVERED "$STATE/sessions/$sid/journal" || fail 'session must be
 session_root="$STATE/worktrees/$sid"
 [[ "$(cat "$TMP/claude-pwd")" == "$session_root" ]] || fail "claude must run in the session root, got $(cat "$TMP/claude-pwd")"
 [[ "$(field transcript)" == "$FAKE_HOME/.claude/projects/"*"/11111111-2222-4333-8444-555555555555.jsonl" ]] || fail 'transcript path must be reported'
-[[ ! -e "$session_root/projects" && ! -L "$session_root/projects" && ! -L "$session_root/.claude/settings.local.json" ]] || fail 'headless session must not link back to the source'
+[[ ! -L "$session_root/projects" && ! -L "$session_root/.claude/settings.local.json" && ! -L "$session_root/mcp.local.json" ]] || fail 'headless session must not link back to the source'
 [[ "$(cat "$TMP/claude-stdin")" == 'Fix the typo.' ]] || fail 'the prompt must reach claude on stdin'
 run_tmp="$(sed -n 's/^CLAUDE_CODE_TMPDIR=//p' "$TMP/claude-env")"
 [[ "$run_tmp" == /private/tmp/hh-* && "$run_tmp" != /private/tmp/claude-* ]] || fail "claude must get a private short temp base, got '$run_tmp'"
@@ -267,7 +304,84 @@ expect_status delivered
 ! grep -q 'TMPDIR=/private/tmp/hh-' "$TMP/verifier-env" || fail 'broker git and the verifier must not use the run temp base'
 ! grep -q 'CLAUDE_CODE_TMPDIR=[^ ]' "$TMP/verifier-env" || fail 'the broker env must not carry CLAUDE_CODE_TMPDIR'
 ! grep -q RUN_TMP_PRESENT "$TMP/verifier-env" || fail 'the run temp base must be removed before delivery starts'
+echo trackedexcluded > "$TMP/mode"
+headless || fail 'tracked excluded run must exit 0'
+expect_status delivered
+git --git-dir="$REMOTE" show main:trackedexcluded-normal.txt >/dev/null || fail 'normal paths beside an excluded edit must be delivered'
+[[ "$(git --git-dir="$REMOTE" show main:projects/keep.txt)" == base ]] || fail 'an edit to a tracked file under an excluded path must not be delivered'
+[[ "$(git --git-dir="$REMOTE" show main:projects/drop.txt)" == base ]] || fail 'a deletion under an excluded path must not be delivered'
+for local_file in .claude/settings.local.json mcp.local.json .mcp.local.json; do
+  ! git --git-dir="$REMOTE" cat-file -e "main:$local_file" 2>/dev/null || fail "gitignored local file $local_file reached the remote"
+done
+echo casevariants > "$TMP/mode"
+headless || fail 'case-variant run must exit 0'
+expect_status delivered
+git --git-dir="$REMOTE" show main:casevariants-normal.txt >/dev/null || fail 'normal paths beside case variants must be delivered'
+leaked="$(git --git-dir="$REMOTE" ls-tree -r --name-only main | grep -iE '^(config/\.local/|\.claude/settings\.local\.json$|\.?mcp\.local\.json$|projects/)' | grep -vx -e projects/keep.txt -e projects/drop.txt || true)"
+[[ -z "$leaked" ]] || fail "case variants of excluded paths were delivered: $leaked"
+for kept in keep.txt drop.txt; do
+  [[ "$(git --git-dir="$REMOTE" show "main:projects/$kept")" == base ]] || fail "projects/$kept changed through a case variant"
+done
 echo 'PASS: harness-headless delivers the work tree through a launcher-owned git dir'
+
+# --- every exclusion layer agrees: table of path variants -----------------------
+# excluded: aliases an excluded entry on this filesystem (case, Unicode case
+# folding) and must not reach the remote. distinct: a different name on APFS
+# and in git, delivered as its own path. link: a symlink into projects/ is
+# delivered as the link itself, never as content under projects/.
+{
+  printf '%s\n' 'excluded|dir|Projects' 'excluded|file|PROJECTS' 'excluded|dir|config/.LOCAL' \
+    'excluded|file|config/.local' 'excluded|file|.claude/SETTINGS.local.json' 'excluded|file|MCP.local.json' \
+    'excluded|file|.Mcp.Local.json' 'distinct|dir|projects.' 'distinct|dir|projects ' 'link|link|plink'
+  printf 'excluded|dir|project\xc5\xbf\n'                      # projectſ (U+017F folds to s)
+  printf 'excluded|file|mcp.local.j\xc5\xbfon\n'                # mcp.local.jſon
+  printf 'excluded|file|.claude/\xc5\xbfettings.local.json\n'   # .claude/ſettings.local.json
+} > "$TMP/variant-table"
+echo variants > "$TMP/mode"
+while IFS= read -r row; do
+  printf '%s\n' "$row" > "$TMP/variants"
+  headless || fail "variant run must exit 0: $row"
+  expect_status delivered
+  git --git-dir="$REMOTE" show main:variants-normal.txt >/dev/null || fail "normal paths beside $row must be delivered"
+  git --git-dir="$REMOTE" ls-tree -r --name-only -z main > "$TMP/main-paths"
+  python3 - "$TMP/variants" "$TMP/main-paths" "$TMP/probe" <<'PY' || fail "an exclusion layer disagreed on: $row"
+import os, sys
+rows = [l.split(b'|', 2) for l in open(sys.argv[1], 'rb').read().split(b'\n') if l]
+main = set(open(sys.argv[2], 'rb').read().split(b'\0')) - {b''}
+# Filesystem truth: does a path alias an excluded entry on this volume?
+probe = sys.argv[3].encode()
+for d in (b'projects', b'config/.local', b'.claude'):
+    os.makedirs(os.path.join(probe, d), exist_ok=True)
+for f in (b'mcp.local.json', b'.mcp.local.json', b'.claude/settings.local.json'):
+    open(os.path.join(probe, f), 'a').close()
+leaves = [os.path.join(probe, e) for e in (b'projects', b'config/.local', b'mcp.local.json', b'.mcp.local.json', b'.claude/settings.local.json')]
+def aliases(path):
+    parts = path.split(b'/')
+    for depth in (1, 2):
+        if len(parts) < depth:
+            break
+        candidate = os.path.join(probe, *parts[:depth])
+        if os.path.lexists(candidate) and any(os.path.samefile(candidate, l) for l in leaves):
+            return True
+    return False
+base = {b'projects/keep.txt', b'projects/drop.txt'}
+leaked = sorted(p for p in main if aliases(p) and p not in base)
+assert not leaked, ('excluded content delivered', leaked)
+for expect, kind, path in rows:
+    if expect == b'excluded':
+        assert path not in main and path + b'/a' not in main, ('excluded variant delivered', path)
+    if expect == b'distinct':
+        assert path + b'/a' in main, ('distinct name must be delivered', path)
+    if expect == b'link':
+        assert path in main and path + b'/x' not in main, ('symlink must be delivered as itself', path)
+PY
+  for kept in keep.txt drop.txt; do
+    [[ "$(git --git-dir="$REMOTE" show "main:projects/$kept")" == base ]] || fail "projects/$kept changed through $row"
+  done
+done < "$TMP/variant-table"
+[[ "$(git --git-dir="$REMOTE" ls-tree main plink | awk '{print $1}')" == 120000 ]] || fail 'plink must be delivered as a symlink'
+! git --git-dir="$REMOTE" cat-file -e main:projects/x 2>/dev/null || fail 'content written through a symlink into projects/ was delivered'
+echo 'PASS: every exclusion layer agrees on case, Unicode folding, file/dir forms, trailing dots and symlinks'
 
 # --- a failed stage is never reported as no_changes -------------------------------
 for mode in nested unreadable; do
@@ -279,6 +393,30 @@ for mode in nested unreadable; do
   [[ "$(field session_id)" != null ]] && grep -qv state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail "$mode session must be kept"
 done
 echo 'PASS: harness-headless fails closed when the work tree cannot be staged'
+
+# --- a broker git error is never read as "nothing to exclude" or "no changes" -----
+# The git on PATH fails calls matching the pattern in $TMP/fail-git (the
+# launcher's environment allowlist drops anything else).
+mkdir -p "$TMP/failgit"
+cat > "$TMP/failgit/git" <<EOF
+#!/bin/bash
+pattern="\$(cat "$TMP/fail-git" 2>/dev/null)"
+if [[ -n "\$pattern" && " \$* " == *"\$pattern"* ]]; then echo "injected git failure: \$pattern" >&2; exit 128; fi
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$TMP/failgit/git"
+echo variants > "$TMP/mode"
+printf 'excluded|dir|project\xc5\xbf\n' > "$TMP/variants"
+for pattern in '--name-only --no-renames -z' '--cached --quiet' '--name-status' 'ls-tree'; do
+  printf '%s' "$pattern" > "$TMP/fail-git"
+  remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
+  headless || fail "run with failing git '$pattern' must exit 0"
+  expect_status failed
+  [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail "run with failing git '$pattern' must deliver nothing"
+  ! grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail "session with failing git '$pattern' must be kept"
+done
+rm -f "$TMP/fail-git"
+echo 'PASS: harness-headless fails closed when broker git fails'
 
 # --- an INTEGRATING journal after close is recovered once, whatever the exit code --
 python3 - "$ROOT/bin" "$TMP/m1" <<'PY' || fail 'INTEGRATING after close must be recovered'

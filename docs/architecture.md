@@ -304,9 +304,26 @@ legacy routes do not change.
   hooks, modules and alternates are never read, and a work-tree
   `.gitattributes` names filter or diff drivers that are not defined, so they
   are no-ops. The work tree holds the final content whether or not the agent
-  committed, so `add -A` with the excluded-path pathspec (`config/.local`,
-  `projects`, `.mcp.local.json`, `mcp.local.json`,
-  `.claude/settings.local.json`) captures it all and drops those paths.
+  committed, so `add -A -- .` captures it all; the excluded paths
+  (`config/.local`, `projects`, `.mcp.local.json`, `mcp.local.json`,
+  `.claude/settings.local.json`) are listed in the trusted git dir's
+  `info/exclude` and reset to the base afterwards, so neither a new file nor
+  an edit to a tracked file there is delivered. `add` never names them: an
+  exclude pathspec naming a gitignored file makes `git add -A` exit 1. The
+  reset and the diff pathspecs match case-insensitively, because the agent
+  can negate ignore rules in `.gitignore` and write `Projects/` or
+  `config/.LOCAL/`. Git folds only ASCII case, while APFS also folds Unicode
+  (`projectſ` with U+017F is `projects` on disk), so every staged path is
+  also checked against probe trees of the excluded entries on the session
+  volume and on the source checkout's volume (they differ when the state
+  home is elsewhere); a path the filesystem resolves to an excluded entry is reset (or,
+  for an interactive commit, refused) the same way. Names the filesystem
+  keeps distinct, such as `projects.` or `projects` with a trailing space,
+  are ordinary paths, and a symlink into `projects/` is delivered as the
+  link itself. A broker git error is never read as an answer: a failed
+  listing is not "nothing to exclude", a failed change check is not "no
+  changes" (the session is kept, not closed), and a failed tree listing is
+  not a deletion. Each stops the close before anything is pushed.
   Without global config, global excludes (for example a global `.DS_Store`
   ignore) do not apply; the repository `.gitignore` does. A marker without
   its `trusted.git` refuses (exit 6, status `refused`). A changed session goes
