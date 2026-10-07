@@ -2,6 +2,25 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.44.0 — 2026-10-07
+
+- `harness-headless` runs the repository verifier in a sandbox. The verifier
+  runs the candidate's tests, which the agent may have written, and it ran
+  them as the user with network, `~/.ssh`, the keychain and git credentials
+  reachable. For headless sessions it now runs under `/usr/bin/sandbox-exec`
+  with a launcher-generated Seatbelt profile (no network except loopback,
+  writes only to the candidate and a per-verify temp dir, no reads of
+  credential stores or the source checkout, no keychain services) and a
+  minimal environment. A host without `sandbox-exec`, or where the profile
+  does not load, is refused before Claude starts. Interactive sessions are
+  unchanged.
+- A headless verifier rejection now ends `failed` (broker exit 9) instead of
+  `conflict`; `conflict` is left to merge conflicts and a remote that keeps
+  moving.
+- A source checkout that has moved or been deleted has its own broker exit
+  code (8) and `harness-headless` reason, instead of reading as a headless
+  record without its trusted git dir.
+
 ## 0.43.1 — 2026-10-07
 
 - `harness-headless` and `harness-session close` no longer fail when the

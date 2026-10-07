@@ -117,8 +117,13 @@ ROOT_GIT_DIR="" SOURCE_GIT_DIR=""
 use_session_git() {
   local dir; dir="$(session_dir "$1")"; ROOT_GIT_DIR=""
   # The canonical checkout's git dir: excluded_aliases probes its volume.
-  local source; source="$(<"$dir/source-root")" && [[ -n "$source" ]] || return 1
-  SOURCE_GIT_DIR="$(git -C "$source" rev-parse --path-format=absolute --git-common-dir)" || return 1
+  # Exit 8: the source checkout is gone (moved or deleted); the work is kept.
+  local source=""
+  { source="$(<"$dir/source-root")" && [[ -d "$source" ]] \
+      && SOURCE_GIT_DIR="$(git -C "$source" rev-parse --path-format=absolute --git-common-dir)"; } || {
+    echo "harness-session: refused: the source checkout ${source:-of session $1} could not be found; the session is kept" >&2
+    return 8
+  }
   [[ -e "$dir/headless" ]] || return 0
   if [[ ! -d "$dir/trusted.git" || -L "$dir/trusted.git" ]]; then
     echo "harness-session: refused: headless session $1 has no trusted git directory" >&2
@@ -422,7 +427,9 @@ exit_session() {
   local id="$1" dir root state
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; state="$(field "$dir/journal" state)"
   if [[ "$state" == OPEN ]]; then
-    use_session_git "$id" || { transition "$id" ABANDONED; return 6; }
+    local refused=0
+    use_session_git "$id" || refused=$?
+    [[ "$refused" == 0 ]] || { transition "$id" ABANDONED; return "$refused"; }
     # Only a clean answer closes; changes or a git error keep the work.
     local rc=0
     session_has_changes "$root" "$(<"$dir/base-sha")" || rc=$?
@@ -502,7 +509,7 @@ submit() {
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; base="$(<"$dir/base-sha")"; state="$(field "$dir/journal" state)"
   [[ "$state" == SUBMITTED ]] && return 0
   [[ "$state" == OPEN ]] || { echo "cannot submit $state session" >&2; return 2; }
-  use_session_git "$id" || return 6
+  use_session_git "$id" || return $?
   stage_worktree "$root" "$base"
   if [[ -z "$ROOT_GIT_DIR" ]]; then
     # Interactive: committed work is in the index already, so staged excluded
@@ -553,6 +560,45 @@ verify_submission_identity() {
   expected="$(field "$dir/journal" identity)"
   [[ -n "$expected" && "$(submission_identity "$dir")" == "$expected" ]]
 }
+# The headless verifier runs candidate content (repository tests the agent may
+# have written), so it runs under Seatbelt, the mechanism Claude Code itself
+# uses on macOS: no network but loopback, writes only to the candidate and a
+# per-verify temp dir, no reads of credential stores or the source checkout,
+# no keychain services. Fixed path: nothing in the environment chooses it.
+SANDBOX_EXEC=/usr/bin/sandbox-exec
+# phys <path>: the physical path of an existing directory (Seatbelt matches
+# resolved paths), otherwise the path itself.
+phys() { if [[ -d "$1" ]]; then (cd -P "$1" && pwd); else printf '%s\n' "$1"; fi; }
+sbpl_str() { local value="${1//\\/\\\\}"; printf '"%s"' "${value//\"/\\\"}"; }
+# verifier_sandbox_profile <candidate> <tmp> <home> <source>: the SBPL profile.
+verifier_sandbox_profile() {
+  local candidate="$1" tmp="$2" home="$3" source="$4" path
+  local -a deny=()
+  for path in "$home/.ssh" "$home/.hermes" "$home/buzz" "$home/.config/gh" "$home/.aws" "$home/.claude" \
+      "$home/Library/Keychains" "$source"; do
+    deny+=("$path")
+    [[ ! -e "$path" ]] || deny+=("$(phys "$path")")
+  done
+  printf '(version 1)\n(allow default)\n'
+  printf '(deny network*)\n(allow network-outbound (remote ip "localhost:*"))\n'
+  printf '(allow network-bind network-inbound (local ip "localhost:*"))\n'
+  printf '(deny file-write*)\n(allow file-write* (subpath %s) (subpath %s)' "$(sbpl_str "$(phys "$candidate")")" "$(sbpl_str "$(phys "$tmp")")"
+  printf ' (literal "/dev/null") (literal "/dev/tty") (subpath "/dev/fd"))\n'
+  printf '(deny file-read*'
+  for path in "${deny[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
+  printf ')\n'
+  printf '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd")'
+  printf ' (global-name-prefix "com.apple.security."))\n'
+}
+# sandbox_check <sandbox-exec>: does the profile load and run here?
+sandbox_check() {
+  local exe="$1" dir rc=0
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/harness-sandbox-check.XXXXXX")" || return 1
+  mkdir "$dir/candidate" "$dir/tmp" || { rm -rf "$dir"; return 1; }
+  "$exe" -p "$(verifier_sandbox_profile "$dir/candidate" "$dir/tmp" "${HOME:?}" "$dir")" /usr/bin/true || rc=$?
+  rm -rf "$dir"
+  return "$rc"
+}
 run_repository_verifier() {
   local candidate="$1" id="$2" remote="$3" baseline="$4" trusted verifier help_output
   local -a verifier_args
@@ -561,6 +607,10 @@ run_repository_verifier() {
   verifier="$trusted/core/bin/auto-deliver.sh"
   [[ -f "$verifier" ]] || { echo 'ERROR: repository-owned core/bin/auto-deliver.sh verifier is required' >&2; rm -rf "$trusted"; return 2; }
   verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push)
+  if [[ -e "$(session_dir "$id")/headless" ]]; then
+    run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "${verifier_args[@]}"
+    return
+  fi
   help_output="$(bash "$verifier" --help 2>/dev/null || true)"
   if grep -q -- '--contract-checked' <<< "$help_output"; then
     verifier_args+=(--contract-checked 'broker candidate cascade verified')
@@ -569,6 +619,30 @@ run_repository_verifier() {
   (unset HARNESS_SESSION_ID HARNESS_SOURCE_ROOT HARNESS_SESSION_ROOT HARNESS_RUN_DIR HARNESS_SESSION_STATE_HOME; cd "$candidate" && TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 \
     bash "$verifier" "${verifier_args[@]}") || rc=$?
   rm -rf "$trusted"
+  return "$rc"
+}
+# run_sandboxed_verifier <candidate> <id> <trusted> <verifier> <args...>:
+# headless sessions only. A minimal environment (no agent sockets, tokens or
+# GitHub variables) and a fresh temp dir, removed afterwards.
+run_sandboxed_verifier() {
+  local candidate="$1" id="$2" trusted="$3" verifier="$4" source vtmp profile help_output name rc=0
+  shift 4
+  local -a args=("$@") venv=()
+  [[ -x "$SANDBOX_EXEC" ]] || { echo "harness-session: refused: $SANDBOX_EXEC is required to verify a headless session" >&2; rm -rf "$trusted"; return 2; }
+  source="$(<"$(session_dir "$id")/source-root")" || { rm -rf "$trusted"; return 2; }
+  vtmp="$(mktemp -d "$(state_home)/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
+  vtmp="$(phys "$vtmp")"
+  profile="$(verifier_sandbox_profile "$candidate" "$vtmp" "${HOME:?}" "$source")" || { rm -rf "$trusted" "$vtmp"; return 2; }
+  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp")
+  [[ -z "${LANG:-}" ]] || venv+=(LANG="$LANG")
+  for name in $(compgen -e); do [[ "$name" != LC_* ]] || venv+=("$name=${!name}"); done
+  help_output="$(cd "$candidate" && env -i "${venv[@]}" "$SANDBOX_EXEC" -p "$profile" bash "$verifier" --help 2>/dev/null || true)"
+  if grep -q -- '--contract-checked' <<< "$help_output"; then
+    args+=(--contract-checked 'broker candidate cascade verified')
+  fi
+  (cd "$candidate" && env -i "${venv[@]}" TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 \
+    HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 "$SANDBOX_EXEC" -p "$profile" bash "$verifier" "${args[@]}") || rc=$?
+  rm -rf "$trusted" "$vtmp"
   return "$rc"
 }
 write_manifest_pathset() {
@@ -602,7 +676,12 @@ integrate_unlocked() {
     write_manifest_pathset "$dir/manifest" "$dir/.submitted-pathset"
     write_index_pathset "$candidate" "$current" "$dir/.candidate-pathset"
     cmp -s "$dir/.submitted-pathset" "$dir/.candidate-pathset" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
-    run_repository_verifier "$candidate" "$id" "$remote" "$current" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
+    run_repository_verifier "$candidate" "$id" "$remote" "$current" || {
+      rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"
+      # Headless: exit 9, the verifier rejected the candidate (not a merge conflict).
+      if [[ -e "$dir/headless" ]]; then return 9; fi
+      return 3
+    }
     verify_submission_identity "$dir" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
     [[ "${HARNESS_SESSION_TEST_CRASH_BEFORE_PUSH:-0}" == 1 ]] && kill -9 "$BASHPID"
     git -C "$candidate" -c user.name=harness-broker -c user.email=broker@invalid commit -qm "harness session $id"
@@ -641,7 +720,7 @@ integrate() { with_lock integrate_unlocked "$@"; }
 close_session() {
   local id="$1" dir state root
   dir="$(session_dir "$id")"; state="$(field "$dir/journal" state)"; root="$(<"$dir/session-root")"
-  use_session_git "$id" || return 6
+  use_session_git "$id" || return $?
   if [[ "$state" == OPEN ]]; then
     local rc=0
     session_has_changes "$root" "$(<"$dir/base-sha")" || rc=$?
@@ -661,8 +740,9 @@ case "${1:-}" in
   list) list ;;
   heartbeat) shift; heartbeat_session "$1" ;;
   gc) shift; [[ $# -eq 0 ]] || exit 2; gc_sessions ;;
+  sandbox-check) shift; [[ $# -eq 1 ]] || exit 2; sandbox_check "$1" ;;
   submit) shift; submit "$1" ;;
   integrate) shift; [[ $# -eq 1 ]] || exit 2; integrate "$1" ;;
   close) shift; [[ $# -eq 1 ]] || exit 2; close_session "$1" ;;
-  *) echo 'usage: harness-session {create|resume|transition|exit|recover|list|heartbeat|gc|submit|integrate|close}' >&2; exit 2 ;;
+  *) echo 'usage: harness-session {create|resume|transition|exit|recover|list|heartbeat|gc|submit|integrate|close|sandbox-check}' >&2; exit 2 ;;
 esac

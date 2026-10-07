@@ -32,10 +32,17 @@ printf '%s\n' base > "$SOURCE/projects/keep.txt"
 printf '%s\n' base > "$SOURCE/projects/drop.txt"
 cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
 #!/usr/bin/env bash
-# Records the broker environment the repository verifier runs with.
-printf 'TMPDIR=%s CLAUDE_CODE_TMPDIR=%s\n' "\${TMPDIR:-}" "\${CLAUDE_CODE_TMPDIR:-}" >> "$TMP/verifier-env"
-[[ ! -s "$TMP/run-tmp" || ! -e "\$(cat "$TMP/run-tmp")" ]] || echo 'RUN_TMP_PRESENT' >> "$TMP/verifier-env"
+# Reports the environment the repository verifier runs with on stdout (the
+# broker log): headless verifiers are sandboxed and can only write their
+# candidate and temp dir. Like kh's auto-deliver, it runs the candidate's tests.
+printf 'VERIFIER-ENV TMPDIR=%s CLAUDE_CODE_TMPDIR=%s\n' "\${TMPDIR:-}" "\${CLAUDE_CODE_TMPDIR:-}"
+[[ ! -s "$TMP/run-tmp" || ! -e "\$(cat "$TMP/run-tmp")" ]] || echo 'VERIFIER-ENV RUN_TMP_PRESENT'
+env | grep -E '^(SSH_AUTH_SOCK|GH_|GITHUB_|[A-Z_]*_TOKEN=)' | sed 's/^/VERIFIER-LEAK /'
 [[ ! -e "$TMP/verify-fail" ]] || exit 92
+for t in "\$TEST_HARNESS_DIR"/verify-tests/*.sh; do
+  [[ -e "\$t" ]] || continue
+  bash "\$t" || exit 93
+done
 EOF
 chmod +x "$SOURCE/core/bin/auto-deliver.sh"
 git -C "$SOURCE" add . && git -C "$SOURCE" commit -qm initial
@@ -134,6 +141,22 @@ case "\$mode" in
     # Another one parked in the run's private temp base.
     (cd "\$CLAUDE_CODE_TMPDIR" && exec perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' sleep 300 > /dev/null 2>&1) &
     echo \$! > "$TMP/linger-tmp.pid"
+    echo "\$ok" ;;
+  breach)
+    printf 'breach %s\n' "\$\$" > breach-normal.txt
+    mkdir -p verify-tests && cp "$TMP/breach.sh" verify-tests/breach.sh
+    echo "\$ok" ;;
+  okverify)
+    printf 'okverify %s\n' "\$\$" > okverify.txt
+    mkdir -p verify-tests && cp "$TMP/okverify.sh" verify-tests/ok.sh
+    echo "\$ok" ;;
+  conflict)
+    printf 'session %s\n' "\$\$" > tracked.txt
+    # Meanwhile main changes the same line.
+    rm -rf "$TMP/conflict-clone" && git clone -q "$REMOTE" "$TMP/conflict-clone"
+    printf 'remote %s\n' "\$\$" > "$TMP/conflict-clone/tracked.txt"
+    git -C "$TMP/conflict-clone" -c user.name=t -c user.email=t@example.invalid commit -qam remote
+    git -C "$TMP/conflict-clone" push -q origin HEAD:main
     echo "\$ok" ;;
   gitcfgonly)
     printf '[filter "evil"]\n\tclean = touch %s\n' "$TMP/filter-ran" >> .git/config
@@ -300,10 +323,12 @@ expect_status delivered
 [[ -s "$TMP/linger.pid" ]] || fail 'linger process did not start'
 ! kill -0 "$(cat "$TMP/linger.pid")" 2>/dev/null || fail 'a process left in the session root must be killed before delivery'
 [[ -s "$TMP/linger-tmp.pid" ]] && ! kill -0 "$(cat "$TMP/linger-tmp.pid")" 2>/dev/null || fail 'a process left in the run temp base must be killed before delivery'
-[[ -s "$TMP/verifier-env" ]] || fail 'the repository verifier did not run'
-! grep -q 'TMPDIR=/private/tmp/hh-' "$TMP/verifier-env" || fail 'broker git and the verifier must not use the run temp base'
-! grep -q 'CLAUDE_CODE_TMPDIR=[^ ]' "$TMP/verifier-env" || fail 'the broker env must not carry CLAUDE_CODE_TMPDIR'
-! grep -q RUN_TMP_PRESENT "$TMP/verifier-env" || fail 'the run temp base must be removed before delivery starts'
+grep -q '^VERIFIER-ENV TMPDIR=' "$RESULT.log" || fail 'the repository verifier did not run'
+! grep -q '^VERIFIER-ENV TMPDIR=/private/tmp/hh-' "$RESULT.log" || fail 'broker git and the verifier must not use the run temp base'
+! grep -q '^VERIFIER-ENV .*CLAUDE_CODE_TMPDIR=[^ ]' "$RESULT.log" || fail 'the broker env must not carry CLAUDE_CODE_TMPDIR'
+! grep -q '^VERIFIER-ENV RUN_TMP_PRESENT' "$RESULT.log" || fail 'the run temp base must be removed before delivery starts'
+verifier_tmp="$(sed -n 's/^VERIFIER-ENV TMPDIR=\([^ ]*\) .*/\1/p' "$RESULT.log" | tail -n 1)"
+[[ "$verifier_tmp" == */verifier-tmp.* && ! -e "$verifier_tmp" ]] || fail "the verifier must get its own temp dir, removed afterwards (got '$verifier_tmp')"
 echo trackedexcluded > "$TMP/mode"
 headless || fail 'tracked excluded run must exit 0'
 expect_status delivered
@@ -455,13 +480,106 @@ expect_status failed
 echo 'PASS: harness-headless maps budget and error results'
 
 # --- conflict -----------------------------------------------------------------------
-echo change > "$TMP/mode"
-: > "$TMP/verify-fail"
+echo conflict > "$TMP/mode"
 headless || fail 'conflict run must exit 0'
-rm -f "$TMP/verify-fail"
 expect_status conflict
 grep -qx state=CONFLICT "$STATE/sessions/$(field session_id)/journal" || fail 'conflict session must be left for the owner'
 echo 'PASS: harness-headless reports conflict and leaves the session'
+
+# --- a verifier rejection is a failure, not a conflict ------------------------------
+echo change > "$TMP/mode"
+: > "$TMP/verify-fail"
+remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
+headless || fail 'verifier-rejected run must exit 0'
+rm -f "$TMP/verify-fail"
+expect_status failed
+[[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail 'a rejected candidate must not be delivered'
+grep -q 'verifier' "$RESULT" || fail 'a verifier rejection must say so'
+! grep -qx -e state=CLOSED -e state=DELIVERED "$STATE/sessions/$(field session_id)/journal" || fail 'a rejected session must be kept'
+echo 'PASS: harness-headless reports a verifier rejection as failed and keeps the session'
+
+# --- the verifier runs agent-written tests in a sandbox -----------------------------
+mkdir -p "$FAKE_HOME/.ssh"; printf 'fixture-private-key\n' > "$FAKE_HOME/.ssh/id_fixture"
+cat > "$TMP/breach.sh" <<'EOF'
+#!/bin/bash
+# An agent-written test that reaches for the network, HOME, ~/.ssh, the
+# keychain and git credentials. It "passes" only if it got everything.
+python3 - <<'PY'
+import errno, os, socket
+home = os.environ['HOME']
+def probe(name, f):
+    try:
+        f()
+        print(f'PROBE {name} ALLOWED')
+    except OSError as e:
+        print(f'PROBE {name} {errno.errorcode.get(e.errno, e.errno)}')
+probe('network', lambda: socket.create_connection(('1.1.1.1', 443), timeout=5).close())
+probe('write-home', lambda: open(os.path.join(home, 'breach-wrote-home'), 'w').close())
+probe('read-ssh', lambda: open(os.path.join(home, '.ssh', 'id_fixture')).read())
+PY
+if security find-generic-password -s harness-breach-probe -w >/dev/null 2>&1; then echo 'PROBE security ALLOWED'; else echo 'PROBE security blocked'; fi
+if printf 'protocol=https\nhost=example.invalid\n\n' | GIT_TERMINAL_PROMPT=0 git credential fill >/dev/null 2>&1; then
+  echo 'PROBE git-credential ALLOWED'
+else
+  echo 'PROBE git-credential blocked'
+fi
+exit 1
+EOF
+# Control: outside the sandbox the same test reaches HOME and ~/.ssh.
+control="$(HOME="$FAKE_HOME" bash "$TMP/breach.sh" 2>&1 || true)"
+grep -q 'PROBE write-home ALLOWED' <<< "$control" && grep -q 'PROBE read-ssh ALLOWED' <<< "$control" || fail "breach probe control must reach HOME unsandboxed: $control"
+rm -f "$FAKE_HOME/breach-wrote-home"
+echo breach > "$TMP/mode"
+remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
+headless || fail 'breach run must exit 0'
+expect_status failed
+[[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail 'a candidate whose tests broke out must not be delivered'
+for blocked in 'network EPERM' 'write-home EPERM' 'read-ssh EPERM' 'security blocked' 'git-credential blocked'; do
+  grep -q "^PROBE $blocked\$" "$RESULT.log" || fail "the verifier sandbox must block: $blocked"
+done
+! grep -q 'ALLOWED' "$RESULT.log" || fail 'a sandboxed probe was allowed'
+[[ ! -e "$FAKE_HOME/breach-wrote-home" ]] || fail 'the verifier wrote to HOME'
+! grep -q '^VERIFIER-LEAK' "$RESULT.log" || fail 'the verifier environment carried credentials'
+echo okverify > "$TMP/mode"
+cat > "$TMP/okverify.sh" <<'EOF'
+#!/bin/bash
+# A normal test: its temp dir, the candidate, loopback and git all work.
+set -e
+: > "$TMPDIR/ok-tmp"
+: > "$TEST_HARNESS_DIR/ok-candidate-write"
+python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(); socket.create_connection(s.getsockname(), timeout=5).close()'
+git -C "$TEST_HARNESS_DIR" status --porcelain >/dev/null
+echo OK-VERIFY-RAN
+EOF
+headless || fail 'okverify run must exit 0'
+expect_status delivered
+grep -q '^OK-VERIFY-RAN$' "$RESULT.log" || fail 'a normal candidate test must run in the sandbox'
+git --git-dir="$REMOTE" show main:okverify.txt >/dev/null || fail 'a normal candidate must be delivered'
+echo 'PASS: harness-headless runs candidate tests in a sandbox without network, secrets or HOME writes'
+
+# --- a moved source checkout is refused with a plain reason -----------------------
+mv_out="$(env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$(command -v python3)" \
+  HARNESS_SESSION_STATE_HOME="$STATE" "$ROOT/bin/session-isolation.sh" create "$SOURCE")"
+mv_id="$(printf '%s\n' "$mv_out" | sed -n 's/^HARNESS_SESSION_ID=//p')"; mv_root="$(printf '%s\n' "$mv_out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+printf 'moved\n' > "$mv_root/moved.txt"
+mv "$SOURCE" "$SOURCE.moved"
+moved_rc=0
+env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" HARNESS_SESSION_STATE_HOME="$STATE" \
+  python3 - "$ROOT/bin" "$STATE" "$mv_id" <<'PY' || moved_rc=$?
+import os, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import harness_headless as h
+state, sid = Path(sys.argv[2]), sys.argv[3]
+subprocess.run([str(h.BIN / 'session-isolation.sh'), 'exit', sid], env=os.environ, stderr=subprocess.DEVNULL)
+with open(os.devnull, 'w') as log:
+    status, commit, reason = h.deliver(sid, state, dict(os.environ), str(state), log)
+assert status == 'refused' and commit is None and 'source checkout' in (reason or ''), (status, reason)
+PY
+mv "$SOURCE.moved" "$SOURCE"
+[[ "$moved_rc" == 0 ]] || fail 'a moved source checkout must be refused with its own reason'
+! grep -qx -e state=CLOSED -e state=DELIVERED "$STATE/sessions/$mv_id/journal" || fail 'a session whose source moved must be kept'
+echo 'PASS: harness-headless names a moved source checkout'
 
 # --- timeout ------------------------------------------------------------------------
 echo hang > "$TMP/mode"
@@ -612,3 +730,22 @@ PY
 expect_status refused
 [[ ! -e "$TMP/claude-argv" ]] && grep -q lockf "$RESULT" || fail 'a missing lockf must refuse before launching claude'
 echo 'PASS: harness-headless refuses before launch when session delivery cannot lock'
+
+# --- no verifier sandbox: refuse before spending anything --------------------------
+printf '#!/bin/sh\necho "sandbox-exec: profile failed to load" >&2\nexit 65\n' > "$TMP/bad-sandbox-exec"; chmod +x "$TMP/bad-sandbox-exec"
+for sandbox in /nonexistent/sandbox-exec "$TMP/bad-sandbox-exec"; do
+  rm -f "$RESULT" "$TMP/claude-argv"
+  env -i PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+    HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" \
+    python3 - "$ROOT/bin" "$sandbox" hh --prompt-file "$PROMPT" --result-file "$RESULT" --lock-file "$LOCK" \
+    --budget-usd 1 --timeout-min 1 <<'PY' || fail "an unusable sandbox ($sandbox) must still exit 0 with a result"
+import sys
+sys.path.insert(0, sys.argv[1])
+import harness_headless
+harness_headless.SANDBOX_EXEC = sys.argv[2]
+raise SystemExit(harness_headless.main(sys.argv[3:]))
+PY
+  expect_status refused
+  [[ ! -e "$TMP/claude-argv" ]] && grep -q sandbox "$RESULT" || fail "an unusable sandbox ($sandbox) must refuse before launching claude"
+done
+echo 'PASS: harness-headless refuses before launch when the verifier sandbox is unavailable'

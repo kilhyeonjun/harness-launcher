@@ -326,12 +326,29 @@ legacy routes do not change.
   not a deletion. Each stops the close before anything is pushed.
   Without global config, global excludes (for example a global `.DS_Store`
   ignore) do not apply; the repository `.gitignore` does. A marker without
-  its `trusted.git` refuses (exit 6, status `refused`). A changed session goes
+  its `trusted.git` refuses (exit 6, status `refused`), and so does a source
+  checkout that has moved or been deleted (exit 8, status `refused`; the
+  session is kept). A changed session goes
   to `ABANDONED`, a clean one to `CLOSED`. A changed session is recovered and
   closed through the broker. A journal still `INTEGRATING` after close is
   recovered once. `DELIVERED` gives `delivered` with the `delivered-sha`
-  readback commit; close exit 3 or 5 gives `conflict` (session kept);
-  anything else is `failed`.
+  readback commit; close exit 3 or 5 gives `conflict` (session kept); exit 9,
+  the repository verifier rejected the candidate, gives `failed` (session
+  kept); anything else is `failed`.
+- **Verifier sandbox.** The repository verifier (`core/bin/auto-deliver.sh`
+  from the trusted baseline, run `--staged-only --dry-run --no-push`) runs the
+  candidate's tests, which the agent may have written. For headless sessions
+  the broker runs it under `/usr/bin/sandbox-exec` with a generated Seatbelt
+  profile: no network except loopback; writes only to the candidate, a fresh
+  per-verify temp dir (`TMPDIR`, removed afterwards), `/dev/null`, `/dev/tty`
+  and `/dev/fd`; no reads of `~/.ssh`, `~/.hermes`, `~/buzz`, `~/.config/gh`,
+  `~/.aws`, `~/.claude`, `~/Library/Keychains` or the source checkout; no
+  lookups of the Security services (`com.apple.SecurityServer`,
+  `com.apple.securityd`, `com.apple.security.*`), so `security` and the
+  osxkeychain credential helper reach nothing. The environment is `HOME`,
+  `PATH`, `LANG`, `LC_*`, `TMPDIR` and the verifier's own switches; agent
+  sockets, `GH_*`, `GITHUB_*` and tokens are not passed. Interactive sessions
+  run the verifier as before.
 - **Result.** Written atomically (temp file and rename) to `R`, always with
   `"version": 1`:
   `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.
@@ -339,7 +356,9 @@ legacy routes do not change.
   Claude errors, a missing Claude result, signals and delivery failures.
   `refused` (`exit_code` 2 before launch) means the run could not start
   without input or broke containment: an unknown profile, a host
-  without `/usr/bin/lockf` (delivery could never lock), an empty or
+  without `/usr/bin/lockf` (delivery could never lock), a host without
+  `/usr/bin/sandbox-exec` or where the verifier profile does not load (checked
+  with `harness-session sandbox-check`), an empty or
   unreadable prompt, a non-positive budget or timeout, a settings key outside
   the allowed set, a refused headless clone, or a headless record without its
   trusted git dir.
