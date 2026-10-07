@@ -2,6 +2,22 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+- New `harness-headless` runs one unattended Claude task in a fresh isolated
+  session and writes one JSON result (`delivered`, `no_changes`, `conflict`,
+  `failed`, `timeout`, `budget`, or `refused`). It keeps only an environment
+  allowlist, adds launcher-enforced permission denies, kills the process group
+  on timeout, holds a caller lock for its whole run, and delivers a successful
+  change through `harness-session close`. See docs/architecture.md.
+- `harness-exec <harness> --isolated ...` no longer injects the current
+  directory as `--cwd`. A non-interactive `--isolated -p` run now works in the
+  session root instead of the canonical checkout. Other routes are unchanged.
+- Headless isolated sessions (`HARNESS_HEADLESS=1`) copy machine-local MCP and
+  settings files instead of linking them, drop the settings `env` block, never
+  link `projects/`, and refuse a clone with a symlink on those paths.
+  Interactive sessions are unchanged.
+
 ## 0.42.0 — 2026-10-01
 
 - herdr: a tab that holds several agents now shows the first agent's session

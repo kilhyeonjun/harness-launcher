@@ -188,7 +188,8 @@ the UUID workspace remains recoverable after an unclean exit.
 Profiles may default only fresh interactive direct-Claude and native-Codex
 routes into this boundary. The router classifies arguments before allocating a
 UUID: non-interactive, batch, help, diagnostics, gateway/Kiro, and no-argument
-TUI routes remain legacy, while generic continuation commands require either an
+TUI routes remain legacy (an explicit `--isolated` still isolates them and
+runs in the session root), while generic continuation commands require either an
 exact `--isolated-session <uuid>` or an intentional `--no-isolated` rollback.
 Argument classification stops at the prompt/freeform boundary so prompt text
 that resembles a launcher switch cannot alter isolation.
@@ -224,6 +225,61 @@ reconciles a proven pushed candidate to `DELIVERED` or returns an unpushed
 submission to `SUBMITTED`. Clean close or normal exit records terminal `CLOSED`.
 
 Manifest-enabled homes also keep an atomic successful-input fingerprint plus a source-identity watch snapshot. The lean warm path validates watched file identities, semantic TOML policy, launcher-owned output hashes, product-plugin skill digests, explicit-only policies, skill/plugin directory topology, every managed skill link, and the normalized global-MCP definition digest before returning; it does not rescan plugin tests/docs/assets. Changing selected global definitions or allowlist membership therefore invalidates the warm path. Unexpected generated-home skill routes force a cold rebuild and reversible quarantine, and marker membership alone never proves ownership. Auth contents, sessions, hook trust state, and generated output mtimes remain runtime state and do not invalidate source generation. A cold rebuild leaves the live success stamp in place while it prepares a candidate transaction, then publishes the replacement success stamp last.
+
+### Headless isolated runs
+
+`harness-headless <profile> --prompt-file F --result-file R --lock-file L --budget-usd N --timeout-min M [--settings-file S] [--model X]`
+runs one unattended Claude task for a registered profile. It is the only
+non-interactive route that works inside an isolated session.
+
+- **Lock and lifetime.** It holds an exclusive `flock` on `L` from start until
+  the result file is in place, including delivery. A second run on the same
+  lock exits 75 without writing a result. The run stays in the foreground.
+- **Environment.** Only `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
+  `LC_*` and `TMPDIR` pass through, plus `HARNESS_SESSION_STATE_HOME` and
+  `XDG_STATE_HOME` so the launcher finds the same session state. It adds
+  `HARNESS_HEADLESS=1`, `HARNESS_PYTHON_BIN` (the resolved interpreter) and
+  `GIT_TERMINAL_PROMPT=0`. With `HARNESS_HEADLESS=1` the launcher does not
+  export the harness `.claude/settings.local.json` `env` block, does not derive
+  a per-harness `GH_TOKEN`, and passes no `--mcp-config`.
+- **Session.** It calls `harness-exec <harness> --isolated --passthrough ...`,
+  so the launcher creates the journal, lease and launch record itself and the
+  run directory is the session root. The headless clone copies
+  `.mcp.local.json`, `mcp.local.json` and `.claude/settings.local.json`
+  (without its `env` block) instead of linking them, and never links
+  `projects/`. A symlink on any of those paths in the cloned tree refuses the
+  clone.
+- **Claude.** `claude -p --output-format json --max-budget-usd N
+  --permission-mode bypassPermissions --strict-mcp-config [--model X]`, with
+  the prompt after `--`. stdin is `/dev/null` and the run has its own process
+  group with no controlling terminal. The launcher merges every `--settings`
+  into one: its launch-record hook, the caller's `S` (any `sandbox` object is
+  kept), and mandatory denies: `Edit`/`Write` on the source root, `~/.hermes`,
+  `~/buzz`, `~/.claude`, `~/.ssh`, `~/.config/gh`; `WebFetch`; `WebSearch`; and
+  Bash rules matching `harness-session`, `session-isolation.sh`,
+  `auto-deliver`, `git push`, `sudo` and `launchctl`. Permission arrays are
+  unions, so the caller can add rules but not remove these.
+- **Timeout.** After `M` minutes (fractions allowed) the whole process group
+  gets `SIGTERM`, then `SIGKILL`. Status `timeout`, `exit_code` 124. The
+  session is left for its owner.
+- **Delivery.** On success the launcher has already moved a changed session to
+  `ABANDONED` and a clean one to `CLOSED`. A changed session is recovered and
+  closed through the broker: exit 0 gives `delivered` with the
+  `delivered-sha` readback commit, exit 3 or 5 gives `conflict` (session kept),
+  exit 4 from `INTEGRATING` is recovered once and gives `delivered` or
+  `failed`. Anything else is `failed`.
+- **Result.** Written atomically (temp file and rename) to `R`:
+  `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.
+  `budget` is Claude subtype `error_max_budget_usd`; `failed` covers other
+  Claude errors, a missing Claude result, and delivery failures. `refused`
+  (`exit_code` 2) means the run could not start without input: an unknown
+  profile, an empty or unreadable prompt, a non-positive budget or timeout, a
+  settings file that is not a JSON object, or a refused headless clone.
+  Launcher and Claude stderr go to `R.log`. The command exits 0 whenever `R`
+  was written and nonzero otherwise.
+
+Denies and hooks are guardrails, not a sandbox: Bash rules match command
+text. Callers that need containment pass a `sandbox` block in `S`.
 
 ### Restore fidelity and the launch record
 

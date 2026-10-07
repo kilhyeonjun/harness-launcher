@@ -250,6 +250,17 @@ harness-exec "$HOME/work-harness" codex base
 
 When the external terminal starts inside the harness, no `--cwd .` is needed. If supplied, `--cwd` must resolve inside the registered harness. This is the supported boundary for Orca and similar worktree managers; see [Orca ADE integration](docs/orca-integration.md).
 
+An explicit leading `--isolated` is not given the current directory: `harness-exec <harness> --isolated --passthrough -p ...` runs in the isolated session root.
+
+Bridges that run one unattended task at a time use `harness-headless`. It never prompts, keeps only an environment allowlist, runs Claude in a fresh isolated session with launcher-enforced permission denies, delivers a successful change through `harness-session close`, and always writes one JSON result:
+
+```bash
+harness-headless <profile> --prompt-file task.md --result-file result.json \
+  --lock-file run.lock --budget-usd 5 --timeout-min 60 [--settings-file extra.json] [--model sonnet]
+```
+
+The result `status` is one of `delivered`, `no_changes`, `conflict`, `failed`, `timeout`, `budget`, or `refused`. See [Headless isolated runs](docs/architecture.md#headless-isolated-runs) for the contract.
+
 SDK hosts that append their own argv to a command prefix put it after `--passthrough`, which ends launcher keyword parsing and lets explicit caller options override the launcher defaults (`--model`, `--effort`, and `--permission-mode` for Claude; `-p`/`--profile` and `-C`/`--cd` for Codex):
 
 ```bash
