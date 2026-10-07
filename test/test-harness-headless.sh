@@ -38,6 +38,7 @@ cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
 printf 'VERIFIER-ENV TMPDIR=%s CLAUDE_CODE_TMPDIR=%s\n' "\${TMPDIR:-}" "\${CLAUDE_CODE_TMPDIR:-}"
 [[ ! -s "$TMP/run-tmp" || ! -e "\$(cat "$TMP/run-tmp")" ]] || echo 'VERIFIER-ENV RUN_TMP_PRESENT'
 env | grep -E '^(SSH_AUTH_SOCK|GH_|GITHUB_|[A-Z_]*_TOKEN=)' | sed 's/^/VERIFIER-LEAK /'
+{ git remote -v; git -C "\$(dirname "\$0")/../.." remote -v; } 2>/dev/null | sed 's/^/VERIFIER-REMOTE /'
 [[ ! -e "$TMP/verify-fail" ]] || exit 92
 for t in "\$TEST_HARNESS_DIR"/verify-tests/*.sh; do
   [[ -e "\$t" ]] || continue
@@ -510,6 +511,11 @@ printf 'fixture-private-key\n' > "$FAKE_HOME/.ssh/id_fixture"
 printf 'echo secret-history\n' > "$FAKE_HOME/.zsh_history"
 printf 'cookie\n' > "$FAKE_HOME/Library/Cookies/Cookies.binarycookies"
 printf 'state=OPEN\n' > "$FAKE_HOME/.local/state/harness-launcher/sessions/other/journal"
+mkdir -p "$FAKE_HOME/.config/git"
+printf 'https://user:fixture-token@example.invalid\n' > "$FAKE_HOME/.git-credentials"
+printf 'https://user:fixture-token@example.invalid\n' > "$FAKE_HOME/.config/git/credentials"
+printf 'machine example.invalid login user password fixture-token\n' > "$FAKE_HOME/.netrc"
+printf '[user]\n\tname = Fixture User\n\temail = fixture@example.invalid\n[http "https://example.invalid/"]\n\textraHeader = Authorization: Bearer fixture-token\n' > "$FAKE_HOME/.gitconfig"
 python3 - "$FAKE_HOME/.orbstack/run/docker.sock" "$TMP/listen-port" <<'PY' &
 import socket, sys, time
 unix = socket.socket(socket.AF_UNIX); unix.bind(sys.argv[1]); unix.listen()
@@ -545,6 +551,8 @@ probe('loopback', lambda: socket.create_connection(('127.0.0.1', int(os.environ[
 probe('docker-socket', lambda: unix_connect(os.path.join(home, '.orbstack/run/docker.sock')))
 probe('write-home', lambda: open(os.path.join(home, 'breach-wrote-home'), 'w').close())
 for name, path in (('read-ssh', '.ssh/id_fixture'), ('read-history', '.zsh_history'),
+                   ('read-git-credentials', '.git-credentials'), ('read-xdg-git-credentials', '.config/git/credentials'),
+                   ('read-netrc', '.netrc'), ('read-gitconfig', '.gitconfig'),
                    ('read-cookies', 'Library/Cookies/Cookies.binarycookies'),
                    ('read-session-record', '.local/state/harness-launcher/sessions/other/journal')):
     probe(name, lambda path=path: open(os.path.join(home, path)).read())
@@ -552,6 +560,11 @@ probe('signal-outside', lambda: os.kill(int(os.environ['OUTSIDE_PID']), 0))
 PY
 check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then echo "PROBE $name ALLOWED"; else echo "PROBE $name blocked"; fi; }
 check security security find-generic-password -s harness-breach-probe -w
+# Credentials in the environment, in a remote URL of the copy or of the
+# trusted verifier clone, or in git config the verifier can see.
+check env-credentials sh -c "env | grep -qE '^(SSH_AUTH_SOCK|GIT_ASKPASS|GH_|GITHUB_|ANTHROPIC_|OPENAI_|CLAUDE_)|_TOKEN='"
+check copy-remote sh -c '[ -n "$(git -C "$TEST_HARNESS_DIR" remote)" ]'
+check git-config-token sh -c 'git config --list 2>/dev/null | grep -q fixture-token'
 check git-credential sh -c "printf 'protocol=https\nhost=example.invalid\n\n' | GIT_TERMINAL_PROMPT=0 git credential fill"
 check nested-sandbox /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
 check osascript /usr/bin/osascript -e 'tell application "Finder" to get version'
@@ -583,12 +596,15 @@ expect_status failed
 [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail 'a candidate whose tests broke out must not be delivered'
 for blocked in 'network EPERM' 'loopback EPERM' 'docker-socket EPERM' 'write-home EPERM' 'read-ssh EPERM' \
     'read-history EPERM' 'read-cookies EPERM' 'read-session-record EPERM' 'signal-outside EPERM' \
+    'read-git-credentials EPERM' 'read-xdg-git-credentials EPERM' 'read-netrc EPERM' 'read-gitconfig EPERM' \
+    'env-credentials blocked' 'copy-remote blocked' 'git-config-token blocked' \
     'security blocked' 'git-credential blocked' 'nested-sandbox blocked' 'osascript blocked' 'open blocked' 'launchctl blocked'; do
   grep -q "^PROBE $blocked\$" "$RESULT.log" || fail "the verifier sandbox must block: $blocked"
 done
 ! grep -q 'ALLOWED' "$RESULT.log" || fail 'a sandboxed probe was allowed'
 [[ ! -e "$FAKE_HOME/breach-wrote-home" && ! -e "$TMP/launchctl-ran" ]] || fail 'the verifier wrote outside the sandbox'
 ! grep -q '^VERIFIER-LEAK' "$RESULT.log" || fail 'the verifier environment carried credentials'
+! grep -q '^VERIFIER-REMOTE' "$RESULT.log" || fail 'a clone the verifier can read kept its remote URL'
 echo okverify > "$TMP/mode"
 cat > "$TMP/okverify.sh" <<'EOF'
 #!/bin/bash
@@ -598,6 +614,7 @@ set -e
 : > "$TEST_HARNESS_DIR/ok-candidate-write"
 python3 -c 'import os, socket; p = os.path.join(os.environ["TMPDIR"], "s"); s = socket.socket(socket.AF_UNIX); s.bind(p); s.listen(); c = socket.socket(socket.AF_UNIX); c.connect(p)'
 git -C "$TEST_HARNESS_DIR" status --porcelain >/dev/null
+[ "$(git config --global user.name)" = 'Fixture User' ]
 echo OK-VERIFY-RAN
 EOF
 headless || fail 'okverify run must exit 0'

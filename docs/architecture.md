@@ -345,18 +345,24 @@ legacy routes do not change.
   the copy's `.git` or work tree runs or is delivered. The profile allows:
   no network at all, except unix sockets inside the verifier's temp dir (no
   loopback services, no Docker socket); writes only to the copy, a fresh
-  per-verify temp dir (`TMPDIR`, removed afterwards), `/dev/null`, `/dev/tty`
-  and `/dev/fd`; no reads of anything under `HOME` except the copy, the temp
-  dir, the trusted verifier, `~/.gitconfig`, `~/.config/git` and toolchains
-  (`PATH` entries under `HOME`, mise's config, data, cache and state dirs),
-  and never `~/.ssh`, `~/.hermes`, `~/buzz`, `~/.config/gh`, `~/.aws`,
-  `~/.claude`, `~/Library/Keychains` or the source checkout; no mach services
+  per-verify temp dir outside `HOME` (`TMPDIR` under `/private/tmp`, removed
+  afterwards), `/dev/null`, `/dev/tty` and `/dev/fd`; no reads of anything
+  under `HOME` or the state home except the copy, the temp dir, the trusted
+  verifier and toolchains (`PATH` entries under `HOME`, mise's installs,
+  cache and `~/.config/mise/config.toml`), and never `~/.ssh`, `~/.hermes`,
+  `~/buzz`, `~/.config/gh`, `~/.aws`, `~/.claude`, `~/Library/Keychains`,
+  `~/.git-credentials`, `~/.netrc`, `~/.config/git` or the source checkout.
+  User git config is not readable; the verifier gets a generated global git
+  config (`GIT_CONFIG_GLOBAL`, identity only), and neither the copy nor the
+  trusted clone keeps a remote, so no remote URL with credentials is
+  readable. No mach services
   except user and group lookup and logging (so no keychain, launchd job
   submission, LaunchServices `open`, XPC services or AppleEvents); signals
   and process inspection only within the sandbox. A nested `sandbox-exec`
   fails. The environment is `HOME`, `PATH`, `LANG`, `LC_*`, `TMPDIR` and the
-  verifier's own switches; agent sockets, `GH_*`, `GITHUB_*` and tokens are
-  not passed. Interactive sessions run the verifier as before.
+  verifier's own switches plus `GIT_CONFIG_GLOBAL`; agent sockets, askpass
+  helpers, `GH_*`, `GITHUB_*`, `ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*` and
+  tokens are not passed. Interactive sessions run the verifier as before.
 - **Result.** Written atomically (temp file and rename) to `R`, always with
   `"version": 1`:
   `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.

@@ -576,16 +576,17 @@ phys() { if [[ -d "$1" ]]; then (cd -P "$1" && pwd); else printf '%s\n' "$1"; fi
 sbpl_str() { local value="${1//\\/\\\\}"; printf '"%s"' "${value//\"/\\\"}"; }
 # verifier_sandbox_profile <copy> <tmp> <home> <source> <trusted>: the SBPL
 # profile. No network (unix sockets only inside the temp dir); writes only to
-# the copy and the temp dir; nothing under HOME is readable except the copy,
-# the temp dir, the trusted verifier, git config and toolchains (PATH entries
-# under HOME, mise); credential stores and the source checkout never are; no
-# mach services beyond SANDBOX_MACH_ALLOW; no AppleEvents; signals and
-# process inspection only within the sandbox.
+# the copy and the temp dir; nothing under HOME or the state home is readable
+# except the copy, the temp dir, the trusted verifier and toolchains (PATH
+# entries under HOME, mise's config and installs); no user git config (the
+# verifier gets a generated one); credential stores and the source checkout
+# never are; no mach services beyond SANDBOX_MACH_ALLOW; no AppleEvents;
+# signals and process inspection only within the sandbox.
 verifier_sandbox_profile() {
-  local copy tmp home source="$4" trusted path entry name
-  copy="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; trusted="$(phys "$5")"
-  local -a readable=("$copy" "$tmp" "$trusted" "$home/.config/git" "$home/.config/mise" "$home/.local/share/mise"
-    "$home/.cache/mise" "$home/.local/state/mise") deny=()
+  local copy tmp home source="$4" trusted state path entry name
+  copy="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; trusted="$(phys "$5")"; state="$(phys "$(state_home)")"
+  local -a readable=("$copy" "$tmp" "$trusted" "$home/.config/mise/config.toml" "$home/.local/share/mise"
+    "$home/.cache/mise") deny=()
   local -a path_entries=()
   IFS=: read -r -a path_entries <<< "${PATH:-}"
   for entry in "${path_entries[@]}"; do
@@ -594,7 +595,7 @@ verifier_sandbox_profile() {
     [[ "$entry" != "$home" && "$entry" == "$home"/* ]] && readable+=("$entry")
   done
   for path in "$home/.ssh" "$home/.hermes" "$home/buzz" "$home/.config/gh" "$home/.aws" "$home/.claude" \
-      "$home/Library/Keychains" "$source"; do
+      "$home/Library/Keychains" "$home/.git-credentials" "$home/.netrc" "$home/.config/git" "$source"; do
     deny+=("$path")
     [[ ! -e "$path" ]] || deny+=("$(phys "$path")")
   done
@@ -603,7 +604,7 @@ verifier_sandbox_profile() {
   printf '(allow network* (remote unix-socket (subpath %s)))\n' "$(sbpl_str "$tmp")"
   printf '(deny file-write*)\n(allow file-write* (subpath %s) (subpath %s)' "$(sbpl_str "$copy")" "$(sbpl_str "$tmp")"
   printf ' (literal "/dev/null") (literal "/dev/tty") (subpath "/dev/fd"))\n'
-  printf '(deny file-read-data (subpath %s))\n(allow file-read-data (literal %s)' "$(sbpl_str "$home")" "$(sbpl_str "$home/.gitconfig")"
+  printf '(deny file-read-data (subpath %s) (subpath %s))\n(allow file-read-data' "$(sbpl_str "$home")" "$(sbpl_str "$state")"
   for path in "${readable[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
   printf ')\n(deny file-read*'
   for path in "${deny[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
@@ -647,21 +648,41 @@ run_repository_verifier() {
 # run_sandboxed_verifier <candidate> <id> <trusted> <verifier> <args...>:
 # headless sessions only. The verifier gets a copy of the candidate (index
 # included, no hard links), a minimal environment (no agent sockets, tokens or
-# GitHub variables) and a fresh temp dir; the copy and the temp dir are
-# removed afterwards and nothing is read back. The broker commits and pushes
-# from the candidate itself, which the sandbox never touched.
+# GitHub variables), a fresh temp dir outside HOME and a generated global git
+# config (identity only); neither the copy nor the trusted clone keeps a
+# remote, so no URL with credentials is readable. The copy and the temp dir
+# are removed afterwards and nothing is read back. The broker commits and
+# pushes from the candidate itself, which the sandbox never touched.
+# scrub_remotes <repo>: drop every remote (and url rewrites) from a clone the
+# sandbox can read.
+scrub_remotes() {
+  local remote
+  for remote in $(session_git -C "$1" remote); do session_git -C "$1" remote remove "$remote" || return 1; done
+  session_git -C "$1" config --remove-section credential 2>/dev/null || true
+  [[ -z "$(session_git -C "$1" config --local --get-regexp '^(url|remote|credential|http)\.' || true)" ]]
+}
+# write_verifier_gitconfig <path>: identity only, no user excludes or
+# attributes files (their default XDG paths are not readable).
+write_verifier_gitconfig() {
+  local name email
+  name="$(git config --global --get user.name | tr -d '\n\\"' || true)"
+  email="$(git config --global --get user.email | tr -d '\n\\"' || true)"
+  { printf '[user]\n\tname = %s\n\temail = %s\n' "${name:-harness-verifier}" "${email:-verifier@invalid}"
+    printf '[core]\n\texcludesFile = /dev/null\n\tattributesFile = /dev/null\n'; } > "$1"
+}
 run_sandboxed_verifier() {
   local candidate="$1" id="$2" trusted="$3" verifier="$4" source vtmp vcopy profile help_output name rc=0
   shift 4
   local -a args=("$@") venv=()
   [[ -x "$SANDBOX_EXEC" ]] || { echo "harness-session: refused: $SANDBOX_EXEC is required to verify a headless session" >&2; rm -rf "$trusted"; return 2; }
   source="$(<"$(session_dir "$id")/source-root")" || { rm -rf "$trusted"; return 2; }
-  vtmp="$(mktemp -d "$(state_home)/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
+  vtmp="$(mktemp -d /private/tmp/verifier-tmp.XXXXXX)" || { rm -rf "$trusted"; return 2; }
   vcopy="$(mktemp -d "$(state_home)/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
   { vtmp="$(phys "$vtmp")" && vcopy="$(phys "$vcopy")" && cp -R "$candidate/." "$vcopy/" \
+      && scrub_remotes "$vcopy" && scrub_remotes "$trusted" && write_verifier_gitconfig "$vtmp/gitconfig" \
       && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted")"; } \
     || { rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
-  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp")
+  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig")
   [[ -z "${LANG:-}" ]] || venv+=(LANG="$LANG")
   for name in $(compgen -e); do [[ "$name" != LC_* ]] || venv+=("$name=${!name}"); done
   help_output="$(cd "$vcopy" && env -i "${venv[@]}" "$SANDBOX_EXEC" -p "$profile" bash "$verifier" --help 2>/dev/null || true)"

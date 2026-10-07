@@ -11,7 +11,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
   with a launcher-generated Seatbelt profile, on a throwaway copy of the
   candidate the broker never reads back, with a minimal environment: no
   network (not even loopback), writes only to the copy and a per-verify temp
-  dir, nothing under `HOME` readable beyond git config and toolchains, no
+  dir outside `HOME`, nothing under `HOME` or the state home readable beyond
+  toolchains (no user git config, git credential stores or `.netrc`; a
+  generated identity-only git config instead; no remote URLs in any clone it
+  can read), no
   mach services beyond user lookup and logging (no keychain, launchd,
   LaunchServices or AppleEvents), and no signals to processes outside the
   sandbox. The broker commits and pushes from the untouched candidate without

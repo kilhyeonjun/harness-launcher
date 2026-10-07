@@ -701,13 +701,15 @@ for mode in headless interactive; do
   fi
   rm -f "$VHOME/verifier-wrote-home"
   HOME="$VHOME" SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=leak-gh GITHUB_TOKEN=leak-github NPM_TOKEN=leak-npm LANG=en_US.UTF-8 \
+    GIT_ASKPASS=/tmp/askpass HOMEBREW_GITHUB_API_TOKEN=leak-brew ANTHROPIC_API_KEY=leak-anthropic OPENAI_API_KEY=leak-openai \
+    CLAUDE_CODE_OAUTH_TOKEN=leak-claude \
     HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$v_id" > "$TMP/venv-$mode.out" || { echo "FAIL: $mode verifier-env close"; exit 1; }
   grep -qx state=DELIVERED "$STATE/sessions/$v_id/journal" || { echo "FAIL: $mode verifier-env session must be delivered"; exit 1; }
   if [[ "$mode" == headless ]]; then
     keys="$(sed -n 's/^VERIFIER-ENV \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$TMP/venv-$mode.out" | sort -u | tr '\n' ' ')"
     for key in $keys; do
       case "$key" in
-        HOME|PATH|LANG|LC_*|TMPDIR|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
+        HOME|PATH|LANG|LC_*|TMPDIR|GIT_CONFIG_GLOBAL|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
         *) echo "FAIL: the headless verifier environment carries $key"; exit 1 ;;
       esac
     done
