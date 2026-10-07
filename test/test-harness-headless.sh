@@ -85,6 +85,22 @@ case "\$mode" in
     git add -f .claude/settings.local.json config/.local/planted projects/planted normal.txt
     git -c user.name=t -c user.email=t@example.invalid commit -qm planted
     echo "\$ok" ;;
+  variants)
+    # One table row: <expect>|<kind>|<path>. The canonical excluded entries are
+    # removed first so the variant is created under its own spelling, and the
+    # path is negated in .gitignore so only the launcher's fence stands.
+    rm -rf projects config/.local mcp.local.json .mcp.local.json .claude/settings.local.json
+    while IFS='|' read -r expect kind path; do
+      [[ -n "\$kind" ]] || continue
+      printf '!/%s\n' "\$path" >> .gitignore
+      case "\$kind" in
+        file) mkdir -p "\$(dirname "\$path")"; printf 'variant\n' > "\$path" ;;
+        dir) mkdir -p "\$path"; printf 'variant\n' > "\$path/a" ;;
+        link) mkdir -p projects; ln -s projects "\$path"; printf 'through-link\n' > "\$path/x" ;;
+      esac
+    done < "$TMP/variants"
+    printf 'normal %s\n' "\$\$" > variants-normal.txt
+    echo "\$ok" ;;
   casevariants)
     # Negations override info/exclude; case variants dodge case-sensitive
     # pathspecs. None of these may be delivered.
@@ -307,6 +323,65 @@ for kept in keep.txt drop.txt; do
   [[ "$(git --git-dir="$REMOTE" show "main:projects/$kept")" == base ]] || fail "projects/$kept changed through a case variant"
 done
 echo 'PASS: harness-headless delivers the work tree through a launcher-owned git dir'
+
+# --- every exclusion layer agrees: table of path variants -----------------------
+# excluded: aliases an excluded entry on this filesystem (case, Unicode case
+# folding) and must not reach the remote. distinct: a different name on APFS
+# and in git, delivered as its own path. link: a symlink into projects/ is
+# delivered as the link itself, never as content under projects/.
+{
+  printf '%s\n' 'excluded|dir|Projects' 'excluded|file|PROJECTS' 'excluded|dir|config/.LOCAL' \
+    'excluded|file|config/.local' 'excluded|file|.claude/SETTINGS.local.json' 'excluded|file|MCP.local.json' \
+    'excluded|file|.Mcp.Local.json' 'distinct|dir|projects.' 'distinct|dir|projects ' 'link|link|plink'
+  printf 'excluded|dir|project\xc5\xbf\n'                      # projectſ (U+017F folds to s)
+  printf 'excluded|file|mcp.local.j\xc5\xbfon\n'                # mcp.local.jſon
+  printf 'excluded|file|.claude/\xc5\xbfettings.local.json\n'   # .claude/ſettings.local.json
+} > "$TMP/variant-table"
+echo variants > "$TMP/mode"
+while IFS= read -r row; do
+  printf '%s\n' "$row" > "$TMP/variants"
+  headless || fail "variant run must exit 0: $row"
+  expect_status delivered
+  git --git-dir="$REMOTE" show main:variants-normal.txt >/dev/null || fail "normal paths beside $row must be delivered"
+  git --git-dir="$REMOTE" ls-tree -r --name-only -z main > "$TMP/main-paths"
+  python3 - "$TMP/variants" "$TMP/main-paths" "$TMP/probe" <<'PY' || fail "an exclusion layer disagreed on: $row"
+import os, sys
+rows = [l.split(b'|', 2) for l in open(sys.argv[1], 'rb').read().split(b'\n') if l]
+main = set(open(sys.argv[2], 'rb').read().split(b'\0')) - {b''}
+# Filesystem truth: does a path alias an excluded entry on this volume?
+probe = sys.argv[3].encode()
+for d in (b'projects', b'config/.local', b'.claude'):
+    os.makedirs(os.path.join(probe, d), exist_ok=True)
+for f in (b'mcp.local.json', b'.mcp.local.json', b'.claude/settings.local.json'):
+    open(os.path.join(probe, f), 'a').close()
+leaves = [os.path.join(probe, e) for e in (b'projects', b'config/.local', b'mcp.local.json', b'.mcp.local.json', b'.claude/settings.local.json')]
+def aliases(path):
+    parts = path.split(b'/')
+    for depth in (1, 2):
+        if len(parts) < depth:
+            break
+        candidate = os.path.join(probe, *parts[:depth])
+        if os.path.lexists(candidate) and any(os.path.samefile(candidate, l) for l in leaves):
+            return True
+    return False
+base = {b'projects/keep.txt', b'projects/drop.txt'}
+leaked = sorted(p for p in main if aliases(p) and p not in base)
+assert not leaked, ('excluded content delivered', leaked)
+for expect, kind, path in rows:
+    if expect == b'excluded':
+        assert path not in main and path + b'/a' not in main, ('excluded variant delivered', path)
+    if expect == b'distinct':
+        assert path + b'/a' in main, ('distinct name must be delivered', path)
+    if expect == b'link':
+        assert path in main and path + b'/x' not in main, ('symlink must be delivered as itself', path)
+PY
+  for kept in keep.txt drop.txt; do
+    [[ "$(git --git-dir="$REMOTE" show "main:projects/$kept")" == base ]] || fail "projects/$kept changed through $row"
+  done
+done < "$TMP/variant-table"
+[[ "$(git --git-dir="$REMOTE" ls-tree main plink | awk '{print $1}')" == 120000 ]] || fail 'plink must be delivered as a symlink'
+! git --git-dir="$REMOTE" cat-file -e main:projects/x 2>/dev/null || fail 'content written through a symlink into projects/ was delivered'
+echo 'PASS: every exclusion layer agrees on case, Unicode folding, file/dir forms, trailing dots and symlinks'
 
 # --- a failed stage is never reported as no_changes -------------------------------
 for mode in nested unreadable; do

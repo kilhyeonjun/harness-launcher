@@ -40,12 +40,51 @@ unset _excluded
 # ignores them through info/exclude), interactive ones to HEAD so submit can
 # still refuse excluded paths the session committed.
 stage_worktree() {
+  local list path
+  local -a aliases=()
   root_git "$1" add -A -- . || return 1
   if [[ -n "$ROOT_GIT_DIR" ]]; then
-    root_git "$1" reset -q "$2" -- "${EXCLUDED_ICASE[@]}"
+    root_git "$1" reset -q "$2" -- "${EXCLUDED_ICASE[@]}" || return 1
   else
     session_git -C "$1" reset -q -- "${EXCLUDED_ICASE[@]}" 2>/dev/null || true
   fi
+  # Names git's ASCII-only icase misses but the filesystem folds onto an
+  # excluded entry (projectſ is projects on APFS) are reset the same way.
+  list="$(mktemp "$(state_home)/aliases.XXXXXX")" || return 1
+  excluded_aliases "$1" "$2" > "$list" || { rm -f "$list"; return 1; }
+  while IFS= read -r -d '' path; do aliases+=(":(literal)$path"); done < "$list"
+  rm -f "$list"
+  (( ${#aliases[@]} )) || return 0
+  if [[ -n "$ROOT_GIT_DIR" ]]; then
+    root_git "$1" reset -q "$2" -- "${aliases[@]}"
+  else
+    session_git -C "$1" reset -q -- "${aliases[@]}"
+  fi
+}
+# excluded_aliases <root> <base>: NUL-separated staged paths (changed from
+# base) that this filesystem resolves to an excluded entry: case, Unicode case
+# folding and normalization are decided by a probe tree of the excluded
+# entries on the same volume as the session roots, so every layer agrees with
+# what a checkout would actually write.
+excluded_aliases() {
+  local root="$1" base="$2" probe path first second
+  probe="$(mktemp -d "$(state_home)/probe.XXXXXX")" || return 1
+  mkdir -p "$probe/projects" "$probe/config/.local" "$probe/.claude" || { rm -rf "$probe"; return 1; }
+  : > "$probe/mcp.local.json"; : > "$probe/.mcp.local.json"; : > "$probe/.claude/settings.local.json"
+  while IFS= read -r -d '' path; do
+    first="${path%%/*}"
+    if [[ -e "$probe/$first" ]] && { [[ "$probe/$first" -ef "$probe/projects" ]] \
+        || [[ "$probe/$first" -ef "$probe/mcp.local.json" ]] || [[ "$probe/$first" -ef "$probe/.mcp.local.json" ]]; }; then
+      printf '%s\0' "$path"; continue
+    fi
+    [[ "$path" == */* ]] || continue
+    second="${path#*/}"; second="$first/${second%%/*}"
+    if [[ -e "$probe/$second" ]] && { [[ "$probe/$second" -ef "$probe/config/.local" ]] \
+        || [[ "$probe/$second" -ef "$probe/.claude/settings.local.json" ]]; }; then
+      printf '%s\0' "$path"
+    fi
+  done < <(root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only --no-renames -z "$base")
+  rm -rf "$probe"
 }
 # Headless sessions (record marker `headless`, written at clone time) never
 # let broker git read the session's own .git: it runs on a launcher-owned git
@@ -156,6 +195,9 @@ create() {
     # info/, and user hooks or config must not reach the trusted dir.
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git init -q --bare --template= "$dir/trusted.git"
     mkdir -p "$dir/trusted.git/info"
+    # Match the clone's filesystem view (git sets these per volume at clone).
+    git --git-dir="$dir/trusted.git" config core.ignorecase "$(git -C "$root" config --bool core.ignorecase || echo false)"
+    git --git-dir="$dir/trusted.git" config core.precomposeunicode "$(git -C "$root" config --bool core.precomposeunicode || echo false)"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" fetch -q --no-tags "$root" "+HEAD:refs/heads/base"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" read-tree "$sha"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" update-index -q --refresh >/dev/null 2>&1 || true
@@ -432,7 +474,7 @@ submit() {
     # paths are only unstaged back to HEAD; committed ones refuse instead of
     # being silently dropped. A headless index is reset to the base there.
     local touched
-    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${EXCLUDED_ICASE[@]}")"
+    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${EXCLUDED_ICASE[@]}"; excluded_aliases "$root" "$base" | tr '\0' '\n')"
     [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
   fi
   root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"
