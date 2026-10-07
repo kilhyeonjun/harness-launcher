@@ -326,12 +326,43 @@ legacy routes do not change.
   not a deletion. Each stops the close before anything is pushed.
   Without global config, global excludes (for example a global `.DS_Store`
   ignore) do not apply; the repository `.gitignore` does. A marker without
-  its `trusted.git` refuses (exit 6, status `refused`). A changed session goes
+  its `trusted.git` refuses (exit 6, status `refused`), and so does a source
+  checkout that has moved or been deleted (exit 8, status `refused`; the
+  session is kept). A changed session goes
   to `ABANDONED`, a clean one to `CLOSED`. A changed session is recovered and
   closed through the broker. A journal still `INTEGRATING` after close is
   recovered once. `DELIVERED` gives `delivered` with the `delivered-sha`
-  readback commit; close exit 3 or 5 gives `conflict` (session kept);
-  anything else is `failed`.
+  readback commit; close exit 3 or 5 gives `conflict` (session kept); exit 9,
+  the repository verifier rejected the candidate, gives `failed` (session
+  kept); anything else is `failed`.
+- **Verifier sandbox.** The repository verifier (`core/bin/auto-deliver.sh`
+  from the trusted baseline, run `--staged-only --dry-run --no-push`) runs the
+  candidate's tests, which the agent may have written. For headless sessions
+  the broker runs it under `/usr/bin/sandbox-exec` with a generated Seatbelt
+  profile, on a throwaway copy of the candidate that the broker deletes and
+  never reads back; the broker commits and pushes from the candidate itself
+  (no hooks, fsmonitor or external drivers), so nothing a test writes into
+  the copy's `.git` or work tree runs or is delivered. The profile allows:
+  no network at all, except unix sockets inside the verifier's temp dir (no
+  loopback services, no Docker socket); writes only to the copy, a fresh
+  per-verify temp dir outside `HOME` (`TMPDIR` under `/private/tmp`, removed
+  afterwards), `/dev/null`, `/dev/tty` and `/dev/fd`; no reads of anything
+  under `HOME` or the state home except the copy, the temp dir, the trusted
+  verifier and toolchains (`PATH` entries under `HOME`, mise's installs,
+  cache and `~/.config/mise/config.toml`), and never `~/.ssh`, `~/.hermes`,
+  `~/buzz`, `~/.config/gh`, `~/.aws`, `~/.claude`, `~/Library/Keychains`,
+  `~/.git-credentials`, `~/.netrc`, `~/.config/git` or the source checkout.
+  User git config is not readable; the verifier gets a generated global git
+  config (`GIT_CONFIG_GLOBAL`, identity only), and neither the copy nor the
+  trusted clone keeps a remote, so no remote URL with credentials is
+  readable. No mach services
+  except user and group lookup and logging (so no keychain, launchd job
+  submission, LaunchServices `open`, XPC services or AppleEvents); signals
+  and process inspection only within the sandbox. A nested `sandbox-exec`
+  fails. The environment is `HOME`, `PATH`, `LANG`, `LC_*`, `TMPDIR` and the
+  verifier's own switches plus `GIT_CONFIG_GLOBAL`; agent sockets, askpass
+  helpers, `GH_*`, `GITHUB_*`, `ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*` and
+  tokens are not passed. Interactive sessions run the verifier as before.
 - **Result.** Written atomically (temp file and rename) to `R`, always with
   `"version": 1`:
   `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.
@@ -339,7 +370,9 @@ legacy routes do not change.
   Claude errors, a missing Claude result, signals and delivery failures.
   `refused` (`exit_code` 2 before launch) means the run could not start
   without input or broke containment: an unknown profile, a host
-  without `/usr/bin/lockf` (delivery could never lock), an empty or
+  without `/usr/bin/lockf` (delivery could never lock), a host without
+  `/usr/bin/sandbox-exec` or where the verifier profile does not load (checked
+  with `harness-session sandbox-check`), an empty or
   unreadable prompt, a non-positive budget or timeout, a settings key outside
   the allowed set, a refused headless clone, or a headless record without its
   trusted git dir.

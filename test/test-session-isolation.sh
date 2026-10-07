@@ -678,3 +678,63 @@ if hdiutil create -quiet -size 64m -fs 'Case-sensitive APFS' -type SPARSE -volna
 else
   echo 'SKIP: no case-sensitive APFS image (hdiutil unavailable)'
 fi
+
+# Headless verifiers run in a sandbox with a minimal environment; the
+# interactive verifier is unchanged.
+git clone -q "$REMOTE" "$TMP/vfix"
+cat >> "$TMP/vfix/core/bin/auto-deliver.sh" <<'EOF'
+if [[ -e verifier-env-probe ]]; then
+  env | sed 's/^/VERIFIER-ENV /'
+  if ( : > "$HOME/verifier-wrote-home" ) 2>/dev/null; then echo VERIFIER-WROTE-HOME; fi
+fi
+EOF
+git -C "$TMP/vfix" -c user.name=t -c user.email=t@example.invalid commit -qam verifier-env-probe
+git -C "$TMP/vfix" push -q origin HEAD:main
+VHOME="$TMP/vhome"; mkdir -p "$VHOME"
+for mode in headless interactive; do
+  if [[ "$mode" == headless ]]; then out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"; else out="$(create)"; fi
+  v_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; v_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+  printf '%s\n' "$mode" > "$v_root/verifier-env-probe"
+  if [[ "$mode" == headless ]]; then
+    HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$v_id"
+    HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$v_id" >/dev/null
+  fi
+  rm -f "$VHOME/verifier-wrote-home"
+  HOME="$VHOME" SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=leak-gh GITHUB_TOKEN=leak-github NPM_TOKEN=leak-npm LANG=en_US.UTF-8 \
+    GIT_ASKPASS=/tmp/askpass HOMEBREW_GITHUB_API_TOKEN=leak-brew ANTHROPIC_API_KEY=leak-anthropic OPENAI_API_KEY=leak-openai \
+    CLAUDE_CODE_OAUTH_TOKEN=leak-claude \
+    HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$v_id" > "$TMP/venv-$mode.out" || { echo "FAIL: $mode verifier-env close"; exit 1; }
+  grep -qx state=DELIVERED "$STATE/sessions/$v_id/journal" || { echo "FAIL: $mode verifier-env session must be delivered"; exit 1; }
+  if [[ "$mode" == headless ]]; then
+    keys="$(sed -n 's/^VERIFIER-ENV \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$TMP/venv-$mode.out" | sort -u | tr '\n' ' ')"
+    for key in $keys; do
+      case "$key" in
+        HOME|PATH|LANG|LC_*|TMPDIR|GIT_CONFIG_GLOBAL|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
+        *) echo "FAIL: the headless verifier environment carries $key"; exit 1 ;;
+      esac
+    done
+    grep -qx 'VERIFIER-ENV LANG=en_US.UTF-8' "$TMP/venv-$mode.out" || { echo 'FAIL: the headless verifier keeps LANG'; exit 1; }
+    v_tmp="$(sed -n 's/^VERIFIER-ENV TMPDIR=//p' "$TMP/venv-$mode.out")"
+    [[ "$v_tmp" == */verifier-tmp.* && ! -e "$v_tmp" ]] || { echo "FAIL: the headless verifier needs its own removed temp dir (got '$v_tmp')"; exit 1; }
+    ! grep -q VERIFIER-WROTE-HOME "$TMP/venv-$mode.out" && [[ ! -e "$VHOME/verifier-wrote-home" ]] || { echo 'FAIL: the headless verifier wrote to HOME'; exit 1; }
+  else
+    grep -qx 'VERIFIER-ENV GH_TOKEN=leak-gh' "$TMP/venv-$mode.out" && grep -q VERIFIER-WROTE-HOME "$TMP/venv-$mode.out" \
+      || { echo 'FAIL: the interactive verifier must run as before'; exit 1; }
+  fi
+done
+echo 'PASS: headless verifiers run sandboxed with a minimal environment; interactive verifiers are unchanged'
+
+# A moved source checkout has its own exit code and keeps the session.
+out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"
+ms_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ms_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'moved\n' > "$ms_root/moved.txt"
+mv "$SOURCE" "$SOURCE.moved"
+rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$ms_id" 2>/dev/null || rc=$?
+exit_rc="$rc"; exit_state="$(sed -n 's/^state=//p' "$STATE/sessions/$ms_id/journal")"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$ms_id" >/dev/null
+rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ms_id" 2>"$TMP/moved.err" || rc=$?
+mv "$SOURCE.moved" "$SOURCE"
+[[ "$exit_rc" == 8 && "$exit_state" == ABANDONED ]] || { echo "FAIL: exit with a moved source must keep the work and exit 8 (got $exit_rc, $exit_state)"; exit 1; }
+[[ "$rc" == 8 ]] && grep -q 'source checkout' "$TMP/moved.err" || { echo "FAIL: close with a moved source must exit 8 and say so (got $rc)"; exit 1; }
+grep -qx state=OPEN "$STATE/sessions/$ms_id/journal" || { echo 'FAIL: a session whose source moved must stay open'; exit 1; }
+echo 'PASS: a moved source checkout exits 8 and keeps the session'

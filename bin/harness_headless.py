@@ -36,6 +36,8 @@ EDIT_TOOLS = ('Edit', 'Write', 'NotebookEdit')
 # Broker integration and session GC serialize on this macOS lock tool and fail
 # closed without it.
 LOCKF = '/usr/bin/lockf'
+# The broker runs the repository verifier (candidate tests) under Seatbelt.
+SANDBOX_EXEC = '/usr/bin/sandbox-exec'
 SUMMARY_MAX = 3000
 EXIT_TIMEOUT = 124
 EXIT_REFUSED = 2
@@ -249,6 +251,10 @@ def kill_lingering(*roots):
 
 
 NO_TRUSTED_GIT = 'headless session record has no trusted git directory; delivery refused, session kept'
+SOURCE_MISSING = ('the source checkout this session was cloned from could not be found (moved or deleted); '
+                  'delivery refused, session kept')
+VERIFIER_REJECTED = ('the repository verifier rejected the session; it runs sandboxed (no network but '
+                     'loopback, no credentials, writes only to its candidate); see the run log; session kept')
 
 
 def deliver(sid, state, env, cwd, log):
@@ -281,9 +287,25 @@ def deliver(sid, state, env, cwd, log):
         return 'no_changes', None, None
     if rc == 6:
         return 'refused', None, NO_TRUSTED_GIT
+    if rc == 8:
+        return 'refused', None, SOURCE_MISSING
+    if rc == 9:
+        return 'failed', None, VERIFIER_REJECTED
     if rc in (3, 5):
         return 'conflict', None, None
     return 'failed', None, None
+
+
+def sandbox_preflight():
+    """Refuse before launch unless the verifier sandbox profile loads here."""
+    if not os.access(SANDBOX_EXEC, os.X_OK):
+        raise Refused(f'{SANDBOX_EXEC} is required to sandbox the repository verifier and is unavailable')
+    env = {'HOME': os.environ.get('HOME', ''), 'PATH': '/usr/bin:/bin', 'TMPDIR': tempfile.gettempdir()}
+    check = subprocess.run([str(BIN / 'session-isolation.sh'), 'sandbox-check', SANDBOX_EXEC], env=env,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if check.returncode != 0:
+        detail = check.stderr.strip()[-300:]
+        raise Refused(f'the repository verifier sandbox profile failed to load ({SANDBOX_EXEC}): {detail}')
 
 
 def run(args, result, run_tmp):
@@ -291,6 +313,7 @@ def run(args, result, run_tmp):
     if not os.access(LOCKF, os.X_OK):
         # Delivery could never succeed; do not spend the budget first.
         raise Refused(f'{LOCKF} is required for session delivery and is unavailable')
+    sandbox_preflight()
     try:
         prompt = Path(args.prompt_file).read_text()
     except OSError as exc:
@@ -376,7 +399,7 @@ def run(args, result, run_tmp):
             result['status'] = 'failed'
             result['summary'] = 'isolated session id was not announced by the launcher'
         else:
-            result['status'], result['commit'], reason = deliver(sid, state, broker_env(env), hdir, log)
+            result['status'], result['commit'], reason = deliver(sid, state, broker_env(env), str(state), log)
             if reason:
                 result['summary'] = reason
 
