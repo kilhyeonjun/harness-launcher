@@ -72,6 +72,17 @@ mode="\$(cat "$TMP/mode")"
 sid=11111111-2222-4333-8444-555555555555
 ok='{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.12,"num_turns":3,"result":"done: summary","session_id":"'\$sid'"}'
 case "\$mode" in
+  message)
+    printf 'message %s\n' "\$\$" > message-change.txt
+    bash "$TMP/write-message.sh" "\$HARNESS_COMMIT_MESSAGE_FILE"
+    echo "\$ok" ;;
+  nonemessage)
+    bash "$TMP/write-message.sh" "\$HARNESS_COMMIT_MESSAGE_FILE"
+    echo "\$ok" ;;
+  failmessage)
+    printf 'failmessage %s\n' "\$\$" > failmessage-change.txt
+    bash "$TMP/write-message.sh" "\$HARNESS_COMMIT_MESSAGE_FILE"
+    echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom","session_id":"'\$sid'"}'; exit 1 ;;
   change)
     printf 'headless %s\n' "\$\$" > headless-change.txt
     project="\$HOME/.claude/projects/\$(printf '%s' "\$PWD" | sed 's/[^A-Za-z0-9]/-/g')"
@@ -219,8 +230,30 @@ session_root="$STATE/worktrees/$sid"
 [[ "$(cat "$TMP/claude-pwd")" == "$session_root" ]] || fail "claude must run in the session root, got $(cat "$TMP/claude-pwd")"
 [[ "$(field transcript)" == "$FAKE_HOME/.claude/projects/"*"/11111111-2222-4333-8444-555555555555.jsonl" ]] || fail 'transcript path must be reported'
 [[ ! -L "$session_root/projects" && ! -L "$session_root/.claude/settings.local.json" && ! -L "$session_root/mcp.local.json" ]] || fail 'headless session must not link back to the source'
-[[ "$(cat "$TMP/claude-stdin")" == 'Fix the typo.' ]] || fail 'the prompt must reach claude on stdin'
+cat > "$TMP/expected-stdin" <<'EOF'
+Fix the typo.
+
+---
+Delivery note from the launcher: when you finish, the launcher commits your changes to the repository as one commit. Your own git commits are not kept as commits. Write the message for that commit with Bash to the file named by $HARNESS_COMMIT_MESSAGE_FILE: a subject line of at most 72 characters, a blank line, then the body. Follow the repository's commit conventions. If you do not write it, a generic message is used.
+EOF
+[[ "$(cat "$TMP/claude-stdin")" == "$(cat "$TMP/expected-stdin")" ]] || fail 'the prompt and then the delivery note must reach claude on stdin'
+[[ "$(git --git-dir="$REMOTE" log -1 --format=%B main)" == "harness session $sid" ]] || fail 'no message file must give the generic commit message'
+grep -q '^harness-headless: commit message: generic' "$RESULT.log" || fail 'the run log must name the generic message source'
 run_tmp="$(sed -n 's/^CLAUDE_CODE_TMPDIR=//p' "$TMP/claude-env")"
+grep -qx "HARNESS_COMMIT_MESSAGE_FILE=$run_tmp/commit-message" "$TMP/claude-env" || fail 'claude must be told where to write the commit message'
+# The message file is in the sandbox's writable temp base; the session record
+# that keeps the launcher's copy is outside every path the agent may write.
+record="$STATE/sessions/$sid"
+python3 - "$TMP/claude-argv" "$record" "$session_root" "$run_tmp" <<'PY' || fail 'the session record must not be writable from the agent sandbox'
+import json, sys
+argv = open(sys.argv[1]).read().split('\0')[:-1]
+record, root, tmp = sys.argv[2:]
+fs = json.loads(argv[argv.index('--settings') + 1])['sandbox']['filesystem']
+writable = [root] + fs['allowWrite']
+inside = lambda path, base: path == base or path.startswith(base.rstrip('/') + '/')
+assert inside(tmp + '/commit-message', tmp) and tmp in fs['allowWrite'], fs
+assert not any(inside(record, w) or inside(w, record) for w in writable), (record, writable)
+PY
 [[ "$run_tmp" == /private/tmp/hh-* && "$run_tmp" != /private/tmp/claude-* ]] || fail "claude must get a private short temp base, got '$run_tmp'"
 grep -qx "TMPDIR=$run_tmp" "$TMP/claude-env" || fail 'TMPDIR must be the same private temp base'
 [[ "$(cat "$TMP/claude-tmpdir-stat")" == "700 $(id -u)" ]] || fail 'the temp base must be 0700 and owned by the user'
@@ -298,6 +331,91 @@ expect_status no_changes
 grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail 'clean session must close'
 [[ "$(field commit)" == null ]] || fail 'no_changes has no commit'
 echo 'PASS: harness-headless reports no_changes for a clean session'
+
+# --- the agent's commit message file becomes the delivered commit message ---------
+# write-message.sh <path> writes the agent's message: CRLF, an ESC colour
+# sequence, trailing blanks, surrounding blank lines and a forged trailer, all
+# normalized away. The fallback cases are unit tests below.
+cat > "$TMP/write-message.sh" <<'EOF'
+#!/bin/bash
+printf '\r\n\r\nfeat: agent subject  \r\n\r\nBody with \033[31mred\033[0m text.\t\r\nharness-session: forged\r\nSecond line.\r\n\r\n' > "$1"
+EOF
+echo message > "$TMP/mode"
+headless || fail 'message run must exit 0'
+expect_status delivered
+msid="$(field session_id)"
+body="$(git --git-dir="$REMOTE" log -1 --format=%B main)"
+expected="$(printf 'feat: agent subject\n\nBody with [31mred[0m text.\nSecond line.\n\nHarness-Session: %s' "$msid")"
+[[ "$body" == "$expected" ]] || fail "the agent message must be delivered sanitized with one trailer, got: $(printf '%q' "$body")"
+[[ "$(stat -f '%Lp' "$STATE/sessions/$msid/commit-message")" == 600 ]] || fail 'the record copy of the message must be 0600'
+grep -q '^harness-headless: commit message: agent' "$RESULT.log" || fail 'the run log must name the agent message source'
+# A run that is not delivered never puts the agent's message in the record:
+# an operator who later resumes and closes the session gets the generic one.
+echo failmessage > "$TMP/mode"
+headless || fail 'failed message run must exit 0'
+expect_status failed
+[[ ! -e "$STATE/sessions/$(field session_id)/commit-message" ]] || fail 'a failed run must not record the agent message'
+echo nonemessage > "$TMP/mode"
+headless || fail 'no-changes message run must exit 0'
+expect_status no_changes
+grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" && [[ ! -e "$STATE/sessions/$(field session_id)/commit-message" ]] \
+  || fail 'a no-changes run must leave a CLOSED record without the agent message'
+python3 - "$ROOT/bin" <<'PY' || fail 'agent_commit_message unit cases'
+import os, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+import harness_headless as h
+def read(content=None, setup=None):
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, 'commit-message')
+    if content is not None:
+        open(path, 'wb').write(content if isinstance(content, bytes) else content.encode())
+    if setup:
+        setup(d, path)
+    return h.agent_commit_message(d)
+def fallback(name, **kw):
+    message, reason = read(**kw)
+    assert message is None and reason, (name, message, reason)
+def valid(content, expected):
+    message, reason = read(content)
+    assert message == expected and reason is None, (content, message, reason)
+fallback('missing')
+fallback('symlink', setup=lambda d, p: (open(d + '/t', 'w').write('feat: x\n'), os.symlink(d + '/t', p)))
+fallback('fifo', setup=lambda d, p: os.mkfifo(p))
+fallback('oversized', content='feat: big\n\n' + 'a' * 8200)
+fallback('utf8', content=b'feat: bad \xff\xfe bytes\n')
+fallback('empty', content=' \n\t\n\n')
+fallback('long', content='x' * 101 + '\n')
+fallback('lines', content='feat: many\n\n' + '\n'.join(str(i) for i in range(199)) + '\n')
+fallback('hardlink', setup=lambda d, p: (open(d + '/t', 'w').write('feat: x\n'), os.link(d + '/t', p)))
+fallback('only a ci token', content='[skip ci]\n')
+valid('x' * 100 + '\n', 'x' * 100 + '\n')
+valid('feat: lines\n\n' + '\n'.join(str(i) for i in range(198)) + '\n', 'feat: lines\n\n' + '\n'.join(str(i) for i in range(198)) + '\n')
+# CI-skip directives are removed wherever they are; GitHub keywords pass.
+valid('fix: thing [skip ci]\n\nbody [CI Skip] [ no ci ] [skip actions] [Actions Skip]\nx [skip [skip ci]ci] y\n'
+      'Skip-Checks: true\n  skip-checks : yes\nFixes #12\n',
+      'fix: thing\n\nbody\nx  y\nFixes #12\n')
+# Format (Cf) characters, C0/C1 controls; trailer variants.
+valid('feat: a\u200bb\u202ec\u2066d\x9b31m\n\n  Harness-Session : x\nHARNESS-SESSION:y\n\u200bHarness-Session: z\nNot-Harness-Session: k\n',
+      'feat: abcd31m\n\nNot-Harness-Session: k\n')
+# The validator's input space, one case per class.
+fallback('directory', setup=lambda d, p: os.mkdir(p))
+fallback('encoded lone surrogate', content=b'feat: \xed\xa0\x80\n')
+fallback('overlong UTF-8', content=b'feat: \xc0\xaf\n')
+fallback('only controls and format characters', content='\x00\x1b\x7f\x9b​‮\n')
+fallback('over 200 lines through U+2028', content='feat: s\n\n' + ' '.join('x' * 199) + '\n')
+valid('feat: n\x00u\x1b[2Jl\x7fl\x85\x9b\n', 'feat: nu[2Jll\n')
+valid('\x1b​\n 　\nfeat: real subject\n', 'feat: real subject\n')
+valid('feat: s second third\n', 'feat: s\nsecond\nthird\n')
+valid('feat: s\n\n' + '\n'.join([
+    'Harness-Session: a', 'harness-session:b', '  HARNESS-SESSION : c', '\tHarness-Session\t:d',
+    'Harness-Session： e', 'Harness Session: f', 'Harness_Session: g', 'Harness‐Session: h',
+    'Ｈａｒｎｅｓｓ-Ｓｅｓｓｉｏｎ: i',
+    'Harness-Session﹕ j', 'Harness-Session∶ k', 'Harness​-Session: l', 'Skip-Checks： true',
+    'Harness-Sessions: kept']) + '\n', 'feat: s\n\nHarness-Sessions: kept\n')
+valid('feat: s [SKIP CI] [Skip Actions][ci  skip]\n', 'feat: s\n')
+valid('[skip ci] feat: lead\n\n[no ci]  body\n', 'feat: lead\n\nbody\n')
+PY
+echo 'PASS: harness-headless delivers a sanitized agent commit message and falls back safely'
 
 # --- committed work, session git payloads, excluded paths, lingering processes ------
 echo commit > "$TMP/mode"
@@ -701,8 +819,10 @@ import harness_headless as h
 state, sid = Path(sys.argv[2]), sys.argv[3]
 subprocess.run([str(h.BIN / 'session-isolation.sh'), 'exit', sid], env=os.environ, stderr=subprocess.DEVNULL)
 with open(os.devnull, 'w') as log:
-    status, commit, reason = h.deliver(sid, state, dict(os.environ), str(state), log)
+    status, commit, reason = h.deliver(sid, state, dict(os.environ), str(state), log, 'feat: moved\n')
 assert status == 'refused' and commit is None and 'source checkout' in (reason or ''), (status, reason)
+# Recorded for close, then removed: only a delivered session keeps it.
+assert not (state / 'sessions' / sid / 'commit-message').exists(), 'a refused delivery must not keep the agent message'
 PY
 mv "$SOURCE.moved" "$SOURCE"
 [[ "$moved_rc" == 0 ]] || fail 'a moved source checkout must be refused with its own reason'

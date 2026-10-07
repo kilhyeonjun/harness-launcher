@@ -199,12 +199,50 @@ before resume and holds it for the complete runtime; its close-on-exec descripto
 prevents runtime, heartbeat, and title-broker children from extending ownership.
 `OPEN` can resume only while that launcher lease is held. `ABANDONED`,
 `CONFLICT`, and retained `CLOSED` records reopen the same UUID; `SUBMITTED` and
-`INTEGRATING` require delivery recovery; `DELIVERED` is permanently terminal.
+`INTEGRATING` require delivery recovery; `DELIVERED` and `DISCARDED` are
+permanently terminal (`resume` and `recover` refuse them).
+
+`harness-session discard <uuid>` retires an `ABANDONED` or `CONFLICT` session
+whose work will not be delivered (for example, work another session already
+delivered). It runs under the global integration lock and takes the session's
+runtime lease without waiting, as garbage collection does; a held lease
+refuses. Before any state change it writes `discarded.patch` into the record:
+the binary diff of the work tree against `base-sha`, staged through a
+temporary copy of the index that submit would stage (the session's own index
+for interactive sessions, the `trusted.git` index for headless ones) with the
+session's broker git, plus `discarded-at` (UTC). The patch holds the work
+tree's tracked content as that index tracks it plus untracked, non-ignored
+files: force-added ignored files stay, files removed with `git rm --cached`
+and now ignored stay deleted, and other gitignored files and the excluded
+machine-local paths are left out. Neither the session index nor a headless
+session's `.git` is written. The diff format is fixed (`--no-color
+--no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/`), so user diff
+settings cannot change the patch. Completeness rests on the exit status of
+every step (index copy, `add`, `diff`) and on the rename that publishes the
+patch only after git wrote it; the patch, `discarded-at` and the record
+directory are flushed with `F_FULLFSYNC` (plain `fsync` where that fails, which
+does not flush the drive cache) before the journal changes. Any failure, or an
+interrupt (the discard's temporary files are removed), refuses and leaves
+the journal unchanged; an interrupt after the patch was published can leave
+`discarded.patch` and `discarded-at` in the `ABANDONED` or `CONFLICT`
+record, which the next `discard` or reopen replaces. Only then does the
+journal become `DISCARDED`, keeping the
+identity a `CONFLICT` carried. `DISCARDED` is reachable only through
+`discard`: `harness-session transition <uuid> DISCARDED` refuses, and every
+reopen to `OPEN` removes a leftover `discarded.patch` and `discarded-at`.
+`OPEN` (use `exit` or `close`), `SUBMITTED` and `INTEGRATING` (possibly
+indeterminate; use `recover`), `CLOSED`, `DELIVERED` and `DISCARDED` refuse
+with exit 2.
+
+State transitions: `OPEN` → `SUBMITTED` | `CLOSED` | `ABANDONED`;
+`SUBMITTED` ⇄ `INTEGRATING`; `INTEGRATING` → `DELIVERED` | `CONFLICT`;
+`ABANDONED`, `CONFLICT`, `CLOSED` → `OPEN`; `ABANDONED`, `CONFLICT` →
+`DISCARDED`.
 
 Serialized garbage collection retains nonterminal, malformed, legacy, future-
-dated, leased, and within-grace records. For an expired `CLOSED` or `DELIVERED`
-record, it rereads state while holding the runtime lease, validates that the
-workspace is the canonical state directory's exact direct child, renames it to
+dated, leased, and within-grace records. For an expired `CLOSED`, `DELIVERED`
+or `DISCARDED` record (`DISCARDED` only with its `discarded.patch`), it
+rereads state while holding the runtime lease, validates that the workspace is the canonical state directory's exact direct child, renames it to
 a same-parent tombstone, and removes only that tombstone. The durable journal is
 retained. The default grace is 24 hours and the accepted range is 0–7 days.
 
@@ -243,7 +281,8 @@ legacy routes do not change.
   `LC_*` pass through, plus `HARNESS_SESSION_STATE_HOME` and
   `XDG_STATE_HOME` so the launcher finds the same session state. It adds
   `HARNESS_HEADLESS=1`, `HARNESS_PYTHON_BIN` (the resolved interpreter),
-  `GIT_TERMINAL_PROMPT=0`, and `TMPDIR` and `CLAUDE_CODE_TMPDIR` both set to a
+  `GIT_TERMINAL_PROMPT=0`, `HARNESS_COMMIT_MESSAGE_FILE` (see **Commit
+  message**), and `TMPDIR` and `CLAUDE_CODE_TMPDIR` both set to a
   fresh `/private/tmp/hh-*` directory (0700, owned by the user, short enough
   for Claude's per-uid socket directory), so the shared
   `/private/tmp/claude-<uid>` can stay write-denied. That directory is
@@ -285,6 +324,48 @@ legacy routes do not change.
   - `S` may contain only `_note`, `permissions.deny`,
     `sandbox.filesystem.denyRead` and `sandbox.network.allowedDomains` (string
     lists, added to the mandatory ones). Any other key is `refused`.
+- **Commit message.** The broker delivers the work tree as one commit; the
+  agent's own commits are not kept as commits. `harness-headless` appends a
+  delivery note to the prompt asking the agent to write that commit's message
+  to `$HARNESS_COMMIT_MESSAGE_FILE`, `<run temp dir>/commit-message`, which
+  the sandbox lets Bash write. After Claude exits and lingering processes are
+  killed, and before the temp directory is removed, it reads the file without
+  following a symlink or blocking (`O_NOFOLLOW|O_NONBLOCK`), only if it is a
+  regular file with a single link, of at most 8192 bytes of strict UTF-8. It
+  turns CRLF, CR, U+2028 and U+2029 into LF, removes every other control
+  character (C0, C1, DEL; NUL and ESC included) except TAB
+  (so ESC and terminal sequences cannot reach a terminal that shows `git
+  log`) and every Unicode format character (bidi overrides, zero-width), removes
+  CI-skip directives (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`,
+  `[actions skip]`, case-insensitive) so the
+  delivered commit cannot switch off the repository's checks, strips trailing
+  whitespace, drops leading and trailing blank lines and any trailer line whose
+  key is `Harness-Session` or `skip-checks` when compared loosely (NFKC, so
+  full-width letters and colons fold; case-insensitive; spaces, hyphens and
+  underscores in the key ignored; leading whitespace allowed). Other trailers and
+  GitHub keywords such as `Fixes #12` pass through unchanged. The message is
+  used only if the subject is non-empty and at most 100 characters and there
+  are at most 200 lines. It is written atomically (0600) to the
+  launcher-owned record, `<record>/commit-message`, which the agent sandbox
+  cannot write, only after the broker has found the session `ABANDONED` with
+  changes and recovered it, right before `close`. Every outcome other than
+  `delivered` leaves no `commit-message` in the record (timeout, budget,
+  failed, refused, `no_changes`, `conflict`, and refusals or failures inside
+  delivery remove or never write it; only a SIGKILL of `harness-headless`
+  during `close` can leave it behind), so a session resumed and closed later
+  by its owner gets the generic message. A
+  `printf` or `echo` command whose text trips a Bash deny rule (it contains
+  `harness-session`, `git push` or another denied word) is refused by the
+  sandbox, so such a message is never written and the generic one is used.
+  The broker commits with that message, a blank line and `Harness-Session:
+  <uuid>` (`git commit --cleanup=whitespace -F`, same `harness-broker`
+  identity) when the record holds a regular, non-symlink `commit-message`, in
+  headless and interactive sessions alike; otherwise with `harness session
+  <uuid>`. Anything else (no file, a symlink, a FIFO, too large, invalid
+  UTF-8, an invalid subject, an I/O error) falls back to the generic message.
+  For a delivery, the run log names the source used (`harness-headless: commit message:
+  agent` or `generic (<reason>)`); the result file does not change. The
+  agent's `.git` is never read for this.
 - **Timeout.** After `M` minutes (fractions allowed) the whole process group
   gets `SIGTERM`, then `SIGKILL`. Status `timeout`, `exit_code` 124. The
   session is left for its owner.

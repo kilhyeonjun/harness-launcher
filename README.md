@@ -184,13 +184,16 @@ apply, verifier, bounded remote retry, or verified readback mismatch becomes
 durable `CONFLICT`; a post-push readback outage remains `INTEGRATING` until
 recovery proves whether the pending commit reached remote history.
 `harness-session recover <uuid>` reconciles an indeterminate integration or
-reopens the same workspace for repair.
+reopens the same workspace for repair. `harness-session discard <uuid>` retires
+an `ABANDONED` or `CONFLICT` session whose work will not be delivered: it keeps
+the work as `discarded.patch` in the session record, then marks it terminal
+`DISCARDED`.
 
 Only one launcher may own a UUID at a time. A kernel lease covers the complete
 runtime and is not inherited by Claude, Codex, heartbeat, or title-broker child
 processes. `CLOSED` workspaces remain resumable for 24 hours by default;
-launcher startup garbage collection retires expired `CLOSED` or `DELIVERED`
-roots only after acquiring that lease. Journals remain for audit. Set
+launcher startup garbage collection retires expired `CLOSED`, `DELIVERED` or
+`DISCARDED` roots only after acquiring that lease. Journals remain for audit. Set
 `HARNESS_SESSION_RETENTION_SECONDS` to a validated value from `0` through
 `604800`; `0` makes a terminal root eligible on the next collection.
 

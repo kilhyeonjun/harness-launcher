@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ISOLATION="$ROOT/bin/session-isolation.sh"
 TMP="$(mktemp -d)"
-trap '[[ ! -d "$TMP/csmnt" ]] || hdiutil detach -quiet -force "$TMP/csmnt" 2>/dev/null; rm -rf "$TMP"' EXIT
+trap '[[ ! -d "$TMP/csmnt" ]] || hdiutil detach -quiet -force "$TMP/csmnt" 2>/dev/null; chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 SOURCE="$TMP/source"
 STATE="$TMP/state"
@@ -738,3 +738,120 @@ mv "$SOURCE.moved" "$SOURCE"
 [[ "$rc" == 8 ]] && grep -q 'source checkout' "$TMP/moved.err" || { echo "FAIL: close with a moved source must exit 8 and say so (got $rc)"; exit 1; }
 grep -qx state=OPEN "$STATE/sessions/$ms_id/journal" || { echo 'FAIL: a session whose source moved must stay open'; exit 1; }
 echo 'PASS: a moved source checkout exits 8 and keeps the session'
+
+# discard: an ABANDONED or CONFLICT session is retired to DISCARDED, its work
+# kept first as a binary patch against its base.
+iso() { HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" "$@"; }
+jfield() { sed -n "s/^$2=//p" "$STATE/sessions/$1/journal"; }
+git -C "$SOURCE" fetch -q origin main:refs/remotes/origin/main
+# expect_discard_refused <id> <state> <message part> [lines]: exit 2, a
+# one-line refusal (state refusals; I/O failures may add the tool's own error
+# line before it), nothing changed.
+expect_discard_refused() {
+  local rc=0
+  iso discard "$1" 2>"$TMP/discard.err" || rc=$?
+  [[ "$rc" == 2 && "$(wc -l < "$TMP/discard.err" | tr -d ' ')" == "${4:-1}" ]] && grep -q -- "$3" "$TMP/discard.err" \
+    || { cat "$TMP/discard.err"; echo "FAIL: discard of $2 must refuse with exit 2 and one line naming '$3' (rc=$rc)"; exit 1; }
+  [[ "$(jfield "$1" state)" == "$2" ]] || { echo "FAIL: a refused discard changed $2"; exit 1; }
+}
+for mode in headless interactive; do
+  if [[ "$mode" == headless ]]; then headless_session; d_id="$hs_id"; d_root="$hs_root"
+  else out="$(create)"; d_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; d_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"; fi
+  # Modified, deleted, committed, untracked text and binary files, a mode
+  # change and a symlink.
+  printf 'discarded edit\n' >> "$d_root/merge.txt"; rm "$d_root/rename-new.txt"
+  printf 'committed\n' > "$d_root/discard-committed.txt"
+  git -C "$d_root" add discard-committed.txt && git -C "$d_root" -c user.name=t -c user.email=t@example.invalid commit -qm agent
+  printf 'untracked\n' > "$d_root/discard-untracked.txt"; printf '\000\001\002binary' > "$d_root/discard.bin"
+  chmod +x "$d_root/merge.txt"; ln -s merge.txt "$d_root/discard-link"
+  iso exit "$d_id" || :
+  [[ "$(jfield "$d_id" state)" == ABANDONED ]] || { echo "FAIL: $mode discard fixture must be ABANDONED"; exit 1; }
+  d_index="$STATE/sessions/$d_id/trusted.git/index"; [[ "$mode" == headless ]] || d_index="$(git -C "$d_root" rev-parse --absolute-git-dir)/index"
+  d_index_before="$(shasum "$d_index")"
+  iso discard "$d_id" || { echo "FAIL: $mode discard of ABANDONED must succeed"; exit 1; }
+  [[ "$(shasum "$d_index")" == "$d_index_before" ]] || { echo "FAIL: $mode discard must not write the session's broker index"; exit 1; }
+  d_dir="$STATE/sessions/$d_id"
+  [[ "$(jfield "$d_id" state)" == DISCARDED && -z "$(jfield "$d_id" identity)" ]] || { echo "FAIL: $mode discard must end DISCARDED"; exit 1; }
+  [[ -f "$d_dir/discarded.patch" && ! -L "$d_dir/discarded.patch" && -s "$d_dir/discarded.patch" ]] || { echo "FAIL: $mode discard must keep the patch"; exit 1; }
+  grep -Eqx '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' "$d_dir/discarded-at" || { echo "FAIL: $mode discard must record discarded-at"; exit 1; }
+  fresh="$TMP/discard-fresh-$mode"; git clone -q "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$d_dir/base-sha")"
+  git -C "$fresh" apply --check "$d_dir/discarded.patch" && git -C "$fresh" apply "$d_dir/discarded.patch" || { echo "FAIL: $mode patch must apply at base"; exit 1; }
+  for f in merge.txt discard-committed.txt discard-untracked.txt discard.bin; do
+    cmp -s "$fresh/$f" "$d_root/$f" || { echo "FAIL: $mode patch must reproduce $f"; exit 1; }
+  done
+  [[ ! -e "$fresh/rename-new.txt" ]] || { echo "FAIL: $mode patch must reproduce the deletion"; exit 1; }
+  [[ -x "$fresh/merge.txt" ]] || { echo "FAIL: $mode patch must reproduce the mode change"; exit 1; }
+  [[ -L "$fresh/discard-link" && "$(readlink "$fresh/discard-link")" == merge.txt ]] || { echo "FAIL: $mode patch must reproduce the symlink"; exit 1; }
+  grep -qx "$d_id DISCARDED" <<< "$(iso list)" || { echo "FAIL: list must show $mode DISCARDED"; exit 1; }
+  rc=0; iso resume "$SOURCE" "$d_id" 2>"$TMP/discard.err" || rc=$?
+  [[ "$rc" == 2 ]] && grep -q 'cannot resume DISCARDED session; start a fresh isolated session' "$TMP/discard.err" || { echo "FAIL: resume of DISCARDED must refuse (rc=$rc)"; exit 1; }
+  rc=0; iso recover "$d_id" 2>"$TMP/discard.err" || rc=$?
+  [[ "$rc" == 2 ]] && grep -q 'start a fresh isolated session' "$TMP/discard.err" || { echo "FAIL: recover of DISCARDED must refuse (rc=$rc)"; exit 1; }
+  expect_discard_refused "$d_id" DISCARDED DISCARDED
+  HARNESS_SESSION_RETENTION_SECONDS=0 iso gc
+  [[ ! -e "$d_root" && -f "$d_dir/journal" && -f "$d_dir/discarded.patch" ]] || { echo "FAIL: gc must retire a $mode DISCARDED work tree and keep the record"; exit 1; }
+done
+# CONFLICT keeps the identity it carried.
+out="$(create)"; c_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; c_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'conflicted\n' > "$c_root/discard-conflict.txt"; iso submit "$c_id"
+chmod u+w "$STATE/sessions/$c_id/submission.patch"; printf '\n' >> "$STATE/sessions/$c_id/submission.patch"
+iso integrate "$c_id" 2>/dev/null && { echo 'FAIL: tampered submission fixture must conflict'; exit 1; }
+c_identity="$(jfield "$c_id" identity)"
+[[ "$(jfield "$c_id" state)" == CONFLICT && "$c_identity" =~ ^[0-9a-f]{64}$ ]] || { echo 'FAIL: CONFLICT fixture must carry an identity'; exit 1; }
+iso discard "$c_id" || { echo 'FAIL: discard of CONFLICT must succeed'; exit 1; }
+[[ "$(jfield "$c_id" state)" == DISCARDED && "$(jfield "$c_id" identity)" == "$c_identity" ]] || { echo 'FAIL: discard of CONFLICT must keep its identity'; exit 1; }
+grep -q discard-conflict.txt "$STATE/sessions/$c_id/discarded.patch" || { echo 'FAIL: CONFLICT discard must keep the work'; exit 1; }
+# Refusals: OPEN, SUBMITTED, INTEGRATING, CLOSED, DELIVERED (DISCARDED above).
+out="$(create)"; r_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; r_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'refuse\n' > "$r_root/discard-refuse.txt"
+expect_discard_refused "$r_id" OPEN 'exit or close'
+iso submit "$r_id"
+expect_discard_refused "$r_id" SUBMITTED recover
+iso transition "$r_id" INTEGRATING "$(jfield "$r_id" identity)"
+expect_discard_refused "$r_id" INTEGRATING recover
+out="$(create)"; cl_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"; iso exit "$cl_id"
+expect_discard_refused "$cl_id" CLOSED CLOSED
+expect_discard_refused "$third_id" DELIVERED DELIVERED
+[[ ! -e "$STATE/sessions/$r_id/discarded.patch" && ! -e "$STATE/sessions/$cl_id/discarded.patch" ]] || { echo 'FAIL: a refused discard must not write evidence'; exit 1; }
+# Interactive evidence starts from the session's own index: a force-added
+# ignored file is kept and a `git rm --cached` file now ignored stays deleted,
+# exactly as submit would deliver them.
+out="$(create)"; ix_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ix_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'ign/\nmerge.txt\n' >> "$ix_root/.gitignore"; mkdir -p "$ix_root/ign"; printf 'forced\n' > "$ix_root/ign/x"
+git -C "$ix_root" add .gitignore && git -C "$ix_root" add -f ign/x && git -C "$ix_root" rm -q --cached merge.txt
+git -C "$ix_root" -c user.name=t -c user.email=t@example.invalid commit -qm index-only
+ix_index_before="$(shasum "$(git -C "$ix_root" rev-parse --absolute-git-dir)/index")"
+iso exit "$ix_id"; iso discard "$ix_id" || { echo 'FAIL: index-seeded discard must succeed'; exit 1; }
+[[ "$(shasum "$(git -C "$ix_root" rev-parse --absolute-git-dir)/index")" == "$ix_index_before" ]] || { echo 'FAIL: discard must not write the session index'; exit 1; }
+fresh="$TMP/discard-fresh-index"; git clone -q "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$STATE/sessions/$ix_id/base-sha")"
+git -C "$fresh" apply "$STATE/sessions/$ix_id/discarded.patch" || { echo 'FAIL: index-seeded patch must apply at base'; exit 1; }
+[[ "$(<"$fresh/ign/x")" == forced ]] || { echo 'FAIL: a force-added ignored file must be kept in the patch'; exit 1; }
+[[ ! -e "$fresh/merge.txt" ]] || { echo 'FAIL: a git rm --cached file must stay deleted in the patch'; exit 1; }
+# DISCARDED is reachable only through discard; a reopen clears stale evidence.
+out="$(create)"; m_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; m_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'm\n' > "$m_root/m.txt"; iso exit "$m_id"
+: > "$STATE/sessions/$m_id/discarded.patch"; date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/sessions/$m_id/discarded-at"
+rc=0; iso transition "$m_id" DISCARDED 2>"$TMP/discard.err" || rc=$?
+[[ "$rc" == 2 ]] && grep -q 'use harness-session discard' "$TMP/discard.err" && [[ "$(jfield "$m_id" state)" == ABANDONED ]] \
+  || { echo "FAIL: transition to DISCARDED must refuse (rc=$rc)"; exit 1; }
+iso recover "$m_id" >/dev/null
+[[ ! -e "$STATE/sessions/$m_id/discarded.patch" && ! -e "$STATE/sessions/$m_id/discarded-at" ]] || { echo 'FAIL: reopening must remove stale discard evidence'; exit 1; }
+# A held runtime lease and a patch that cannot be written refuse and change nothing.
+out="$(create)"; a_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; a_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'keep me\n' > "$a_root/discard-keep.txt"; iso exit "$a_id"
+exec 8>"$STATE/sessions/$a_id/runtime.lock"; /usr/bin/lockf -s -t 0 8
+expect_discard_refused "$a_id" ABANDONED 'in use'
+exec 8>&-
+[[ ! -e "$STATE/sessions/$a_id/discarded.patch" ]] || { echo 'FAIL: a leased discard must not write evidence'; exit 1; }
+chmod a-w "$STATE/sessions/$a_id"
+expect_discard_refused "$a_id" ABANDONED patch 2
+chmod u+w "$STATE/sessions/$a_id"
+rc=0; PATH="$FAILPATH" FAIL_GIT='--binary' iso discard "$a_id" 2>/dev/null || rc=$?
+[[ "$rc" == 2 && "$(jfield "$a_id" state)" == ABANDONED && ! -e "$STATE/sessions/$a_id/discarded.patch" && -f "$a_root/discard-keep.txt" ]] \
+  || { echo "FAIL: a failed patch write must refuse and change nothing (rc=$rc)"; exit 1; }
+# An interrupted discard (TERM while git stages) removes its temporaries.
+rc=0; PATH="$FAILPATH" AFTER_GIT=' add -A ' AFTER_CMD='kill -TERM "$(ps -o ppid= -p "$PPID")"' iso discard "$a_id" 2>/dev/null || rc=$?
+leftover="$(find "$STATE" -maxdepth 1 -name 'discard.*'; find "$STATE/sessions/$a_id" -name '.discarded.patch.*')"
+[[ "$rc" != 0 && -z "$leftover" && "$(jfield "$a_id" state)" == ABANDONED ]] || { echo "FAIL: an interrupted discard must clean up and change nothing (rc=$rc): $leftover"; exit 1; }
+iso discard "$a_id" && [[ "$(jfield "$a_id" state)" == DISCARDED ]] || { echo 'FAIL: discard must succeed once the patch can be written'; exit 1; }
+echo 'PASS: discard keeps the work as a patch, retires ABANDONED/CONFLICT to DISCARDED and refuses everything else'
