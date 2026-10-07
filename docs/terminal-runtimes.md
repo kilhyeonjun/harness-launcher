@@ -407,6 +407,14 @@ the pane, the plugin clears them. herdr keeps no pane metadata across a server
 restart, so the plugin reports every pane again at startup, and a pane again
 when an agent is detected in it.
 
+Decision. herdr's own status says `idle` both when a turn is done and when it
+ended by asking you to choose. When a Claude turn ends and its last answer marks
+a recommended option with `← 추천` (outside a code block), the plugin sets a
+`$decision` token to `결정 필요`; the next status other than `idle` (you
+answered, or the agent asks for input) or a turn that ends without the mark
+clears it. herdr's state labels accept only its own statuses, so this is a token,
+not a label.
+
 Tab labels. A tab that holds a detected agent takes that agent's session title
 as its label, cut to 20 display cells (a wide character counts as two) with a
 trailing `…`. When a tab holds several agents, the first one with a usable
@@ -451,18 +459,21 @@ rows = [
     "state_icon",
     { token = "pane", bold = true },
     { token = "state_text", fg = "#f38ba8", bold = true, rules = [{ equals = "입력 필요" }, { contains = "", hide = true }] },
+    { token = "$decision", fg = "#f9e2af", bold = true },
   ],
   [{ token = "workspace", dim = true }, { token = "agent", dim = true }, { token = "$model", dim = true }],
 ]
 ```
 
-The first row's `state_text` shows only `입력 필요`, in red. Plan usage belongs
+The first row's `state_text` shows only `입력 필요`, in red, and `$decision`
+shows `결정 필요`, in yellow. Plan usage belongs
 to the account, not a pane: put [`harness-herdr-web usage`](herdr-web-ui.md) in
 the tab bar and its `--watch` board in a popup.
 
 Notifications. When an agent goes from `working` to `idle`, or to `blocked`,
 the plugin waits one second and, if the state still holds, posts a desktop
-notification. The title is `✅ <agent> 완료` or `⏳ <agent> 입력 필요`, the subtitle
+notification. The title is `✅ <agent> 완료`, `🔘 <agent> 결정 필요` (a turn that
+ended on a choice, as above) or `⏳ <agent> 입력 필요`, the subtitle
 is the workspace label, and the body is the agent's session title as last
 reported (uncut). Clicking it
 activates the terminal app that hosts the herdr client (found from the client's

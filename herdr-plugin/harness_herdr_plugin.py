@@ -75,6 +75,9 @@ CODEX_HOME_DEPTH = 8
 CLAUDE_HOME = os.path.join(".harness", "claude")
 METADATA_SOURCE = "harness.launcher"
 STATE_LABELS = (("idle", "대기"), ("working", "작업 중"), ("blocked", "입력 필요"), ("done", "완료"))
+# A harness answer that leaves a choice to the user marks its recommended option.
+DECISION_MARK = "← 추천"
+DECISION_LABEL = "결정 필요"
 MODEL_PREFIX = re.compile(r"^(gpt-|claude-)")
 TAIL_BYTES = 512 * 1024
 TAIL_MAX_BYTES = 32 * 1024 * 1024
@@ -290,15 +293,15 @@ def scan_titles(path, session, entry):
     return entry
 
 
-def tail_record(path, kind):
-    """The last record of type `kind` in the file's last TAIL_MAX_BYTES, or None.
+def tail_record(path, *kinds):
+    """The last record of one of the types `kinds` in the file's last TAIL_MAX_BYTES, or None.
 
     A long Codex turn writes megabytes after its turn_context, so the file is read
     backwards in TAIL_BYTES chunks, each byte once, carrying the partial first line."""
     handle = open_owned(path)
     if handle is None:
         return None
-    marker = ('"%s"' % kind).encode()
+    markers = [('"%s"' % kind).encode() for kind in kinds]
     with handle:
         size = position = os.fstat(handle.fileno()).st_size
         carry = b""
@@ -309,15 +312,29 @@ def tail_record(path, kind):
             lines = (handle.read(step) + carry).split(b"\n")
             carry = lines.pop(0) if position > 0 else b""
             for raw in reversed(lines):
-                if marker not in raw:
+                if not any(marker in raw for marker in markers):
                     continue
                 try:
                     record = json.loads(raw.decode("utf-8", "replace"))
                 except ValueError:
                     continue
-                if isinstance(record, dict) and record.get("type") == kind:
+                if isinstance(record, dict) and record.get("type") in kinds:
                     return record
     return None
+
+
+def ends_on_choice(transcript):
+    """Whether a Claude turn's last answer leaves a choice to the user: the harness
+    recommendation mark outside code blocks. A turn stopped before any answer ends
+    on the user's record, so an older answer does not count."""
+    record = tail_record(transcript, "user", "assistant") or {}
+    if record.get("type") != "assistant":
+        return False
+    message = record.get("message") if isinstance(record.get("message"), dict) else {}
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    text = "".join(block.get("text") or "" for block in content
+                   if isinstance(block, dict) and block.get("type") == "text")
+    return DECISION_MARK in "".join(text.split("```")[::2])
 
 
 def model_text(model, effort):
@@ -606,7 +623,8 @@ def record_status(payload):
         entry = statuses.get(pane_id) or {}
         previous = entry.get("status")
         seq = int(entry.get("seq", 0)) + 1
-        statuses[pane_id] = {"status": status, "seq": seq}
+        entry.update(status=status, seq=seq)
+        statuses[pane_id] = entry
     if status == "blocked" and previous != "blocked":
         kind = "attention"
     elif status == "idle" and previous == "working":
@@ -614,6 +632,42 @@ def record_status(payload):
     else:
         return None
     return {"kind": kind, "pane_id": pane_id, "seq": seq, "agent": data.get("agent") or "agent"}
+
+
+def settle_decision(payload, pending):
+    """Show `$decision` while a Claude turn that ended on a choice waits for the answer.
+
+    A finished turn sets or clears it from its last answer; any status but idle (the
+    user answered, or the agent asks for input) clears it; another idle keeps it."""
+    data = payload.get("data") or {}
+    pane_id = data.get("pane_id") or os.environ.get("HERDR_PANE_ID")
+    status = data.get("agent_status")
+    finished = bool(pending) and pending["kind"] == "finished"
+    if not pane_id or not status or (status == "idle" and not finished):
+        return
+    wanted = False
+    if finished and pending["agent"] == "claude":
+        pane = next((item for item in herdr("pane", "list")["panes"]
+                     if item.get("pane_id") == pane_id), None)
+        # A stale idle event read while the agent works again sets nothing.
+        live = pane and pane.get("agent_status") == "idle"
+        transcript = live and Titles({}).claude_transcript(pane)
+        wanted = bool(transcript) and ends_on_choice(transcript)
+    with locked_state() as state:
+        entry = session(state)["panes"].get(pane_id)
+        # Events run in separate processes: a newer status settles it instead.
+        if not entry or entry.get("status") != status or (finished and entry.get("seq") != pending["seq"]):
+            return
+        if bool(entry.get("decision")) != wanted:
+            argv = ["pane", "report-metadata", pane_id, "--source", METADATA_SOURCE]
+            # herdr drops a report guarded by an agent that has exited, so a set never
+            # lands on the shell left behind; a clear has no guard and always lands.
+            argv += (["--agent", "claude", "--token", "decision=" + DECISION_LABEL] if wanted
+                     else ["--clear-token", "decision"])
+            if herdr_ok(*argv):
+                entry["decision"] = wanted
+    if wanted:
+        pending["decision"] = True
 
 
 def still_current(pending):
@@ -696,7 +750,10 @@ def announce(pending):
     if visible and (not hosts or front in hosts):
         return
     host = front if front in hosts else (hosts[0] if hosts else None)
-    template = "✅ %s 완료" if pending["kind"] == "finished" else "⏳ %s 입력 필요"
+    if pending.get("decision"):
+        template = "🔘 %s " + DECISION_LABEL
+    else:
+        template = "✅ %s 완료" if pending["kind"] == "finished" else "⏳ %s 입력 필요"
     title = template % pending["agent"]
     subtitle = workspace.get("label") or pane.get("workspace_id") or ""
     # The title the last sync reported, which the run that queued this notification made.
@@ -1031,6 +1088,11 @@ def main():
                       forget=forget)
     except Exception as error:  # noqa: BLE001
         log("tabs: %s" % error)
+    if event == "pane.agent_status_changed":
+        try:
+            settle_decision(payload, pending)
+        except Exception as error:  # noqa: BLE001
+            log("decision: %s" % error)
     try:
         ensure_watcher()
     except Exception as error:  # noqa: BLE001
