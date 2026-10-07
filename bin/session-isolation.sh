@@ -24,7 +24,23 @@ session_git() {
   git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c submodule.recurse=false \
     -c diff.external= -c core.untrackedCache=false "$@"
 }
+EXCLUDED_PATHS=(config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json)
 EXCLUDED_PATHSPEC=(':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json')
+# stage_worktree <root> <base>: stage the session work tree. `add` never names
+# the excluded paths: an exclude pathspec that names a gitignored file (the
+# copied or linked machine-local files are usually ignored) makes `add -A`
+# exit 1. Excluded paths are then reset; headless sessions reset them to the
+# base so a tracked file there keeps its base content (their trusted.git also
+# ignores them through info/exclude), interactive ones to HEAD so submit can
+# still refuse excluded paths the session committed.
+stage_worktree() {
+  root_git "$1" add -A -- . || return 1
+  if [[ -n "$ROOT_GIT_DIR" ]]; then
+    root_git "$1" reset -q "$2" -- "${EXCLUDED_PATHS[@]}"
+  else
+    session_git -C "$1" reset -q -- "${EXCLUDED_PATHS[@]}" 2>/dev/null || true
+  fi
+}
 # Headless sessions (record marker `headless`, written at clone time) never
 # let broker git read the session's own .git: it runs on a launcher-owned git
 # dir in the record (`trusted.git`, base commit plus its own index) with the
@@ -130,6 +146,7 @@ create() {
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" fetch -q --no-tags "$root" "+HEAD:refs/heads/base"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" read-tree "$sha"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" update-index -q --refresh >/dev/null 2>&1 || true
+    printf '/%s\n' "${EXCLUDED_PATHS[@]}" >> "$dir/trusted.git/info/exclude"
     : > "$dir/headless"
   fi
   printf '1\n' > "$dir/lease-v1"
@@ -310,7 +327,7 @@ session_has_changes() {
     # The work tree holds the final content, committed or not. A failed stage
     # leaves the index at base, so it counts as changed (submit then fails
     # closed) instead of reading as clean and dropping the edits.
-    root_git "$1" add -A -- . "${EXCLUDED_PATHSPEC[@]}" || return 0
+    stage_worktree "$1" "$2" || return 0
     ! root_git "$1" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$2" -- . "${EXCLUDED_PATHSPEC[@]}"
     return
   fi
@@ -396,16 +413,13 @@ submit() {
   [[ "$state" == SUBMITTED ]] && return 0
   [[ "$state" == OPEN ]] || { echo "cannot submit $state session" >&2; return 2; }
   use_session_git "$id" || return 6
-  root_git "$root" add -A -- . "${EXCLUDED_PATHSPEC[@]}"
+  stage_worktree "$root" "$base"
   if [[ -z "$ROOT_GIT_DIR" ]]; then
-    # Interactive: committed work is in the index already, so the add
-    # pathspec cannot keep excluded paths out. Staged-only excluded paths (a
-    # raw `git add -A` picks up the machine-local links) are unstaged;
-    # committed ones refuse instead of being silently dropped. A headless
-    # index only ever receives the pathspec-filtered work tree.
+    # Interactive: committed work is in the index already, so staged excluded
+    # paths are only unstaged back to HEAD; committed ones refuse instead of
+    # being silently dropped. A headless index is reset to the base there.
     local touched
-    session_git -C "$root" reset -q -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json 2>/dev/null || true
-    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json)"
+    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${EXCLUDED_PATHS[@]}")"
     [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
   fi
   root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"

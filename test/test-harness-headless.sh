@@ -27,6 +27,8 @@ git -C "$SOURCE" config user.name test
 printf '%s\n' 'HARNESS_NAME="headless"' 'HARNESS_PREFIX="hh"' > "$SOURCE/config/launcher.env"
 printf '%s\n' 'github_user: tester' > "$SOURCE/config/config.yaml"
 printf '%s\n' tracked > "$SOURCE/tracked.txt"
+printf '%s\n' '.claude/settings.local.json' 'mcp.local.json' > "$SOURCE/.gitignore"
+printf '%s\n' base > "$SOURCE/projects/keep.txt"
 cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
 #!/usr/bin/env bash
 # Records the broker environment the repository verifier runs with.
@@ -40,6 +42,7 @@ git -C "$SOURCE" remote add origin "$REMOTE"
 git -C "$SOURCE" push -q origin main
 printf '%s\n' '{"env":{"LOCAL_SETTINGS_SECRET":"leak-local"}}' > "$SOURCE/.claude/settings.local.json"
 printf '%s\n' '{"mcpServers":{"docs":{"command":"echo"}}}' > "$SOURCE/.mcp.local.json"
+printf '%s\n' '{"mcpServers":{"local":{"command":"echo"}}}' > "$SOURCE/mcp.local.json"
 SOURCE_REAL="$(cd "$SOURCE" && pwd -P)"
 printf '%s\n' "$SOURCE" > "$PROFILES/profiles/hh"
 
@@ -80,6 +83,10 @@ case "\$mode" in
     printf 'normal %s\n' "\$\$" > normal.txt
     git add -f .claude/settings.local.json config/.local/planted projects/planted normal.txt
     git -c user.name=t -c user.email=t@example.invalid commit -qm planted
+    echo "\$ok" ;;
+  trackedexcluded)
+    printf 'agent edit\n' > projects/keep.txt
+    printf 'normal %s\n' "\$\$" > trackedexcluded-normal.txt
     echo "\$ok" ;;
   nested)
     printf 'edit %s\n' "\$\$" > nested-edit.txt
@@ -134,7 +141,7 @@ field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))[sys.argv[2
 # On failure, print the result and the launcher/Claude/broker log next to it.
 fail() {
   echo "FAIL: $*" >&2
-  [[ -f "$RESULT" ]] && sed 's/^/  /' "$RESULT" >&2
+  [[ -f "$RESULT" ]] && { sed 's/^/  /' "$RESULT"; echo; } >&2
   [[ -f "$RESULT.log" ]] && { echo "  --- $RESULT.log" >&2; sed 's/^/  | /' "$RESULT.log" >&2; }
   exit 1
 }
@@ -153,7 +160,7 @@ grep -qx state=DELIVERED "$STATE/sessions/$sid/journal" || fail 'session must be
 session_root="$STATE/worktrees/$sid"
 [[ "$(cat "$TMP/claude-pwd")" == "$session_root" ]] || fail "claude must run in the session root, got $(cat "$TMP/claude-pwd")"
 [[ "$(field transcript)" == "$FAKE_HOME/.claude/projects/"*"/11111111-2222-4333-8444-555555555555.jsonl" ]] || fail 'transcript path must be reported'
-[[ ! -e "$session_root/projects" && ! -L "$session_root/projects" && ! -L "$session_root/.claude/settings.local.json" ]] || fail 'headless session must not link back to the source'
+[[ ! -L "$session_root/projects" && ! -L "$session_root/.claude/settings.local.json" && ! -L "$session_root/mcp.local.json" ]] || fail 'headless session must not link back to the source'
 [[ "$(cat "$TMP/claude-stdin")" == 'Fix the typo.' ]] || fail 'the prompt must reach claude on stdin'
 run_tmp="$(sed -n 's/^CLAUDE_CODE_TMPDIR=//p' "$TMP/claude-env")"
 [[ "$run_tmp" == /private/tmp/hh-* && "$run_tmp" != /private/tmp/claude-* ]] || fail "claude must get a private short temp base, got '$run_tmp'"
@@ -267,6 +274,14 @@ expect_status delivered
 ! grep -q 'TMPDIR=/private/tmp/hh-' "$TMP/verifier-env" || fail 'broker git and the verifier must not use the run temp base'
 ! grep -q 'CLAUDE_CODE_TMPDIR=[^ ]' "$TMP/verifier-env" || fail 'the broker env must not carry CLAUDE_CODE_TMPDIR'
 ! grep -q RUN_TMP_PRESENT "$TMP/verifier-env" || fail 'the run temp base must be removed before delivery starts'
+echo trackedexcluded > "$TMP/mode"
+headless || fail 'tracked excluded run must exit 0'
+expect_status delivered
+git --git-dir="$REMOTE" show main:trackedexcluded-normal.txt >/dev/null || fail 'normal paths beside an excluded edit must be delivered'
+[[ "$(git --git-dir="$REMOTE" show main:projects/keep.txt)" == base ]] || fail 'an edit to a tracked file under an excluded path must not be delivered'
+for local_file in .claude/settings.local.json mcp.local.json .mcp.local.json; do
+  ! git --git-dir="$REMOTE" cat-file -e "main:$local_file" 2>/dev/null || fail "gitignored local file $local_file reached the remote"
+done
 echo 'PASS: harness-headless delivers the work tree through a launcher-owned git dir'
 
 # --- a failed stage is never reported as no_changes -------------------------------

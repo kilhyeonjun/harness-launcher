@@ -304,9 +304,12 @@ legacy routes do not change.
   hooks, modules and alternates are never read, and a work-tree
   `.gitattributes` names filter or diff drivers that are not defined, so they
   are no-ops. The work tree holds the final content whether or not the agent
-  committed, so `add -A` with the excluded-path pathspec (`config/.local`,
-  `projects`, `.mcp.local.json`, `mcp.local.json`,
-  `.claude/settings.local.json`) captures it all and drops those paths.
+  committed, so `add -A -- .` captures it all; the excluded paths
+  (`config/.local`, `projects`, `.mcp.local.json`, `mcp.local.json`,
+  `.claude/settings.local.json`) are listed in the trusted git dir's
+  `info/exclude` and reset to the base afterwards, so neither a new file nor
+  an edit to a tracked file there is delivered. `add` never names them: an
+  exclude pathspec naming a gitignored file makes `git add -A` exit 1.
   Without global config, global excludes (for example a global `.DS_Store`
   ignore) do not apply; the repository `.gitignore` does. A marker without
   its `trusted.git` refuses (exit 6, status `refused`). A changed session goes

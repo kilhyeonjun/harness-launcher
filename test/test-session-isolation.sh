@@ -520,4 +520,26 @@ git -C "$ok_root" add committed-normal.txt && git -C "$ok_root" -c user.name=t -
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ok_id"
 git --git-dir="$REMOTE" show main:committed-normal.txt >/dev/null || { echo 'FAIL: committed normal paths must be delivered'; exit 1; }
 
+# Interactive close when the harness .gitignore ignores the machine-local links.
+git clone -q "$REMOTE" "$TMP/ignore-clone"
+printf '%s\n' '.claude/settings.local.json' 'mcp.local.json' > "$TMP/ignore-clone/.gitignore"
+git -C "$TMP/ignore-clone" add .gitignore
+git -C "$TMP/ignore-clone" -c user.name=t -c user.email=t@example.invalid commit -qm ignore-local
+git -C "$TMP/ignore-clone" push -q origin HEAD:main
+printf '{}\n' > "$SOURCE/mcp.local.json"
+out="$(create)"; ig_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ig_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+[[ -L "$ig_root/mcp.local.json" && -L "$ig_root/.claude/settings.local.json" ]] || { echo 'FAIL: fixture must link the gitignored local files'; exit 1; }
+printf 'ignored-layout\n' > "$ig_root/ignored-layout.txt"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ig_id"
+git --git-dir="$REMOTE" show main:ignored-layout.txt >/dev/null || { echo 'FAIL: interactive close must deliver beside gitignored local links'; exit 1; }
+! git --git-dir="$REMOTE" cat-file -e main:mcp.local.json 2>/dev/null || { echo 'FAIL: a gitignored local link was delivered'; exit 1; }
+# Headless, same layout. (An interactive test above wrote through its
+# settings link into the source copy; give it valid JSON again.)
+printf '{}\n' > "$SOURCE/.claude/settings.local.json"
+headless_session
+printf 'headless-ignored\n' > "$hs_root/headless-ignored.txt"
+deliver_headless
+git --git-dir="$REMOTE" show main:headless-ignored.txt >/dev/null || { echo 'FAIL: headless close must deliver beside gitignored local copies'; exit 1; }
+! git --git-dir="$REMOTE" cat-file -e main:mcp.local.json 2>/dev/null || { echo 'FAIL: a gitignored local copy was delivered'; exit 1; }
+
 echo 'PASS: submissions touching excluded paths are refused; committed work is delivered'
