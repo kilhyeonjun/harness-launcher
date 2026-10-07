@@ -577,6 +577,80 @@ class NotificationTest(HerdrPluginTestCase):
                          [pane("w5:p1", "w5:t1", title="other"),
                           pane("w5:p4", "w5:t4", title=LONG_TITLE)])
 
+    def activity(self, phase, identity="work-1"):
+        state = self.h.state()
+        for item in state["panes"]:
+            if item["pane_id"] == "w5:p4":
+                item["tokens"] = {} if phase is None else {
+                    "herdr_activity": phase, "herdr_activity_id": identity,
+                }
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+
+    def test_background_wait_defers_response_notification_until_explicit_settled(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertEqual(self.h.notifications(), [])
+        self.activity("settled")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+
+    def test_expired_activity_is_uncertainty_and_never_a_finished_notification(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.activity(None)
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(self.h.notifications(), [])
+
+    def test_different_activity_settlement_does_not_finish_the_previous_work(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.activity("settled", "other-work")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(self.h.notifications(), [])
+
+    def test_observed_working_activity_lost_before_idle_still_defers(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.activity(None)
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertEqual(self.h.notifications(), [])
+        self.activity("settled")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+
+    def test_new_foreground_turn_cancels_a_deferred_previous_response(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.activity("settled")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(self.h.notifications(), [])
+
+    def test_startup_seeds_activity_without_synthesizing_a_finish(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertRan(self.h.run("startup"))
+        self.activity("settled")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(self.h.notifications(), [])
+
+    def test_notification_prefers_explicit_pane_label_over_metadata_and_terminal_title(self):
+        state = self.h.state()
+        for item in state["panes"]:
+            if item["pane_id"] == "w5:p4":
+                item.update(label="소유자 지정 이름", title="새 세션 제목")
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertEqual(flag(self.h.notifications()[0], "-message"), "소유자 지정 이름")
+
     def test_another_herdr_session_keeps_this_sessions_statuses(self):
         # Pane ids repeat across herdr sessions; one session's sync must not prune the other's.
         self.assertRan(self.h.status("w5:p4", "working"))
@@ -597,7 +671,7 @@ class NotificationTest(HerdrPluginTestCase):
         sent = self.h.notifications()
         self.assertEqual(len(sent), 1, sent)
         argv = sent[0]
-        self.assertEqual(flag(argv, "-title"), "✅ claude 완료")
+        self.assertEqual(flag(argv, "-title"), "✅ claude 응답 종료")
         self.assertEqual(flag(argv, "-subtitle"), "beta")
         self.assertEqual(flag(argv, "-message"), LONG_TITLE)
         self.assertEqual(flag(argv, "-group"), "herdr-harness.w5:p4")
@@ -732,7 +806,7 @@ class NotificationTest(HerdrPluginTestCase):
 THREAD = "0199aaaa-1111-7222-8333-444455556666"
 SESSION = "5b6c7d8e-1111-4222-8333-444455556666"
 LABELS = ["--state-label", "idle=대기", "--state-label", "working=작업 중",
-          "--state-label", "blocked=입력 필요", "--state-label", "done=완료"]
+          "--state-label", "blocked=입력 필요", "--state-label", "done=응답 종료"]
 
 
 def jsonl(path, records, append=False):
@@ -977,6 +1051,22 @@ class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertRan(self.h.status("w5:p1", "working"))
         self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
 
+    def test_decision_request_is_delivered_during_background_wait_without_a_second_finish(self):
+        state = self.h.state()
+        state["panes"][0]["tokens"] = {
+            "herdr_activity": "waiting", "herdr_activity_id": "decision-work",
+        }
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.turn("A ← 추천")
+        self.assertEqual(len(self.h.notifications()), 1)
+        self.assertEqual(flag(self.h.notifications()[0], "-title"), "🔘 claude 결정 필요")
+        state = self.h.state()
+        self.assertEqual(state["panes"][0]["tokens"]["herdr_activity"], "waiting")
+        state["panes"][0]["tokens"]["herdr_activity"] = "settled"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+
     def test_every_choice_in_one_session_is_shown(self):
         self.turn("A ← 추천")
         self.turn("B ← 추천")
@@ -989,12 +1079,12 @@ class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
         self.turn("배포했습니다.")
         self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
-        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 완료")
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 응답 종료")
 
     def test_mark_inside_a_code_block_is_not_a_choice(self):
         self.turn("예시:\n```\nA ← 추천\n```\n끝났습니다.")
         self.assertEqual(self.decisions(), [])
-        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 완료")
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 응답 종료")
 
     def test_turn_stopped_before_any_answer_does_not_reuse_the_older_choice(self):
         self.turn("A ← 추천")

@@ -398,7 +398,7 @@ approval are dropped; a thread id is no title.
 
 Pane metadata. Each agent pane reports its full title as herdr's metadata
 title (the sidebar `pane` token), the state labels `대기`, `작업 중`, `입력 필요`
-and `완료` (the `state_text` token), and a `$model` token with the model and
+and `응답 종료` (the `state_text` token), and a `$model` token with the model and
 reasoning effort of the latest turn (from the Codex rollout's last
 `turn_context` or the last Claude assistant record), for example
 `6.1-sol xhigh` or `opus-5-5 xhigh`. The model is read again when the agent's
@@ -472,10 +472,18 @@ the tab bar and its `--watch` board in a popup.
 
 Notifications. When an agent goes from `working` to `idle`, or to `blocked`,
 the plugin waits one second and, if the state still holds, posts a desktop
-notification. The title is `✅ <agent> 완료`, `🔘 <agent> 결정 필요` (a turn that
-ended on a choice, as above) or `⏳ <agent> 입력 필요`, the subtitle
-is the workspace label, and the body is the agent's session title as last
-reported (uncut). Clicking it
+notification. The title is `✅ <agent> 응답 종료`, `🔘 <agent> 결정 필요` (a turn
+that ended on a choice) or `⏳ <agent> 입력 필요`: an
+ended response does not assert that the user's entire task is verified. A fresh
+`herdr_activity=waiting|stalled` token paired with `herdr_activity_id` defers the
+response notification until the same cycle explicitly reports `settled`.
+A decision notification requests input and is delivered while work waits; it
+does not release the background activity or claim completion.
+Missing or expired activity after an observed wait stays uncertain; it does not
+release the notification. A new foreground turn, session identity or startup
+cancels the old deferred response. The subtitle is the workspace label. The
+body prefers a manual pane label, then its metadata session title and terminal
+title (uncut). Clicking it
 activates the terminal app that hosts the herdr client (found from the client's
 process ancestry, so cmux, Ghostty or another app) and runs
 `herdr agent focus <pane>`. A newer notification for the same pane replaces
