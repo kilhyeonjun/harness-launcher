@@ -309,7 +309,10 @@ legacy routes do not change.
   `.claude/settings.local.json`) are listed in the trusted git dir's
   `info/exclude` and reset to the base afterwards, so neither a new file nor
   an edit to a tracked file there is delivered. `add` never names them: an
-  exclude pathspec naming a gitignored file makes `git add -A` exit 1.
+  exclude pathspec naming a gitignored file makes `git add -A` exit 1. The
+  reset and the diff pathspecs match case-insensitively, because the agent
+  can negate ignore rules in `.gitignore` and write `Projects/` or
+  `config/.LOCAL/`.
   Without global config, global excludes (for example a global `.DS_Store`
   ignore) do not apply; the repository `.gitignore` does. A marker without
   its `trusted.git` refuses (exit 6, status `refused`). A changed session goes

@@ -85,6 +85,18 @@ case "\$mode" in
     git add -f .claude/settings.local.json config/.local/planted projects/planted normal.txt
     git -c user.name=t -c user.email=t@example.invalid commit -qm planted
     echo "\$ok" ;;
+  casevariants)
+    # Negations override info/exclude; case variants dodge case-sensitive
+    # pathspecs. None of these may be delivered.
+    printf '%s\n' '!/Projects' '!/PROJECTS' '!/config/.LOCAL' '!/.claude/Settings.Local.json' '!/MCP.local.json' '!/.MCP.Local.json' >> .gitignore
+    mkdir -p PROJECTS config/.LOCAL .claude
+    printf 'v\n' > PROJECTS/variant.txt
+    printf 'v\n' > config/.LOCAL/variant.txt
+    printf '{"v":1}\n' > .claude/Settings.Local.json
+    printf '{"v":1}\n' > MCP.local.json
+    printf '{"v":1}\n' > .MCP.Local.json
+    printf 'normal %s\n' "\$\$" > casevariants-normal.txt
+    echo "\$ok" ;;
   trackedexcluded)
     printf 'agent edit\n' > projects/keep.txt
     rm projects/drop.txt
@@ -284,6 +296,15 @@ git --git-dir="$REMOTE" show main:trackedexcluded-normal.txt >/dev/null || fail 
 [[ "$(git --git-dir="$REMOTE" show main:projects/drop.txt)" == base ]] || fail 'a deletion under an excluded path must not be delivered'
 for local_file in .claude/settings.local.json mcp.local.json .mcp.local.json; do
   ! git --git-dir="$REMOTE" cat-file -e "main:$local_file" 2>/dev/null || fail "gitignored local file $local_file reached the remote"
+done
+echo casevariants > "$TMP/mode"
+headless || fail 'case-variant run must exit 0'
+expect_status delivered
+git --git-dir="$REMOTE" show main:casevariants-normal.txt >/dev/null || fail 'normal paths beside case variants must be delivered'
+leaked="$(git --git-dir="$REMOTE" ls-tree -r --name-only main | grep -iE '^(config/\.local/|\.claude/settings\.local\.json$|\.?mcp\.local\.json$|projects/)' | grep -vx -e projects/keep.txt -e projects/drop.txt || true)"
+[[ -z "$leaked" ]] || fail "case variants of excluded paths were delivered: $leaked"
+for kept in keep.txt drop.txt; do
+  [[ "$(git --git-dir="$REMOTE" show "main:projects/$kept")" == base ]] || fail "projects/$kept changed through a case variant"
 done
 echo 'PASS: harness-headless delivers the work tree through a launcher-owned git dir'
 

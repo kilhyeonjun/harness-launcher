@@ -25,7 +25,13 @@ session_git() {
     -c diff.external= -c core.untrackedCache=false "$@"
 }
 EXCLUDED_PATHS=(config/.local projects .mcp.local.json mcp.local.json .claude/settings.local.json)
-EXCLUDED_PATHSPEC=(':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json')
+# Case-insensitive: the agent can negate the ignore rules in .gitignore, and
+# a case variant (Projects/, config/.LOCAL/) must not slip past the fence.
+EXCLUDED_PATHSPEC=() EXCLUDED_ICASE=()
+for _excluded in "${EXCLUDED_PATHS[@]}"; do
+  EXCLUDED_PATHSPEC+=(":(exclude,icase)$_excluded"); EXCLUDED_ICASE+=(":(icase)$_excluded")
+done
+unset _excluded
 # stage_worktree <root> <base>: stage the session work tree. `add` never names
 # the excluded paths: an exclude pathspec that names a gitignored file (the
 # copied or linked machine-local files are usually ignored) makes `add -A`
@@ -36,9 +42,9 @@ EXCLUDED_PATHSPEC=(':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.loc
 stage_worktree() {
   root_git "$1" add -A -- . || return 1
   if [[ -n "$ROOT_GIT_DIR" ]]; then
-    root_git "$1" reset -q "$2" -- "${EXCLUDED_PATHS[@]}"
+    root_git "$1" reset -q "$2" -- "${EXCLUDED_ICASE[@]}"
   else
-    session_git -C "$1" reset -q -- "${EXCLUDED_PATHS[@]}" 2>/dev/null || true
+    session_git -C "$1" reset -q -- "${EXCLUDED_ICASE[@]}" 2>/dev/null || true
   fi
 }
 # Headless sessions (record marker `headless`, written at clone time) never
@@ -426,7 +432,7 @@ submit() {
     # paths are only unstaged back to HEAD; committed ones refuse instead of
     # being silently dropped. A headless index is reset to the base there.
     local touched
-    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${EXCLUDED_PATHS[@]}")"
+    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${EXCLUDED_ICASE[@]}")"
     [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
   fi
   root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"

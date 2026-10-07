@@ -16,7 +16,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
   under an excluded path is not delivered; interactive sessions unstage them
   as before and still refuse excluded paths they committed. Both kinds of
   session list the excluded paths in their own `info/exclude`, so staging
-  never reads inside them. A real staging failure elsewhere, such as a nested
+  never reads inside them. The excluded-path fence now matches case
+  variants (`Projects/`, `config/.LOCAL/`, `MCP.local.json`), so a session
+  that negates the ignore rules still cannot deliver them; an interactive
+  session that committed one is refused. A real staging failure elsewhere, such as a nested
   repository with no commit or an unreadable file, still ends `failed`.
 - Headless session creation no longer fails when the user's git config sets
   a hooks-only `init.templateDir`; the launcher-owned git dir is created

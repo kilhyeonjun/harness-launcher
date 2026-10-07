@@ -502,7 +502,7 @@ rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$hs_id" 2>/dev/nul
 echo 'PASS: headless broker git uses the launcher-owned git dir, never the session .git'
 
 # Interactive: committed changes under excluded paths refuse the submission; normal commits deliver.
-for excluded in .claude/settings.local.json config/.local/x projects/x; do
+for excluded in .claude/settings.local.json config/.local/x projects/x config/.LOCAL/y Projects/y; do
   out="$(create)"; ex_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; ex_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
   rm -rf "$ex_root/projects"
   mkdir -p "$(dirname "$ex_root/$excluded")"; printf 'secret\n' > "$ex_root/$excluded"
