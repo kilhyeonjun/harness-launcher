@@ -46,12 +46,12 @@ COMMIT_MESSAGE = 'commit-message'
 MESSAGE_MAX_BYTES = 8192
 MESSAGE_MAX_LINES = 200
 SUBJECT_MAX = 100
-# The broker appends this trailer itself.
-RESERVED_TRAILER = re.compile(r'\s*harness-session\s*:', re.I)
+# Trailer keys dropped from the message (see trailer_key): the broker appends
+# Harness-Session itself, and skip-checks would switch off the checks.
+DROPPED_TRAILERS = ('harnesssession', 'skipchecks')
 # CI-skip directives (GitHub Actions and most CI systems): the delivered
 # commit must not switch off the repository's checks.
 CI_SKIP_TOKEN = re.compile(r'\[\s*(?:skip\s+ci|ci\s+skip|no\s+ci|skip\s+actions|actions\s+skip)\s*\]', re.I)
-CI_SKIP_TRAILER = re.compile(r'\s*skip-checks\s*:', re.I)
 DELIVERY_NOTE = (
     '---\n'
     'Delivery note from the launcher: when you finish, the launcher commits your changes to the repository '
@@ -124,6 +124,16 @@ def child_env(run_tmp):
     return env
 
 
+def trailer_key(line):
+    """The trailer key of a line compared loosely, so no spoof of a dropped
+    trailer survives: compatibility forms (full-width letters and colons)
+    folded by NFKC, case folded, and every non-alphanumeric character in the
+    key (spaces, hyphens, underscores) removed. None without a colon."""
+    norm = unicodedata.normalize('NFKC', line).casefold().replace('\u2236', ':')
+    key, colon, _ = norm.partition(':')
+    return re.sub(r'[\W_]', '', key) if colon else None
+
+
 def agent_commit_message(run_tmp):
     """(message, None) from the agent's message file, or (None, reason). The
     file is agent-written: no symlink or special file, bounded, strict UTF-8,
@@ -153,13 +163,15 @@ def agent_commit_message(run_tmp):
         text = data.decode('utf-8', errors='strict')
     except UnicodeError:
         return None, 'message file is not valid UTF-8'
-    text = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', text.replace('\r\n', '\n').replace('\r', '\n'))
+    # Line and paragraph separators split lines for viewers, so they are lines.
+    text = text.replace('\r\n', '\n').replace('\r', '\n').replace('\u2028', '\n').replace('\u2029', '\n')
+    text = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', text)
     # Format characters (bidi overrides, zero-width) could hide or reorder text.
     text = ''.join(c for c in text if unicodedata.category(c) != 'Cf')
     while CI_SKIP_TOKEN.search(text):
         text = CI_SKIP_TOKEN.sub('', text)
     lines = [line.rstrip() for line in text.split('\n')
-             if not (RESERVED_TRAILER.match(line) or CI_SKIP_TRAILER.match(line))]
+             if trailer_key(line) not in DROPPED_TRAILERS]
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:

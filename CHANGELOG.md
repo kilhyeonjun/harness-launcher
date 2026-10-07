@@ -10,10 +10,11 @@ Notable changes are recorded here. This project follows semantic versioning for 
   now asks the agent (a delivery note appended to the prompt) to write the
   message to `$HARNESS_COMMIT_MESSAGE_FILE` in its private temp directory. The
   launcher reads it without following symlinks or blocking, only as a regular
-  single-link file of at most 8192 bytes of strict UTF-8, removes control and
-  Unicode format characters (except LF and TAB), CI-skip directives
-  (`[skip ci]` and its variants, `skip-checks:` lines) and any
-  `Harness-Session:` line, and accepts it only with a non-empty subject of at
+  single-link file of at most 8192 bytes of strict UTF-8, treats U+2028 and
+  U+2029 as line breaks, removes control and Unicode format characters
+  (except LF and TAB), CI-skip directives (`[skip ci]` and its variants) and
+  any `Harness-Session` or `skip-checks` trailer line, including spoofed
+  spellings (full-width, spaced, case variants), and accepts it only with a non-empty subject of at
   most 100 characters and at most 200 lines. Only a run that goes to delivery
   copies the message into the launcher-owned session record, and the broker
   commits with it plus a `Harness-Session: <uuid>` trailer. Anything else falls

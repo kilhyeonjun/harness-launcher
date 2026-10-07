@@ -387,8 +387,24 @@ valid('fix: thing [skip ci]\n\nbody [CI Skip] [ no ci ] [skip actions] [Actions 
       'Skip-Checks: true\n  skip-checks : yes\nFixes #12\n',
       'fix: thing\n\nbody\nx  y\nFixes #12\n')
 # Format (Cf) characters, C0/C1 controls; trailer variants.
-valid('feat: a​b‮c⁦d\x9b31m\n\n  Harness-Session : x\nHARNESS-SESSION:y\n​Harness-Session: z\nNot-Harness-Session: k\n',
+valid('feat: a\u200bb\u202ec\u2066d\x9b31m\n\n  Harness-Session : x\nHARNESS-SESSION:y\n\u200bHarness-Session: z\nNot-Harness-Session: k\n',
       'feat: abcd31m\n\nNot-Harness-Session: k\n')
+# The validator's input space, one case per class.
+fallback('directory', setup=lambda d, p: os.mkdir(p))
+fallback('encoded lone surrogate', content=b'feat: \xed\xa0\x80\n')
+fallback('overlong UTF-8', content=b'feat: \xc0\xaf\n')
+fallback('only controls and format characters', content='\x00\x1b\x7f\x9b​‮\n')
+fallback('over 200 lines through U+2028', content='feat: s\n\n' + ' '.join('x' * 199) + '\n')
+valid('feat: n\x00u\x1b[2Jl\x7fl\x85\x9b\n', 'feat: nu[2Jll\n')
+valid('\x1b​\n 　\nfeat: real subject\n', 'feat: real subject\n')
+valid('feat: s second third\n', 'feat: s\nsecond\nthird\n')
+valid('feat: s\n\n' + '\n'.join([
+    'Harness-Session: a', 'harness-session:b', '  HARNESS-SESSION : c', '\tHarness-Session\t:d',
+    'Harness-Session： e', 'Harness Session: f', 'Harness_Session: g', 'Harness‐Session: h',
+    'Ｈａｒｎｅｓｓ-Ｓｅｓｓｉｏｎ: i',
+    'Harness-Session﹕ j', 'Harness-Session∶ k', 'Harness​-Session: l', 'Skip-Checks： true',
+    'Harness-Sessions: kept']) + '\n', 'feat: s\n\nHarness-Sessions: kept\n')
+valid('feat: s [SKIP CI] [Skip Actions][ci  skip]\n', 'feat: s\n')
 PY
 echo 'PASS: harness-headless delivers a sanitized agent commit message and falls back safely'
 

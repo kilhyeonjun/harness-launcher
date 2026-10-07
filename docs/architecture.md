@@ -327,14 +327,17 @@ legacy routes do not change.
   killed, and before the temp directory is removed, it reads the file without
   following a symlink or blocking (`O_NOFOLLOW|O_NONBLOCK`), only if it is a
   regular file with a single link, of at most 8192 bytes of strict UTF-8. It
-  turns CRLF and CR into LF, removes every other control character except TAB
+  turns CRLF, CR, U+2028 and U+2029 into LF, removes every other control
+  character (C0, C1, DEL; NUL and ESC included) except TAB
   (so ESC and terminal sequences cannot reach a terminal that shows `git
   log`) and every Unicode format character (bidi overrides, zero-width), removes
   CI-skip directives (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`,
-  `[actions skip]`, case-insensitive, and `skip-checks:` lines) so the
+  `[actions skip]`, case-insensitive) so the
   delivered commit cannot switch off the repository's checks, strips trailing
-  whitespace, drops leading and trailing blank lines and any line starting
-  `Harness-Session:` (case-insensitive, spaces allowed). Other trailers and
+  whitespace, drops leading and trailing blank lines and any trailer line whose
+  key is `Harness-Session` or `skip-checks` when compared loosely (NFKC, so
+  full-width letters and colons fold; case-insensitive; spaces, hyphens and
+  underscores in the key ignored; leading whitespace allowed). Other trailers and
   GitHub keywords such as `Fixes #12` pass through unchanged. The message is
   used only if the subject is non-empty and at most 100 characters and there
   are at most 200 lines. It is written atomically (0600) to the
