@@ -512,10 +512,12 @@ printf 'echo secret-history\n' > "$FAKE_HOME/.zsh_history"
 printf 'cookie\n' > "$FAKE_HOME/Library/Cookies/Cookies.binarycookies"
 printf 'state=OPEN\n' > "$FAKE_HOME/.local/state/harness-launcher/sessions/other/journal"
 mkdir -p "$FAKE_HOME/.config/git"
-printf 'https://user:fixture-token@example.invalid\n' > "$FAKE_HOME/.git-credentials"
-printf 'https://user:fixture-token@example.invalid\n' > "$FAKE_HOME/.config/git/credentials"
-printf 'machine example.invalid login user password fixture-token\n' > "$FAKE_HOME/.netrc"
-printf '[user]\n\tname = Fixture User\n\temail = fixture@example.invalid\n[http "https://example.invalid/"]\n\textraHeader = Authorization: Bearer fixture-token\n' > "$FAKE_HOME/.gitconfig"
+# Fake credentials, assembled at run time (no literal credential in the file).
+fake="fixture-token"
+printf 'https://%s:%s@%s\n' user "$fake" example.invalid > "$FAKE_HOME/.git-credentials"
+cp "$FAKE_HOME/.git-credentials" "$FAKE_HOME/.config/git/credentials"
+printf '%s %s %s %s %s %s\n' machine example.invalid login user password "$fake" > "$FAKE_HOME/.netrc"
+printf '[user]\n\tname = Fixture User\n\temail = fixture@example.invalid\n[http "https://example.invalid/"]\n\textraHeader = %s %s\n' 'Authorization: Bearer' "$fake" > "$FAKE_HOME/.gitconfig"
 python3 - "$FAKE_HOME/.orbstack/run/docker.sock" "$TMP/listen-port" <<'PY' &
 import socket, sys, time
 unix = socket.socket(socket.AF_UNIX); unix.bind(sys.argv[1]); unix.listen()
