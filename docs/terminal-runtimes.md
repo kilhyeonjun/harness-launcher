@@ -398,7 +398,7 @@ approval are dropped; a thread id is no title.
 
 Pane metadata. Each agent pane reports its full title as herdr's metadata
 title (the sidebar `pane` token), the state labels `대기`, `작업 중`, `입력 필요`
-and `완료` (the `state_text` token), and a `$model` token with the model and
+and `응답 종료` (the `state_text` token), and a `$model` token with the model and
 reasoning effort of the latest turn (from the Codex rollout's last
 `turn_context` or the last Claude assistant record), for example
 `6.1-sol xhigh` or `opus-5-5 xhigh`. The model is read again when the agent's
