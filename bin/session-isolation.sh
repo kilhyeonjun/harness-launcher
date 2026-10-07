@@ -18,6 +18,19 @@ write_heartbeat() {
   mv -f "$tmp" "$dir/heartbeat"
 }
 field() { sed -n "s/^$2=//p" "$1" | head -n 1; }
+# Broker git on a session root: never run fsmonitor or hooks named by the
+# session's own config.
+session_git() { git -c core.fsmonitor=false -c core.hooksPath=/dev/null "$@"; }
+# Headless sessions record their .git/config hash at clone time; any change
+# means the agent escaped containment, so no broker git may run on the root.
+config_intact() {
+  local id="$1" dir root
+  dir="$(session_dir "$id")"; [[ -f "$dir/git-config.sha256" ]] || return 0
+  root="$(<"$dir/session-root")"
+  [[ "$(shasum -a 256 < "$root/.git/config" 2>/dev/null | awk '{print $1}')" == "$(<"$dir/git-config.sha256")" ]] && return 0
+  echo "harness-session: refused: session $id git config changed since clone" >&2
+  return 6
+}
 reopen_session() {
   local id="$1" dir
   dir="$(session_dir "$id")"
@@ -69,7 +82,9 @@ create() {
   sha="$(git -C "$source" rev-parse "$base^{commit}")"
   id="$(new_id)"; dir="$state/sessions/$id"; root="$state/worktrees/$id"
   mkdir -p "$dir"
-  git clone -q --no-checkout "$source" "$root"
+  local -a clone_flags=(-q --no-checkout)
+  [[ "${HARNESS_HEADLESS:-0}" != 1 ]] || clone_flags+=(--no-hardlinks)
+  git clone "${clone_flags[@]}" "$source" "$root"
   git -C "$root" remote remove origin
   git -C "$root" checkout -q --detach "$sha"
   rm -rf "$root/config/.local"
@@ -87,6 +102,7 @@ create() {
   printf '%s\n' "$source" > "$dir/source-root"
   printf '%s\n' "$root" > "$dir/session-root"
   printf '%s\n' "$sha" > "$dir/base-sha"
+  [[ "${HARNESS_HEADLESS:-0}" != 1 ]] || shasum -a 256 < "$root/.git/config" | awk '{print $1}' > "$dir/git-config.sha256"
   printf '1\n' > "$dir/lease-v1"
   : > "$dir/runtime.lock"
   write_journal "$dir" OPEN ""
@@ -258,14 +274,18 @@ transition() {
   case "$old:$next" in OPEN:SUBMITTED|OPEN:CLOSED|SUBMITTED:INTEGRATING|INTEGRATING:SUBMITTED|INTEGRATING:DELIVERED|INTEGRATING:CONFLICT|OPEN:ABANDONED|ABANDONED:OPEN|CONFLICT:OPEN|CLOSED:OPEN) ;; *) echo "invalid transition: $old -> $next" >&2; return 2;; esac
   write_journal "$dir" "$next" "$identity"
 }
+# session_has_changes <root> [base-sha]: worktree changes, or commits made in
+# the session (HEAD moved off the base).
 session_has_changes() {
-  [[ -n "$(git -C "$1" status --porcelain --untracked-files=all -- . ':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json')" ]]
+  [[ -n "${2:-}" && "$(session_git -C "$1" rev-parse HEAD 2>/dev/null)" != "$2" ]] && return 0
+  [[ -n "$(session_git -C "$1" status --porcelain --untracked-files=all -- . ':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json')" ]]
 }
 exit_session() {
   local id="$1" dir root state
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; state="$(field "$dir/journal" state)"
   if [[ "$state" == OPEN ]]; then
-    if session_has_changes "$root"; then transition "$id" ABANDONED; else transition "$id" CLOSED; fi
+    config_intact "$id" 2>/dev/null || { transition "$id" ABANDONED; return 0; }
+    if session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" ABANDONED; else transition "$id" CLOSED; fi
   fi
 }
 recover_unlocked() {
@@ -299,7 +319,7 @@ recover_unlocked() {
   reopen_session "$id"
   printf 'HARNESS_SESSION_ROOT=%s\nstate=OPEN\n' "$(<"$dir/session-root")"
 }
-recover() { with_lock recover_unlocked "$1"; }
+recover() { config_intact "$1" || return $?; with_lock recover_unlocked "$1"; }
 heartbeat_epoch() { date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || printf '0\n'; }
 heartbeat_session() {
   local dir="$(session_dir "$1")" state
@@ -325,9 +345,9 @@ write_index_manifest() {
   : > "$output"
   while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     if [[ "$status" == D* ]]; then printf 'D\0-\0-\0%s\0' "$path" >> "$output"; continue; fi
-    read -r mode oid stage path2 < <(git -C "$root" ls-files -s -- "$path")
+    read -r mode oid stage path2 < <(session_git -C "$root" ls-files -s -- "$path")
     printf 'F\0%s\0%s\0%s\0' "$mode" "$oid" "$path" >> "$output"
-  done < <(git -C "$root" diff --cached --name-status --no-renames -z "$base")
+  done < <(session_git -C "$root" diff --no-ext-diff --cached --name-status --no-renames -z "$base")
 }
 submission_identity() {
   local dir="$1"
@@ -338,8 +358,8 @@ submit() {
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; base="$(<"$dir/base-sha")"; state="$(field "$dir/journal" state)"
   [[ "$state" == SUBMITTED ]] && return 0
   [[ "$state" == OPEN ]] || { echo "cannot submit $state session" >&2; return 2; }
-  git -C "$root" add -A -- . ':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json'
-  git -C "$root" diff --cached --binary "$base" > "$dir/submission.patch"
+  session_git -C "$root" add -A -- . ':!config/.local' ':!projects' ':!.mcp.local.json' ':!mcp.local.json' ':!.claude/settings.local.json'
+  session_git -C "$root" diff --no-ext-diff --no-textconv --cached --binary "$base" > "$dir/submission.patch"
   [[ -s "$dir/submission.patch" ]] || { echo 'empty submission' >&2; return 2; }
   write_index_manifest "$root" "$base" "$dir/.manifest"
   mv -f "$dir/.manifest" "$dir/manifest"
@@ -466,7 +486,8 @@ integrate() { with_lock integrate_unlocked "$@"; }
 close_session() {
   local id="$1" dir state root
   dir="$(session_dir "$id")"; state="$(field "$dir/journal" state)"; root="$(<"$dir/session-root")"
-  if [[ "$state" == OPEN ]] && ! session_has_changes "$root"; then transition "$id" CLOSED; return 0; fi
+  config_intact "$id" || return $?
+  if [[ "$state" == OPEN ]] && ! session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" CLOSED; return 0; fi
   [[ "$state" == OPEN ]] && submit "$id"
   [[ "$(field "$dir/journal" state)" == SUBMITTED ]] || { echo "cannot close $state session" >&2; return 2; }
   integrate "$id"

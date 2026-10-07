@@ -425,3 +425,29 @@ expect_headless_refusal "$dir_src" 'a symlinked .claude directory'
 [[ ! -e "$TMP/outside-dir/settings.local.json" ]] || { echo 'FAIL: headless copy wrote through a symlinked parent'; exit 1; }
 
 echo 'PASS: headless clones ignore cwd modules and refuse symlinked local-file paths'
+
+# Headless clones own their object files (no hardlinks into the source).
+nolink_root="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
+linked="$(find "$nolink_root/.git/objects" -type f -links +1 | head -n 1)"
+[[ -z "$linked" ]] || { echo "FAIL: headless clone objects must not be hardlinked: $linked"; exit 1; }
+nolink_id="${nolink_root##*/}"
+[[ -s "$STATE/sessions/$nolink_id/git-config.sha256" ]] || { echo 'FAIL: headless create must record the session git config hash'; exit 1; }
+
+# Broker git on a session root never runs fsmonitor or hooks from its config.
+fsm_out="$(create)"; fsm_root="$(printf '%s\n' "$fsm_out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; fsm_id="$(printf '%s\n' "$fsm_out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf '#!/bin/sh\ntouch "%s"\n' "$TMP/fsmonitor-ran" > "$TMP/fsmonitor.sh"; chmod +x "$TMP/fsmonitor.sh"
+git -C "$fsm_root" config core.fsmonitor "$TMP/fsmonitor.sh"
+printf 'fsm\n' > "$fsm_root/fsm.txt"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$fsm_id"
+[[ ! -e "$TMP/fsmonitor-ran" ]] || { echo 'FAIL: broker git must disable core.fsmonitor on the session root'; exit 1; }
+
+# A headless session whose git config changed is refused before any git runs.
+tamper_out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"; tamper_root="$(printf '%s\n' "$tamper_out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; tamper_id="$(printf '%s\n' "$tamper_out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+printf 'x\n' > "$tamper_root/tamper.txt"
+printf '[core]\n\tfsmonitor = %s\n' "$TMP/fsmonitor.sh" >> "$tamper_root/.git/config"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$tamper_id"
+grep -qx state=ABANDONED "$STATE/sessions/$tamper_id/journal" || { echo 'FAIL: a tampered headless session must stay ABANDONED'; exit 1; }
+if HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$tamper_id" 2>/dev/null; then echo 'FAIL: close must refuse a tampered headless session'; exit 1; fi
+[[ ! -e "$TMP/fsmonitor-ran" ]] || { echo 'FAIL: a tampered headless session ran git'; exit 1; }
+
+echo 'PASS: headless clones own their objects and broker git ignores session config hooks'
