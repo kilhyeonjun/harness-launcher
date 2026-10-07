@@ -62,6 +62,9 @@ assert_route isolate 1 --passthrough resume
 assert_route reject 1 base --passthrough --resume=session-id
 assert_route legacy 1 base --passthrough -p 'batch task'
 assert_route invalid 1 base --passthrough --mcp-config '{}'
+# harness-headless argv: --strict-mcp-config alone is a plain Claude flag.
+assert_route legacy 1 --passthrough --strict-mcp-config -p
+assert_route legacy 1 --passthrough -p --output-format json --max-budget-usd 1 --permission-mode bypassPermissions --strict-mcp-config --settings '{}' -- prompt
 assert_route isolate 1 base --passthrough -- --resume
 # A management subcommand right after the marker runs natively (no clone).
 assert_route legacy 1 base --passthrough auth status
