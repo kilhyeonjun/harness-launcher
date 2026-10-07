@@ -577,6 +577,80 @@ class NotificationTest(HerdrPluginTestCase):
                          [pane("w5:p1", "w5:t1", title="other"),
                           pane("w5:p4", "w5:t4", title=LONG_TITLE)])
 
+    def activity(self, phase, identity="work-1"):
+        state = self.h.state()
+        for item in state["panes"]:
+            if item["pane_id"] == "w5:p4":
+                item["tokens"] = {} if phase is None else {
+                    "herdr_activity": phase, "herdr_activity_id": identity,
+                }
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+
+    def test_background_wait_defers_response_notification_until_explicit_settled(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertEqual(self.h.notifications(), [])
+        self.activity("settled")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+
+    def test_expired_activity_is_uncertainty_and_never_a_finished_notification(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.activity(None)
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(self.h.notifications(), [])
+
+    def test_different_activity_settlement_does_not_finish_the_previous_work(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.activity("settled", "other-work")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(self.h.notifications(), [])
+
+    def test_observed_working_activity_lost_before_idle_still_defers(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.activity(None)
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertEqual(self.h.notifications(), [])
+        self.activity("settled")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+
+    def test_new_foreground_turn_cancels_a_deferred_previous_response(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.activity("settled")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(self.h.notifications(), [])
+
+    def test_startup_seeds_activity_without_synthesizing_a_finish(self):
+        self.activity("waiting")
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertRan(self.h.run("startup"))
+        self.activity("settled")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(self.h.notifications(), [])
+
+    def test_notification_prefers_explicit_pane_label_over_metadata_and_terminal_title(self):
+        state = self.h.state()
+        for item in state["panes"]:
+            if item["pane_id"] == "w5:p4":
+                item.update(label="소유자 지정 이름", title="새 세션 제목")
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.status("w5:p4", "working"))
+        self.assertRan(self.h.status("w5:p4", "idle"))
+        self.assertEqual(flag(self.h.notifications()[0], "-message"), "소유자 지정 이름")
+
     def test_another_herdr_session_keeps_this_sessions_statuses(self):
         # Pane ids repeat across herdr sessions; one session's sync must not prune the other's.
         self.assertRan(self.h.status("w5:p4", "working"))
@@ -597,7 +671,7 @@ class NotificationTest(HerdrPluginTestCase):
         sent = self.h.notifications()
         self.assertEqual(len(sent), 1, sent)
         argv = sent[0]
-        self.assertEqual(flag(argv, "-title"), "✅ claude 완료")
+        self.assertEqual(flag(argv, "-title"), "✅ claude 응답 종료")
         self.assertEqual(flag(argv, "-subtitle"), "beta")
         self.assertEqual(flag(argv, "-message"), LONG_TITLE)
         self.assertEqual(flag(argv, "-group"), "herdr-harness.w5:p4")
@@ -732,7 +806,7 @@ class NotificationTest(HerdrPluginTestCase):
 THREAD = "0199aaaa-1111-7222-8333-444455556666"
 SESSION = "5b6c7d8e-1111-4222-8333-444455556666"
 LABELS = ["--state-label", "idle=대기", "--state-label", "working=작업 중",
-          "--state-label", "blocked=입력 필요", "--state-label", "done=완료"]
+          "--state-label", "blocked=입력 필요", "--state-label", "done=응답 종료"]
 
 
 def jsonl(path, records, append=False):

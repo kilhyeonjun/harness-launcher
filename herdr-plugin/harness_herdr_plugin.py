@@ -74,7 +74,7 @@ CODEX_HOME_DEPTH = 8
 # A harness Claude config directory, looked up the same way; ~/.claude is the last candidate.
 CLAUDE_HOME = os.path.join(".harness", "claude")
 METADATA_SOURCE = "harness.launcher"
-STATE_LABELS = (("idle", "대기"), ("working", "작업 중"), ("blocked", "입력 필요"), ("done", "완료"))
+STATE_LABELS = (("idle", "대기"), ("working", "작업 중"), ("blocked", "입력 필요"), ("done", "응답 종료"))
 # A harness answer that leaves a choice to the user marks its recommended option.
 DECISION_MARK = "← 추천"
 DECISION_LABEL = "결정 필요"
@@ -622,7 +622,7 @@ def record_status(payload):
         statuses = session(state)["panes"]
         entry = statuses.get(pane_id) or {}
         previous = entry.get("status")
-        seq = int(entry.get("seq", 0)) + 1
+        seq = int(entry.get("seq", 0)) + (previous != status)
         entry.update(status=status, seq=seq)
         statuses[pane_id] = entry
     if status == "blocked" and previous != "blocked":
@@ -673,6 +673,61 @@ def settle_decision(payload, pending):
 def still_current(pending):
     with locked_state() as state:
         return (session(state)["panes"].get(pending["pane_id"]) or {}).get("seq") == pending["seq"]
+
+
+def activity_of(pane):
+    tokens = pane.get("tokens") or {}
+    return tokens.get("herdr_activity"), tokens.get("herdr_activity_id")
+
+
+def reconcile_activity(panes):
+    """Only a fresh explicit settle can release an observed background completion."""
+    ready = []
+    with locked_state() as state:
+        records = session(state)["panes"]
+        for pane in panes:
+            pane_id = pane.get("pane_id")
+            entry = records.setdefault(pane_id, {})
+            phase, identity = activity_of(pane)
+            owner = (pane.get("agent"), session_of(pane, pane.get("agent") or ""), pane.get("terminal_id"))
+            if entry.get("activity_owner") != list(owner):
+                entry.pop("deferred", None)
+                entry.pop("activity_id", None)
+                entry.pop("activity_phase", None)
+                entry["activity_owner"] = list(owner)
+            if pane.get("agent_status") in ("working", "blocked"):
+                entry.pop("deferred", None)
+            pending = entry.get("deferred")
+            if phase in ("waiting", "stalled") and identity:
+                if entry.get("activity_id") not in (None, identity):
+                    entry.pop("deferred", None)
+                entry.update(activity_id=identity, activity_phase=phase)
+            elif phase == "settled" and identity:
+                if pending and entry.get("activity_id") == identity and entry.get("seq") == pending.get("seq"):
+                    ready.append(pending)
+                entry.pop("deferred", None)
+                entry.update(activity_id=identity, activity_phase="settled")
+            elif entry.get("activity_phase") in ("waiting", "stalled", "unknown"):
+                entry["activity_phase"] = "unknown"
+    return ready
+
+
+def defer_finished(pending, pane):
+    if pending["kind"] != "finished":
+        return False
+    phase, identity = activity_of(pane)
+    with locked_state() as state:
+        entry = session(state)["panes"].get(pending["pane_id"]) or {}
+        if entry.get("seq") != pending.get("seq"):
+            return True
+        if phase in ("waiting", "stalled") and identity:
+            entry.update(activity_phase=phase, activity_id=identity)
+        unresolved = entry.get("activity_phase") in ("waiting", "stalled", "unknown")
+        if unresolved and not (phase == "settled" and identity == entry.get("activity_id")):
+            entry["deferred"] = pending
+            session(state)["panes"][pending["pane_id"]] = entry
+            return True
+    return False
 
 
 def notify_delay():
@@ -740,7 +795,10 @@ def announce(pending):
                  if item.get("pane_id") == pane_id), None)
     # Events run in separate processes and can take the lock out of order; announce only
     # what herdr still reports for the pane.
-    if pane is None or pane.get("agent_status") != EXPECTED_LIVE_STATUS[pending["kind"]]:
+    valid = ("idle", "done") if pending["kind"] == "finished" else (EXPECTED_LIVE_STATUS[pending["kind"]],)
+    if pane is None or pane.get("agent_status") not in valid:
+        return
+    if defer_finished(pending, pane):
         return
     workspace = next((item for item in herdr("workspace", "list")["workspaces"]
                       if item.get("workspace_id") == pane.get("workspace_id")), {})
@@ -753,13 +811,14 @@ def announce(pending):
     if pending.get("decision"):
         template = "🔘 %s " + DECISION_LABEL
     else:
-        template = "✅ %s 완료" if pending["kind"] == "finished" else "⏳ %s 입력 필요"
+        template = "✅ %s 응답 종료" if pending["kind"] == "finished" else "⏳ %s 입력 필요"
     title = template % pending["agent"]
     subtitle = workspace.get("label") or pane.get("workspace_id") or ""
     # The title the last sync reported, which the run that queued this notification made.
     with locked_state() as state:
         reported = session(state)["meta"].get(pane_id) or {}
-    message = (reported.get("title") or display_title(pane.get("terminal_title_stripped") or "")
+    message = ((pane.get("label") or "").strip() or (pane.get("title") or "").strip()
+               or reported.get("title") or display_title(pane.get("terminal_title_stripped") or "")
                or pane_id)
     notifier = terminal_notifier()
     if notifier:
@@ -842,7 +901,7 @@ def pane_key(pane):
     """What a pane.updated event must change before the watcher syncs again; a shell's
     own title changes (each command) do not count."""
     agent = pane.get("agent") or ""
-    return agent, display_title(pane.get("terminal_title_stripped") or "") if agent else ""
+    return agent, display_title(pane.get("terminal_title_stripped") or "") if agent else "", activity_of(pane), pane.get("agent_status")
 
 
 def watch_paths():
@@ -958,6 +1017,9 @@ class Watcher:
         # Start where the sync stopped reading, so nothing written in between is missed.
         self.files = {path: self.files.get(path) or position for path, position in watched.items()}
         self.keys = {pane.get("pane_id"): pane_key(pane) for pane in panes}
+        for pending in reconcile_activity(panes):
+            if still_current(pending):
+                announce(pending)
         return True
 
     def scan(self):
@@ -1084,8 +1146,14 @@ def main():
             pane_id = data.get("pane_id")
             # A new server has no pane metadata; a newly detected agent has none either.
             forget = "all" if event == "startup" else pane_id if event == "pane.agent_detected" else None
-            sync_tabs(refresh_model=pane_id if event == "pane.agent_status_changed" else None,
-                      forget=forget)
+            if event == "startup":
+                with locked_state() as state:
+                    session(state)["panes"].clear()
+            panes, _ = sync_tabs(refresh_model=pane_id if event == "pane.agent_status_changed" else None,
+                                 forget=forget)
+            for deferred in reconcile_activity(panes):
+                if still_current(deferred):
+                    announce(deferred)
     except Exception as error:  # noqa: BLE001
         log("tabs: %s" % error)
     if event == "pane.agent_status_changed":

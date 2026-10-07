@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.46.1 — 2026-10-08
+
+- Herdr desktop notifications defer an ended response while its background
+  activity is unresolved. Expired observations stay uncertain; only an explicit
+  settlement for the same activity cycle releases the notification. New turns
+  and session identities cancel the old deferred response. Notifications prefer
+  a manual pane label and session metadata title, and say “응답 종료” rather than
+  claiming the whole task is complete.
+
 ## 0.46.0 — 2026-10-08
 
 - herdr plugin: a Claude turn whose last answer marks a recommended option
