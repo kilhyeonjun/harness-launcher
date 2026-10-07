@@ -10,9 +10,11 @@ Notable changes are recorded here. This project follows semantic versioning for 
   now asks the agent (a delivery note appended to the prompt) to write the
   message to `$HARNESS_COMMIT_MESSAGE_FILE` in its private temp directory. The
   launcher reads it without following symlinks or blocking, only as a regular
-  file of at most 8192 bytes of strict UTF-8, removes control characters
-  (except LF and TAB) and any `Harness-Session:` line, and accepts it only
-  with a non-empty subject of at most 100 characters and at most 200 lines. It
+  single-link file of at most 8192 bytes of strict UTF-8, removes control and
+  Unicode format characters (except LF and TAB), CI-skip directives
+  (`[skip ci]` and its variants, `skip-checks:` lines) and any
+  `Harness-Session:` line, and accepts it only with a non-empty subject of at
+  most 100 characters and at most 200 lines. Only a run that goes to delivery
   copies the message into the launcher-owned session record, and the broker
   commits with it plus a `Harness-Session: <uuid>` trailer. Anything else falls
   back to the generic message; the run log names which was used. The agent's
@@ -21,14 +23,19 @@ Notable changes are recorded here. This project follows semantic versioning for 
   session whose work will not be delivered; before, such a session could only
   be reopened and was never collected. It takes the session's runtime lease
   without waiting (a live owner refuses), first writes the work tree as a
-  binary patch against the session base (`discarded.patch`, untracked files
-  included, gitignored files not) and `discarded-at` into the record, refuses
-  without changing anything if that patch cannot be written completely, and
-  then moves the session to the new terminal state `DISCARDED`. `gc` retires
-  `DISCARDED` work trees after the retention period, like `CLOSED` and
-  `DELIVERED`; `resume` and `recover` refuse them. Other states refuse with exit 2: `OPEN` (use
-  `exit` or `close`), `SUBMITTED` and `INTEGRATING` (use `recover`), `CLOSED`,
-  `DELIVERED` and `DISCARDED`.
+  binary patch against the session base and `discarded-at` into the record
+  (fsynced). The patch is staged from a copy of the index submit would use, so
+  it holds exactly what `close` would deliver: force-added ignored files and
+  `git rm --cached` removals included, untracked files added, other gitignored
+  files and machine-local paths left out. It refuses without changing anything
+  if that patch cannot be written completely, and then moves the session to
+  the new terminal state `DISCARDED`. `gc` retires `DISCARDED` work trees
+  after the retention period, like `CLOSED` and `DELIVERED`; `resume` and
+  `recover` refuse them. Other states refuse with exit 2: `OPEN` (use `exit`
+  or `close`), `SUBMITTED` and `INTEGRATING` (use `recover`), `CLOSED`,
+  `DELIVERED` and `DISCARDED`. `DISCARDED` is reachable only through
+  `discard`: `harness-session transition <uuid> DISCARDED` refuses, and
+  reopening a session removes any leftover discard evidence.
 
 ## 0.44.1 — 2026-10-07
 

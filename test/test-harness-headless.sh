@@ -76,6 +76,10 @@ case "\$mode" in
     printf 'message %s\n' "\$\$" > message-change.txt
     bash "$TMP/write-message.sh" "\$HARNESS_COMMIT_MESSAGE_FILE"
     echo "\$ok" ;;
+  failmessage)
+    printf 'failmessage %s\n' "\$\$" > failmessage-change.txt
+    bash "$TMP/write-message.sh" "\$HARNESS_COMMIT_MESSAGE_FILE"
+    echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom","session_id":"'\$sid'"}'; exit 1 ;;
   change)
     printf 'headless %s\n' "\$\$" > headless-change.txt
     project="\$HOME/.claude/projects/\$(printf '%s' "\$PWD" | sed 's/[^A-Za-z0-9]/-/g')"
@@ -326,42 +330,66 @@ grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail 'cle
 echo 'PASS: harness-headless reports no_changes for a clean session'
 
 # --- the agent's commit message file becomes the delivered commit message ---------
-# write-message.sh <path> writes the case named in $TMP/message-case.
-cat > "$TMP/write-message.sh" <<EOF
+# write-message.sh <path> writes the agent's message: CRLF, an ESC colour
+# sequence, trailing blanks, surrounding blank lines and a forged trailer, all
+# normalized away. The fallback cases are unit tests below.
+cat > "$TMP/write-message.sh" <<'EOF'
 #!/bin/bash
-f="\$1"
-case "\$(cat "$TMP/message-case")" in
-  valid)
-    # CRLF, an ESC colour sequence, trailing blanks, surrounding blank lines and
-    # a forged trailer: all normalized away.
-    printf '\r\n\r\nfeat: agent subject  \r\n\r\nBody with \033[31mred\033[0m text.\t\r\nharness-session: forged\r\nSecond line.\r\n\r\n' > "\$f" ;;
-  symlink) printf 'feat: through a link\n' > "$TMP/message-target"; ln -s "$TMP/message-target" "\$f" ;;
-  fifo) mkfifo "\$f" ;;
-  oversized) { printf 'feat: big\n\n'; head -c 8200 /dev/zero | tr '\0' a; } > "\$f" ;;
-  utf8) printf 'feat: bad \xff\xfe bytes\n' > "\$f" ;;
-  empty) printf ' \n\t\n\n' > "\$f" ;;
-  long) printf '%0101d\n' 0 > "\$f" ;;
-  lines) { printf 'feat: many lines\n\n'; seq 1 200; } > "\$f" ;;
-esac
+printf '\r\n\r\nfeat: agent subject  \r\n\r\nBody with \033[31mred\033[0m text.\t\r\nharness-session: forged\r\nSecond line.\r\n\r\n' > "$1"
 EOF
 echo message > "$TMP/mode"
-for case in valid symlink fifo oversized utf8 empty long lines; do
-  printf '%s\n' "$case" > "$TMP/message-case"
-  headless || fail "message run ($case) must exit 0"
-  expect_status delivered
-  msid="$(field session_id)"
-  body="$(git --git-dir="$REMOTE" log -1 --format=%B main)"
-  if [[ "$case" == valid ]]; then
-    expected="$(printf 'feat: agent subject\n\nBody with [31mred[0m text.\nSecond line.\n\nHarness-Session: %s' "$msid")"
-    [[ "$body" == "$expected" ]] || fail "the agent message must be delivered sanitized with one trailer, got: $(printf '%q' "$body")"
-    [[ "$(stat -f '%Lp' "$STATE/sessions/$msid/commit-message")" == 600 ]] || fail 'the record copy of the message must be 0600'
-    grep -q '^harness-headless: commit message: agent' "$RESULT.log" || fail 'the run log must name the agent message source'
-  else
-    [[ "$body" == "harness session $msid" ]] || fail "a $case message file must give the generic message, got: $(printf '%q' "$body")"
-    [[ ! -e "$STATE/sessions/$msid/commit-message" ]] || fail "a $case message must not reach the session record"
-    grep -q '^harness-headless: commit message: generic' "$RESULT.log" || fail "the run log must name the generic source ($case)"
-  fi
-done
+headless || fail 'message run must exit 0'
+expect_status delivered
+msid="$(field session_id)"
+body="$(git --git-dir="$REMOTE" log -1 --format=%B main)"
+expected="$(printf 'feat: agent subject\n\nBody with [31mred[0m text.\nSecond line.\n\nHarness-Session: %s' "$msid")"
+[[ "$body" == "$expected" ]] || fail "the agent message must be delivered sanitized with one trailer, got: $(printf '%q' "$body")"
+[[ "$(stat -f '%Lp' "$STATE/sessions/$msid/commit-message")" == 600 ]] || fail 'the record copy of the message must be 0600'
+grep -q '^harness-headless: commit message: agent' "$RESULT.log" || fail 'the run log must name the agent message source'
+# A run that is not delivered never puts the agent's message in the record:
+# an operator who later resumes and closes the session gets the generic one.
+echo failmessage > "$TMP/mode"
+headless || fail 'failed message run must exit 0'
+expect_status failed
+[[ ! -e "$STATE/sessions/$(field session_id)/commit-message" ]] || fail 'a failed run must not record the agent message'
+python3 - "$ROOT/bin" <<'PY' || fail 'agent_commit_message unit cases'
+import os, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+import harness_headless as h
+def read(content=None, setup=None):
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, 'commit-message')
+    if content is not None:
+        open(path, 'wb').write(content if isinstance(content, bytes) else content.encode())
+    if setup:
+        setup(d, path)
+    return h.agent_commit_message(d)
+def fallback(name, **kw):
+    message, reason = read(**kw)
+    assert message is None and reason, (name, message, reason)
+def valid(content, expected):
+    message, reason = read(content)
+    assert message == expected and reason is None, (content, message, reason)
+fallback('missing')
+fallback('symlink', setup=lambda d, p: (open(d + '/t', 'w').write('feat: x\n'), os.symlink(d + '/t', p)))
+fallback('fifo', setup=lambda d, p: os.mkfifo(p))
+fallback('oversized', content='feat: big\n\n' + 'a' * 8200)
+fallback('utf8', content=b'feat: bad \xff\xfe bytes\n')
+fallback('empty', content=' \n\t\n\n')
+fallback('long', content='x' * 101 + '\n')
+fallback('lines', content='feat: many\n\n' + '\n'.join(str(i) for i in range(199)) + '\n')
+fallback('hardlink', setup=lambda d, p: (open(d + '/t', 'w').write('feat: x\n'), os.link(d + '/t', p)))
+fallback('only a ci token', content='[skip ci]\n')
+valid('x' * 100 + '\n', 'x' * 100 + '\n')
+valid('feat: lines\n\n' + '\n'.join(str(i) for i in range(198)) + '\n', 'feat: lines\n\n' + '\n'.join(str(i) for i in range(198)) + '\n')
+# CI-skip directives are removed wherever they are; GitHub keywords pass.
+valid('fix: thing [skip ci]\n\nbody [CI Skip] [ no ci ] [skip actions] [Actions Skip]\nx [skip [skip ci]ci] y\n'
+      'Skip-Checks: true\n  skip-checks : yes\nFixes #12\n',
+      'fix: thing\n\nbody\nx  y\nFixes #12\n')
+# Format (Cf) characters, C0/C1 controls; trailer variants.
+valid('feat: a​b‮c⁦d\x9b31m\n\n  Harness-Session : x\nHARNESS-SESSION:y\n​Harness-Session: z\nNot-Harness-Session: k\n',
+      'feat: abcd31m\n\nNot-Harness-Session: k\n')
+PY
 echo 'PASS: harness-headless delivers a sanitized agent commit message and falls back safely'
 
 # --- committed work, session git payloads, excluded paths, lingering processes ------

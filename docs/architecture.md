@@ -207,15 +207,27 @@ whose work will not be delivered (for example, work another session already
 delivered). It runs under the global integration lock and takes the session's
 runtime lease without waiting, as garbage collection does; a held lease
 refuses. Before any state change it writes `discarded.patch` into the record:
-the binary diff of the work tree (tracked, deleted and untracked files;
-gitignored files and the excluded machine-local paths are left out) against
-`base-sha`, staged through a temporary index with the session's broker git
-(`trusted.git` for headless sessions), plus `discarded-at` (UTC). A patch that cannot be written
-completely, or is empty while the work tree differs from the base, refuses and
+the binary diff of the work tree against `base-sha`, staged through a
+temporary copy of the index that submit would stage (the session's own index
+for interactive sessions, the `trusted.git` index for headless ones) with the
+session's broker git, plus `discarded-at` (UTC). Starting from that index
+keeps the patch equal to what `close` would deliver: force-added ignored files
+stay, files removed with `git rm --cached` and now ignored stay deleted,
+untracked files are added, and other gitignored files and the excluded
+machine-local paths are left out. Neither the session index nor a headless
+session's `.git` is written. The diff format is fixed (`--no-color
+--no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/`), so user diff
+settings cannot change the patch. Completeness rests on the exit status of
+every step (index copy, `add`, `diff`) and on the rename that publishes the
+patch only after git wrote it; the patch, `discarded-at` and the record
+directory are fsynced before the journal changes. Any failure refuses and
 changes nothing. Only then does the journal become `DISCARDED`, keeping the
-identity a `CONFLICT` carried. `OPEN` (use `exit` or `close`), `SUBMITTED` and
-`INTEGRATING` (possibly indeterminate; use `recover`), `CLOSED`, `DELIVERED`
-and `DISCARDED` refuse with exit 2.
+identity a `CONFLICT` carried. `DISCARDED` is reachable only through
+`discard`: `harness-session transition <uuid> DISCARDED` refuses, and every
+reopen to `OPEN` removes a leftover `discarded.patch` and `discarded-at`.
+`OPEN` (use `exit` or `close`), `SUBMITTED` and `INTEGRATING` (possibly
+indeterminate; use `recover`), `CLOSED`, `DELIVERED` and `DISCARDED` refuse
+with exit 2.
 
 State transitions: `OPEN` → `SUBMITTED` | `CLOSED` | `ABANDONED`;
 `SUBMITTED` ⇄ `INTEGRATING`; `INTEGRATING` → `DELIVERED` | `CONFLICT`;
@@ -314,21 +326,32 @@ legacy routes do not change.
   the sandbox lets Bash write. After Claude exits and lingering processes are
   killed, and before the temp directory is removed, it reads the file without
   following a symlink or blocking (`O_NOFOLLOW|O_NONBLOCK`), only if it is a
-  regular file of at most 8192 bytes of strict UTF-8. It turns CRLF and CR
-  into LF, removes every other control character except TAB (so ESC and
-  terminal sequences cannot reach a terminal that shows the log), strips
-  trailing whitespace, drops leading and trailing blank lines and any line
-  starting `Harness-Session:` (case-insensitive). The message is used only if
-  the subject is non-empty and at most 100 characters and there are at most
-  200 lines; it is then written atomically (0600) to the launcher-owned
-  record, `<record>/commit-message`, which the agent sandbox cannot write.
+  regular file with a single link, of at most 8192 bytes of strict UTF-8. It
+  turns CRLF and CR into LF, removes every other control character except TAB
+  (so ESC and terminal sequences cannot reach a terminal that shows `git
+  log`) and every Unicode format character (bidi overrides, zero-width), removes
+  CI-skip directives (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`,
+  `[actions skip]`, case-insensitive, and `skip-checks:` lines) so the
+  delivered commit cannot switch off the repository's checks, strips trailing
+  whitespace, drops leading and trailing blank lines and any line starting
+  `Harness-Session:` (case-insensitive, spaces allowed). Other trailers and
+  GitHub keywords such as `Fixes #12` pass through unchanged. The message is
+  used only if the subject is non-empty and at most 100 characters and there
+  are at most 200 lines. It is written atomically (0600) to the
+  launcher-owned record, `<record>/commit-message`, which the agent sandbox
+  cannot write, only when the run goes to delivery, right before the broker
+  runs; a timeout, budget, failed or refused run never records it, so a
+  session resumed and closed later by its owner gets the generic message. A
+  `printf` or `echo` command whose text trips a Bash deny rule (it contains
+  `harness-session`, `git push` or another denied word) is refused by the
+  sandbox, so such a message is never written and the generic one is used.
   The broker commits with that message, a blank line and `Harness-Session:
   <uuid>` (`git commit --cleanup=whitespace -F`, same `harness-broker`
   identity) when the record holds a regular, non-symlink `commit-message`, in
   headless and interactive sessions alike; otherwise with `harness session
   <uuid>`. Anything else (no file, a symlink, a FIFO, too large, invalid
   UTF-8, an invalid subject, an I/O error) falls back to the generic message.
-  The run log names the source used (`harness-headless: commit message:
+  For a delivery, the run log names the source used (`harness-headless: commit message:
   agent` or `generic (<reason>)`); the result file does not change. The
   agent's `.git` is never read for this.
 - **Timeout.** After `M` minutes (fractions allowed) the whole process group

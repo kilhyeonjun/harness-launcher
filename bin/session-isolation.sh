@@ -145,7 +145,8 @@ reopen_session() {
   local id="$1" dir
   dir="$(session_dir "$id")"
   chmod u+w "$dir/submission.patch" "$dir/manifest" "$dir/remote-url" 2>/dev/null || true
-  rm -f "$dir/pending-sha" "$dir/push-ack" "$dir/.candidate-manifest"
+  # Stale discard evidence (a failed discard) must not outlive the reopen.
+  rm -f "$dir/pending-sha" "$dir/push-ack" "$dir/.candidate-manifest" "$dir/discarded.patch" "$dir/discarded-at"
   transition "$id" OPEN
   write_heartbeat "$dir"
 }
@@ -796,7 +797,7 @@ integrate_unlocked() {
     fi
     "${cgit[@]}" -C "$candidate" -c user.name=harness-broker -c user.email=broker@invalid commit -q "${cmsg[@]}" || rc=$?
     [[ -z "$message" ]] || rm -f "$message"
-    [[ "$rc" == 0 ]] || return "$rc"
+    [[ "$rc" == 0 ]] || { rm -rf "$candidate"; return "$rc"; }
     delivered="$(git -C "$candidate" rev-parse HEAD)"
     write_candidate_manifest "$candidate" "$delivered" "$dir/manifest" "$dir/.candidate-manifest" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
     printf '%s\n' "$delivered" > "$dir/pending-sha"
@@ -844,31 +845,41 @@ close_session() {
   integrate "$id"
 }
 # write_discard_patch <id> <dir>: the session work tree against its base as a
-# binary patch (untracked files included, excluded paths not) in
-# <dir>/discarded.patch, staged through a temporary index so neither the
-# session index nor, for headless sessions, the session .git is touched.
+# binary patch in <dir>/discarded.patch, fsynced. It stages through a copy of
+# the index submit would stage (the session index, or the trusted index for
+# headless sessions), so force-added ignored files and `rm --cached` removals
+# come out as submit would deliver them, untracked files are added, and
+# neither the session index nor the session .git of a headless session is
+# written. Completeness rests on every git step's exit status and on the
+# rename that publishes the file only after git wrote it.
 write_discard_patch() {
-  local id="$1" dir="$2" root base tmp patch rc=0
+  local id="$1" dir="$2" root base tmp patch index rc=0
   root="$(<"$dir/session-root")" && base="$(<"$dir/base-sha")" || return 1
   [[ -d "$root" && ! -L "$root" ]] || return 1
   ROOT_GIT_DIR=""
   if [[ -e "$dir/headless" ]]; then
     [[ -d "$dir/trusted.git" && ! -L "$dir/trusted.git" ]] || return 1
-    ROOT_GIT_DIR="$dir/trusted.git"
+    ROOT_GIT_DIR="$dir/trusted.git"; index="$ROOT_GIT_DIR/index"
+  else
+    index="$(session_git -C "$root" rev-parse --path-format=absolute --git-path index)" || return 1
   fi
+  [[ -f "$index" && ! -L "$index" ]] || return 1
   tmp="$(mktemp -d "$(state_home)/discard.XXXXXX")" || return 1
   patch="$(mktemp "$dir/.discarded.patch.XXXXXX")" || { rm -rf "$tmp"; return 1; }
   export GIT_INDEX_FILE="$tmp/index"
-  { root_git "$root" read-tree "$base" && root_git "$root" add -A -- . \
-      && root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$patch"
+  # Fixed output format: no user color, prefix or external diff setting
+  # changes the patch.
+  { cp "$index" "$GIT_INDEX_FILE" && root_git "$root" add -A -- . \
+      && root_git "$root" diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ \
+        --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$patch"
   } || rc=1
-  if [[ "$rc" == 0 && ! -s "$patch" ]]; then
-    # An empty patch is evidence only when the work tree really is the base.
-    root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$base" -- . "${EXCLUDED_PATHSPEC[@]}" || rc=1
-  fi
   unset GIT_INDEX_FILE
   rm -rf "$tmp"
   [[ "$rc" == 0 ]] && mv -f "$patch" "$dir/discarded.patch" || { rm -f "$patch"; return 1; }
+}
+# fsync_paths <path>...: flush files and directories to disk.
+fsync_paths() {
+  perl -MIO::Handle -e 'for (@ARGV) { open(my $f, "<", $_) or die "$_: $!\n"; $f->sync or die "$_: $!\n"; }' "$@"
 }
 # discard <id>: retire an ABANDONED or CONFLICT session whose work will not be
 # delivered. Its work is kept first as discarded.patch; then DISCARDED, which
@@ -892,7 +903,8 @@ discard_unlocked() {
     # Reread under the lease: a launcher may have reopened it meanwhile.
     state="$(field "$dir/journal" state)"
     [[ "$state" == ABANDONED || "$state" == CONFLICT ]] || { echo "harness-session: refused: session $id is now $state" >&2; exit 2; }
-    { write_discard_patch "$id" "$dir" && date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/discarded-at"; } || {
+    { write_discard_patch "$id" "$dir" && date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/discarded-at" \
+        && fsync_paths "$dir/discarded.patch" "$dir/discarded-at" "$dir"; } || {
       rm -f "$dir/discarded.patch" "$dir/discarded-at"
       echo "harness-session: refused: could not write the discard patch for session $id; nothing changed" >&2
       exit 2
@@ -904,7 +916,11 @@ case "${1:-}" in
   create) shift; [[ $# -eq 1 ]] || exit 2; create "$1" ;;
   discard) shift; [[ $# -eq 1 ]] || exit 2; with_lock discard_unlocked "$1" ;;
   resume) shift; [[ $# -eq 2 ]] || exit 2; resume_session "$1" "$2" ;;
-  transition) shift; transition "$@" ;;
+  transition)
+    shift
+    # DISCARDED needs the lease and the evidence that only discard provides.
+    [[ "${2:-}" != DISCARDED ]] || { echo 'harness-session: refused: use harness-session discard to discard a session' >&2; exit 2; }
+    transition "$@" ;;
   exit) shift; exit_session "$1" ;;
   recover) shift; recover "$1" ;;
   list) list ;;

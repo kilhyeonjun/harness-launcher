@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -46,7 +47,11 @@ MESSAGE_MAX_BYTES = 8192
 MESSAGE_MAX_LINES = 200
 SUBJECT_MAX = 100
 # The broker appends this trailer itself.
-RESERVED_TRAILER = re.compile(r'harness-session:', re.I)
+RESERVED_TRAILER = re.compile(r'\s*harness-session\s*:', re.I)
+# CI-skip directives (GitHub Actions and most CI systems): the delivered
+# commit must not switch off the repository's checks.
+CI_SKIP_TOKEN = re.compile(r'\[\s*(?:skip\s+ci|ci\s+skip|no\s+ci|skip\s+actions|actions\s+skip)\s*\]', re.I)
+CI_SKIP_TRAILER = re.compile(r'\s*skip-checks\s*:', re.I)
 DELIVERY_NOTE = (
     '---\n'
     'Delivery note from the launcher: when you finish, the launcher commits your changes to the repository '
@@ -130,8 +135,13 @@ def agent_commit_message(run_tmp):
     except OSError as exc:
         return None, f'unreadable message file ({exc.strerror})'
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
             return None, 'message file is not a regular file'
+        # A hard link would be another file's content (defence in depth: the
+        # sandbox cannot link read-denied files).
+        if info.st_nlink != 1:
+            return None, 'message file has more than one link'
         data = os.read(fd, MESSAGE_MAX_BYTES + 1)
     except OSError as exc:
         return None, f'unreadable message file ({exc.strerror})'
@@ -144,7 +154,12 @@ def agent_commit_message(run_tmp):
     except UnicodeError:
         return None, 'message file is not valid UTF-8'
     text = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', text.replace('\r\n', '\n').replace('\r', '\n'))
-    lines = [line.rstrip() for line in text.split('\n') if not RESERVED_TRAILER.match(line)]
+    # Format characters (bidi overrides, zero-width) could hide or reorder text.
+    text = ''.join(c for c in text if unicodedata.category(c) != 'Cf')
+    while CI_SKIP_TOKEN.search(text):
+        text = CI_SKIP_TOKEN.sub('', text)
+    lines = [line.rstrip() for line in text.split('\n')
+             if not (RESERVED_TRAILER.match(line) or CI_SKIP_TRAILER.match(line))]
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:
@@ -446,11 +461,8 @@ def run(args, result, run_tmp):
         # Before any broker step: nothing from the run survives near the work
         # tree or the temp base, and the temp base is gone.
         kill_lingering(str(state / 'worktrees' / sid) if sid else None, run_tmp)
-        message, reason = agent_commit_message(run_tmp)
-        if message and sid:
-            reason = record_commit_message(state, sid, message)
-        source = 'agent' if message and not reason else f'generic ({reason or "no session"})'
-        print(f'harness-headless: commit message: {source}', file=log, flush=True)
+        # Read now (the temp base goes next); recorded only for a delivery.
+        message, message_reason = agent_commit_message(run_tmp)
         shutil.rmtree(run_tmp, ignore_errors=True)
         # A clone refusal can only precede the launcher's session announcement.
         announced = SESSION_LINE.search(log_text)
@@ -479,6 +491,10 @@ def run(args, result, run_tmp):
             result['status'] = 'failed'
             result['summary'] = 'isolated session id was not announced by the launcher'
         else:
+            if message:
+                message_reason = record_commit_message(state, sid, message)
+            source = 'agent' if message and not message_reason else f'generic ({message_reason})'
+            print(f'harness-headless: commit message: {source}', file=log, flush=True)
             result['status'], result['commit'], reason = deliver(sid, state, broker_env(env), str(state), log)
             if reason:
                 result['summary'] = reason
