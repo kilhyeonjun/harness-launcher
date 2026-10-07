@@ -766,7 +766,10 @@ for mode in headless interactive; do
   chmod +x "$d_root/merge.txt"; ln -s merge.txt "$d_root/discard-link"
   iso exit "$d_id" || :
   [[ "$(jfield "$d_id" state)" == ABANDONED ]] || { echo "FAIL: $mode discard fixture must be ABANDONED"; exit 1; }
+  d_index="$STATE/sessions/$d_id/trusted.git/index"; [[ "$mode" == headless ]] || d_index="$(git -C "$d_root" rev-parse --absolute-git-dir)/index"
+  d_index_before="$(shasum "$d_index")"
   iso discard "$d_id" || { echo "FAIL: $mode discard of ABANDONED must succeed"; exit 1; }
+  [[ "$(shasum "$d_index")" == "$d_index_before" ]] || { echo "FAIL: $mode discard must not write the session's broker index"; exit 1; }
   d_dir="$STATE/sessions/$d_id"
   [[ "$(jfield "$d_id" state)" == DISCARDED && -z "$(jfield "$d_id" identity)" ]] || { echo "FAIL: $mode discard must end DISCARDED"; exit 1; }
   [[ -f "$d_dir/discarded.patch" && ! -L "$d_dir/discarded.patch" && -s "$d_dir/discarded.patch" ]] || { echo "FAIL: $mode discard must keep the patch"; exit 1; }
@@ -846,5 +849,9 @@ chmod u+w "$STATE/sessions/$a_id"
 rc=0; PATH="$FAILPATH" FAIL_GIT='--binary' iso discard "$a_id" 2>/dev/null || rc=$?
 [[ "$rc" == 2 && "$(jfield "$a_id" state)" == ABANDONED && ! -e "$STATE/sessions/$a_id/discarded.patch" && -f "$a_root/discard-keep.txt" ]] \
   || { echo "FAIL: a failed patch write must refuse and change nothing (rc=$rc)"; exit 1; }
+# An interrupted discard (TERM while git stages) removes its temporaries.
+rc=0; PATH="$FAILPATH" AFTER_GIT=' add -A ' AFTER_CMD='kill -TERM "$(ps -o ppid= -p "$PPID")"' iso discard "$a_id" 2>/dev/null || rc=$?
+leftover="$(find "$STATE" -maxdepth 1 -name 'discard.*'; find "$STATE/sessions/$a_id" -name '.discarded.patch.*')"
+[[ "$rc" != 0 && -z "$leftover" && "$(jfield "$a_id" state)" == ABANDONED ]] || { echo "FAIL: an interrupted discard must clean up and change nothing (rc=$rc): $leftover"; exit 1; }
 iso discard "$a_id" && [[ "$(jfield "$a_id" state)" == DISCARDED ]] || { echo 'FAIL: discard must succeed once the patch can be written'; exit 1; }
 echo 'PASS: discard keeps the work as a patch, retires ABANDONED/CONFLICT to DISCARDED and refuses everything else'

@@ -52,6 +52,7 @@ DROPPED_TRAILERS = ('harnesssession', 'skipchecks')
 # CI-skip directives (GitHub Actions and most CI systems): the delivered
 # commit must not switch off the repository's checks.
 CI_SKIP_TOKEN = re.compile(r'\[\s*(?:skip\s+ci|ci\s+skip|no\s+ci|skip\s+actions|actions\s+skip)\s*\]', re.I)
+CI_SKIP_LEADING = re.compile(r'^[ \t]*(?:' + CI_SKIP_TOKEN.pattern + r')[ \t]*', re.I | re.M)
 DELIVERY_NOTE = (
     '---\n'
     'Delivery note from the launcher: when you finish, the launcher commits your changes to the repository '
@@ -169,6 +170,8 @@ def agent_commit_message(run_tmp):
     # Format characters (bidi overrides, zero-width) could hide or reorder text.
     text = ''.join(c for c in text if unicodedata.category(c) != 'Cf')
     while CI_SKIP_TOKEN.search(text):
+        # A token that starts a line takes its following blanks with it.
+        text = CI_SKIP_LEADING.sub('', text)
         text = CI_SKIP_TOKEN.sub('', text)
     lines = [line.rstrip() for line in text.split('\n')
              if trailer_key(line) not in DROPPED_TRAILERS]
@@ -359,8 +362,24 @@ VERIFIER_REJECTED = ('the repository verifier rejected the session; it runs sand
                      'loopback, no credentials, writes only to its candidate); see the run log; session kept')
 
 
-def deliver(sid, state, env, cwd, log):
-    """Broker delivery after a successful run: (status, commit, reason)."""
+def deliver(sid, state, env, cwd, log, message=None):
+    """Broker delivery after a successful run: (status, commit, reason).
+    The agent's commit message is recorded for the broker only while `close`
+    runs; every outcome other than DELIVERED removes it again."""
+    record = state / 'sessions' / sid / COMMIT_MESSAGE
+    outcome = None
+    try:
+        outcome = _deliver(sid, state, env, cwd, log, message)
+        return outcome
+    finally:
+        if outcome is None or outcome[0] != 'delivered':
+            try:
+                record.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _deliver(sid, state, env, cwd, log, message):
     iso = str(BIN / 'session-isolation.sh')
 
     def session(*args):
@@ -376,6 +395,9 @@ def deliver(sid, state, env, cwd, log):
         return 'no_changes', None, None
     if current != 'ABANDONED' or session('recover') != 0:
         return 'failed', None, None
+    # The session has changes and is about to be closed through the broker.
+    reason = record_commit_message(state, sid, message) if message else 'no usable message file'
+    print(f'harness-headless: commit message: {"agent" if not reason else f"generic ({reason})"}', file=log, flush=True)
     rc = session('close')
     after = journal_state(state, sid)
     if after == 'INTEGRATING':
@@ -503,11 +525,9 @@ def run(args, result, run_tmp):
             result['status'] = 'failed'
             result['summary'] = 'isolated session id was not announced by the launcher'
         else:
-            if message:
-                message_reason = record_commit_message(state, sid, message)
-            source = 'agent' if message and not message_reason else f'generic ({message_reason})'
-            print(f'harness-headless: commit message: {source}', file=log, flush=True)
-            result['status'], result['commit'], reason = deliver(sid, state, broker_env(env), str(state), log)
+            if not message:
+                print(f'harness-headless: agent commit message unusable: {message_reason}', file=log, flush=True)
+            result['status'], result['commit'], reason = deliver(sid, state, broker_env(env), str(state), log, message)
             if reason:
                 result['summary'] = reason
 

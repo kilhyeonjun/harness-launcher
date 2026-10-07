@@ -864,8 +864,15 @@ write_discard_patch() {
     index="$(session_git -C "$root" rev-parse --path-format=absolute --git-path index)" || return 1
   fi
   [[ -f "$index" && ! -L "$index" ]] || return 1
+  # Runs in discard's lease subshell: an interrupt still removes the temps
+  # (globals, so the trap sees them; a renamed patch is no longer there).
+  DISCARD_TEMPS=()
+  trap 'rm -rf ${DISCARD_TEMPS[@]+"${DISCARD_TEMPS[@]}"}' EXIT
+  trap 'exit 130' INT TERM HUP
   tmp="$(mktemp -d "$(state_home)/discard.XXXXXX")" || return 1
+  DISCARD_TEMPS+=("$tmp")
   patch="$(mktemp "$dir/.discarded.patch.XXXXXX")" || { rm -rf "$tmp"; return 1; }
+  DISCARD_TEMPS+=("$patch")
   export GIT_INDEX_FILE="$tmp/index"
   # Fixed output format: no user color, prefix or external diff setting
   # changes the patch.
@@ -877,9 +884,10 @@ write_discard_patch() {
   rm -rf "$tmp"
   [[ "$rc" == 0 ]] && mv -f "$patch" "$dir/discarded.patch" || { rm -f "$patch"; return 1; }
 }
-# fsync_paths <path>...: flush files and directories to disk.
+# fsync_paths <path>...: flush files and directories to stable storage:
+# F_FULLFSYNC (51, macOS: also the drive cache), else plain fsync.
 fsync_paths() {
-  perl -MIO::Handle -e 'for (@ARGV) { open(my $f, "<", $_) or die "$_: $!\n"; $f->sync or die "$_: $!\n"; }' "$@"
+  /usr/bin/perl -MIO::Handle -e 'for (@ARGV) { open(my $f, "<", $_) or die "$_: $!\n"; fcntl($f, 51, 0) or $f->sync or die "$_: $!\n"; }' "$@"
 }
 # discard <id>: retire an ABANDONED or CONFLICT session whose work will not be
 # delivered. Its work is kept first as discarded.patch; then DISCARDED, which

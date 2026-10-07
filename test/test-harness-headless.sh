@@ -76,6 +76,9 @@ case "\$mode" in
     printf 'message %s\n' "\$\$" > message-change.txt
     bash "$TMP/write-message.sh" "\$HARNESS_COMMIT_MESSAGE_FILE"
     echo "\$ok" ;;
+  nonemessage)
+    bash "$TMP/write-message.sh" "\$HARNESS_COMMIT_MESSAGE_FILE"
+    echo "\$ok" ;;
   failmessage)
     printf 'failmessage %s\n' "\$\$" > failmessage-change.txt
     bash "$TMP/write-message.sh" "\$HARNESS_COMMIT_MESSAGE_FILE"
@@ -352,6 +355,11 @@ echo failmessage > "$TMP/mode"
 headless || fail 'failed message run must exit 0'
 expect_status failed
 [[ ! -e "$STATE/sessions/$(field session_id)/commit-message" ]] || fail 'a failed run must not record the agent message'
+echo nonemessage > "$TMP/mode"
+headless || fail 'no-changes message run must exit 0'
+expect_status no_changes
+grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" && [[ ! -e "$STATE/sessions/$(field session_id)/commit-message" ]] \
+  || fail 'a no-changes run must leave a CLOSED record without the agent message'
 python3 - "$ROOT/bin" <<'PY' || fail 'agent_commit_message unit cases'
 import os, sys, tempfile
 sys.path.insert(0, sys.argv[1])
@@ -405,6 +413,7 @@ valid('feat: s\n\n' + '\n'.join([
     'Harness-Session﹕ j', 'Harness-Session∶ k', 'Harness​-Session: l', 'Skip-Checks： true',
     'Harness-Sessions: kept']) + '\n', 'feat: s\n\nHarness-Sessions: kept\n')
 valid('feat: s [SKIP CI] [Skip Actions][ci  skip]\n', 'feat: s\n')
+valid('[skip ci] feat: lead\n\n[no ci]  body\n', 'feat: lead\n\nbody\n')
 PY
 echo 'PASS: harness-headless delivers a sanitized agent commit message and falls back safely'
 
@@ -810,8 +819,10 @@ import harness_headless as h
 state, sid = Path(sys.argv[2]), sys.argv[3]
 subprocess.run([str(h.BIN / 'session-isolation.sh'), 'exit', sid], env=os.environ, stderr=subprocess.DEVNULL)
 with open(os.devnull, 'w') as log:
-    status, commit, reason = h.deliver(sid, state, dict(os.environ), str(state), log)
+    status, commit, reason = h.deliver(sid, state, dict(os.environ), str(state), log, 'feat: moved\n')
 assert status == 'refused' and commit is None and 'source checkout' in (reason or ''), (status, reason)
+# Recorded for close, then removed: only a delivered session keeps it.
+assert not (state / 'sessions' / sid / 'commit-message').exists(), 'a refused delivery must not keep the agent message'
 PY
 mv "$SOURCE.moved" "$SOURCE"
 [[ "$moved_rc" == 0 ]] || fail 'a moved source checkout must be refused with its own reason'

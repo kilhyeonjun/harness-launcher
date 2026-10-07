@@ -210,18 +210,20 @@ refuses. Before any state change it writes `discarded.patch` into the record:
 the binary diff of the work tree against `base-sha`, staged through a
 temporary copy of the index that submit would stage (the session's own index
 for interactive sessions, the `trusted.git` index for headless ones) with the
-session's broker git, plus `discarded-at` (UTC). Starting from that index
-keeps the patch equal to what `close` would deliver: force-added ignored files
-stay, files removed with `git rm --cached` and now ignored stay deleted,
-untracked files are added, and other gitignored files and the excluded
+session's broker git, plus `discarded-at` (UTC). The patch holds the work
+tree's tracked content as that index tracks it plus untracked, non-ignored
+files: force-added ignored files stay, files removed with `git rm --cached`
+and now ignored stay deleted, and other gitignored files and the excluded
 machine-local paths are left out. Neither the session index nor a headless
 session's `.git` is written. The diff format is fixed (`--no-color
 --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/`), so user diff
 settings cannot change the patch. Completeness rests on the exit status of
 every step (index copy, `add`, `diff`) and on the rename that publishes the
 patch only after git wrote it; the patch, `discarded-at` and the record
-directory are fsynced before the journal changes. Any failure refuses and
-changes nothing. Only then does the journal become `DISCARDED`, keeping the
+directory are flushed with `F_FULLFSYNC` (plain `fsync` where that fails, which
+does not flush the drive cache) before the journal changes. Any failure, or an
+interrupt (the discard's temporary files are removed), refuses and changes
+nothing. Only then does the journal become `DISCARDED`, keeping the
 identity a `CONFLICT` carried. `DISCARDED` is reachable only through
 `discard`: `harness-session transition <uuid> DISCARDED` refuses, and every
 reopen to `OPEN` removes a leftover `discarded.patch` and `discarded-at`.
@@ -342,9 +344,12 @@ legacy routes do not change.
   used only if the subject is non-empty and at most 100 characters and there
   are at most 200 lines. It is written atomically (0600) to the
   launcher-owned record, `<record>/commit-message`, which the agent sandbox
-  cannot write, only when the run goes to delivery, right before the broker
-  runs; a timeout, budget, failed or refused run never records it, so a
-  session resumed and closed later by its owner gets the generic message. A
+  cannot write, only after the broker has found the session `ABANDONED` with
+  changes and recovered it, right before `close`. Every outcome other than
+  `delivered` leaves no `commit-message` in the record (timeout, budget,
+  failed, refused, `no_changes`, `conflict`, and refusals or failures inside
+  delivery remove or never write it), so a session resumed and closed later
+  by its owner gets the generic message. A
   `printf` or `echo` command whose text trips a Bash deny rule (it contains
   `harness-session`, `git push` or another denied word) is refused by the
   sandbox, so such a message is never written and the generic one is used.
