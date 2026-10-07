@@ -321,7 +321,8 @@ legacy routes do not change.
   `budget` is Claude subtype `error_max_budget_usd`; `failed` covers other
   Claude errors, a missing Claude result, signals and delivery failures.
   `refused` (`exit_code` 2 before launch) means the run could not start
-  without input or broke containment: an unknown profile, an empty or
+  without input or broke containment: an unknown profile, a host
+  without `/usr/bin/lockf` (delivery could never lock), an empty or
   unreadable prompt, a non-positive budget or timeout, a settings key outside
   the allowed set, a refused headless clone, or a headless record without its
   trusted git dir.

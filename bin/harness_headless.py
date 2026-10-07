@@ -33,6 +33,9 @@ BASH_DENY = ('harness-session', 'session-isolation.sh', 'auto-deliver', 'git pus
 # Prefix form only: a wildcard would also block paths such as docs/*buzz*/.
 BASH_PREFIX_DENY = ('hermes', 'buzz', 'rm -rf')
 EDIT_TOOLS = ('Edit', 'Write', 'NotebookEdit')
+# Broker integration and session GC serialize on this macOS lock tool and fail
+# closed without it.
+LOCKF = '/usr/bin/lockf'
 SUMMARY_MAX = 3000
 EXIT_TIMEOUT = 124
 EXIT_REFUSED = 2
@@ -285,6 +288,9 @@ def deliver(sid, state, env, cwd, log):
 
 def run(args, result, run_tmp):
     hdir = harness_dir(args.harness)
+    if not os.access(LOCKF, os.X_OK):
+        # Delivery could never succeed; do not spend the budget first.
+        raise Refused(f'{LOCKF} is required for session delivery and is unavailable')
     try:
         prompt = Path(args.prompt_file).read_text()
     except OSError as exc:

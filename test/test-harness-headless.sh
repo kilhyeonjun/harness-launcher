@@ -458,3 +458,19 @@ raise SystemExit(harness_headless.main(sys.argv[2:]))
 PY
 expect_status failed
 echo 'PASS: harness-headless writes a result when the temp base cannot be created'
+
+# --- no /usr/bin/lockf: refuse before spending anything ---------------------------
+rm -f "$RESULT" "$TMP/claude-argv"
+env -i PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+  HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" \
+  python3 - "$ROOT/bin" hh --prompt-file "$PROMPT" --result-file "$RESULT" --lock-file "$LOCK" \
+  --budget-usd 1 --timeout-min 1 <<'PY' || fail 'a missing lockf must still exit 0 with a result'
+import sys
+sys.path.insert(0, sys.argv[1])
+import harness_headless
+harness_headless.LOCKF = '/nonexistent/lockf'
+raise SystemExit(harness_headless.main(sys.argv[2:]))
+PY
+expect_status refused
+[[ ! -e "$TMP/claude-argv" ]] && grep -q lockf "$RESULT" || fail 'a missing lockf must refuse before launching claude'
+echo 'PASS: harness-headless refuses before launch when session delivery cannot lock'
