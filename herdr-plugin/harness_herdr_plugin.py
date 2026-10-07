@@ -29,7 +29,8 @@ this file changes (an upgrade: the next run starts the new one) or herdr stops
 answering. Plan usage is not per pane: `harness-herdr-web usage` serves the tab
 bar and a popup.
 
-Notifications: working -> idle announces completion and a switch to blocked
+Notifications: working -> idle or done (a finish the user has not seen yet)
+announces completion and a switch to blocked
 announces a request for input, after the state held for the notify delay. The
 visible tab stays silent while its host terminal app is frontmost, as herdr's
 own toasts do. Clicking the notification activates the host terminal app and
@@ -70,6 +71,11 @@ EXPECTED_LIVE_STATUS = {"attention": "blocked"}
 # herdr reports a finished turn as `done` until the user sees the pane, `idle` after
 # (app/api_helpers.rs pane_agent_status); a tab out of sight finishes working -> done.
 FINISHED = ("idle", "done")
+
+
+def same_status(a, b):
+    """`done` and `idle` are one finished turn: seen by the user or not yet."""
+    return a == b or (a in FINISHED and b in FINISHED)
 # A harness Codex home, looked up from the pane's directory upward.
 CODEX_INDEX = os.path.join(".harness", "codex", "session_index.jsonl")
 CODEX_INDEX_MAX_BYTES = 16 * 1024 * 1024
@@ -625,7 +631,7 @@ def record_status(payload):
         statuses = session(state)["panes"]
         entry = statuses.get(pane_id) or {}
         previous = entry.get("status")
-        seq = int(entry.get("seq", 0)) + (previous != status)
+        seq = int(entry.get("seq", 0)) + (not same_status(previous, status))
         entry.update(status=status, seq=seq)
         statuses[pane_id] = entry
     if status == "blocked" and previous != "blocked":
@@ -659,7 +665,7 @@ def settle_decision(payload, pending):
     with locked_state() as state:
         entry = session(state)["panes"].get(pane_id)
         # Events run in separate processes: a newer status settles it instead.
-        if not entry or entry.get("status") != status or (finished and entry.get("seq") != pending["seq"]):
+        if not entry or not same_status(entry.get("status"), status) or (finished and entry.get("seq") != pending["seq"]):
             return
         if bool(entry.get("decision")) != wanted:
             argv = ["pane", "report-metadata", pane_id, "--source", METADATA_SOURCE]

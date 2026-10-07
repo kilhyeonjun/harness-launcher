@@ -407,11 +407,11 @@ the pane, the plugin clears them. herdr keeps no pane metadata across a server
 restart, so the plugin reports every pane again at startup, and a pane again
 when an agent is detected in it.
 
-Decision. herdr's own status says `idle` both when a turn is done and when it
-ended by asking you to choose. When a Claude turn ends and its last answer marks
+Decision. herdr's own status says `idle` (or `done`, before you have seen the
+pane) both when a turn is done and when it ended by asking you to choose. When a Claude turn ends and its last answer marks
 a recommended option with `← 추천` (outside a code block), the plugin sets a
-`$decision` token to `결정 필요`; the next status other than `idle` (you
-answered, or the agent asks for input) or a turn that ends without the mark
+`$decision` token to `결정 필요`; the next status other than `idle` or `done`
+(you answered, or the agent asks for input) or a turn that ends without the mark
 clears it. herdr's state labels accept only its own statuses, so this is a token,
 not a label.
 

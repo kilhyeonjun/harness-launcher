@@ -8,7 +8,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
   finished. herdr reports it as `done` until the user sees the pane, and only
   `working` → `idle` counted, so in a background tab neither the response
   notification nor the `$decision` (`결정 필요`) token appeared. `done` now counts
-  like `idle`, and a later `done` → `idle` (the user looks at it) keeps the token.
+  like `idle`. The `idle` herdr reports on the pane's next change after the user
+  has seen it is the same finished turn: it neither notifies again, nor drops a
+  notification held for background work, nor clears the token.
 
 ## 0.46.1 — 2026-10-08
 
