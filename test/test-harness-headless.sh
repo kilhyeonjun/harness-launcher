@@ -161,7 +161,7 @@ printf '%s\n' '{"_note":"bridge policy","permissions":{"deny":["Read(//secret/**
 
 headless() {
   rm -f "$TMP/claude-argv" "$TMP/claude-env" "$TMP/claude-pwd"
-  ${HEADLESS_EXEC:+exec} env -i PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+  ${HEADLESS_EXEC:+exec} env -i PATH="$TMP/failgit:$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
     HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" \
     ANTHROPIC_API_KEY=leak-api BUZZ_TOKEN=leak-buzz TELEGRAM_BOT_TOKEN=leak-telegram \
     "$PREFIX/bin/harness-headless" hh --prompt-file "$PROMPT" --result-file "$RESULT" \
@@ -393,6 +393,30 @@ for mode in nested unreadable; do
   [[ "$(field session_id)" != null ]] && grep -qv state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail "$mode session must be kept"
 done
 echo 'PASS: harness-headless fails closed when the work tree cannot be staged'
+
+# --- a broker git error is never read as "nothing to exclude" or "no changes" -----
+# The git on PATH fails calls matching the pattern in $TMP/fail-git (the
+# launcher's environment allowlist drops anything else).
+mkdir -p "$TMP/failgit"
+cat > "$TMP/failgit/git" <<EOF
+#!/bin/bash
+pattern="\$(cat "$TMP/fail-git" 2>/dev/null)"
+if [[ -n "\$pattern" && " \$* " == *"\$pattern"* ]]; then echo "injected git failure: \$pattern" >&2; exit 128; fi
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$TMP/failgit/git"
+echo variants > "$TMP/mode"
+printf 'excluded|dir|project\xc5\xbf\n' > "$TMP/variants"
+for pattern in '--name-only --no-renames -z' '--cached --quiet' '--name-status' 'ls-tree'; do
+  printf '%s' "$pattern" > "$TMP/fail-git"
+  remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
+  headless || fail "run with failing git '$pattern' must exit 0"
+  expect_status failed
+  [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail "run with failing git '$pattern' must deliver nothing"
+  ! grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail "session with failing git '$pattern' must be kept"
+done
+rm -f "$TMP/fail-git"
+echo 'PASS: harness-headless fails closed when broker git fails'
 
 # --- an INTEGRATING journal after close is recovered once, whatever the exit code --
 python3 - "$ROOT/bin" "$TMP/m1" <<'PY' || fail 'INTEGRATING after close must be recovered'

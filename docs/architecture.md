@@ -317,8 +317,12 @@ legacy routes do not change.
   also checked against a probe tree of the excluded entries on the same
   volume; a path the filesystem resolves to an excluded entry is reset (or,
   for an interactive commit, refused) the same way. Names the filesystem
-  keeps distinct, such as `projects.` or `projects `, are ordinary paths, and
-  a symlink into `projects/` is delivered as the link itself.
+  keeps distinct, such as `projects.` or `projects` with a trailing space,
+  are ordinary paths, and a symlink into `projects/` is delivered as the
+  link itself. A broker git error is never read as an answer: a failed
+  listing is not "nothing to exclude", a failed change check is not "no
+  changes" (the session is kept, not closed), and a failed tree listing is
+  not a deletion. Each stops the close before anything is pushed.
   Without global config, global excludes (for example a global `.DS_Store`
   ignore) do not apply; the repository `.gitignore` does. A marker without
   its `trusted.git` refuses (exit 6, status `refused`). A changed session goes

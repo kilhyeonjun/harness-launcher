@@ -561,3 +561,77 @@ git --git-dir="$REMOTE" show main:beside-local.txt >/dev/null || { echo 'FAIL: i
 chmod 600 "$il_root/config/.local/locked"
 
 echo 'PASS: submissions touching excluded paths are refused; committed work is delivered'
+
+# Fail closed: a git failure injected anywhere on the delivery path stops the
+# close, keeps the work (never CLOSED as if empty) and delivers nothing.
+# FAIL_GIT makes matching git calls exit 128; AFTER_GIT runs AFTER_CMD (with
+# the git arguments) after a matching call succeeds.
+REAL_GIT="$(command -v git)"
+mkdir -p "$TMP/failgit"
+cat > "$TMP/failgit/git" <<EOF
+#!/bin/bash
+if [[ -n "\${FAIL_GIT:-}" && " \$* " == *"\$FAIL_GIT"* ]]; then echo "injected git failure: \$FAIL_GIT" >&2; exit 128; fi
+"$REAL_GIT" "\$@"; rc=\$?
+if [[ -n "\${AFTER_GIT:-}" && " \$* " == *"\$AFTER_GIT"* ]]; then bash -c "\$AFTER_CMD" _ "\$@"; fi
+exit \$rc
+EOF
+chmod +x "$TMP/failgit/git"
+FAILPATH="$TMP/failgit:$PATH"
+# <mode> <commit|worktree> <FAIL_GIT pattern> <path>...
+fail_closed_row() {
+  local mode="$1" how="$2" pattern="$3" out id root before rc=0 path state; shift 3
+  if [[ "$mode" == headless ]]; then out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"; else out="$(create)"; fi
+  root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+  rm -rf "$root/projects"
+  for path; do mkdir -p "$(dirname "$root/$path")"; printf 'fail-closed\n' > "$root/$path"; done
+  if [[ "$how" == commit ]]; then
+    git -C "$root" add -f -- "$@"; git -C "$root" -c user.name=t -c user.email=t@example.invalid commit -qm fail-closed
+  fi
+  before="$(git --git-dir="$REMOTE" rev-parse main)"
+  if [[ "$mode" == headless ]]; then
+    PATH="$FAILPATH" FAIL_GIT="$pattern" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$id" 2>>"$TMP/fail-closed.err" || :
+    PATH="$FAILPATH" FAIL_GIT="$pattern" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$id" >/dev/null 2>>"$TMP/fail-closed.err" || :
+  fi
+  PATH="$FAILPATH" FAIL_GIT="$pattern" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$id" 2>>"$TMP/fail-closed.err" || rc=$?
+  state="$(sed -n 's/^state=//p' "$STATE/sessions/$id/journal")"
+  [[ "$rc" != 0 ]] || { echo "FAIL: $mode close with failing git '$pattern' must fail (state $state)"; exit 1; }
+  [[ "$state" != CLOSED && "$state" != DELIVERED ]] || { echo "FAIL: $mode close with failing git '$pattern' ended $state"; exit 1; }
+  [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$before" ]] || { echo "FAIL: $mode close with failing git '$pattern' delivered"; exit 1; }
+}
+alias_path=$'project\xc5\xbf/x'
+fail_closed_row headless worktree '--name-only --no-renames -z' fc1.txt "$alias_path"
+fail_closed_row headless worktree '--cached --quiet' fc2.txt
+fail_closed_row headless worktree '--name-status' fc3.txt
+fail_closed_row headless worktree 'ls-tree' fc4.txt
+fail_closed_row headless worktree 'icase)' fc5.txt
+fail_closed_row interactive commit '--name-only' fc6.txt projects/x
+fail_closed_row interactive worktree 'status --porcelain' fc7.txt
+fail_closed_row interactive worktree 'reset -q' fc8.txt
+fail_closed_row interactive worktree 'icase)' fc9.txt
+fail_closed_row interactive commit 'ls-tree' fc10.txt
+
+# Clone-time fences that cannot be applied refuse the session.
+journals() { find "$STATE/sessions" -name journal | wc -l | tr -d ' '; }
+# <AFTER_GIT pattern> <AFTER_CMD> <headless|interactive> [source]
+create_refused_row() {
+  local count rc=0
+  count="$(journals)"
+  if [[ "$3" == headless ]]; then
+    PATH="$FAILPATH" AFTER_GIT="$1" AFTER_CMD="$2" HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "${4:-$SOURCE}" >/dev/null 2>>"$TMP/fail-closed.err" || rc=$?
+  else
+    PATH="$FAILPATH" AFTER_GIT="$1" AFTER_CMD="$2" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "${4:-$SOURCE}" >/dev/null 2>>"$TMP/fail-closed.err" || rc=$?
+  fi
+  [[ "$rc" != 0 && "$(journals)" == "$count" ]] || { echo "FAIL: create must refuse when '$2' follows git '$1' (rc=$rc)"; exit 1; }
+}
+# Read-only info/exclude: the interactive clone exclude cannot be written.
+create_refused_row ' clone ' 'chmod a-w "${@: -1}/.git/info/exclude" "${@: -1}/.git/info" 2>/dev/null' interactive
+# Read-only trusted.git: its info/exclude cannot be written.
+create_refused_row ' init -q --bare ' 'chmod a-w "${@: -1}"' headless
+# A tracked projects symlink that cannot be removed refuses the headless clone.
+LINKSRC="$TMP/linksrc"
+git init -q -b main "$LINKSRC"; ln -s "$TMP" "$LINKSRC/projects"
+git -C "$LINKSRC" add projects; git -C "$LINKSRC" -c user.name=t -c user.email=t@example.invalid commit -qm link
+create_refused_row ' checkout -q --detach ' 'chflags -h uchg "$2/projects"' headless "$LINKSRC"
+find "$STATE" -exec chflags -h nouchg {} + 2>/dev/null; chmod -R u+w "$STATE"
+
+echo 'PASS: injected git and filesystem failures on the delivery path fail closed'

@@ -26,6 +26,16 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - Headless session creation no longer fails when the user's git config sets
   a hooks-only `init.templateDir`; the launcher-owned git dir is created
   without user templates or config.
+- Session delivery fails closed when a broker git call fails. Before, a
+  failed listing of staged paths read as "nothing to exclude" (a Unicode
+  alias of `projects/` could be delivered), a failed change check read as "no
+  changes" (the session was closed and its work reported as `no_changes`), a
+  failed check for committed excluded paths let an interactive submission
+  through, and a failed tree listing after the commit was read as deletions
+  and pushed before the readback reported a conflict. Each of these now
+  stops the close, keeps the session, and delivers nothing; `harness-headless`
+  reports `failed`. A headless clone whose `projects` link cannot be removed
+  is refused.
 
 ## 0.43.0 — 2026-10-07
 

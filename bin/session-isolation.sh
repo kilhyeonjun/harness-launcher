@@ -46,7 +46,7 @@ stage_worktree() {
   if [[ -n "$ROOT_GIT_DIR" ]]; then
     root_git "$1" reset -q "$2" -- "${EXCLUDED_ICASE[@]}" || return 1
   else
-    session_git -C "$1" reset -q -- "${EXCLUDED_ICASE[@]}" 2>/dev/null || true
+    session_git -C "$1" reset -q -- "${EXCLUDED_ICASE[@]}" || return 1
   fi
   # Names git's ASCII-only icase misses but the filesystem folds onto an
   # excluded entry (projectſ is projects on APFS) are reset the same way.
@@ -69,8 +69,13 @@ stage_worktree() {
 excluded_aliases() {
   local root="$1" base="$2" probe path first second
   probe="$(mktemp -d "$(state_home)/probe.XXXXXX")" || return 1
-  mkdir -p "$probe/projects" "$probe/config/.local" "$probe/.claude" || { rm -rf "$probe"; return 1; }
-  : > "$probe/mcp.local.json"; : > "$probe/.mcp.local.json"; : > "$probe/.claude/settings.local.json"
+  # Callers test the status, so errexit is off here: every step is checked,
+  # and the staged list is a file, not a process substitution whose failure
+  # would read as "no paths".
+  { mkdir -p "$probe/projects" "$probe/config/.local" "$probe/.claude" \
+      && : > "$probe/mcp.local.json" && : > "$probe/.mcp.local.json" && : > "$probe/.claude/settings.local.json" \
+      && root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only --no-renames -z "$base" > "$probe.staged"
+  } || { rm -rf "$probe" "$probe.staged"; return 1; }
   while IFS= read -r -d '' path; do
     first="${path%%/*}"
     if [[ -e "$probe/$first" ]] && { [[ "$probe/$first" -ef "$probe/projects" ]] \
@@ -83,8 +88,8 @@ excluded_aliases() {
         || [[ "$probe/$second" -ef "$probe/.claude/settings.local.json" ]]; }; then
       printf '%s\0' "$path"
     fi
-  done < <(root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only --no-renames -z "$base")
-  rm -rf "$probe"
+  done < "$probe.staged"
+  rm -rf "$probe" "$probe.staged"
 }
 # Headless sessions (record marker `headless`, written at clone time) never
 # let broker git read the session's own .git: it runs on a launcher-owned git
@@ -128,7 +133,7 @@ reopen_session() {
 #   component under <root> refuses the clone instead of being followed.
 headless_local_files() {
   local source="$1" root="$2" local_file part path tmp py="${HARNESS_PYTHON_BIN:-}"
-  [[ ! -L "$root/projects" ]] || rm -f "$root/projects"
+  [[ ! -L "$root/projects" ]] || rm -f "$root/projects" || return 2
   for local_file in .mcp.local.json mcp.local.json .claude/settings.local.json; do
     [[ -f "$source/$local_file" ]] || continue
     path="$root"
@@ -196,11 +201,11 @@ create() {
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git init -q --bare --template= "$dir/trusted.git"
     mkdir -p "$dir/trusted.git/info"
     # Match the clone's filesystem view (git sets these per volume at clone).
-    git --git-dir="$dir/trusted.git" config core.ignorecase "$(git -C "$root" config --bool core.ignorecase || echo false)"
-    git --git-dir="$dir/trusted.git" config core.precomposeunicode "$(git -C "$root" config --bool core.precomposeunicode || echo false)"
+    git --git-dir="$dir/trusted.git" config core.ignorecase "$(git -C "$root" config --bool --default false core.ignorecase)"
+    git --git-dir="$dir/trusted.git" config core.precomposeunicode "$(git -C "$root" config --bool --default false core.precomposeunicode)"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" fetch -q --no-tags "$root" "+HEAD:refs/heads/base"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" read-tree "$sha"
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" update-index -q --refresh >/dev/null 2>&1 || true
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" update-index -q --refresh
     printf '/%s\n' "${EXCLUDED_PATHS[@]}" >> "$dir/trusted.git/info/exclude"
     : > "$dir/headless"
   fi
@@ -375,26 +380,34 @@ transition() {
   case "$old:$next" in OPEN:SUBMITTED|OPEN:CLOSED|SUBMITTED:INTEGRATING|INTEGRATING:SUBMITTED|INTEGRATING:DELIVERED|INTEGRATING:CONFLICT|OPEN:ABANDONED|ABANDONED:OPEN|CONFLICT:OPEN|CLOSED:OPEN) ;; *) echo "invalid transition: $old -> $next" >&2; return 2;; esac
   write_journal "$dir" "$next" "$identity"
 }
-# session_has_changes <root> [base-sha]: worktree changes, or commits made in
-# the session (HEAD moved off the base). Call use_session_git first.
+# session_has_changes <root> [base-sha]: 0 when the work tree changed or the
+# session committed (HEAD moved off the base), 1 when it did not, 2 when git
+# could not tell. Callers test the status, so errexit is off: every git call
+# is checked and an error is never read as "no changes". Call use_session_git first.
 session_has_changes() {
+  local rc=0 head out
   if [[ -n "$ROOT_GIT_DIR" ]]; then
-    # The work tree holds the final content, committed or not. A failed stage
-    # leaves the index at base, so it counts as changed (submit then fails
-    # closed) instead of reading as clean and dropping the edits.
-    stage_worktree "$1" "$2" || return 0
-    ! root_git "$1" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$2" -- . "${EXCLUDED_PATHSPEC[@]}"
-    return
+    # The work tree holds the final content, committed or not.
+    stage_worktree "$1" "$2" || return 2
+    root_git "$1" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$2" -- . "${EXCLUDED_PATHSPEC[@]}" || rc=$?
+    case "$rc" in 0) return 1 ;; 1) return 0 ;; *) return 2 ;; esac
   fi
-  [[ -n "${2:-}" && "$(session_git -C "$1" rev-parse HEAD 2>/dev/null)" != "$2" ]] && return 0
-  [[ -n "$(session_git -C "$1" status --porcelain --ignore-submodules=all --untracked-files=all -- . "${EXCLUDED_PATHSPEC[@]}")" ]]
+  if [[ -n "${2:-}" ]]; then
+    head="$(session_git -C "$1" rev-parse HEAD)" || return 2
+    [[ "$head" == "$2" ]] || return 0
+  fi
+  out="$(session_git -C "$1" status --porcelain --ignore-submodules=all --untracked-files=all -- . "${EXCLUDED_PATHSPEC[@]}")" || return 2
+  [[ -n "$out" ]] || return 1
 }
 exit_session() {
   local id="$1" dir root state
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; state="$(field "$dir/journal" state)"
   if [[ "$state" == OPEN ]]; then
     use_session_git "$id" || { transition "$id" ABANDONED; return 6; }
-    if session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" ABANDONED; else transition "$id" CLOSED; fi
+    # Only a clean answer closes; changes or a git error keep the work.
+    local rc=0
+    session_has_changes "$root" "$(<"$dir/base-sha")" || rc=$?
+    if [[ "$rc" == 1 ]]; then transition "$id" CLOSED; else transition "$id" ABANDONED; fi
   fi
 }
 recover_unlocked() {
@@ -450,13 +463,16 @@ list() {
   done
 }
 write_index_manifest() {
-  local root="$1" base="$2" output="$3" status path mode oid stage path2
+  local root="$1" base="$2" output="$3" status path mode oid stage path2 entry
+  root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$output.paths" || return 1
   : > "$output"
   while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     if [[ "$status" == D* ]]; then printf 'D\0-\0-\0%s\0' "$path" >> "$output"; continue; fi
-    read -r mode oid stage path2 < <(root_git "$root" ls-files -s -- "$path")
+    entry="$(root_git "$root" ls-files -s -- ":(literal)$path")" && [[ -n "$entry" ]] || return 1
+    read -r mode oid stage path2 <<< "$entry"
     printf 'F\0%s\0%s\0%s\0' "$mode" "$oid" "$path" >> "$output"
-  done < <(root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z "$base" -- . "${EXCLUDED_PATHSPEC[@]}")
+  done < "$output.paths"
+  rm -f "$output.paths"
 }
 submission_identity() {
   local dir="$1"
@@ -473,8 +489,11 @@ submit() {
     # Interactive: committed work is in the index already, so staged excluded
     # paths are only unstaged back to HEAD; committed ones refuse instead of
     # being silently dropped. A headless index is reset to the base there.
-    local touched
-    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${EXCLUDED_ICASE[@]}"; excluded_aliases "$root" "$base" | tr '\0' '\n')"
+    local touched aliases
+    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${EXCLUDED_ICASE[@]}")" \
+      && aliases="$(excluded_aliases "$root" "$base" | tr '\0' '\n')" \
+      || { echo 'harness-session: refused: could not check the submission for excluded paths' >&2; return 2; }
+    touched="$touched${aliases:+$'\n'$aliases}"
     [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
   fi
   root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"
@@ -499,8 +518,8 @@ write_candidate_manifest() {
   local repo="$1" tree="$2" submitted="$3" output="$4" kind old_mode old_oid path entry meta mode type oid
   : > "$output"
   while IFS= read -r -d '' kind && IFS= read -r -d '' old_mode && IFS= read -r -d '' old_oid && IFS= read -r -d '' path; do
-    entry=""
-    IFS= read -r -d '' entry < <(git -C "$repo" ls-tree -z "$tree" -- "$path") || true
+    # Empty output is a deletion; an ls-tree error is not.
+    entry="$(git -C "$repo" ls-tree "$tree" -- ":(literal)$path")" || return 1
     if [[ -z "$entry" ]]; then
       printf 'D\0-\0-\0%s\0' "$path" >> "$output"
       continue
@@ -570,7 +589,7 @@ integrate_unlocked() {
     [[ "${HARNESS_SESSION_TEST_CRASH_BEFORE_PUSH:-0}" == 1 ]] && kill -9 "$BASHPID"
     git -C "$candidate" -c user.name=harness-broker -c user.email=broker@invalid commit -qm "harness session $id"
     delivered="$(git -C "$candidate" rev-parse HEAD)"
-    write_candidate_manifest "$candidate" "$delivered" "$dir/manifest" "$dir/.candidate-manifest"
+    write_candidate_manifest "$candidate" "$delivered" "$dir/manifest" "$dir/.candidate-manifest" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
     printf '%s\n' "$delivered" > "$dir/pending-sha"
     git -C "$candidate" fetch -q origin main
     [[ "$(git -C "$candidate" rev-parse origin/main)" == "$current" ]] || { rm -rf "$candidate"; continue; }
@@ -605,7 +624,12 @@ close_session() {
   local id="$1" dir state root
   dir="$(session_dir "$id")"; state="$(field "$dir/journal" state)"; root="$(<"$dir/session-root")"
   use_session_git "$id" || return 6
-  if [[ "$state" == OPEN ]] && ! session_has_changes "$root" "$(<"$dir/base-sha")"; then transition "$id" CLOSED; return 0; fi
+  if [[ "$state" == OPEN ]]; then
+    local rc=0
+    session_has_changes "$root" "$(<"$dir/base-sha")" || rc=$?
+    [[ "$rc" != 2 ]] || { echo 'harness-session: refused: could not read the session changes' >&2; return 2; }
+    [[ "$rc" != 1 ]] || { transition "$id" CLOSED; return 0; }
+  fi
   [[ "$state" == OPEN ]] && submit "$id"
   [[ "$(field "$dir/journal" state)" == SUBMITTED ]] || { echo "cannot close $state session" >&2; return 2; }
   integrate "$id"
