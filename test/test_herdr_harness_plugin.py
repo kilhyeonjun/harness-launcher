@@ -1051,6 +1051,22 @@ class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertRan(self.h.status("w5:p1", "working"))
         self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
 
+    def test_decision_request_is_delivered_during_background_wait_without_a_second_finish(self):
+        state = self.h.state()
+        state["panes"][0]["tokens"] = {
+            "herdr_activity": "waiting", "herdr_activity_id": "decision-work",
+        }
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.turn("A ← 추천")
+        self.assertEqual(len(self.h.notifications()), 1)
+        self.assertEqual(flag(self.h.notifications()[0], "-title"), "🔘 claude 결정 필요")
+        state = self.h.state()
+        self.assertEqual(state["panes"][0]["tokens"]["herdr_activity"], "waiting")
+        state["panes"][0]["tokens"]["herdr_activity"] = "settled"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+
     def test_every_choice_in_one_session_is_shown(self):
         self.turn("A ← 추천")
         self.turn("B ← 추천")
@@ -1063,12 +1079,12 @@ class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
         self.turn("배포했습니다.")
         self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
-        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 완료")
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 응답 종료")
 
     def test_mark_inside_a_code_block_is_not_a_choice(self):
         self.turn("예시:\n```\nA ← 추천\n```\n끝났습니다.")
         self.assertEqual(self.decisions(), [])
-        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 완료")
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 응답 종료")
 
     def test_turn_stopped_before_any_answer_does_not_reuse_the_older_choice(self):
         self.turn("A ← 추천")

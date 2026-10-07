@@ -477,6 +477,8 @@ that ended on a choice) or `⏳ <agent> 입력 필요`: an
 ended response does not assert that the user's entire task is verified. A fresh
 `herdr_activity=waiting|stalled` token paired with `herdr_activity_id` defers the
 response notification until the same cycle explicitly reports `settled`.
+A decision notification requests input and is delivered while work waits; it
+does not release the background activity or claim completion.
 Missing or expired activity after an observed wait stays uncertain; it does not
 release the notification. A new foreground turn, session identity or startup
 cancels the old deferred response. The subtitle is the workspace label. The

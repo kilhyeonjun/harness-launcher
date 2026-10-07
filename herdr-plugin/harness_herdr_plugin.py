@@ -720,6 +720,9 @@ def defer_finished(pending, pane):
         entry = session(state)["panes"].get(pending["pane_id"]) or {}
         if entry.get("seq") != pending.get("seq"):
             return True
+        # A decision requests input; it does not claim the background work ended.
+        if pending.get("decision"):
+            return False
         if phase in ("waiting", "stalled") and identity:
             entry.update(activity_phase=phase, activity_id=identity)
         unresolved = entry.get("activity_phase") in ("waiting", "stalled", "unknown")
