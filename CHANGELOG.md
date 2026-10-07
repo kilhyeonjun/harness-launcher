@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.46.2 — 2026-10-08
+
+- herdr plugin: a turn that ends in a pane out of sight is now treated as
+  finished. herdr reports it as `done` until the user sees the pane, and only
+  `working` → `idle` counted, so in a background tab neither the response
+  notification nor the `$decision` (`결정 필요`) token appeared. `done` now counts
+  like `idle`, and a later `done` → `idle` (the user looks at it) keeps the token.
+
 ## 0.46.1 — 2026-10-08
 
 - Herdr desktop notifications defer an ended response while its background

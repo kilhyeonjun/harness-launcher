@@ -1067,6 +1067,28 @@ class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
         self.assertEqual(len(self.h.notifications()), 1)
 
+    def test_turn_in_a_tab_out_of_sight_ending_on_a_choice_shows_it(self):
+        # herdr reports a finished turn the user has not seen as `done`, not `idle`
+        # (app/api_helpers.rs pane_agent_status), so a tab out of sight ends working -> done.
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.answer("1. 새 worktree ← 추천\n2. 그대로 진행")
+        self.assertRan(self.h.status("w5:p1", "done"))
+        self.assertEqual(self.decisions(), [self.SET])
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "🔘 claude 결정 필요")
+        sent = len(self.h.notifications())
+        self.assertRan(self.h.status("w5:p1", "idle"))  # the user looks at it: still waiting
+        self.assertEqual(self.decisions(), [self.SET])
+        self.assertEqual(len(self.h.notifications()), sent)
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
+
+    def test_plain_turn_in_a_tab_out_of_sight_says_done(self):
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.answer("배포했습니다.")
+        self.assertRan(self.h.status("w5:p1", "done"))
+        self.assertEqual(self.decisions(), [])
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 응답 종료")
+
     def test_every_choice_in_one_session_is_shown(self):
         self.turn("A ← 추천")
         self.turn("B ← 추천")
