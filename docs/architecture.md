@@ -239,15 +239,16 @@ legacy routes do not change.
   exits 2 with a `refused` result when `R` is writable. `SIGTERM`, `SIGINT` and
   `SIGHUP` kill the run's process group, write a `failed` result (`exit_code`
   128 + signal), and only then release the lock.
-- **Environment.** Only `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
-  `LC_*` and `TMPDIR` pass through, plus `HARNESS_SESSION_STATE_HOME` and
+- **Environment.** Only `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `LANG` and
+  `LC_*` pass through, plus `HARNESS_SESSION_STATE_HOME` and
   `XDG_STATE_HOME` so the launcher finds the same session state. It adds
-  `HARNESS_HEADLESS=1`, `HARNESS_PYTHON_BIN` (the resolved interpreter) and
-  `GIT_TERMINAL_PROMPT=0`. With `HARNESS_HEADLESS=1` the launcher does not
+  `HARNESS_HEADLESS=1`, `HARNESS_PYTHON_BIN` (the resolved interpreter),
+  `GIT_TERMINAL_PROMPT=0`, and `TMPDIR` and `CLAUDE_CODE_TMPDIR` both set to a
+  fresh `/private/tmp/hh-*` directory (0700, owned by the user, short enough
+  for Claude's per-uid socket directory). That directory is removed on every
+  exit path, so the shared `/private/tmp/claude-<uid>` can stay write-denied. With `HARNESS_HEADLESS=1` the launcher does not
   export the harness `.claude/settings.local.json` `env` block, does not derive
-  a per-harness `GH_TOKEN`, passes no `--mcp-config`, and sets `TMPDIR` to
-  `<state>/sessions/<uuid>/tmp` (removed after the run) instead of the shared
-  per-user temp directory.
+  a per-harness `GH_TOKEN`, and passes no `--mcp-config`.
 - **Session.** It calls `harness-exec <harness> --isolated --passthrough ...`,
   so the launcher creates the journal and lease itself and the run directory
   is the session root. The headless clone uses `git clone --no-hardlinks`,
@@ -273,7 +274,7 @@ legacy routes do not change.
     `~/.ssh`, `~/.config/gh`, `~/.aws`, `~/.claude`, the source root and the
     caller's paths; `filesystem.denyWrite` for `/private/tmp/claude-<uid>`,
     `/tmp/claude-<uid>` and the session `.git/config`, `.git/hooks` and
-    `.git/info`; `filesystem.allowWrite` for the session `TMPDIR`.
+    `.git/info`; `filesystem.allowWrite` for the run's temp directory.
   - `permissions.deny`: `Read` on every `denyRead` path; `Edit`, `Write` and
     `NotebookEdit` on those paths, `~/Library/LaunchAgents`, the temp
     directories and the session git config, hooks and info; `WebFetch`;

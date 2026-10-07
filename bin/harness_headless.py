@@ -23,7 +23,7 @@ UUID = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]
 SESSION_LINE = re.compile(r'^harness-launcher: isolated session (' + UUID + r');', re.M)
 # Caller environment kept for the launcher and Claude. Everything else
 # (API keys, bot tokens, ...) is dropped before anything is launched.
-ENV_ALLOW = ('HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'TMPDIR')
+ENV_ALLOW = ('HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG')
 # Launcher state location only, so `harness-session` sees the same sessions.
 ENV_LAUNCHER = ('HARNESS_SESSION_STATE_HOME', 'XDG_STATE_HOME')
 HOME_DENY = ('.hermes', 'buzz', '.ssh', '.config/gh', '.aws', '.claude')
@@ -85,8 +85,12 @@ def harness_dir(name):
     return root
 
 
-def child_env():
+def child_env(run_tmp):
     env = {k: v for k, v in os.environ.items() if k in ENV_ALLOW + ENV_LAUNCHER or k.startswith('LC_')}
+    # One private temp base per run: Claude keeps its per-uid dir (Bash cwd
+    # tracking) under CLAUDE_CODE_TMPDIR, which must stay short for AF_UNIX
+    # sockets, so the shared /private/tmp/claude-<uid> can stay write-denied.
+    env.update(TMPDIR=run_tmp, CLAUDE_CODE_TMPDIR=run_tmp)
     # HARNESS_HEADLESS selects the headless clone and skips harness-local
     # secrets; the interpreter is the one the launcher shim already resolved.
     env.update(HARNESS_HEADLESS='1', HARNESS_PYTHON_BIN=sys.executable, GIT_TERMINAL_PROMPT='0')
@@ -100,7 +104,7 @@ def state_home(env):
     return Path(base, 'harness-launcher')
 
 
-def mandatory_settings(source, home, caller_deny_read):
+def mandatory_settings(source, home, caller_deny_read, run_tmp=None):
     """Launcher-owned containment. Passed last, so the launcher's settings
     merge (dicts deep-merged, lists unioned, scalars last-wins) keeps every
     value here over any earlier --settings. Every sandbox read-denied path is
@@ -125,7 +129,8 @@ def mandatory_settings(source, home, caller_deny_read):
             'sandbox': {'enabled': True, 'failIfUnavailable': True, 'allowUnsandboxedCommands': False,
                         'autoAllowBashIfSandboxed': True,
                         'network': {'strictAllowlist': True, 'allowedDomains': []},
-                        'filesystem': {'denyRead': deny_read, 'denyWrite': deny_write}}}
+                        'filesystem': {'denyRead': deny_read, 'denyWrite': deny_write,
+                                       'allowWrite': [run_tmp] if run_tmp else []}}}
 
 
 def _strings(value):
@@ -267,7 +272,7 @@ def deliver(sid, state, env, cwd, log):
     return 'failed', None, None
 
 
-def run(args, result):
+def run(args, result, run_tmp):
     hdir = harness_dir(args.harness)
     try:
         prompt = Path(args.prompt_file).read_text()
@@ -285,7 +290,7 @@ def run(args, result):
             raise Refused('--settings-file must contain a JSON object')
         validate_caller(caller)
 
-    env = child_env()
+    env = child_env(run_tmp)
     state = state_home(env)
     # The launcher merges every --settings (its launch-record hook, the
     # caller's, these denies) into the single --settings Claude receives.
@@ -299,7 +304,7 @@ def run(args, result):
     if caller is not None:
         command += ['--settings', json.dumps(caller)]
     caller_deny_read = ((caller or {}).get('sandbox') or {}).get('filesystem', {}).get('denyRead', [])
-    command += ['--settings', json.dumps(mandatory_settings(hdir, env['HOME'], caller_deny_read))]
+    command += ['--settings', json.dumps(mandatory_settings(hdir, env['HOME'], caller_deny_read, run_tmp))]
 
     log_path = args.result_file + '.log'
     with open(log_path, 'w') as log, tempfile.TemporaryFile('w+') as out, tempfile.TemporaryFile('w+') as stdin:
@@ -323,8 +328,6 @@ def run(args, result):
         log_text = Path(log_path).read_text(errors='replace')
         sid = launched_session(log_text, state, hdir)
         result['session_id'] = sid
-        if sid:
-            shutil.rmtree(state / 'sessions' / sid / 'tmp', ignore_errors=True)
         # A clone refusal can only precede the launcher's session announcement.
         announced = SESSION_LINE.search(log_text)
         launcher_text = log_text[:announced.start()] if announced else log_text
@@ -390,8 +393,10 @@ def main(argv):
         return 2
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, _terminate)
+    # Short, user-owned, 0700, not a symlink, outside the shared claude-<uid>.
+    run_tmp = tempfile.mkdtemp(prefix='hh-', dir='/private/tmp')
     try:
-        run(args, result)
+        run(args, result, run_tmp)
     except Refused as exc:
         result.update(status='refused', summary=str(exc)[:SUMMARY_MAX], exit_code=EXIT_REFUSED)
     except Terminated as exc:
@@ -402,6 +407,7 @@ def main(argv):
         result.update(status='failed', summary=f'harness-headless error: {exc}'[:SUMMARY_MAX])
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, signal.SIG_IGN)
+    shutil.rmtree(run_tmp, ignore_errors=True)
     result['ended_at'] = int(time.time())
     try:
         write_result(args.result_file, result)

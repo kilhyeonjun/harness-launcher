@@ -49,6 +49,7 @@ cat > "$STUB/claude" <<EOF
 #!/usr/bin/env bash
 printf '%s\0' "\$@" > "$TMP/claude-argv"
 env > "$TMP/claude-env"
+stat -f '%Lp %u' "\${CLAUDE_CODE_TMPDIR:-/nonexistent}" > "$TMP/claude-tmpdir-stat" 2>/dev/null
 printf '%s\n' "\$PWD" > "$TMP/claude-pwd"
 cat > "$TMP/claude-stdin"
 mode="\$(cat "$TMP/mode")"
@@ -141,9 +142,12 @@ session_root="$STATE/worktrees/$sid"
 [[ "$(field transcript)" == "$FAKE_HOME/.claude/projects/"*"/11111111-2222-4333-8444-555555555555.jsonl" ]] || fail 'transcript path must be reported'
 [[ ! -e "$session_root/projects" && ! -L "$session_root/projects" && ! -L "$session_root/.claude/settings.local.json" ]] || fail 'headless session must not link back to the source'
 [[ "$(cat "$TMP/claude-stdin")" == 'Fix the typo.' ]] || fail 'the prompt must reach claude on stdin'
-grep -qx "TMPDIR=$STATE/sessions/$sid/tmp" "$TMP/claude-env" || fail 'claude must get a per-session TMPDIR'
-[[ ! -e "$STATE/sessions/$sid/tmp" ]] || fail 'the per-session TMPDIR must be removed after the run'
-python3 - "$TMP/claude-argv" "$SOURCE_REAL" "$FAKE_HOME" "$session_root" "$STATE/sessions/$sid/tmp" "$(id -u)" <<'PY' || fail 'claude argv contract'
+run_tmp="$(sed -n 's/^CLAUDE_CODE_TMPDIR=//p' "$TMP/claude-env")"
+[[ "$run_tmp" == /private/tmp/hh-* && "$run_tmp" != /private/tmp/claude-* ]] || fail "claude must get a private short temp base, got '$run_tmp'"
+grep -qx "TMPDIR=$run_tmp" "$TMP/claude-env" || fail 'TMPDIR must be the same private temp base'
+[[ "$(cat "$TMP/claude-tmpdir-stat")" == "700 $(id -u)" ]] || fail 'the temp base must be 0700 and owned by the user'
+[[ ! -e "$run_tmp" ]] || fail 'the temp base must be removed after the run'
+python3 - "$TMP/claude-argv" "$SOURCE_REAL" "$FAKE_HOME" "$session_root" "$run_tmp" "$(id -u)" <<'PY' || fail 'claude argv contract'
 import json, sys
 argv = open(sys.argv[1]).read().split('\0')[:-1]
 source, home, root, tmp, uid = sys.argv[2:]
@@ -309,6 +313,8 @@ rm -f "$TMP/child.pid" "$TMP/grandchild.pid"
 start=$SECONDS
 TIMEOUT_MIN=0.03 headless || fail 'timeout run must exit 0'
 expect_status timeout
+timeout_tmp="$(sed -n 's/^CLAUDE_CODE_TMPDIR=//p' "$TMP/claude-env")"
+[[ -n "$timeout_tmp" && ! -e "$timeout_tmp" ]] || fail 'the temp base must be removed after a timeout'
 (( SECONDS - start < 30 )) || fail 'timeout must stop the run promptly'
 for pidfile in "$TMP/child.pid" "$TMP/grandchild.pid"; do
   [[ -s "$pidfile" ]] || fail "missing $pidfile"
@@ -370,6 +376,8 @@ raise SystemExit(1)
 PY
 wait "$runner" || true
 expect_status failed
+term_tmp="$(sed -n 's/^CLAUDE_CODE_TMPDIR=//p' "$TMP/claude-env")"
+[[ -n "$term_tmp" && ! -e "$term_tmp" ]] || fail 'the temp base must be removed after SIGTERM'
 for pidfile in "$TMP/child.pid" "$TMP/grandchild.pid"; do
   ! kill -0 "$(cat "$pidfile")" 2>/dev/null || fail 'SIGTERM must kill the whole process group'
 done

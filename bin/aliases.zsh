@@ -1079,13 +1079,6 @@ _harness_launcher_run() {
     fi
     HARNESS_DIR="$HARNESS_SESSION_ROOT"
     [[ -n "$HARNESS_RUN_DIR" ]] || HARNESS_RUN_DIR="$HARNESS_SESSION_ROOT"
-    if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
-      # harness-headless: a private TMPDIR under the session record instead
-      # of the shared per-user temp directory.
-      local headless_tmp="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}/sessions/$HARNESS_SESSION_ID/tmp"
-      mkdir -p -m 700 "$headless_tmp" || return $?
-      export TMPDIR="${headless_tmp:A}"
-    fi
     export HARNESS_RUN_DIR
     # Claude files transcripts under its cwd's project directory, which is the
     # caller's run directory (harness-exec passes --cwd), not the session root.
@@ -1334,7 +1327,7 @@ _harness_launcher_run_session() {
     launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant" "$launch_context")" || return $?
     [[ -z "$launch_settings" ]] || claude_args+=(--settings "$launch_settings")
     if [[ "${HARNESS_HEADLESS:-0}" == 1 && -n "${HARNESS_SESSION_ROOT:-}" ]]; then
-      claude_args+=(--settings "$(harness_headless_session_settings "${HARNESS_SESSION_ROOT:A}" "$TMPDIR")")
+      claude_args+=(--settings "$(harness_headless_session_settings "${HARNESS_SESSION_ROOT:A}")")
     fi
     # Passthrough argv goes last, after the launcher-owned flags. The boolean
     # --exclude-dynamic-system-prompt-sections then closes the variadic
