@@ -942,6 +942,83 @@ class MetadataTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertEqual(len(self.h.reports()), 2)
 
 
+class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
+    """A Claude turn whose last answer marks a recommendation waits for the user's choice."""
+
+    SET = ["w5:p1", "--source", "harness.launcher", "--agent", "claude", "--token", "decision=결정 필요"]
+    CLEAR = ["w5:p1", "--source", "harness.launcher", "--clear-token", "decision"]
+
+    def setUp(self):
+        super().setUp()
+        harness = self.h.root / "acme-platform-harness"
+        self.transcript([custom_title("배포 방식 검토")])
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)],
+                         [claude_agent("w5:p1", "w5:t1", harness)])
+
+    def answer(self, text):
+        self.transcript([{"type": "assistant", "sessionId": SESSION,
+                          "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}},
+                         {"type": "system", "sessionId": SESSION}], append=True)
+
+    def turn(self, text):
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.answer(text)
+        self.assertRan(self.h.status("w5:p1", "idle"))
+
+    def decisions(self):
+        return [report for report in self.h.reports() if report in (self.SET, self.CLEAR)]
+
+    def test_turn_ending_on_a_choice_shows_it_until_the_user_answers(self):
+        self.turn("1. 새 worktree ← 추천\n2. 그대로 진행")
+        self.assertEqual(self.decisions(), [self.SET])
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "🔘 claude 결정 필요")
+        self.assertRan(self.h.status("w5:p1", "idle"))  # another idle keeps it
+        self.assertEqual(self.decisions(), [self.SET])
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
+
+    def test_every_choice_in_one_session_is_shown(self):
+        self.turn("A ← 추천")
+        self.turn("B ← 추천")
+        self.assertEqual(self.decisions(), [self.SET, self.CLEAR, self.SET])
+
+    def test_a_plain_finish_clears_it_and_says_done(self):
+        self.turn("A ← 추천")
+        self.assertRan(self.h.status("w5:p1", "blocked"))
+        self.assertRan(self.h.status("w5:p1", "idle"))
+        self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
+        self.turn("배포했습니다.")
+        self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 완료")
+
+    def test_mark_inside_a_code_block_is_not_a_choice(self):
+        self.turn("예시:\n```\nA ← 추천\n```\n끝났습니다.")
+        self.assertEqual(self.decisions(), [])
+        self.assertEqual(flag(self.h.notifications()[-1], "-title"), "✅ claude 완료")
+
+    def test_turn_stopped_before_any_answer_does_not_reuse_the_older_choice(self):
+        self.turn("A ← 추천")
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.transcript([{"type": "user", "sessionId": SESSION,
+                          "message": {"role": "user", "content": "1번으로"}}], append=True)
+        self.assertRan(self.h.status("w5:p1", "idle"))
+        self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
+
+    def test_idle_event_read_after_work_resumed_sets_nothing(self):
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.answer("A ← 추천")
+        self.assertRan(self.h.status("w5:p1", "idle", live="working"))
+        self.assertEqual(self.decisions(), [])
+
+    def test_codex_turn_never_sets_it(self):
+        state = self.h.state()
+        self.h.set_state(state["workspaces"], state["tabs"],
+                         [codex_agent("w5:p1", "w5:t1", self.h.root / "x")])
+        self.assertRan(self.h.status("w5:p1", "working", agent="codex"))
+        self.assertRan(self.h.status("w5:p1", "idle", agent="codex"))
+        self.assertEqual(self.decisions(), [])
+
+
 class OwnRenameTest(HerdrPluginTestCase):
     def setUp(self):
         super().setUp()

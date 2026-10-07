@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.46.0 — 2026-10-08
+
+- herdr plugin: a Claude turn whose last answer marks a recommended option
+  (`← 추천`) now notifies `🔘 claude 결정 필요` instead of `완료`, and sets a
+  `$decision` pane token to `결정 필요` until the next non-idle status or a turn
+  without the mark. Add `{ token = "$decision" }` to a sidebar row to show it
+  (docs/terminal-runtimes.md).
+
 ## 0.45.0 — 2026-10-07
 
 - Headless deliveries carry the agent's commit message. The broker delivers
