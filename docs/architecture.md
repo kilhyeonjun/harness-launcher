@@ -199,12 +199,33 @@ before resume and holds it for the complete runtime; its close-on-exec descripto
 prevents runtime, heartbeat, and title-broker children from extending ownership.
 `OPEN` can resume only while that launcher lease is held. `ABANDONED`,
 `CONFLICT`, and retained `CLOSED` records reopen the same UUID; `SUBMITTED` and
-`INTEGRATING` require delivery recovery; `DELIVERED` is permanently terminal.
+`INTEGRATING` require delivery recovery; `DELIVERED` and `DISCARDED` are
+permanently terminal (`resume` and `recover` refuse them).
+
+`harness-session discard <uuid>` retires an `ABANDONED` or `CONFLICT` session
+whose work will not be delivered (for example, work another session already
+delivered). It runs under the global integration lock and takes the session's
+runtime lease without waiting, as garbage collection does; a held lease
+refuses. Before any state change it writes `discarded.patch` into the record:
+the binary diff of the work tree (tracked, deleted and untracked files;
+gitignored files and the excluded machine-local paths are left out) against
+`base-sha`, staged through a temporary index with the session's broker git
+(`trusted.git` for headless sessions), plus `discarded-at` (UTC). A patch that cannot be written
+completely, or is empty while the work tree differs from the base, refuses and
+changes nothing. Only then does the journal become `DISCARDED`, keeping the
+identity a `CONFLICT` carried. `OPEN` (use `exit` or `close`), `SUBMITTED` and
+`INTEGRATING` (possibly indeterminate; use `recover`), `CLOSED`, `DELIVERED`
+and `DISCARDED` refuse with exit 2.
+
+State transitions: `OPEN` → `SUBMITTED` | `CLOSED` | `ABANDONED`;
+`SUBMITTED` ⇄ `INTEGRATING`; `INTEGRATING` → `DELIVERED` | `CONFLICT`;
+`ABANDONED`, `CONFLICT`, `CLOSED` → `OPEN`; `ABANDONED`, `CONFLICT` →
+`DISCARDED`.
 
 Serialized garbage collection retains nonterminal, malformed, legacy, future-
-dated, leased, and within-grace records. For an expired `CLOSED` or `DELIVERED`
-record, it rereads state while holding the runtime lease, validates that the
-workspace is the canonical state directory's exact direct child, renames it to
+dated, leased, and within-grace records. For an expired `CLOSED`, `DELIVERED`
+or `DISCARDED` record (`DISCARDED` only with its `discarded.patch`), it
+rereads state while holding the runtime lease, validates that the workspace is the canonical state directory's exact direct child, renames it to
 a same-parent tombstone, and removes only that tombstone. The durable journal is
 retained. The default grace is 24 hours and the accepted range is 0–7 days.
 

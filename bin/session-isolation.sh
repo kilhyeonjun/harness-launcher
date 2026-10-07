@@ -243,7 +243,7 @@ journal_valid() {
   local journal="$1"
   [[ -f "$journal" && ! -L "$journal" ]] || return 1
   awk '
-    NR == 1 && $0 ~ /^state=(OPEN|ABANDONED|CONFLICT|CLOSED|SUBMITTED|INTEGRATING|DELIVERED)$/ { state = 1; next }
+    NR == 1 && $0 ~ /^state=(OPEN|ABANDONED|CONFLICT|CLOSED|SUBMITTED|INTEGRATING|DELIVERED|DISCARDED)$/ { state = 1; next }
     NR == 2 && $0 ~ /^identity=[^[:cntrl:]]*$/ { identity = 1; next }
     NR == 3 && $0 ~ /^heartbeat=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/ { heartbeat = 1; next }
     { bad = 1 }
@@ -293,6 +293,10 @@ terminal_record_valid() {
     CLOSED) [[ -z "$identity" ]] ;;
     DELIVERED)
       [[ "$identity" =~ ^[0-9A-Fa-f]{64}$ ]] && git_object_id_file_valid "$dir/delivered-sha" && delivered_manifest_valid "$dir/delivered-manifest"
+      ;;
+    # Identity: empty (ABANDONED) or the submission digest CONFLICT carried.
+    DISCARDED)
+      [[ -z "$identity" || "$identity" =~ ^[0-9A-Fa-f]{64}$ ]] && [[ -f "$dir/discarded.patch" && ! -L "$dir/discarded.patch" ]]
       ;;
     *) return 1 ;;
   esac
@@ -389,7 +393,7 @@ resume_session() {
     ABANDONED|CONFLICT|CLOSED) reopen_session "$id" ;;
     SUBMITTED) echo 'cannot resume SUBMITTED session; run harness-session integrate or recover' >&2; return 2 ;;
     INTEGRATING) echo 'cannot resume INTEGRATING session; run harness-session recover' >&2; return 2 ;;
-    DELIVERED) echo 'cannot resume DELIVERED session; start a fresh isolated session' >&2; return 2 ;;
+    DELIVERED|DISCARDED) echo "cannot resume $state session; start a fresh isolated session" >&2; return 2 ;;
     *) echo "cannot resume $state session: invalid journal state" >&2; return 2 ;;
   esac
   write_heartbeat "$dir"
@@ -400,7 +404,7 @@ transition() {
   dir="$(session_dir "$id")"; [[ -f "$dir/journal" ]] || { echo "unknown session: $id" >&2; return 2; }
   old="$(field "$dir/journal" state)"; old_identity="$(field "$dir/journal" identity)"
   [[ "$old" == "$next" && "$old_identity" == "$identity" ]] && return 0
-  case "$old:$next" in OPEN:SUBMITTED|OPEN:CLOSED|SUBMITTED:INTEGRATING|INTEGRATING:SUBMITTED|INTEGRATING:DELIVERED|INTEGRATING:CONFLICT|OPEN:ABANDONED|ABANDONED:OPEN|CONFLICT:OPEN|CLOSED:OPEN) ;; *) echo "invalid transition: $old -> $next" >&2; return 2;; esac
+  case "$old:$next" in OPEN:SUBMITTED|OPEN:CLOSED|SUBMITTED:INTEGRATING|INTEGRATING:SUBMITTED|INTEGRATING:DELIVERED|INTEGRATING:CONFLICT|OPEN:ABANDONED|ABANDONED:OPEN|CONFLICT:OPEN|CLOSED:OPEN|ABANDONED:DISCARDED|CONFLICT:DISCARDED) ;; *) echo "invalid transition: $old -> $next" >&2; return 2;; esac
   write_journal "$dir" "$next" "$identity"
 }
 # session_has_changes <root> [base-sha]: 0 when the work tree changed or the
@@ -463,6 +467,7 @@ recover_unlocked() {
     printf 'HARNESS_SESSION_ROOT=%s\nstate=SUBMITTED\n' "$(<"$dir/session-root")"
     return 0
   fi
+  [[ "$state" != DISCARDED ]] || { echo 'cannot recover DISCARDED session; start a fresh isolated session' >&2; return 2; }
   [[ "$state" == ABANDONED || "$state" == CONFLICT ]] || return 2
   reopen_session "$id"
   printf 'HARNESS_SESSION_ROOT=%s\nstate=OPEN\n' "$(<"$dir/session-root")"
@@ -838,8 +843,66 @@ close_session() {
   [[ "$(field "$dir/journal" state)" == SUBMITTED ]] || { echo "cannot close $state session" >&2; return 2; }
   integrate "$id"
 }
+# write_discard_patch <id> <dir>: the session work tree against its base as a
+# binary patch (untracked files included, excluded paths not) in
+# <dir>/discarded.patch, staged through a temporary index so neither the
+# session index nor, for headless sessions, the session .git is touched.
+write_discard_patch() {
+  local id="$1" dir="$2" root base tmp patch rc=0
+  root="$(<"$dir/session-root")" && base="$(<"$dir/base-sha")" || return 1
+  [[ -d "$root" && ! -L "$root" ]] || return 1
+  ROOT_GIT_DIR=""
+  if [[ -e "$dir/headless" ]]; then
+    [[ -d "$dir/trusted.git" && ! -L "$dir/trusted.git" ]] || return 1
+    ROOT_GIT_DIR="$dir/trusted.git"
+  fi
+  tmp="$(mktemp -d "$(state_home)/discard.XXXXXX")" || return 1
+  patch="$(mktemp "$dir/.discarded.patch.XXXXXX")" || { rm -rf "$tmp"; return 1; }
+  export GIT_INDEX_FILE="$tmp/index"
+  { root_git "$root" read-tree "$base" && root_git "$root" add -A -- . \
+      && root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$patch"
+  } || rc=1
+  if [[ "$rc" == 0 && ! -s "$patch" ]]; then
+    # An empty patch is evidence only when the work tree really is the base.
+    root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$base" -- . "${EXCLUDED_PATHSPEC[@]}" || rc=1
+  fi
+  unset GIT_INDEX_FILE
+  rm -rf "$tmp"
+  [[ "$rc" == 0 ]] && mv -f "$patch" "$dir/discarded.patch" || { rm -f "$patch"; return 1; }
+}
+# discard <id>: retire an ABANDONED or CONFLICT session whose work will not be
+# delivered. Its work is kept first as discarded.patch; then DISCARDED, which
+# gc retires like CLOSED and DELIVERED.
+discard_unlocked() {
+  local id="$1" dir state
+  valid_id "$id" || { echo "harness-session: refused: invalid session UUID: $id" >&2; return 2; }
+  dir="$(session_dir "$id")"
+  [[ -d "$dir" && ! -L "$dir" ]] && journal_valid "$dir/journal" || { echo "harness-session: refused: session $id has no valid record" >&2; return 2; }
+  state="$(field "$dir/journal" state)"
+  case "$state" in
+    ABANDONED|CONFLICT) ;;
+    OPEN) echo "harness-session: refused: session $id is OPEN; use exit or close" >&2; return 2 ;;
+    SUBMITTED|INTEGRATING) echo "harness-session: refused: session $id is $state and may be indeterminate; run harness-session recover" >&2; return 2 ;;
+    *) echo "harness-session: refused: session $id is $state; only ABANDONED or CONFLICT sessions can be discarded" >&2; return 2 ;;
+  esac
+  [[ -f "$dir/runtime.lock" && ! -L "$dir/runtime.lock" ]] || { echo "harness-session: refused: session $id has no runtime lease record" >&2; return 2; }
+  (
+    exec 8>"$dir/runtime.lock"
+    /usr/bin/lockf -s -t 0 8 || { echo "harness-session: refused: session $id is in use (its runtime lease is held)" >&2; exit 2; }
+    # Reread under the lease: a launcher may have reopened it meanwhile.
+    state="$(field "$dir/journal" state)"
+    [[ "$state" == ABANDONED || "$state" == CONFLICT ]] || { echo "harness-session: refused: session $id is now $state" >&2; exit 2; }
+    { write_discard_patch "$id" "$dir" && date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/discarded-at"; } || {
+      rm -f "$dir/discarded.patch" "$dir/discarded-at"
+      echo "harness-session: refused: could not write the discard patch for session $id; nothing changed" >&2
+      exit 2
+    }
+    transition "$id" DISCARDED "$(field "$dir/journal" identity)"
+  )
+}
 case "${1:-}" in
   create) shift; [[ $# -eq 1 ]] || exit 2; create "$1" ;;
+  discard) shift; [[ $# -eq 1 ]] || exit 2; with_lock discard_unlocked "$1" ;;
   resume) shift; [[ $# -eq 2 ]] || exit 2; resume_session "$1" "$2" ;;
   transition) shift; transition "$@" ;;
   exit) shift; exit_session "$1" ;;
@@ -851,5 +914,5 @@ case "${1:-}" in
   submit) shift; submit "$1" ;;
   integrate) shift; [[ $# -eq 1 ]] || exit 2; integrate "$1" ;;
   close) shift; [[ $# -eq 1 ]] || exit 2; close_session "$1" ;;
-  *) echo 'usage: harness-session {create|resume|transition|exit|recover|list|heartbeat|gc|submit|integrate|close|sandbox-check}' >&2; exit 2 ;;
+  *) echo 'usage: harness-session {create|resume|transition|exit|recover|list|heartbeat|gc|submit|integrate|close|discard|sandbox-check}' >&2; exit 2 ;;
 esac

@@ -17,6 +17,18 @@ Notable changes are recorded here. This project follows semantic versioning for 
   commits with it plus a `Harness-Session: <uuid>` trailer. Anything else falls
   back to the generic message; the run log names which was used. The agent's
   `.git` is never read, and the result file is unchanged (version 1).
+- New `harness-session discard <uuid>` retires an `ABANDONED` or `CONFLICT`
+  session whose work will not be delivered; before, such a session could only
+  be reopened and was never collected. It takes the session's runtime lease
+  without waiting (a live owner refuses), first writes the work tree as a
+  binary patch against the session base (`discarded.patch`, untracked files
+  included, gitignored files not) and `discarded-at` into the record, refuses
+  without changing anything if that patch cannot be written completely, and
+  then moves the session to the new terminal state `DISCARDED`. `gc` retires
+  `DISCARDED` work trees after the retention period, like `CLOSED` and
+  `DELIVERED`; `resume` and `recover` refuse them. Other states refuse with exit 2: `OPEN` (use
+  `exit` or `close`), `SUBMITTED` and `INTEGRATING` (use `recover`), `CLOSED`,
+  `DELIVERED` and `DISCARDED`.
 
 ## 0.44.1 — 2026-10-07
 
