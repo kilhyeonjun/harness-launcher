@@ -135,6 +135,10 @@ create() {
         ln -s "$source/$local_file" "$root/$local_file"
       fi
     done
+    # Staging adds the whole work tree; keep it out of the excluded paths even
+    # when the harness .gitignore does not cover them.
+    mkdir -p "$root/.git/info"
+    printf '/%s\n' "${EXCLUDED_PATHS[@]}" >> "$root/.git/info/exclude"
   fi
   printf '%s\n' "$source" > "$dir/source-root"
   printf '%s\n' "$root" > "$dir/session-root"
@@ -142,7 +146,10 @@ create() {
   if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
     # Before the agent runs: the base commit and a matching index, owned by
     # the launcher record and outside the sandbox's writable paths.
-    git init -q --bare "$dir/trusted.git"
+    # No user template or config: a hooks-only init.templateDir would leave no
+    # info/, and user hooks or config must not reach the trusted dir.
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git init -q --bare --template= "$dir/trusted.git"
+    mkdir -p "$dir/trusted.git/info"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" fetch -q --no-tags "$root" "+HEAD:refs/heads/base"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" read-tree "$sha"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git --git-dir="$dir/trusted.git" --work-tree="$root" update-index -q --refresh >/dev/null 2>&1 || true

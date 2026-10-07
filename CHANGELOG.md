@@ -14,9 +14,13 @@ Notable changes are recorded here. This project follows semantic versioning for 
   the excluded paths: headless sessions reset them to the base (their
   launcher-owned git dir also ignores them), so an edit to a tracked file
   under an excluded path is not delivered; interactive sessions unstage them
-  as before and still refuse excluded paths they committed. A real staging
-  failure, such as a nested repository with no commit or an unreadable file,
-  still ends `failed`.
+  as before and still refuse excluded paths they committed. Both kinds of
+  session list the excluded paths in their own `info/exclude`, so staging
+  never reads inside them. A real staging failure elsewhere, such as a nested
+  repository with no commit or an unreadable file, still ends `failed`.
+- Headless session creation no longer fails when the user's git config sets
+  a hooks-only `init.templateDir`; the launcher-owned git dir is created
+  without user templates or config.
 
 ## 0.43.0 — 2026-10-07
 

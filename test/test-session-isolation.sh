@@ -522,7 +522,7 @@ git --git-dir="$REMOTE" show main:committed-normal.txt >/dev/null || { echo 'FAI
 
 # Interactive close when the harness .gitignore ignores the machine-local links.
 git clone -q "$REMOTE" "$TMP/ignore-clone"
-printf '%s\n' '.claude/settings.local.json' 'mcp.local.json' > "$TMP/ignore-clone/.gitignore"
+printf '%s\n' '.claude/settings.local.json' 'mcp.local.json' '/projects' > "$TMP/ignore-clone/.gitignore"
 git -C "$TMP/ignore-clone" add .gitignore
 git -C "$TMP/ignore-clone" -c user.name=t -c user.email=t@example.invalid commit -qm ignore-local
 git -C "$TMP/ignore-clone" push -q origin HEAD:main
@@ -541,5 +541,23 @@ printf 'headless-ignored\n' > "$hs_root/headless-ignored.txt"
 deliver_headless
 git --git-dir="$REMOTE" show main:headless-ignored.txt >/dev/null || { echo 'FAIL: headless close must deliver beside gitignored local copies'; exit 1; }
 ! git --git-dir="$REMOTE" cat-file -e main:mcp.local.json 2>/dev/null || { echo 'FAIL: a gitignored local copy was delivered'; exit 1; }
+
+# A user git template without info/ (hooks-only init.templateDir) must not
+# break headless create; the trusted git dir ignores user config entirely.
+mkdir -p "$TMP/tplhome" "$TMP/tpl/hooks"
+printf '#!/bin/sh\ntouch "%s"\n' "$TMP/template-hook-ran" > "$TMP/tpl/hooks/post-checkout"; chmod +x "$TMP/tpl/hooks/post-checkout"
+printf '[init]\n\ttemplateDir = %s\n' "$TMP/tpl" > "$TMP/tplhome/.gitconfig"
+tpl_out="$(HOME="$TMP/tplhome" HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE")" || { echo 'FAIL: headless create must survive a hooks-only git template'; exit 1; }
+tpl_id="$(printf '%s\n' "$tpl_out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+grep -qx '/projects' "$STATE/sessions/$tpl_id/trusted.git/info/exclude" || { echo 'FAIL: trusted.git must ignore the excluded paths'; exit 1; }
+[[ ! -e "$STATE/sessions/$tpl_id/trusted.git/hooks/post-checkout" ]] || { echo 'FAIL: user template hooks must not reach trusted.git'; exit 1; }
+# Interactive add never reads into non-ignored excluded paths.
+out="$(create)"; il_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; il_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+mkdir -p "$il_root/config/.local"; printf 'x\n' > "$il_root/config/.local/locked"; chmod 000 "$il_root/config/.local/locked"
+git init -q "$il_root/config/.local/nested"
+printf 'beside-local\n' > "$il_root/beside-local.txt"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$il_id" || { echo 'FAIL: unreadable content under an excluded path must not stop interactive close'; exit 1; }
+git --git-dir="$REMOTE" show main:beside-local.txt >/dev/null || { echo 'FAIL: interactive close beside excluded content must deliver'; exit 1; }
+chmod 600 "$il_root/config/.local/locked"
 
 echo 'PASS: submissions touching excluded paths are refused; committed work is delivered'

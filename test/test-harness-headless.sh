@@ -29,6 +29,7 @@ printf '%s\n' 'github_user: tester' > "$SOURCE/config/config.yaml"
 printf '%s\n' tracked > "$SOURCE/tracked.txt"
 printf '%s\n' '.claude/settings.local.json' 'mcp.local.json' > "$SOURCE/.gitignore"
 printf '%s\n' base > "$SOURCE/projects/keep.txt"
+printf '%s\n' base > "$SOURCE/projects/drop.txt"
 cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
 #!/usr/bin/env bash
 # Records the broker environment the repository verifier runs with.
@@ -86,6 +87,7 @@ case "\$mode" in
     echo "\$ok" ;;
   trackedexcluded)
     printf 'agent edit\n' > projects/keep.txt
+    rm projects/drop.txt
     printf 'normal %s\n' "\$\$" > trackedexcluded-normal.txt
     echo "\$ok" ;;
   nested)
@@ -279,6 +281,7 @@ headless || fail 'tracked excluded run must exit 0'
 expect_status delivered
 git --git-dir="$REMOTE" show main:trackedexcluded-normal.txt >/dev/null || fail 'normal paths beside an excluded edit must be delivered'
 [[ "$(git --git-dir="$REMOTE" show main:projects/keep.txt)" == base ]] || fail 'an edit to a tracked file under an excluded path must not be delivered'
+[[ "$(git --git-dir="$REMOTE" show main:projects/drop.txt)" == base ]] || fail 'a deletion under an excluded path must not be delivered'
 for local_file in .claude/settings.local.json mcp.local.json .mcp.local.json; do
   ! git --git-dir="$REMOTE" cat-file -e "main:$local_file" 2>/dev/null || fail "gitignored local file $local_file reached the remote"
 done
