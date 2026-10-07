@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# harness-headless: non-interactive isolated run, delivery, and result contract.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP="$(mktemp -d)"
+TMP="$(cd "$TMP" && pwd -P)"
+trap 'rm -rf "$TMP"' EXIT
+PREFIX="$TMP/prefix"
+STUB="$TMP/stub"
+SOURCE="$TMP/harness"
+REMOTE="$TMP/remote.git"
+STATE="$TMP/state"
+FAKE_HOME="$TMP/home"
+PROFILES="$TMP/profiles"
+RESULT="$TMP/out/result.json"
+LOCK="$TMP/run.lock"
+PROMPT="$TMP/prompt.txt"
+mkdir -p "$STUB" "$FAKE_HOME" "$PROFILES/profiles" "$TMP/out" "$SOURCE/config" "$SOURCE/core/bin" "$SOURCE/projects/product" "$SOURCE/.claude"
+
+bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$PREFIX"
+
+git init -q --bare -b main "$REMOTE"
+git -C "$SOURCE" init -q -b main
+git -C "$SOURCE" config user.email test@example.invalid
+git -C "$SOURCE" config user.name test
+printf '%s\n' 'HARNESS_NAME="headless"' 'HARNESS_PREFIX="hh"' > "$SOURCE/config/launcher.env"
+printf '%s\n' 'github_user: tester' > "$SOURCE/config/config.yaml"
+printf '%s\n' tracked > "$SOURCE/tracked.txt"
+cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
+#!/usr/bin/env bash
+[[ ! -e "$TMP/verify-fail" ]] || exit 92
+EOF
+chmod +x "$SOURCE/core/bin/auto-deliver.sh"
+git -C "$SOURCE" add . && git -C "$SOURCE" commit -qm initial
+git -C "$SOURCE" remote add origin "$REMOTE"
+git -C "$SOURCE" push -q origin main
+printf '%s\n' '{"env":{"LOCAL_SETTINGS_SECRET":"leak-local"}}' > "$SOURCE/.claude/settings.local.json"
+printf '%s\n' '{"mcpServers":{"docs":{"command":"echo"}}}' > "$SOURCE/.mcp.local.json"
+SOURCE_REAL="$(cd "$SOURCE" && pwd -P)"
+printf '%s\n' "$SOURCE" > "$PROFILES/profiles/hh"
+
+cat > "$STUB/gh" <<'EOF'
+#!/usr/bin/env bash
+[[ "$*" == "auth token --user tester" ]] && echo gh-token-leak
+EOF
+# Test control travels through files: harness-headless clears the environment.
+cat > "$STUB/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\0' "\$@" > "$TMP/claude-argv"
+env > "$TMP/claude-env"
+printf '%s\n' "\$PWD" > "$TMP/claude-pwd"
+mode="\$(cat "$TMP/mode")"
+sid=11111111-2222-4333-8444-555555555555
+ok='{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.12,"num_turns":3,"result":"done: summary","session_id":"'\$sid'"}'
+case "\$mode" in
+  change)
+    printf 'headless %s\n' "\$\$" > headless-change.txt
+    project="\$HOME/.claude/projects/\$(printf '%s' "\$PWD" | sed 's/[^A-Za-z0-9]/-/g')"
+    mkdir -p "\$project" && : > "\$project/\$sid.jsonl"
+    echo "\$ok" ;;
+  none) echo "\$ok" ;;
+  budget) echo '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":2.01,"num_turns":9,"session_id":"'\$sid'"}'; exit 1 ;;
+  error) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"total_cost_usd":0.5,"num_turns":2,"result":"boom","session_id":"'\$sid'"}'; exit 1 ;;
+  hang)
+    sleep 300 & echo \$! > "$TMP/grandchild.pid"
+    echo \$\$ > "$TMP/child.pid"
+    wait ;;
+  wait)
+    : > "$TMP/started"
+    while [[ ! -e "$TMP/release" ]]; do sleep 0.05; done
+    echo "\$ok" ;;
+esac
+EOF
+chmod +x "$STUB/gh" "$STUB/claude"
+printf '%s\n' 'Fix the typo.' > "$PROMPT"
+printf '%s\n' '{"permissions":{"deny":["Read(//secret/**)"]},"sandbox":{"enabled":true,"network":{"allowedDomains":["example.com"],"strictAllowlist":true}}}' > "$TMP/caller-settings.json"
+
+headless() {
+  rm -f "$TMP/claude-argv" "$TMP/claude-env" "$TMP/claude-pwd"
+  env -i PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+    HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" \
+    ANTHROPIC_API_KEY=leak-api BUZZ_TOKEN=leak-buzz TELEGRAM_BOT_TOKEN=leak-telegram \
+    "$PREFIX/bin/harness-headless" hh --prompt-file "$PROMPT" --result-file "$RESULT" \
+    --lock-file "$LOCK" --budget-usd 2 --timeout-min "${TIMEOUT_MIN:-1}" "$@"
+}
+field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))[sys.argv[2]]; print("null" if v is None else v)' "$RESULT" "$1"; }
+fail() { echo "FAIL: $*" >&2; [[ -f "$RESULT" ]] && sed 's/^/  /' "$RESULT" >&2; exit 1; }
+expect_status() { [[ "$(field status)" == "$1" ]] || fail "expected status $1"; }
+
+# --- delivered -----------------------------------------------------------------
+echo change > "$TMP/mode"
+headless --settings-file "$TMP/caller-settings.json" --model sonnet || fail 'delivered run must exit 0'
+expect_status delivered
+sid="$(field session_id)"
+[[ "$sid" =~ ^[0-9A-Fa-f-]{36}$ ]] || fail 'delivered result must name the launcher session'
+[[ "$(field commit)" == "$(git --git-dir="$REMOTE" rev-parse main)" ]] || fail 'commit must be the delivered remote SHA'
+git --git-dir="$REMOTE" show main:headless-change.txt >/dev/null || fail 'change must reach the remote'
+grep -qx state=DELIVERED "$STATE/sessions/$sid/journal" || fail 'session must be DELIVERED'
+[[ "$(field cost_usd)" == 0.12 && "$(field num_turns)" == 3 && "$(field summary)" == 'done: summary' && "$(field exit_code)" == 0 ]] || fail 'claude metadata must be copied'
+session_root="$STATE/worktrees/$sid"
+[[ "$(cat "$TMP/claude-pwd")" == "$session_root" ]] || fail "claude must run in the session root, got $(cat "$TMP/claude-pwd")"
+[[ "$(field transcript)" == "$FAKE_HOME/.claude/projects/"*"/11111111-2222-4333-8444-555555555555.jsonl" ]] || fail 'transcript path must be reported'
+[[ ! -e "$session_root/projects" && ! -L "$session_root/projects" && ! -L "$session_root/.claude/settings.local.json" ]] || fail 'headless session must not link back to the source'
+python3 - "$TMP/claude-argv" "$SOURCE_REAL" "$FAKE_HOME" <<'PY' || fail 'claude argv contract'
+import json, sys
+argv = open(sys.argv[1]).read().split('\0')[:-1]
+source, home = sys.argv[2], sys.argv[3]
+assert argv.count('--settings') == 1, argv
+assert '--strict-mcp-config' in argv and '--mcp-config' not in argv, argv
+for a, b in (('--output-format', 'json'), ('--max-budget-usd', '2'), ('--permission-mode', 'bypassPermissions'), ('--model', 'sonnet')):
+    assert argv[argv.index(a) + 1] == b, (a, argv)
+assert '-p' in argv and argv[-1] == 'Fix the typo.\n' and argv[-2] == '--', argv
+settings = json.loads(argv[argv.index('--settings') + 1])
+deny = settings['permissions']['deny']
+for rule in ('Edit(/%s/**)' % source, 'Write(/%s/**)' % source, 'Write(/%s/.ssh/**)' % home,
+             'Edit(/%s/.config/gh/**)' % home, 'Write(/%s/.hermes/**)' % home, 'Write(/%s/buzz/**)' % home,
+             'Write(/%s/.claude/**)' % home, 'WebFetch', 'WebSearch', 'Bash(*git push*)', 'Bash(*harness-session*)',
+             'Bash(*session-isolation.sh*)', 'Bash(*auto-deliver*)', 'Bash(*sudo*)', 'Bash(*launchctl*)',
+             'Read(//secret/**)'):
+    assert rule in deny, (rule, deny)
+assert settings['sandbox'] == {'enabled': True, 'network': {'allowedDomains': ['example.com'], 'strictAllowlist': True}}, settings
+assert 'harness-launch-record' in json.dumps(settings['hooks']), settings
+PY
+for leak in leak-api leak-buzz leak-telegram leak-local gh-token-leak; do
+  ! grep -q "$leak" "$TMP/claude-env" || fail "secret $leak reached the claude environment"
+done
+! grep -q '^GH_TOKEN=' "$TMP/claude-env" || fail 'GH_TOKEN must not be exported in headless runs'
+echo 'PASS: harness-headless delivers through the broker with merged denies and a clean environment'
+
+# --- no_changes -----------------------------------------------------------------
+echo none > "$TMP/mode"
+headless || fail 'no_changes run must exit 0'
+expect_status no_changes
+grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail 'clean session must close'
+[[ "$(field commit)" == null ]] || fail 'no_changes has no commit'
+echo 'PASS: harness-headless reports no_changes for a clean session'
+
+# --- budget / failed --------------------------------------------------------------
+echo budget > "$TMP/mode"
+headless || fail 'budget run must exit 0'
+expect_status budget
+[[ "$(field cost_usd)" == 2.01 && "$(field session_id)" != null ]] || fail 'budget result must keep cost and session'
+echo error > "$TMP/mode"
+headless || fail 'failed run must exit 0'
+expect_status failed
+[[ "$(field summary)" == boom && "$(field exit_code)" == 1 ]] || fail 'failed result must keep the claude result and exit code'
+echo 'PASS: harness-headless maps budget and error results'
+
+# --- conflict -----------------------------------------------------------------------
+echo change > "$TMP/mode"
+: > "$TMP/verify-fail"
+headless || fail 'conflict run must exit 0'
+rm -f "$TMP/verify-fail"
+expect_status conflict
+grep -qx state=CONFLICT "$STATE/sessions/$(field session_id)/journal" || fail 'conflict session must be left for the owner'
+echo 'PASS: harness-headless reports conflict and leaves the session'
+
+# --- timeout ------------------------------------------------------------------------
+echo hang > "$TMP/mode"
+rm -f "$TMP/child.pid" "$TMP/grandchild.pid"
+start=$SECONDS
+TIMEOUT_MIN=0.03 headless || fail 'timeout run must exit 0'
+expect_status timeout
+(( SECONDS - start < 30 )) || fail 'timeout must stop the run promptly'
+for pidfile in "$TMP/child.pid" "$TMP/grandchild.pid"; do
+  [[ -s "$pidfile" ]] || fail "missing $pidfile"
+  ! kill -0 "$(cat "$pidfile")" 2>/dev/null || fail 'timeout must kill the whole process group'
+done
+echo 'PASS: harness-headless kills the process group on timeout'
+
+# --- lock ---------------------------------------------------------------------------
+echo wait > "$TMP/mode"
+rm -f "$TMP/started" "$TMP/release"
+headless > /dev/null 2>&1 &
+first=$!
+for _ in $(seq 1 200); do [[ -e "$TMP/started" ]] && break; sleep 0.05; done
+[[ -e "$TMP/started" ]] || fail 'locked run did not start'
+python3 - "$LOCK" <<'PY' || fail 'harness-headless must hold an exclusive flock while running'
+import fcntl, sys
+with open(sys.argv[1], 'a') as f:
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+if headless > /dev/null 2>&1; then fail 'a second run must not start while the lock is held'; fi
+: > "$TMP/release"
+wait "$first" || fail 'locked run must finish'
+expect_status no_changes
+echo 'PASS: harness-headless holds the lock file for its whole run'
+
+# --- refused ------------------------------------------------------------------------
+rm -f "$TMP/claude-argv"
+: > "$PROMPT"
+headless || fail 'refused run must exit 0'
+expect_status refused
+[[ "$(field session_id)" == null && ! -e "$TMP/claude-argv" ]] || fail 'refused run must not launch claude'
+printf '%s\n' 'Fix the typo.' > "$PROMPT"
+env -i PATH="/usr/bin:/bin" HOME="$FAKE_HOME" HARNESS_PROFILE_HOME="$PROFILES" \
+  "$PREFIX/bin/harness-headless" missing --prompt-file "$PROMPT" --result-file "$RESULT" \
+  --lock-file "$LOCK" --budget-usd 1 --timeout-min 1 || fail 'unknown harness must still write a result'
+expect_status refused
+# A tracked symlinked .claude makes the headless clone refuse itself.
+LINKED="$TMP/linked"
+mkdir -p "$LINKED/config" "$TMP/linked-outside"
+git -C "$LINKED" init -q -b main
+printf '%s\n' 'HARNESS_NAME="linked"' 'HARNESS_PREFIX="lh"' > "$LINKED/config/launcher.env"
+ln -s "$TMP/linked-outside" "$LINKED/.claude"
+git -C "$LINKED" add -A && git -C "$LINKED" -c user.email=t@example.invalid -c user.name=t commit -qm initial
+rm "$LINKED/.claude" && mkdir "$LINKED/.claude" && printf '%s\n' '{}' > "$LINKED/.claude/settings.local.json"
+printf '%s\n' "$LINKED" > "$PROFILES/profiles/lh"
+rm -f "$TMP/claude-argv"
+env -i PATH="$STUB:/usr/bin:/bin" HOME="$FAKE_HOME" HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" \
+  "$PREFIX/bin/harness-headless" lh --prompt-file "$PROMPT" --result-file "$RESULT" \
+  --lock-file "$LOCK" --budget-usd 1 --timeout-min 1 || fail 'refused clone must still write a result'
+expect_status refused
+[[ ! -e "$TMP/claude-argv" && ! -e "$TMP/linked-outside/settings.local.json" ]] || fail 'refused clone must not launch claude or write outside'
+if "$PREFIX/bin/harness-headless" hh --prompt-file "$PROMPT" 2>/dev/null; then fail 'missing required options must exit nonzero'; fi
+echo 'PASS: harness-headless refuses runs that would need interactive input'

@@ -1153,6 +1153,8 @@ harness_observability_load() {
 harness_gh_token_load() {
   local harness_dir="$1" cfg user="" token=""
   HARNESS_GH_USER=""
+  # harness-headless runs get no derived credentials.
+  [ "${HARNESS_HEADLESS:-0}" != 1 ] || return 1
   # Same resolution order as the harness gh-auth hook: team profiles keep
   # github_user in gitignored per-machine config; personal profiles may commit it.
   for cfg in "$harness_dir/config/.local/config.yaml" "$harness_dir/config/config.yaml"; do
@@ -1181,6 +1183,8 @@ harness_gh_token_load() {
 harness_export_local_env() {
   local harness_dir="$1"
   local harness_python
+  # harness-headless runs never inherit harness-local secrets.
+  [ "${HARNESS_HEADLESS:-0}" != 1 ] || return 0
   [ -f "$harness_dir/.claude/settings.local.json" ] || return 0
   harness_python="$(harness_python3_resolve)" || return 1
   local _mk _mv _restore_xtrace=0

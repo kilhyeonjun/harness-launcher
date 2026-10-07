@@ -522,6 +522,8 @@ _harness_launcher_prepare_codex_apps_allowlist() {
 _harness_launcher_claude_mcp_local_args() {
   local rendered
   reply=()
+  # harness-headless passes --strict-mcp-config with no MCP servers.
+  [[ "${HARNESS_HEADLESS:-0}" != 1 ]] || return 0
   rendered="$(harness_claude_mcp_runtime_config "$1" "$_HARNESS_LAUNCHER_BIN")" || return $?
   [[ -z "$rendered" ]] || reply=(--mcp-config "$rendered")
 }
