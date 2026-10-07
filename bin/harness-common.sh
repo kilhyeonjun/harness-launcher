@@ -240,6 +240,21 @@ harness_claude_launch_settings() {
   [ -z "$out" ] || printf '%s\n' "{$out}"
 }
 
+# harness_headless_session_settings <session-root> <tmp-dir>
+#   harness-headless only: settings that need the session path, merged into the
+#   single Claude --settings. The session git config, hooks and info dir are
+#   write-denied (the broker later runs git there), and the per-session TMPDIR
+#   is the one extra sandbox write path.
+harness_headless_session_settings() {
+  local git tmp tool rules=""
+  git="$(harness_json_escape "$1/.git")"; tmp="$(harness_json_escape "$2")"
+  for tool in Edit Write NotebookEdit; do
+    rules="$rules${rules:+,}\"$tool(/$git/config)\",\"$tool(/$git/hooks/**)\",\"$tool(/$git/info/**)\""
+  done
+  printf '{"permissions":{"deny":[%s]},"sandbox":{"filesystem":{"denyWrite":["%s/config","%s/hooks","%s/info"],"allowWrite":["%s"]}}}\n' \
+    "$rules" "$git" "$git" "$git" "$tmp"
+}
+
 # harness_codex_option_takes_value <option>: top-level Codex options whose
 # value is the next argument.
 harness_codex_option_takes_value() {

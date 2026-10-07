@@ -230,59 +230,79 @@ Manifest-enabled homes also keep an atomic successful-input fingerprint plus a s
 
 `harness-headless <profile> --prompt-file F --result-file R --lock-file L --budget-usd N --timeout-min M [--settings-file S] [--model X]`
 runs one unattended Claude task for a registered profile. It is the only
-non-interactive route that works inside an isolated session.
+non-interactive route that works inside an isolated session. Interactive and
+legacy routes do not change.
 
 - **Lock and lifetime.** It holds an exclusive `flock` on `L` from start until
-  the result file is in place, including delivery. A second run on the same
-  lock exits 75 without writing a result. The run stays in the foreground.
+  the result file is in place, including delivery, and stays in the
+  foreground. A held lock exits 75 and leaves `R` alone; any other lock error
+  exits 2 with a `refused` result when `R` is writable. `SIGTERM`, `SIGINT` and
+  `SIGHUP` kill the run's process group, write a `failed` result (`exit_code`
+  128 + signal), and only then release the lock.
 - **Environment.** Only `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `LANG`,
   `LC_*` and `TMPDIR` pass through, plus `HARNESS_SESSION_STATE_HOME` and
   `XDG_STATE_HOME` so the launcher finds the same session state. It adds
   `HARNESS_HEADLESS=1`, `HARNESS_PYTHON_BIN` (the resolved interpreter) and
   `GIT_TERMINAL_PROMPT=0`. With `HARNESS_HEADLESS=1` the launcher does not
   export the harness `.claude/settings.local.json` `env` block, does not derive
-  a per-harness `GH_TOKEN`, and passes no `--mcp-config`.
+  a per-harness `GH_TOKEN`, passes no `--mcp-config`, and sets `TMPDIR` to
+  `<state>/sessions/<uuid>/tmp` (removed after the run) instead of the shared
+  per-user temp directory.
 - **Session.** It calls `harness-exec <harness> --isolated --passthrough ...`,
-  so the launcher creates the journal, lease and launch record itself and the
-  run directory is the session root. The headless clone copies
-  `.mcp.local.json`, `mcp.local.json` and `.claude/settings.local.json`
-  (without its `env` block) instead of linking them, and never links
-  `projects/`. A symlink on any of those paths in the cloned tree refuses the
-  clone.
+  so the launcher creates the journal and lease itself and the run directory
+  is the session root. The headless clone uses `git clone --no-hardlinks`,
+  copies `.mcp.local.json`, `mcp.local.json` and `.claude/settings.local.json`
+  (without its `env` block) instead of linking them, never links `projects/`,
+  and refuses a symlink on any of those paths. It records the SHA-256 of the
+  session `.git/config` in the session record.
 - **Claude.** `claude -p --output-format json --max-budget-usd N
-  --permission-mode bypassPermissions --strict-mcp-config [--model X]`, with
-  the prompt after `--`. stdin is `/dev/null` and the run has its own process
-  group with no controlling terminal. The launcher merges every `--settings`
-  into one (dicts merge, lists are unions, the last scalar wins): its
-  launch-record hook, the caller's `S`, and the mandatory containment, passed
-  last so it wins. Mandatory: `sandbox` with `enabled`, `failIfUnavailable`,
-  `allowUnsandboxedCommands: false`, `network.strictAllowlist` and an empty
-  `network.allowedDomains`, and `filesystem.denyRead` for `~/.hermes`,
-  `~/buzz`, `~/.ssh`, `~/.config/gh`, `~/.aws`, `~/.claude` and the source root
-  (the session clone has its own Git directory and copied local files, so it
-  never needs to read the source root). `permissions.deny` holds
-  `Edit`/`Write`/`NotebookEdit` on the source root and those directories,
-  `Read` on those directories, `WebFetch`, `WebSearch`, and Bash rules matching
-  `harness-session`, `session-isolation.sh`, `auto-deliver`, `git push`, `sudo`
-  and `launchctl`. `S` may contain only `_note`, `permissions.deny`,
-  `sandbox.filesystem.denyRead` and `sandbox.network.allowedDomains` (string
-  lists, added to the mandatory ones). Any other key is `refused`.
+  --permission-mode acceptEdits --strict-mcp-config [--model X]`, with the
+  prompt on stdin, in its own process group without a controlling terminal.
+  The launcher merges every `--settings` into one (dicts merge, lists are
+  unions, the last scalar wins): its launch-record settings, the session
+  settings, the caller's `S`, and the mandatory containment, passed last.
+  - `disableAllHooks: true` (project hooks run outside the sandbox) and
+    `disableBypassPermissionsMode: "disable"`. Hooks are off, so headless runs
+    write no launch record; a later `resume` of such a Claude session gets the
+    default permissions.
+  - `sandbox`: `enabled`, `failIfUnavailable`, `allowUnsandboxedCommands:
+    false`, `autoAllowBashIfSandboxed`, `network.strictAllowlist` with an empty
+    `network.allowedDomains`; `filesystem.denyRead` for `~/.hermes`, `~/buzz`,
+    `~/.ssh`, `~/.config/gh`, `~/.aws`, `~/.claude`, the source root and the
+    caller's paths; `filesystem.denyWrite` for `/private/tmp/claude-<uid>`,
+    `/tmp/claude-<uid>` and the session `.git/config`, `.git/hooks` and
+    `.git/info`; `filesystem.allowWrite` for the session `TMPDIR`.
+  - `permissions.deny`: `Read` on every `denyRead` path; `Edit`, `Write` and
+    `NotebookEdit` on those paths, `~/Library/LaunchAgents`, the temp
+    directories and the session git config, hooks and info; `WebFetch`;
+    `WebSearch`; Bash rules matching `harness-session`, `session-isolation.sh`,
+    `auto-deliver`, `git push`, `sudo` and `launchctl` anywhere in the
+    command; and `hermes`, `buzz` and `rm -rf` as prefixes.
+  - `S` may contain only `_note`, `permissions.deny`,
+    `sandbox.filesystem.denyRead` and `sandbox.network.allowedDomains` (string
+    lists, added to the mandatory ones). Any other key is `refused`.
 - **Timeout.** After `M` minutes (fractions allowed) the whole process group
   gets `SIGTERM`, then `SIGKILL`. Status `timeout`, `exit_code` 124. The
   session is left for its owner.
-- **Delivery.** On success the launcher has already moved a changed session to
-  `ABANDONED` and a clean one to `CLOSED`. A changed session is recovered and
-  closed through the broker: exit 0 gives `delivered` with the
-  `delivered-sha` readback commit, exit 3 or 5 gives `conflict` (session kept),
-  exit 4 from `INTEGRATING` is recovered once and gives `delivered` or
-  `failed`. Anything else is `failed`.
-- **Result.** Written atomically (temp file and rename) to `R`:
+- **Delivery.** When Claude exits, the launcher moves a changed session
+  (worktree changes or commits past the base) to `ABANDONED` and a clean one
+  to `CLOSED`. If the session `.git/config` no longer matches its clone-time
+  hash, no broker git runs on the root and the status is `refused`. Otherwise
+  a changed session is recovered and closed through the broker, whose git
+  commands on the root run with `core.fsmonitor=false` and
+  `core.hooksPath=/dev/null`. A journal still `INTEGRATING` after close is
+  recovered once. `DELIVERED` gives `delivered` with the `delivered-sha`
+  readback commit; close exit 3 or 5 gives `conflict` (session kept); anything
+  else is `failed`.
+- **Result.** Written atomically (temp file and rename) to `R`, always with
+  `"version": 1`:
   `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.
   `budget` is Claude subtype `error_max_budget_usd`; `failed` covers other
-  Claude errors, a missing Claude result, and delivery failures. `refused`
-  (`exit_code` 2) means the run could not start without input: an unknown
-  profile, an empty or unreadable prompt, a non-positive budget or timeout, a
-  settings file with a key outside the allowed set, or a refused headless clone.
+  Claude errors, a missing Claude result, signals and delivery failures.
+  `refused` (`exit_code` 2 before launch) means the run could not start
+  without input or broke containment: an unknown profile, an empty or
+  unreadable prompt, a non-positive budget or timeout, a settings key outside
+  the allowed set, a refused headless clone, or a changed session git config.
   Launcher and Claude stderr go to `R.log`. The command exits 0 whenever `R`
   was written and nonzero otherwise.
 

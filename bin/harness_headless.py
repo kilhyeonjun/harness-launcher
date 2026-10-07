@@ -5,10 +5,12 @@ docs/architecture.md "Headless isolated runs" for the contract.
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -26,7 +28,12 @@ ENV_ALLOW = ('HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'TMPDIR')
 # Launcher state location only, so `harness-session` sees the same sessions.
 ENV_LAUNCHER = ('HARNESS_SESSION_STATE_HOME', 'XDG_STATE_HOME')
 HOME_DENY = ('.hermes', 'buzz', '.ssh', '.config/gh', '.aws', '.claude')
+# Edit-tool denies only (persistence vectors that are not secrets).
+HOME_WRITE_DENY = ('Library/LaunchAgents',)
 BASH_DENY = ('harness-session', 'session-isolation.sh', 'auto-deliver', 'git push', 'sudo', 'launchctl')
+# Prefix form only: a wildcard would also block paths such as docs/*buzz*/.
+BASH_PREFIX_DENY = ('hermes', 'buzz', 'rm -rf')
+EDIT_TOOLS = ('Edit', 'Write', 'NotebookEdit')
 SUMMARY_MAX = 3000
 EXIT_TIMEOUT = 124
 EXIT_REFUSED = 2
@@ -34,6 +41,14 @@ EXIT_REFUSED = 2
 
 class Refused(Exception):
     pass
+
+
+class Terminated(Exception):
+    pass
+
+
+def _terminate(signum, frame):
+    raise Terminated(signum)
 
 
 def parse_args(argv):
@@ -86,23 +101,32 @@ def state_home(env):
     return Path(base, 'harness-launcher')
 
 
-def mandatory_settings(source, home):
+def mandatory_settings(source, home, caller_deny_read):
     """Launcher-owned containment. Passed last, so the launcher's settings
     merge (dicts deep-merged, lists unioned, scalars last-wins) keeps every
-    value here over any earlier --settings."""
-    homes = list(dict.fromkeys(os.path.join(home, d) for d in HOME_DENY))
-    sources = list(dict.fromkeys([source, os.path.realpath(source)]))
-    deny = [f'{tool}(/{path}/**)' for path in sources + homes for tool in ('Edit', 'Write', 'NotebookEdit')]
-    deny += [f'Read(/{path}/**)' for path in homes]
+    value here over any earlier --settings. Every sandbox read-denied path is
+    also denied to the Read and edit tools, which the sandbox does not cover."""
+    uid = os.getuid()
+    homes = [os.path.join(home, d) for d in HOME_DENY]
+    sources = [source, os.path.realpath(source)]
+    # The session clone has its own Git directory (no hardlinks or alternates)
+    # and copied local files, so the canonical source root can be read-denied.
+    deny_read = list(dict.fromkeys(homes + sources + list(caller_deny_read)))
+    deny_write = [f'/private/tmp/claude-{uid}', f'/tmp/claude-{uid}']
+    write_paths = deny_read + [os.path.join(home, d) for d in HOME_WRITE_DENY] + deny_write
+    deny = [f'Read(/{path}/**)' for path in deny_read]
+    deny += [f'{tool}(/{path}/**)' for path in write_paths for tool in EDIT_TOOLS]
     deny += ['WebFetch', 'WebSearch']
     for word in BASH_DENY:
         deny += [f'Bash({word}:*)', f'Bash(*{word}*)']
-    # The session clone has its own Git directory and copied local files, so
-    # the canonical source root can be read-denied too.
+    deny += [f'Bash({word}:*)' for word in BASH_PREFIX_DENY]
     return {'permissions': {'deny': deny},
+            'disableAllHooks': True,
+            'disableBypassPermissionsMode': 'disable',
             'sandbox': {'enabled': True, 'failIfUnavailable': True, 'allowUnsandboxedCommands': False,
+                        'autoAllowBashIfSandboxed': True,
                         'network': {'strictAllowlist': True, 'allowedDomains': []},
-                        'filesystem': {'denyRead': homes + sources}}}
+                        'filesystem': {'denyRead': deny_read, 'denyWrite': deny_write}}}
 
 
 def _strings(value):
@@ -179,6 +203,18 @@ def kill_group(pgid):
             time.sleep(2)
 
 
+def config_intact(state, sid):
+    """The session .git/config still matches the hash recorded at clone time."""
+    record = state / 'sessions' / sid
+    try:
+        expected = (record / 'git-config.sha256').read_text().strip()
+        root = (record / 'session-root').read_text().strip()
+        actual = hashlib.sha256(Path(root, '.git', 'config').read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return bool(expected) and actual == expected
+
+
 def deliver(sid, state, env, cwd, log):
     """Broker delivery after a successful run: (status, commit)."""
     iso = str(BIN / 'session-isolation.sh')
@@ -194,20 +230,24 @@ def deliver(sid, state, env, cwd, log):
     current = journal_state(state, sid)
     if current == 'CLOSED':
         return 'no_changes', None
+    if not config_intact(state, sid):
+        # Escaped containment: no broker git may run on this root.
+        return 'refused', None
     if current != 'ABANDONED' or session('recover') != 0:
         return 'failed', None
     rc = session('close')
     after = journal_state(state, sid)
-    if rc == 0:
-        if after == 'DELIVERED':
-            return delivered()
-        return ('no_changes', None) if after == 'CLOSED' else ('failed', None)
+    if after == 'INTEGRATING':
+        # Indeterminate integration (readback outage, exit 4 or a git 128):
+        # prove the pending commit once.
+        session('recover')
+        after = journal_state(state, sid)
+    if after == 'DELIVERED':
+        return delivered()
+    if rc == 0 and after == 'CLOSED':
+        return 'no_changes', None
     if rc in (3, 5):
         return 'conflict', None
-    if rc == 4 and after == 'INTEGRATING':
-        # Indeterminate post-push readback: prove the pending commit once.
-        if session('recover') == 0 and journal_state(state, sid) == 'DELIVERED':
-            return delivered()
     return 'failed', None
 
 
@@ -233,25 +273,33 @@ def run(args, result):
     state = state_home(env)
     # The launcher merges every --settings (its launch-record hook, the
     # caller's, these denies) into the single --settings Claude receives.
+    # acceptEdits, not bypass: writes outside the session root are denied and
+    # sandboxed Bash auto-runs (autoAllowBashIfSandboxed). The prompt is stdin.
     command = [str(BIN / 'harness-exec'), hdir, '--isolated', '--passthrough', '-p',
                '--output-format', 'json', '--max-budget-usd', args.budget_usd,
-               '--permission-mode', 'bypassPermissions', '--strict-mcp-config']
+               '--permission-mode', 'acceptEdits', '--strict-mcp-config']
     if args.model:
         command += ['--model', args.model]
     if caller is not None:
         command += ['--settings', json.dumps(caller)]
-    command += ['--settings', json.dumps(mandatory_settings(hdir, env['HOME'])), '--', prompt]
+    caller_deny_read = ((caller or {}).get('sandbox') or {}).get('filesystem', {}).get('denyRead', [])
+    command += ['--settings', json.dumps(mandatory_settings(hdir, env['HOME'], caller_deny_read))]
 
     log_path = args.result_file + '.log'
-    with open(log_path, 'w') as log, tempfile.TemporaryFile('w+') as out:
-        proc = subprocess.Popen(command, cwd=hdir, env=env, stdin=subprocess.DEVNULL,
+    with open(log_path, 'w') as log, tempfile.TemporaryFile('w+') as out, tempfile.TemporaryFile('w+') as stdin:
+        stdin.write(prompt)
+        stdin.flush()
+        stdin.seek(0)
+        proc = subprocess.Popen(command, cwd=hdir, env=env, stdin=stdin,
                                 stdout=out, stderr=log, start_new_session=True)
         timed_out = False
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-        kill_group(proc.pid)
+        finally:
+            # Also on a terminating signal: the whole group goes first.
+            kill_group(proc.pid)
         proc.wait()
         log.flush()
         out.seek(0)
@@ -259,6 +307,11 @@ def run(args, result):
         log_text = Path(log_path).read_text(errors='replace')
         sid = launched_session(log_text, state, hdir)
         result['session_id'] = sid
+        if sid:
+            shutil.rmtree(state / 'sessions' / sid / 'tmp', ignore_errors=True)
+        # A clone refusal can only precede the launcher's session announcement.
+        announced = SESSION_LINE.search(log_text)
+        launcher_text = log_text[:announced.start()] if announced else log_text
         result['exit_code'] = EXIT_TIMEOUT if timed_out else proc.returncode
         if data:
             text = data.get('result')
@@ -269,7 +322,7 @@ def run(args, result):
             result['transcript'] = transcript_path(env['HOME'], session_root, data.get('session_id'))
         if timed_out:
             result['status'] = 'timeout'
-        elif 'headless clone refused' in log_text:
+        elif 'headless clone refused' in launcher_text:
             result['status'] = 'refused'
             result['summary'] = 'isolated session refused: symlinked machine-local path in the harness tree'
         elif data is None:
@@ -284,6 +337,8 @@ def run(args, result):
             result['summary'] = 'isolated session id was not announced by the launcher'
         else:
             result['status'], result['commit'] = deliver(sid, state, env, hdir, log)
+            if result['status'] == 'refused':
+                result['summary'] = "session git config changed during the run; delivery refused, session kept"
 
 
 def write_result(path, result):
@@ -297,21 +352,39 @@ def write_result(path, result):
 
 def main(argv):
     args = parse_args(argv)
-    try:
-        lock = open(args.lock_file, 'a')
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
-        print(f'harness-headless: lock unavailable: {args.lock_file}: {exc.strerror}', file=sys.stderr)
-        return 75
     result = {'version': 1, 'status': 'failed', 'session_id': None, 'commit': None, 'cost_usd': None,
               'num_turns': None, 'summary': '', 'transcript': None, 'exit_code': 1,
               'started_at': int(time.time()), 'ended_at': None}
     try:
+        lock = open(args.lock_file, 'a')
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        # Another run owns the lock and its result file: touch nothing.
+        print(f'harness-headless: lock is held: {args.lock_file}', file=sys.stderr)
+        return 75
+    except OSError as exc:
+        print(f'harness-headless: lock unavailable: {args.lock_file}: {exc.strerror}', file=sys.stderr)
+        result.update(status='refused', summary=f'lock unavailable: {exc.strerror}',
+                      exit_code=EXIT_REFUSED, ended_at=int(time.time()))
+        try:
+            write_result(args.result_file, result)
+        except OSError:
+            pass
+        return 2
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, _terminate)
+    try:
         run(args, result)
     except Refused as exc:
         result.update(status='refused', summary=str(exc)[:SUMMARY_MAX], exit_code=EXIT_REFUSED)
+    except Terminated as exc:
+        signum = exc.args[0]
+        result.update(status='failed', exit_code=128 + signum,
+                      summary=f'harness-headless terminated by signal {signum}')
     except Exception as exc:  # the result file is the contract; never exit silently
         result.update(status='failed', summary=f'harness-headless error: {exc}'[:SUMMARY_MAX])
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_IGN)
     result['ended_at'] = int(time.time())
     try:
         write_result(args.result_file, result)

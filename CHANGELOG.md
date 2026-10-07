@@ -15,10 +15,13 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - `harness-exec <harness> --isolated ...` no longer injects the current
   directory as `--cwd`. A non-interactive `--isolated -p` run now works in the
   session root instead of the canonical checkout. Other routes are unchanged.
-- Headless isolated sessions (`HARNESS_HEADLESS=1`) copy machine-local MCP and
-  settings files instead of linking them, drop the settings `env` block, never
-  link `projects/`, and refuse a clone with a symlink on those paths.
-  Interactive sessions are unchanged.
+- Headless isolated sessions (`HARNESS_HEADLESS=1`) clone without hardlinks,
+  copy machine-local MCP and settings files instead of linking them, drop the
+  settings `env` block, never link `projects/`, refuse a clone with a symlink
+  on those paths, and refuse delivery when the session `.git/config` changed.
+- Isolated sessions with commits past their base now count as changed, so
+  committed work is delivered instead of being closed as clean. Broker git on
+  a session root runs with `core.fsmonitor=false` and `core.hooksPath=/dev/null`.
 
 ## 0.42.0 — 2026-10-01
 
