@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## 0.43.0 — 2026-10-07
 
 - New `harness-headless` runs one unattended Claude task in a fresh isolated
   session and writes one JSON result (`delivered`, `no_changes`, `conflict`,
@@ -395,7 +395,7 @@ Notable changes are recorded here. This project follows semantic versioning for 
   fingerprint, and prepare script import it, so a missing module makes every
   Codex home preparation fail.
 
-## Unreleased
+## 0.43.0 — 2026-10-07
 
 - `docs/orca-integration.md` no longer recommends one Orca profile per trust
   boundary. Orca profiles share one PTY daemon and readable terminal history on
