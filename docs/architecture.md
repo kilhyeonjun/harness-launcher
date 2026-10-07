@@ -339,16 +339,24 @@ legacy routes do not change.
   from the trusted baseline, run `--staged-only --dry-run --no-push`) runs the
   candidate's tests, which the agent may have written. For headless sessions
   the broker runs it under `/usr/bin/sandbox-exec` with a generated Seatbelt
-  profile: no network except loopback; writes only to the candidate, a fresh
+  profile, on a throwaway copy of the candidate that the broker deletes and
+  never reads back; the broker commits and pushes from the candidate itself
+  (no hooks, fsmonitor or external drivers), so nothing a test writes into
+  the copy's `.git` or work tree runs or is delivered. The profile allows:
+  no network at all, except unix sockets inside the verifier's temp dir (no
+  loopback services, no Docker socket); writes only to the copy, a fresh
   per-verify temp dir (`TMPDIR`, removed afterwards), `/dev/null`, `/dev/tty`
-  and `/dev/fd`; no reads of `~/.ssh`, `~/.hermes`, `~/buzz`, `~/.config/gh`,
-  `~/.aws`, `~/.claude`, `~/Library/Keychains` or the source checkout; no
-  lookups of the Security services (`com.apple.SecurityServer`,
-  `com.apple.securityd`, `com.apple.security.*`), so `security` and the
-  osxkeychain credential helper reach nothing. The environment is `HOME`,
-  `PATH`, `LANG`, `LC_*`, `TMPDIR` and the verifier's own switches; agent
-  sockets, `GH_*`, `GITHUB_*` and tokens are not passed. Interactive sessions
-  run the verifier as before.
+  and `/dev/fd`; no reads of anything under `HOME` except the copy, the temp
+  dir, the trusted verifier, `~/.gitconfig`, `~/.config/git` and toolchains
+  (`PATH` entries under `HOME`, mise's config, data, cache and state dirs),
+  and never `~/.ssh`, `~/.hermes`, `~/buzz`, `~/.config/gh`, `~/.aws`,
+  `~/.claude`, `~/Library/Keychains` or the source checkout; no mach services
+  except user and group lookup and logging (so no keychain, launchd job
+  submission, LaunchServices `open`, XPC services or AppleEvents); signals
+  and process inspection only within the sandbox. A nested `sandbox-exec`
+  fails. The environment is `HOME`, `PATH`, `LANG`, `LC_*`, `TMPDIR` and the
+  verifier's own switches; agent sockets, `GH_*`, `GITHUB_*` and tokens are
+  not passed. Interactive sessions run the verifier as before.
 - **Result.** Written atomically (temp file and rename) to `R`, always with
   `"version": 1`:
   `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.

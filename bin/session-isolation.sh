@@ -562,40 +562,63 @@ verify_submission_identity() {
 }
 # The headless verifier runs candidate content (repository tests the agent may
 # have written), so it runs under Seatbelt, the mechanism Claude Code itself
-# uses on macOS: no network but loopback, writes only to the candidate and a
-# per-verify temp dir, no reads of credential stores or the source checkout,
-# no keychain services. Fixed path: nothing in the environment chooses it.
+# uses on macOS, on a throwaway copy of the candidate the broker never reads
+# back. Fixed path: nothing in the environment chooses it.
 SANDBOX_EXEC=/usr/bin/sandbox-exec
+# Mach services a sandboxed bash, git or python needs: user and group lookup
+# and logging. Everything else (launchd job submission, LaunchServices,
+# AppleEvents, XPC services, the keychain) is unreachable.
+SANDBOX_MACH_ALLOW=(com.apple.system.opendirectoryd.libinfo com.apple.system.logger com.apple.logd
+  com.apple.diagnosticd com.apple.system.notification_center)
 # phys <path>: the physical path of an existing directory (Seatbelt matches
 # resolved paths), otherwise the path itself.
 phys() { if [[ -d "$1" ]]; then (cd -P "$1" && pwd); else printf '%s\n' "$1"; fi; }
 sbpl_str() { local value="${1//\\/\\\\}"; printf '"%s"' "${value//\"/\\\"}"; }
-# verifier_sandbox_profile <candidate> <tmp> <home> <source>: the SBPL profile.
+# verifier_sandbox_profile <copy> <tmp> <home> <source> <trusted>: the SBPL
+# profile. No network (unix sockets only inside the temp dir); writes only to
+# the copy and the temp dir; nothing under HOME is readable except the copy,
+# the temp dir, the trusted verifier, git config and toolchains (PATH entries
+# under HOME, mise); credential stores and the source checkout never are; no
+# mach services beyond SANDBOX_MACH_ALLOW; no AppleEvents; signals and
+# process inspection only within the sandbox.
 verifier_sandbox_profile() {
-  local candidate="$1" tmp="$2" home="$3" source="$4" path
-  local -a deny=()
+  local copy tmp home source="$4" trusted path entry name
+  copy="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; trusted="$(phys "$5")"
+  local -a readable=("$copy" "$tmp" "$trusted" "$home/.config/git" "$home/.config/mise" "$home/.local/share/mise"
+    "$home/.cache/mise" "$home/.local/state/mise") deny=()
+  local -a path_entries=()
+  IFS=: read -r -a path_entries <<< "${PATH:-}"
+  for entry in "${path_entries[@]}"; do
+    [[ -d "$entry" ]] || continue
+    entry="$(phys "$entry")"
+    [[ "$entry" != "$home" && "$entry" == "$home"/* ]] && readable+=("$entry")
+  done
   for path in "$home/.ssh" "$home/.hermes" "$home/buzz" "$home/.config/gh" "$home/.aws" "$home/.claude" \
       "$home/Library/Keychains" "$source"; do
     deny+=("$path")
     [[ ! -e "$path" ]] || deny+=("$(phys "$path")")
   done
   printf '(version 1)\n(allow default)\n'
-  printf '(deny network*)\n(allow network-outbound (remote ip "localhost:*"))\n'
-  printf '(allow network-bind network-inbound (local ip "localhost:*"))\n'
-  printf '(deny file-write*)\n(allow file-write* (subpath %s) (subpath %s)' "$(sbpl_str "$(phys "$candidate")")" "$(sbpl_str "$(phys "$tmp")")"
+  printf '(deny network*)\n(allow network* (local unix-socket (subpath %s)))\n' "$(sbpl_str "$tmp")"
+  printf '(allow network* (remote unix-socket (subpath %s)))\n' "$(sbpl_str "$tmp")"
+  printf '(deny file-write*)\n(allow file-write* (subpath %s) (subpath %s)' "$(sbpl_str "$copy")" "$(sbpl_str "$tmp")"
   printf ' (literal "/dev/null") (literal "/dev/tty") (subpath "/dev/fd"))\n'
-  printf '(deny file-read*'
+  printf '(deny file-read-data (subpath %s))\n(allow file-read-data (literal %s)' "$(sbpl_str "$home")" "$(sbpl_str "$home/.gitconfig")"
+  for path in "${readable[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
+  printf ')\n(deny file-read*'
   for path in "${deny[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
-  printf ')\n'
-  printf '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd")'
-  printf ' (global-name-prefix "com.apple.security."))\n'
+  printf ')\n(deny mach-lookup)\n(allow mach-lookup'
+  for name in "${SANDBOX_MACH_ALLOW[@]}"; do printf ' (global-name "%s")' "$name"; done
+  printf ')\n(deny appleevent-send)\n'
+  printf '(deny signal)\n(allow signal (target same-sandbox))\n'
+  printf '(deny process-info*)\n(allow process-info* (target same-sandbox))\n'
 }
 # sandbox_check <sandbox-exec>: does the profile load and run here?
 sandbox_check() {
   local exe="$1" dir rc=0
   dir="$(mktemp -d "${TMPDIR:-/tmp}/harness-sandbox-check.XXXXXX")" || return 1
-  mkdir "$dir/candidate" "$dir/tmp" || { rm -rf "$dir"; return 1; }
-  "$exe" -p "$(verifier_sandbox_profile "$dir/candidate" "$dir/tmp" "${HOME:?}" "$dir")" /usr/bin/true || rc=$?
+  mkdir "$dir/candidate" "$dir/tmp" "$dir/trusted" || { rm -rf "$dir"; return 1; }
+  "$exe" -p "$(verifier_sandbox_profile "$dir/candidate" "$dir/tmp" "${HOME:?}" "$dir/source" "$dir/trusted")" /usr/bin/true || rc=$?
   rm -rf "$dir"
   return "$rc"
 }
@@ -622,27 +645,32 @@ run_repository_verifier() {
   return "$rc"
 }
 # run_sandboxed_verifier <candidate> <id> <trusted> <verifier> <args...>:
-# headless sessions only. A minimal environment (no agent sockets, tokens or
-# GitHub variables) and a fresh temp dir, removed afterwards.
+# headless sessions only. The verifier gets a copy of the candidate (index
+# included, no hard links), a minimal environment (no agent sockets, tokens or
+# GitHub variables) and a fresh temp dir; the copy and the temp dir are
+# removed afterwards and nothing is read back. The broker commits and pushes
+# from the candidate itself, which the sandbox never touched.
 run_sandboxed_verifier() {
-  local candidate="$1" id="$2" trusted="$3" verifier="$4" source vtmp profile help_output name rc=0
+  local candidate="$1" id="$2" trusted="$3" verifier="$4" source vtmp vcopy profile help_output name rc=0
   shift 4
   local -a args=("$@") venv=()
   [[ -x "$SANDBOX_EXEC" ]] || { echo "harness-session: refused: $SANDBOX_EXEC is required to verify a headless session" >&2; rm -rf "$trusted"; return 2; }
   source="$(<"$(session_dir "$id")/source-root")" || { rm -rf "$trusted"; return 2; }
   vtmp="$(mktemp -d "$(state_home)/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
-  vtmp="$(phys "$vtmp")"
-  profile="$(verifier_sandbox_profile "$candidate" "$vtmp" "${HOME:?}" "$source")" || { rm -rf "$trusted" "$vtmp"; return 2; }
+  vcopy="$(mktemp -d "$(state_home)/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
+  { vtmp="$(phys "$vtmp")" && vcopy="$(phys "$vcopy")" && cp -R "$candidate/." "$vcopy/" \
+      && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted")"; } \
+    || { rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
   venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp")
   [[ -z "${LANG:-}" ]] || venv+=(LANG="$LANG")
   for name in $(compgen -e); do [[ "$name" != LC_* ]] || venv+=("$name=${!name}"); done
-  help_output="$(cd "$candidate" && env -i "${venv[@]}" "$SANDBOX_EXEC" -p "$profile" bash "$verifier" --help 2>/dev/null || true)"
+  help_output="$(cd "$vcopy" && env -i "${venv[@]}" "$SANDBOX_EXEC" -p "$profile" bash "$verifier" --help 2>/dev/null || true)"
   if grep -q -- '--contract-checked' <<< "$help_output"; then
     args+=(--contract-checked 'broker candidate cascade verified')
   fi
-  (cd "$candidate" && env -i "${venv[@]}" TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 \
+  (cd "$vcopy" && env -i "${venv[@]}" TEST_HARNESS_DIR="$vcopy" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 \
     HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 "$SANDBOX_EXEC" -p "$profile" bash "$verifier" "${args[@]}") || rc=$?
-  rm -rf "$trusted" "$vtmp"
+  rm -rf "$trusted" "$vtmp" "$vcopy"
   return "$rc"
 }
 write_manifest_pathset() {
@@ -684,13 +712,17 @@ integrate_unlocked() {
     }
     verify_submission_identity "$dir" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
     [[ "${HARNESS_SESSION_TEST_CRASH_BEFORE_PUSH:-0}" == 1 ]] && kill -9 "$BASHPID"
-    git -C "$candidate" -c user.name=harness-broker -c user.email=broker@invalid commit -qm "harness session $id"
+    # Headless: no hooks, fsmonitor or external drivers on the broker's own
+    # commit and push (the verifier never touched this dir; belt and braces).
+    local -a cgit=(git)
+    [[ ! -e "$dir/headless" ]] || cgit=(session_git)
+    "${cgit[@]}" -C "$candidate" -c user.name=harness-broker -c user.email=broker@invalid commit -qm "harness session $id"
     delivered="$(git -C "$candidate" rev-parse HEAD)"
     write_candidate_manifest "$candidate" "$delivered" "$dir/manifest" "$dir/.candidate-manifest" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
     printf '%s\n' "$delivered" > "$dir/pending-sha"
     git -C "$candidate" fetch -q origin main
     [[ "$(git -C "$candidate" rev-parse origin/main)" == "$current" ]] || { rm -rf "$candidate"; continue; }
-    if git -C "$candidate" push -q origin HEAD:refs/heads/main; then
+    if "${cgit[@]}" -C "$candidate" push -q origin HEAD:refs/heads/main; then
       [[ "${HARNESS_SESSION_TEST_CRASH_BEFORE_ACK:-0}" == 1 ]] && kill -9 "$BASHPID"
       printf '%s\n' "$delivered" > "$dir/push-ack"
       [[ "${HARNESS_SESSION_TEST_CRASH_AFTER_PUSH:-0}" == 1 ]] && kill -9 "$BASHPID"

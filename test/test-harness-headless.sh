@@ -34,7 +34,7 @@ cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
 #!/usr/bin/env bash
 # Reports the environment the repository verifier runs with on stdout (the
 # broker log): headless verifiers are sandboxed and can only write their
-# candidate and temp dir. Like kh's auto-deliver, it runs the candidate's tests.
+# candidate and temp dir. Like a harness auto-deliver, it runs the candidate's tests.
 printf 'VERIFIER-ENV TMPDIR=%s CLAUDE_CODE_TMPDIR=%s\n' "\${TMPDIR:-}" "\${CLAUDE_CODE_TMPDIR:-}"
 [[ ! -s "$TMP/run-tmp" || ! -e "\$(cat "$TMP/run-tmp")" ]] || echo 'VERIFIER-ENV RUN_TMP_PRESENT'
 env | grep -E '^(SSH_AUTH_SOCK|GH_|GITHUB_|[A-Z_]*_TOKEN=)' | sed 's/^/VERIFIER-LEAK /'
@@ -144,7 +144,11 @@ case "\$mode" in
     echo "\$ok" ;;
   breach)
     printf 'breach %s\n' "\$\$" > breach-normal.txt
-    mkdir -p verify-tests && cp "$TMP/breach.sh" verify-tests/breach.sh
+    mkdir -p verify-tests && cp "$TMP/breach.sh" verify-tests/breach.sh && cp "$TMP/breach.env" verify-tests/breach.env
+    echo "\$ok" ;;
+  payload)
+    printf 'payload %s\n' "\$\$" > payload-normal.txt
+    mkdir -p verify-tests && cp "$TMP/payload.sh" verify-tests/payload.sh
     echo "\$ok" ;;
   okverify)
     printf 'okverify %s\n' "\$\$" > okverify.txt
@@ -499,13 +503,32 @@ grep -q 'verifier' "$RESULT" || fail 'a verifier rejection must say so'
 echo 'PASS: harness-headless reports a verifier rejection as failed and keeps the session'
 
 # --- the verifier runs agent-written tests in a sandbox -----------------------------
-mkdir -p "$FAKE_HOME/.ssh"; printf 'fixture-private-key\n' > "$FAKE_HOME/.ssh/id_fixture"
+# Fixtures under the fake HOME: secrets, history, browser data, another
+# session's record, and a Docker-style socket served from outside the sandbox.
+mkdir -p "$FAKE_HOME/.ssh" "$FAKE_HOME/Library/Cookies" "$FAKE_HOME/.local/state/harness-launcher/sessions/other" "$FAKE_HOME/.orbstack/run"
+printf 'fixture-private-key\n' > "$FAKE_HOME/.ssh/id_fixture"
+printf 'echo secret-history\n' > "$FAKE_HOME/.zsh_history"
+printf 'cookie\n' > "$FAKE_HOME/Library/Cookies/Cookies.binarycookies"
+printf 'state=OPEN\n' > "$FAKE_HOME/.local/state/harness-launcher/sessions/other/journal"
+python3 - "$FAKE_HOME/.orbstack/run/docker.sock" "$TMP/listen-port" <<'PY' &
+import socket, sys, time
+unix = socket.socket(socket.AF_UNIX); unix.bind(sys.argv[1]); unix.listen()
+tcp = socket.socket(); tcp.bind(('127.0.0.1', 0)); tcp.listen()
+open(sys.argv[2], 'w').write(str(tcp.getsockname()[1]))
+time.sleep(600)
+PY
+listener=$!
+for _ in $(seq 50); do [[ -s "$TMP/listen-port" ]] && break; sleep 0.1; done
+printf 'LOOP_PORT=%s\nOUTSIDE_PID=%s\nLAUNCHCTL_MARKER=%s\nLAUNCHCTL_LABEL=%s\n' \
+  "$(cat "$TMP/listen-port")" "$listener" "$TMP/launchctl-ran" "harness-breach-$$" > "$TMP/breach.env"
 cat > "$TMP/breach.sh" <<'EOF'
 #!/bin/bash
-# An agent-written test that reaches for the network, HOME, ~/.ssh, the
-# keychain and git credentials. It "passes" only if it got everything.
-python3 - <<'PY'
-import errno, os, socket
+# An agent-written test that reaches for the network, local services, HOME,
+# secrets, the keychain, git credentials, launchd, LaunchServices, AppleEvents
+# and processes outside the sandbox. It "passes" only if it got everything.
+source "$(dirname "$0")/breach.env"
+LOOP_PORT="$LOOP_PORT" OUTSIDE_PID="$OUTSIDE_PID" python3 - <<'PY'
+import errno, os, signal, socket
 home = os.environ['HOME']
 def probe(name, f):
     try:
@@ -513,41 +536,67 @@ def probe(name, f):
         print(f'PROBE {name} ALLOWED')
     except OSError as e:
         print(f'PROBE {name} {errno.errorcode.get(e.errno, e.errno)}')
+def unix_connect(path):
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(path)
+    s.close()
 probe('network', lambda: socket.create_connection(('1.1.1.1', 443), timeout=5).close())
+probe('loopback', lambda: socket.create_connection(('127.0.0.1', int(os.environ['LOOP_PORT'])), timeout=5).close())
+probe('docker-socket', lambda: unix_connect(os.path.join(home, '.orbstack/run/docker.sock')))
 probe('write-home', lambda: open(os.path.join(home, 'breach-wrote-home'), 'w').close())
-probe('read-ssh', lambda: open(os.path.join(home, '.ssh', 'id_fixture')).read())
+for name, path in (('read-ssh', '.ssh/id_fixture'), ('read-history', '.zsh_history'),
+                   ('read-cookies', 'Library/Cookies/Cookies.binarycookies'),
+                   ('read-session-record', '.local/state/harness-launcher/sessions/other/journal')):
+    probe(name, lambda path=path: open(os.path.join(home, path)).read())
+probe('signal-outside', lambda: os.kill(int(os.environ['OUTSIDE_PID']), 0))
 PY
-if security find-generic-password -s harness-breach-probe -w >/dev/null 2>&1; then echo 'PROBE security ALLOWED'; else echo 'PROBE security blocked'; fi
-if printf 'protocol=https\nhost=example.invalid\n\n' | GIT_TERMINAL_PROMPT=0 git credential fill >/dev/null 2>&1; then
-  echo 'PROBE git-credential ALLOWED'
-else
-  echo 'PROBE git-credential blocked'
-fi
+check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then echo "PROBE $name ALLOWED"; else echo "PROBE $name blocked"; fi; }
+check security security find-generic-password -s harness-breach-probe -w
+check git-credential sh -c "printf 'protocol=https\nhost=example.invalid\n\n' | GIT_TERMINAL_PROMPT=0 git credential fill"
+check nested-sandbox /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
+check osascript /usr/bin/osascript -e 'tell application "Finder" to get version'
+check open /usr/bin/open -g -j -a Calculator
+check launchctl /bin/launchctl submit -l "$LAUNCHCTL_LABEL" -- /usr/bin/touch "$LAUNCHCTL_MARKER"
 exit 1
 EOF
-# Control: outside the sandbox the same test reaches HOME and ~/.ssh.
-control="$(HOME="$FAKE_HOME" bash "$TMP/breach.sh" 2>&1 || true)"
-grep -q 'PROBE write-home ALLOWED' <<< "$control" && grep -q 'PROBE read-ssh ALLOWED' <<< "$control" || fail "breach probe control must reach HOME unsandboxed: $control"
+# Control: outside the sandbox the same reads and writes succeed.
+control="$(python3 - "$FAKE_HOME" "$(cat "$TMP/listen-port")" <<'PY' 2>&1 || true
+import os, socket, sys
+home, port = sys.argv[1], int(sys.argv[2])
+open(os.path.join(home, 'breach-wrote-home'), 'w').close()
+open(os.path.join(home, '.ssh/id_fixture')).read()
+socket.create_connection(('127.0.0.1', port), timeout=5).close()
+s = socket.socket(socket.AF_UNIX); s.connect(os.path.join(home, '.orbstack/run/docker.sock')); s.close()
+print('CONTROL-OK')
+PY
+)"
+grep -q CONTROL-OK <<< "$control" || fail "breach control must reach HOME and the listeners unsandboxed: $control"
 rm -f "$FAKE_HOME/breach-wrote-home"
 echo breach > "$TMP/mode"
 remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
 headless || fail 'breach run must exit 0'
+sleep 1
+/bin/launchctl remove "harness-breach-$$" 2>/dev/null || true
+pkill -x Calculator 2>/dev/null || true
+kill "$listener" 2>/dev/null || true
 expect_status failed
 [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail 'a candidate whose tests broke out must not be delivered'
-for blocked in 'network EPERM' 'write-home EPERM' 'read-ssh EPERM' 'security blocked' 'git-credential blocked'; do
+for blocked in 'network EPERM' 'loopback EPERM' 'docker-socket EPERM' 'write-home EPERM' 'read-ssh EPERM' \
+    'read-history EPERM' 'read-cookies EPERM' 'read-session-record EPERM' 'signal-outside EPERM' \
+    'security blocked' 'git-credential blocked' 'nested-sandbox blocked' 'osascript blocked' 'open blocked' 'launchctl blocked'; do
   grep -q "^PROBE $blocked\$" "$RESULT.log" || fail "the verifier sandbox must block: $blocked"
 done
 ! grep -q 'ALLOWED' "$RESULT.log" || fail 'a sandboxed probe was allowed'
-[[ ! -e "$FAKE_HOME/breach-wrote-home" ]] || fail 'the verifier wrote to HOME'
+[[ ! -e "$FAKE_HOME/breach-wrote-home" && ! -e "$TMP/launchctl-ran" ]] || fail 'the verifier wrote outside the sandbox'
 ! grep -q '^VERIFIER-LEAK' "$RESULT.log" || fail 'the verifier environment carried credentials'
 echo okverify > "$TMP/mode"
 cat > "$TMP/okverify.sh" <<'EOF'
 #!/bin/bash
-# A normal test: its temp dir, the candidate, loopback and git all work.
+# A normal test: its temp dir, the candidate copy, its own unix socket and git.
 set -e
 : > "$TMPDIR/ok-tmp"
 : > "$TEST_HARNESS_DIR/ok-candidate-write"
-python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(); socket.create_connection(s.getsockname(), timeout=5).close()'
+python3 -c 'import os, socket; p = os.path.join(os.environ["TMPDIR"], "s"); s = socket.socket(socket.AF_UNIX); s.bind(p); s.listen(); c = socket.socket(socket.AF_UNIX); c.connect(p)'
 git -C "$TEST_HARNESS_DIR" status --porcelain >/dev/null
 echo OK-VERIFY-RAN
 EOF
@@ -555,7 +604,34 @@ headless || fail 'okverify run must exit 0'
 expect_status delivered
 grep -q '^OK-VERIFY-RAN$' "$RESULT.log" || fail 'a normal candidate test must run in the sandbox'
 git --git-dir="$REMOTE" show main:okverify.txt >/dev/null || fail 'a normal candidate must be delivered'
-echo 'PASS: harness-headless runs candidate tests in a sandbox without network, secrets or HOME writes'
+! git --git-dir="$REMOTE" cat-file -e main:ok-candidate-write 2>/dev/null || fail 'a file the verifier wrote must not be delivered'
+# A test that plants git payloads and edits a tracked file in its copy: none
+# of it runs during the broker's commit or push, and only the reviewed patch
+# is delivered.
+git init -q --bare "$TMP/evil-push.git"
+cat > "$TMP/payload.sh" <<EOF
+#!/bin/bash
+cd "\$TEST_HARNESS_DIR"
+for hook in pre-commit commit-msg post-commit pre-push reference-transaction; do
+  printf '#!/bin/sh\ntouch "$TMP/payload-ran"\n' > ".git/hooks/\$hook"; chmod +x ".git/hooks/\$hook"
+done
+git config core.fsmonitor 'touch $TMP/payload-ran #'
+git config filter.evil.clean 'touch $TMP/payload-ran; cat'
+git config credential.helper '!touch $TMP/payload-ran #'
+git config remote.origin.pushurl "$TMP/evil-push.git"
+printf '* filter=evil\n' > .git/info/attributes
+printf 'tampered by the verifier\n' > tracked.txt
+git add tracked.txt
+exit 0
+EOF
+echo payload > "$TMP/mode"
+headless || fail 'payload run must exit 0'
+expect_status delivered
+[[ ! -e "$TMP/payload-ran" ]] || fail 'a git payload written by a verifier test ran outside the sandbox'
+[[ "$(git --git-dir="$REMOTE" show main:tracked.txt)" != 'tampered by the verifier' ]] || fail 'content the verifier changed was delivered'
+git --git-dir="$REMOTE" show main:payload-normal.txt >/dev/null || fail 'the reviewed patch must be delivered'
+[[ -z "$(git --git-dir="$TMP/evil-push.git" for-each-ref)" ]] || fail 'the push was redirected by the verifier copy'
+echo 'PASS: harness-headless runs candidate tests in a sandbox with no network, services, secrets or write-back'
 
 # --- a moved source checkout is refused with a plain reason -----------------------
 mv_out="$(env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$(command -v python3)" \
