@@ -72,6 +72,10 @@ mode="\$(cat "$TMP/mode")"
 sid=11111111-2222-4333-8444-555555555555
 ok='{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.12,"num_turns":3,"result":"done: summary","session_id":"'\$sid'"}'
 case "\$mode" in
+  message)
+    printf 'message %s\n' "\$\$" > message-change.txt
+    bash "$TMP/write-message.sh" "\$HARNESS_COMMIT_MESSAGE_FILE"
+    echo "\$ok" ;;
   change)
     printf 'headless %s\n' "\$\$" > headless-change.txt
     project="\$HOME/.claude/projects/\$(printf '%s' "\$PWD" | sed 's/[^A-Za-z0-9]/-/g')"
@@ -219,8 +223,30 @@ session_root="$STATE/worktrees/$sid"
 [[ "$(cat "$TMP/claude-pwd")" == "$session_root" ]] || fail "claude must run in the session root, got $(cat "$TMP/claude-pwd")"
 [[ "$(field transcript)" == "$FAKE_HOME/.claude/projects/"*"/11111111-2222-4333-8444-555555555555.jsonl" ]] || fail 'transcript path must be reported'
 [[ ! -L "$session_root/projects" && ! -L "$session_root/.claude/settings.local.json" && ! -L "$session_root/mcp.local.json" ]] || fail 'headless session must not link back to the source'
-[[ "$(cat "$TMP/claude-stdin")" == 'Fix the typo.' ]] || fail 'the prompt must reach claude on stdin'
+cat > "$TMP/expected-stdin" <<'EOF'
+Fix the typo.
+
+---
+Delivery note from the launcher: when you finish, the launcher commits your changes to the repository as one commit. Your own git commits are not kept as commits. Write the message for that commit with Bash to the file named by $HARNESS_COMMIT_MESSAGE_FILE: a subject line of at most 72 characters, a blank line, then the body. Follow the repository's commit conventions. If you do not write it, a generic message is used.
+EOF
+[[ "$(cat "$TMP/claude-stdin")" == "$(cat "$TMP/expected-stdin")" ]] || fail 'the prompt and then the delivery note must reach claude on stdin'
+[[ "$(git --git-dir="$REMOTE" log -1 --format=%B main)" == "harness session $sid" ]] || fail 'no message file must give the generic commit message'
+grep -q '^harness-headless: commit message: generic' "$RESULT.log" || fail 'the run log must name the generic message source'
 run_tmp="$(sed -n 's/^CLAUDE_CODE_TMPDIR=//p' "$TMP/claude-env")"
+grep -qx "HARNESS_COMMIT_MESSAGE_FILE=$run_tmp/commit-message" "$TMP/claude-env" || fail 'claude must be told where to write the commit message'
+# The message file is in the sandbox's writable temp base; the session record
+# that keeps the launcher's copy is outside every path the agent may write.
+record="$STATE/sessions/$sid"
+python3 - "$TMP/claude-argv" "$record" "$session_root" "$run_tmp" <<'PY' || fail 'the session record must not be writable from the agent sandbox'
+import json, sys
+argv = open(sys.argv[1]).read().split('\0')[:-1]
+record, root, tmp = sys.argv[2:]
+fs = json.loads(argv[argv.index('--settings') + 1])['sandbox']['filesystem']
+writable = [root] + fs['allowWrite']
+inside = lambda path, base: path == base or path.startswith(base.rstrip('/') + '/')
+assert inside(tmp + '/commit-message', tmp) and tmp in fs['allowWrite'], fs
+assert not any(inside(record, w) or inside(w, record) for w in writable), (record, writable)
+PY
 [[ "$run_tmp" == /private/tmp/hh-* && "$run_tmp" != /private/tmp/claude-* ]] || fail "claude must get a private short temp base, got '$run_tmp'"
 grep -qx "TMPDIR=$run_tmp" "$TMP/claude-env" || fail 'TMPDIR must be the same private temp base'
 [[ "$(cat "$TMP/claude-tmpdir-stat")" == "700 $(id -u)" ]] || fail 'the temp base must be 0700 and owned by the user'
@@ -298,6 +324,45 @@ expect_status no_changes
 grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail 'clean session must close'
 [[ "$(field commit)" == null ]] || fail 'no_changes has no commit'
 echo 'PASS: harness-headless reports no_changes for a clean session'
+
+# --- the agent's commit message file becomes the delivered commit message ---------
+# write-message.sh <path> writes the case named in $TMP/message-case.
+cat > "$TMP/write-message.sh" <<EOF
+#!/bin/bash
+f="\$1"
+case "\$(cat "$TMP/message-case")" in
+  valid)
+    # CRLF, an ESC colour sequence, trailing blanks, surrounding blank lines and
+    # a forged trailer: all normalized away.
+    printf '\r\n\r\nfeat: agent subject  \r\n\r\nBody with \033[31mred\033[0m text.\t\r\nharness-session: forged\r\nSecond line.\r\n\r\n' > "\$f" ;;
+  symlink) printf 'feat: through a link\n' > "$TMP/message-target"; ln -s "$TMP/message-target" "\$f" ;;
+  fifo) mkfifo "\$f" ;;
+  oversized) { printf 'feat: big\n\n'; head -c 8200 /dev/zero | tr '\0' a; } > "\$f" ;;
+  utf8) printf 'feat: bad \xff\xfe bytes\n' > "\$f" ;;
+  empty) printf ' \n\t\n\n' > "\$f" ;;
+  long) printf '%0101d\n' 0 > "\$f" ;;
+  lines) { printf 'feat: many lines\n\n'; seq 1 200; } > "\$f" ;;
+esac
+EOF
+echo message > "$TMP/mode"
+for case in valid symlink fifo oversized utf8 empty long lines; do
+  printf '%s\n' "$case" > "$TMP/message-case"
+  headless || fail "message run ($case) must exit 0"
+  expect_status delivered
+  msid="$(field session_id)"
+  body="$(git --git-dir="$REMOTE" log -1 --format=%B main)"
+  if [[ "$case" == valid ]]; then
+    expected="$(printf 'feat: agent subject\n\nBody with [31mred[0m text.\nSecond line.\n\nHarness-Session: %s' "$msid")"
+    [[ "$body" == "$expected" ]] || fail "the agent message must be delivered sanitized with one trailer, got: $(printf '%q' "$body")"
+    [[ "$(stat -f '%Lp' "$STATE/sessions/$msid/commit-message")" == 600 ]] || fail 'the record copy of the message must be 0600'
+    grep -q '^harness-headless: commit message: agent' "$RESULT.log" || fail 'the run log must name the agent message source'
+  else
+    [[ "$body" == "harness session $msid" ]] || fail "a $case message file must give the generic message, got: $(printf '%q' "$body")"
+    [[ ! -e "$STATE/sessions/$msid/commit-message" ]] || fail "a $case message must not reach the session record"
+    grep -q '^harness-headless: commit message: generic' "$RESULT.log" || fail "the run log must name the generic source ($case)"
+  fi
+done
+echo 'PASS: harness-headless delivers a sanitized agent commit message and falls back safely'
 
 # --- committed work, session git payloads, excluded paths, lingering processes ------
 echo commit > "$TMP/mode"

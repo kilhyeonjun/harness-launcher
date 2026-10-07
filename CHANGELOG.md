@@ -2,6 +2,22 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.45.0 — 2026-10-07
+
+- Headless deliveries carry the agent's commit message. The broker delivers
+  the work tree as one commit, so the agent's own commits and their messages
+  were lost and every delivery read `harness session <uuid>`. `harness-headless`
+  now asks the agent (a delivery note appended to the prompt) to write the
+  message to `$HARNESS_COMMIT_MESSAGE_FILE` in its private temp directory. The
+  launcher reads it without following symlinks or blocking, only as a regular
+  file of at most 8192 bytes of strict UTF-8, removes control characters
+  (except LF and TAB) and any `Harness-Session:` line, and accepts it only
+  with a non-empty subject of at most 100 characters and at most 200 lines. It
+  copies the message into the launcher-owned session record, and the broker
+  commits with it plus a `Harness-Session: <uuid>` trailer. Anything else falls
+  back to the generic message; the run log names which was used. The agent's
+  `.git` is never read, and the result file is unchanged (version 1).
+
 ## 0.44.1 — 2026-10-07
 
 - The headless verifier sandbox denies by default. The 0.44.0 profile started

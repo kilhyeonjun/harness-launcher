@@ -782,7 +782,16 @@ integrate_unlocked() {
     # commit and push (the verifier never touched this dir; belt and braces).
     local -a cgit=(git)
     [[ ! -e "$dir/headless" ]] || cgit=(session_git)
-    "${cgit[@]}" -C "$candidate" -c user.name=harness-broker -c user.email=broker@invalid commit -qm "harness session $id"
+    local message="" text="" rc=0
+    local -a cmsg=(-m "harness session $id")
+    # A launcher-written message (headless runs) plus the session trailer.
+    if [[ -f "$dir/commit-message" && ! -L "$dir/commit-message" ]] && text="$(<"$dir/commit-message")" && [[ -n "$text" ]] \
+        && message="$(mktemp "$(state_home)/commit-message.XXXXXX")"; then
+      printf '%s\n\nHarness-Session: %s\n' "$text" "$id" > "$message" && cmsg=(--cleanup=whitespace -F "$message")
+    fi
+    "${cgit[@]}" -C "$candidate" -c user.name=harness-broker -c user.email=broker@invalid commit -q "${cmsg[@]}" || rc=$?
+    [[ -z "$message" ]] || rm -f "$message"
+    [[ "$rc" == 0 ]] || return "$rc"
     delivered="$(git -C "$candidate" rev-parse HEAD)"
     write_candidate_manifest "$candidate" "$delivered" "$dir/manifest" "$dir/.candidate-manifest" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
     printf '%s\n' "$delivered" > "$dir/pending-sha"

@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,19 @@ LOCKF = '/usr/bin/lockf'
 # The broker runs the repository verifier (candidate tests) under Seatbelt.
 SANDBOX_EXEC = '/usr/bin/sandbox-exec'
 SUMMARY_MAX = 3000
+# The agent's message for the delivery commit (see agent_commit_message).
+COMMIT_MESSAGE = 'commit-message'
+MESSAGE_MAX_BYTES = 8192
+MESSAGE_MAX_LINES = 200
+SUBJECT_MAX = 100
+# The broker appends this trailer itself.
+RESERVED_TRAILER = re.compile(r'harness-session:', re.I)
+DELIVERY_NOTE = (
+    '---\n'
+    'Delivery note from the launcher: when you finish, the launcher commits your changes to the repository '
+    'as one commit. Your own git commits are not kept as commits. Write the message for that commit with Bash '
+    'to the file named by $HARNESS_COMMIT_MESSAGE_FILE: a subject line of at most 72 characters, a blank line, '
+    'then the body. Follow the repository\'s commit conventions. If you do not write it, a generic message is used.')
 EXIT_TIMEOUT = 124
 EXIT_REFUSED = 2
 
@@ -99,7 +113,68 @@ def child_env(run_tmp):
     # HARNESS_HEADLESS selects the headless clone and skips harness-local
     # secrets; the interpreter is the one the launcher shim already resolved.
     env.update(HARNESS_HEADLESS='1', HARNESS_PYTHON_BIN=sys.executable, GIT_TERMINAL_PROMPT='0')
+    # The only place the agent can hand the launcher a commit message: the
+    # sandbox may write the run's temp base, never the session record.
+    env['HARNESS_COMMIT_MESSAGE_FILE'] = os.path.join(run_tmp, COMMIT_MESSAGE)
     return env
+
+
+def agent_commit_message(run_tmp):
+    """(message, None) from the agent's message file, or (None, reason). The
+    file is agent-written: no symlink or special file, bounded, strict UTF-8,
+    no control characters but LF and TAB, no reserved trailer. Never raises."""
+    try:
+        fd = os.open(os.path.join(run_tmp, COMMIT_MESSAGE), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None, 'no message file'
+    except OSError as exc:
+        return None, f'unreadable message file ({exc.strerror})'
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, 'message file is not a regular file'
+        data = os.read(fd, MESSAGE_MAX_BYTES + 1)
+    except OSError as exc:
+        return None, f'unreadable message file ({exc.strerror})'
+    finally:
+        os.close(fd)
+    if len(data) > MESSAGE_MAX_BYTES:
+        return None, f'message file is larger than {MESSAGE_MAX_BYTES} bytes'
+    try:
+        text = data.decode('utf-8', errors='strict')
+    except UnicodeError:
+        return None, 'message file is not valid UTF-8'
+    text = re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', text.replace('\r\n', '\n').replace('\r', '\n'))
+    lines = [line.rstrip() for line in text.split('\n') if not RESERVED_TRAILER.match(line)]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    if not lines or len(lines[0]) > SUBJECT_MAX or len(lines) > MESSAGE_MAX_LINES:
+        return None, 'message has no subject, a subject over 100 characters or over 200 lines'
+    return '\n'.join(lines) + '\n', None
+
+
+def record_commit_message(state, sid, message):
+    """Atomically write the message to the launcher-owned session record,
+    where the broker reads it. Returns None, or why it was not written."""
+    record = state / 'sessions' / sid
+    target = record / COMMIT_MESSAGE
+    try:
+        if target.is_symlink():
+            return 'the session record has a symlink at commit-message'
+        fd, tmp = tempfile.mkstemp(dir=record, prefix='.commit-message.')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as out:
+                out.write(message)
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(tmp, target)
+        except BaseException:
+            os.unlink(tmp)
+            raise
+    except OSError as exc:
+        return f'could not write the session record ({exc.strerror})'
+    return None
 
 
 def broker_env(env):
@@ -348,7 +423,7 @@ def run(args, result, run_tmp):
 
     log_path = args.result_file + '.log'
     with open(log_path, 'w') as log, tempfile.TemporaryFile('w+') as out, tempfile.TemporaryFile('w+') as stdin:
-        stdin.write(prompt)
+        stdin.write(prompt.rstrip('\n') + '\n\n' + DELIVERY_NOTE)
         stdin.flush()
         stdin.seek(0)
         proc = subprocess.Popen(command, cwd=hdir, env=env, stdin=stdin,
@@ -371,6 +446,11 @@ def run(args, result, run_tmp):
         # Before any broker step: nothing from the run survives near the work
         # tree or the temp base, and the temp base is gone.
         kill_lingering(str(state / 'worktrees' / sid) if sid else None, run_tmp)
+        message, reason = agent_commit_message(run_tmp)
+        if message and sid:
+            reason = record_commit_message(state, sid, message)
+        source = 'agent' if message and not reason else f'generic ({reason or "no session"})'
+        print(f'harness-headless: commit message: {source}', file=log, flush=True)
         shutil.rmtree(run_tmp, ignore_errors=True)
         # A clone refusal can only precede the launcher's session announcement.
         announced = SESSION_LINE.search(log_text)

@@ -243,7 +243,8 @@ legacy routes do not change.
   `LC_*` pass through, plus `HARNESS_SESSION_STATE_HOME` and
   `XDG_STATE_HOME` so the launcher finds the same session state. It adds
   `HARNESS_HEADLESS=1`, `HARNESS_PYTHON_BIN` (the resolved interpreter),
-  `GIT_TERMINAL_PROMPT=0`, and `TMPDIR` and `CLAUDE_CODE_TMPDIR` both set to a
+  `GIT_TERMINAL_PROMPT=0`, `HARNESS_COMMIT_MESSAGE_FILE` (see **Commit
+  message**), and `TMPDIR` and `CLAUDE_CODE_TMPDIR` both set to a
   fresh `/private/tmp/hh-*` directory (0700, owned by the user, short enough
   for Claude's per-uid socket directory), so the shared
   `/private/tmp/claude-<uid>` can stay write-denied. That directory is
@@ -285,6 +286,30 @@ legacy routes do not change.
   - `S` may contain only `_note`, `permissions.deny`,
     `sandbox.filesystem.denyRead` and `sandbox.network.allowedDomains` (string
     lists, added to the mandatory ones). Any other key is `refused`.
+- **Commit message.** The broker delivers the work tree as one commit; the
+  agent's own commits are not kept as commits. `harness-headless` appends a
+  delivery note to the prompt asking the agent to write that commit's message
+  to `$HARNESS_COMMIT_MESSAGE_FILE`, `<run temp dir>/commit-message`, which
+  the sandbox lets Bash write. After Claude exits and lingering processes are
+  killed, and before the temp directory is removed, it reads the file without
+  following a symlink or blocking (`O_NOFOLLOW|O_NONBLOCK`), only if it is a
+  regular file of at most 8192 bytes of strict UTF-8. It turns CRLF and CR
+  into LF, removes every other control character except TAB (so ESC and
+  terminal sequences cannot reach a terminal that shows the log), strips
+  trailing whitespace, drops leading and trailing blank lines and any line
+  starting `Harness-Session:` (case-insensitive). The message is used only if
+  the subject is non-empty and at most 100 characters and there are at most
+  200 lines; it is then written atomically (0600) to the launcher-owned
+  record, `<record>/commit-message`, which the agent sandbox cannot write.
+  The broker commits with that message, a blank line and `Harness-Session:
+  <uuid>` (`git commit --cleanup=whitespace -F`, same `harness-broker`
+  identity) when the record holds a regular, non-symlink `commit-message`, in
+  headless and interactive sessions alike; otherwise with `harness session
+  <uuid>`. Anything else (no file, a symlink, a FIFO, too large, invalid
+  UTF-8, an invalid subject, an I/O error) falls back to the generic message.
+  The run log names the source used (`harness-headless: commit message:
+  agent` or `generic (<reason>)`); the result file does not change. The
+  agent's `.git` is never read for this.
 - **Timeout.** After `M` minutes (fractions allowed) the whole process group
   gets `SIGTERM`, then `SIGKILL`. Status `timeout`, `exit_code` 124. The
   session is left for its owner.
