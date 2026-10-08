@@ -64,6 +64,7 @@ class BridgeTests(unittest.TestCase):
         for key in ('HARNESS_SESSION_ROOT','HARNESS_SOURCE_ROOT','CODEX_HOME','HARNESS_SESSION_ID'):env.pop(key,None)
         return subprocess.run(['/bin/bash',str(GUARD.with_name('codex-home-prepare.sh')),str(harness)],env=env,capture_output=True,text=True,timeout=90)
 
+    @unittest.skipUnless(os.access('/usr/bin/lockf',os.X_OK) and os.environ.get('HARNESS_TEST_FORCE_NO_LOCKF')!='1','macOS lockf integration unavailable')
     def test_preserve_preparation_rejects_drift_before_global_write(self):
         (self.local/'scripts/browser-client.mjs').write_text('new bridge')
         before=self.config.read_bytes();result=self.prepare()
@@ -72,6 +73,7 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual((self.global_/'scripts/browser-client.mjs').read_text(),'old bridge')
         self.assertEqual(self.config.read_bytes(),before)
 
+    @unittest.skipUnless(os.access('/usr/bin/lockf',os.X_OK) and os.environ.get('HARNESS_TEST_FORCE_NO_LOCKF')!='1','macOS lockf integration unavailable')
     def test_preserve_preparation_uses_compatible_assets_without_global_publish(self):
         before=self.config.read_bytes();result=self.prepare()
         self.assertEqual(result.returncode,0,result.stderr)
