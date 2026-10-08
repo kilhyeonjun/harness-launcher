@@ -193,6 +193,12 @@ case "\$mode" in
     echo \$! > "$TMP/setsid.pid"
     echo \$\$ > "$TMP/child.pid"
     wait ;;
+  swaproot)
+    # The agent replaces its session root with a symlink to another tree.
+    printf 'swap %s\n' "\$\$" > swap-normal.txt
+    root="\$PWD"; cd /
+    mv "\$root" "$TMP/swapped-root" && ln -s "$TMP/swap-target" "\$root"
+    echo "\$ok" ;;
   wait)
     : > "$TMP/started"
     while [[ ! -e "$TMP/release" ]]; do sleep 0.05; done
@@ -881,6 +887,19 @@ mv "$SOURCE.moved" "$SOURCE"
 [[ "$moved_rc" == 0 ]] || fail 'a moved source checkout must be refused with its own reason'
 ! grep -qx -e state=CLOSED -e state=DELIVERED "$STATE/sessions/$mv_id/journal" || fail 'a session whose source moved must be kept'
 echo 'PASS: harness-headless names a moved source checkout'
+
+# --- H1b: a session root swapped for a symlink is never staged or delivered --------
+mkdir -p "$TMP/swap-target"
+git -C "$TMP/swap-target" init -q -b main
+printf 'stolen\n' > "$TMP/swap-target/stolen.txt"
+echo swaproot > "$TMP/mode"
+remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
+headless || fail 'swapped-root run must exit 0'
+expect_status refused
+grep -q 'session root' "$RESULT" || fail 'a swapped session root must be named'
+[[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail 'a swapped session root must deliver nothing'
+[[ -z "$(git -C "$TMP/swap-target" status --porcelain --untracked-files=no)" ]] || fail 'the symlink target must not be staged'
+echo 'PASS: harness-headless refuses a session whose root was replaced by a symlink'
 
 # --- timeout ------------------------------------------------------------------------
 echo hang > "$TMP/mode"

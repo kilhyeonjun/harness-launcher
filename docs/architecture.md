@@ -266,7 +266,7 @@ Manifest-enabled homes also keep an atomic successful-input fingerprint plus a s
 
 ### Headless isolated runs
 
-`harness-headless <profile> --prompt-file F --result-file R --lock-file L --budget-usd N --timeout-min M [--settings-file S] [--model X] [--effort E] [--agent claude|codex] [--model-endpoint U --endpoint-key-file K [--max-model-requests Q]]`
+`harness-headless <profile> --prompt-file F --result-file R --lock-file L --budget-usd N --timeout-min M [--settings-file S] [--model X] [--effort E] [--agent claude|codex] [--model-endpoint U --endpoint-key-file K [--max-model-requests Q]] [--target T --target-digest D --task-id I --approval-sha A]`
 runs one unattended Claude (default) or Codex task for a registered profile.
 It is the only non-interactive route that works inside an isolated session.
 Interactive and legacy routes do not change, and a call without the new
@@ -671,6 +671,193 @@ accepted:
   `~/.config/harness-launcher`; a key readable inside the sandbox is refused.
 - Codex reaches the model with the full conversation each request; the
   forwarder checks the model name, not the content.
+
+### Headless target mode (code repositories)
+
+`--target <name>` points a headless Codex run at one personal code repository
+the owner registered, instead of the harness. Everything else in the Codex
+path (forwarder, `CODEX_HOME`, process-group and lingering-process kills,
+result file) is unchanged; the session, delivery and verifier differ.
+
+- **Arguments.** `--target` needs `--agent codex` (with `--agent claude` it is
+  `refused`: the Claude sandbox is a deny list and cannot promise to keep
+  other code and the keychain out), `--target-digest` (64 hex),
+  `--task-id` (`[A-Za-z0-9][A-Za-z0-9_-]{0,63}`) and `--approval-sha` (a
+  lowercase hex SHA). The companions without `--target` are `refused`. The
+  launcher names the branch `loop/<task-id>-<approval-sha[:8]>`.
+- **Owner policy.** The owner-specific values are host configuration, never
+  launcher code: `<profile home>/target-policy.json` (normally
+  `~/.config/harness-launcher/`; a regular file owned by the user, mode 0600,
+  one link) holds exactly:
+
+  ```json
+  {"owner": "example-owner",
+   "ssh_hosts": ["github.com-example"],
+   "deny_repos": ["example-owner/example-harness", "other-org/*"],
+   "home_deny": ["company-*", "mirrors", ".agent-state"]}
+  ```
+
+  `owner` is the GitHub account; `ssh_hosts` the SSH host aliases a remote may
+  use (never plain `github.com`, whose default key may be another account's);
+  `deny_repos` repositories that are never targets; `home_deny` paths under
+  `HOME` (a trailing `*` matches a name prefix) that no live checkout may sit
+  under and the agent sandbox denies; `ssh_hosts` and `home_deny` must not be
+  empty, and `target add` shows all four values on its confirmation screen.
+  The owner writes it by hand
+  (`install -m 600`). Without it, or with any other shape, every `target`
+  command and every `--target` run is `refused`.
+- **Host record.** `<profile home>/targets/<name>.json` (a 0700 directory)
+  holds exactly the canonical JSON of the entry `{name, github, remote, base,
+  test: {group, run, timeout_min}}`: `json.dumps(entry, sort_keys=True,
+  separators=(',', ':'), ensure_ascii=False)` in UTF-8, `~` never expanded;
+  `path` and `about` from the registry are not part of it. The run refuses
+  unless the file is a regular file owned by the user, mode 0600, one link,
+  its sha256 equals `--target-digest`, and it is the canonical JSON of its own
+  entry. `<name>.path` beside it (same file rules, optional) holds the realpath
+  of the registry `path` (it must be absolute): the owner's live checkout,
+  which a run never reads or writes and the agent sandbox denies.
+  `test/fixtures/target-digest-vectors.json` holds shared vectors (YAML entry,
+  canonical JSON, sha256; placeholder values) for the loop.
+- **Registering.** `harness-profile target add <name> --from <targets.yaml>`
+  needs a terminal on stdin and stdout, checks every boundary rule below
+  (network ones included), shows the entry and its unified diff against the
+  current record, and writes only after the owner types the name again
+  (atomic rename, 0600). `target list` and `target show <name>` print records
+  and digests. The terminal check is an accident guard, not a security
+  boundary: an agent or loop cannot answer it only because nothing sandboxed
+  can write the profile home (the Codex profile denies it, and the Claude
+  lane's settings deny writes to the profile home in use in the sandbox and
+  the edit tools). YAML is read with PyYAML when the launcher interpreter has
+  it, otherwise with the system Ruby's `YAML.safe_load`.
+- **Boundary.** Enforced by `target add` and again by every run, before the
+  agent and again before the push; any mismatch is `refused`: the `github`
+  owner is the policy `owner`; the remote is `git@<alias>:` with an alias from
+  `ssh_hosts`, followed by exactly `<github>.git`; the repository matches no
+  `deny_repos` entry; the live path is not under a `home_deny` entry;
+  `ssh -T git@<alias>` greets the owner; `gh auth token --user <owner>` works
+  (from launchd or a cron job too; otherwise `refused` with the reason);
+  `gh api user` is the owner; `gh api repos/<github>` is `private: true` and
+  `fork: false`; `gh api repos/<github>/actions/permissions` is `enabled:
+  false` (GitHub Actions off for the repository: no workflow can run on the
+  pushed branch or the PR, whatever its triggers, per-workflow permissions or
+  environment secrets); the default workflow permissions are `read`; the
+  repository has no Actions secrets.
+- **Clone.** In `<state>/target-runs/<run id>/root`: `git init`, then `git
+  fetch <remote> +refs/heads/<base>:refs/remotes/origin/<base>` with `-c
+  gc.auto=0 -c core.hooksPath=/dev/null`, `GIT_CONFIG_GLOBAL=/dev/null` and
+  `GIT_CONFIG_NOSYSTEM=1`; the root is detached at the fetched base SHA
+  (`base_sha` in the result), and its device and inode are recorded. The live
+  checkout is never used.
+- **Frozen root.** The agent can write its root, which includes removing it
+  and putting a symlink or another directory in its place; git would follow a
+  symlink and stage sandbox-denied files. After every agent process is gone
+  the broker renames the root to `root.frozen` beside it (a directory the
+  agent cannot write) and requires a real directory with the recorded inode
+  there; otherwise the run is `failed` and nothing is staged. Every later
+  step uses the frozen path. Interactive and headless harness sessions
+  (`session-isolation.sh`) record the root's inode at `create` and refuse
+  (exit 10, `refused` for headless runs) to stage a root that is not that
+  directory; records from older launchers fall back to a real directory whose
+  physical path is the recorded one.
+- **trusted.git.** A bare repository in the delivery record
+  `<state>/target-delivery/<name>/<task>-<approval8>/`, outside the session
+  root, made before the agent starts with the base commit and an index of the
+  root. After the agent, the broker stages the frozen root with that index
+  (`add -A`), writes a binary patch and a manifest, applies the patch onto a
+  fresh checkout of the base with its own index, and requires the resulting
+  manifest to be identical. Commit (`commit-tree`, author `harness-broker`),
+  push and readback use only trusted.git, with `-c core.hooksPath=/dev/null
+  -c core.fsmonitor=false` and the other hardening options,
+  `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`; the agent clone's
+  `.git` (config, hooks, fsmonitor) is never read, and attribute filters it
+  names have no definition.
+- **Rules.** `CODEX_HOME/AGENTS.md` is only `work-scale.md`,
+  `outcome-control.md` and `performance-observation.md` from the harness's
+  `origin/main:.claude/rules/` (`git cat-file`, never the work tree); the
+  repository's own `AGENTS.md` is read by Codex as usual.
+- **Test environment.** Before the agent starts, the broker checks the base
+  out into `<run>/env-source` and runs `uv sync --frozen --no-build
+  --no-install-project --group <test.group>` there, outside every sandbox,
+  with network, and with `UV_PROJECT_ENVIRONMENT=<run>/env` (broker-owned,
+  outside the run's temp base and the session root, which the agent can
+  write). `--no-build` keeps sdist builds (package code) from running outside
+  the sandbox; a test group that needs one is `refused` with that reason. The
+  agent gets `HARNESS_TARGET_PYTHON=<run>/env/bin/python`. The venv and
+  `realpath(sys.base_prefix)` of its python (probed with `python -I -S`;
+  neither `/`, nor an ancestor of `HOME` or of the state home, nor at or
+  under the state home) are read and
+  exec only in the agent and verifier profiles; every write there is denied.
+  `env-source/` and the broker's `candidate/` copy are removed when the run
+  ends.
+- **Agent sandbox.** The 0.47 Codex profile; then read and exec of the env;
+  then every path deny of that profile again (so the `base_prefix` allow
+  cannot reopen one; the state-home lines are not repeated, since they would
+  close the env); then denies of `~/Library/Keychains`,
+  `~/.config/harness-launcher` and the profile home in use, the policy
+  `home_deny` entries, the harness root and the live checkout, each also by
+  resolved path. The verifier profile gets the same additions.
+- **Broker checks, in order, after every agent process is killed.** No
+  changes: `no_changes`. A path with a `.github` component (NFKC, case
+  folded), a gitlink (mode 160000) or any `.gitmodules` change: `refused`. A
+  secret pattern (auto-deliver's list, `gh[opsur]_…`, `github_pat_…` and any
+  `-----BEGIN … PRIVATE KEY-----`) in an added diff line, the commit message
+  or the PR body: `refused`, naming only where and which pattern. Any change,
+  at any depth, to `uv.lock`, `uv.toml`, `.python-version` or
+  `requirements*.txt`, or to `[project] dependencies`, `optional-dependencies`
+  or `requires-python`, `[dependency-groups]`, `[build-system]` or `[tool.uv]`
+  of a `pyproject.toml` (compared as parsed TOML; a file that no longer parses
+  counts): `failed`, "의존성 변경은 오프라인 검증 불가". Then the verifier:
+  `test.run` with `argv[0]` (always the literal `python`) replaced by the env
+  python, on a copy of the candidate, under the verifier profile plus the
+  additions above, with a minimal environment and `test.timeout_min`; a
+  nonzero exit or timeout is `failed` (the verifier rejection reason).
+  Nothing is pushed in any of these cases.
+- **Delivery.** The broker commits, writes the manifest, message, PR body,
+  the record digest and `PENDING(<sha>)` to the record's journal, and runs
+  the boundary preflight again. `gh auth token --user <owner>` is the token;
+  it goes only into the environment of each `gh` call, never into argv, logs,
+  the result, the PR body, the agent or the verifier. Then: the remote branch
+  at that SHA resumes; an absent branch is pushed without force and the
+  journal becomes `PUSHED(<sha>)`; a branch at another commit is `conflict`;
+  a `PUSHED` journal whose branch is gone is `failed` (never pushed again).
+  A fresh bare repository fetches the branch back and must find the SHA and
+  the manifest.
+  `gh pr list --repo <github> --head <branch> --state all` runs first; only
+  when it is empty,
+  `gh pr create --repo <github> --base <base> --head <branch> --draft --title <subject> --body-file <file>`,
+  from an empty broker-owned directory holding only that file. After a create
+  failure or timeout the list is read again before giving up. The journal
+  becomes `DELIVERED(<sha>)` and `pr-url` is kept. The PR body opens with a
+  note that `loop/` may not follow the repository's branching strategy, and
+  the agent's message body is inside a fenced `text` block (shown, never
+  rendered as Markdown or images).
+- **Rerun.** A run whose record journal is `PENDING` or `PUSHED` does not
+  start the agent: it resumes delivery of the recorded commit, and only under
+  the record digest it started with (another digest is `failed`). A
+  `DELIVERED` record returns its `pr_opened` result again. A record that never
+  reached `PENDING` is moved aside (`.retired-*`) and the run starts fresh.
+- **Result.** Additive to version 1: status `pr_opened`, and `target`,
+  `branch`, `base_sha` and `pr_url` (null until known) on every `--target`
+  result; `commit` is the pushed SHA.
+
+Target mode threat model. The owner's keyring token, SSH key and live
+checkout stay outside every sandbox: only the broker, after the agent's
+processes are gone, runs `gh` and pushes, and only to a new branch of a
+private, non-fork repository with GitHub Actions disabled, as a draft PR a
+human reviews before anything is merged or deployed. What the agent writes
+reaches the remote only as file content through the frozen root, the patch,
+the manifest and the checks above. Residual risks, accepted:
+
+- `uv sync` runs outside the sandbox with network. With `--no-build` no
+  package build runs, but uv itself resolves and downloads the base branch's
+  locked wheels (owner-reviewed content, before the agent ran) and reads the
+  user's uv configuration; a compromised index or wheel is installed into the
+  env, whose code then runs only inside the sandboxes.
+- Actions are checked off at preflight; an owner who turns them on later is
+  refused at the next run, not retroactively.
+- The secret scan is pattern based; the PR is a draft and needs a human.
+- Delivery records and run directories under `<state>/target-*` (the frozen
+  root and the env) are kept; there is no automatic cleanup yet.
 
 ### Restore fidelity and the launch record
 

@@ -273,7 +273,21 @@ harness-headless <profile> --agent codex --model gpt-6.1-sol --effort medium \
   --lock-file run.lock --budget-usd 5 --timeout-min 30
 ```
 
-The result `status` is one of `delivered`, `no_changes`, `conflict`, `failed`, `timeout`, `budget`, or `refused`. See [Headless isolated runs](docs/architecture.md#headless-isolated-runs) for the contract.
+`--target <name>` (Codex only) runs the same Codex agent on a registered personal code repository instead of the harness and delivers a successful change as a draft pull request on a new `loop/<task>-<approval8>` branch. The owner registers each repository once from a terminal; the caller passes the sha256 of that record, so a changed registry entry is refused until it is registered again:
+
+```bash
+harness-profile target add <name> --from targets.yaml   # needs a TTY; shows the entry and its diff, asks for the name again
+harness-profile target list
+harness-profile target show <name>
+harness-headless <profile> --agent codex --model gpt-6.1-sol --model-endpoint http://127.0.0.1:<port>/v1 \
+  --endpoint-key-file ~/.config/harness-launcher/cliproxy-headless.key \
+  --target <name> --target-digest <sha256> --task-id <id> --approval-sha <sha> \
+  --prompt-file task.md --result-file result.json --lock-file run.lock --budget-usd 5 --timeout-min 30
+```
+
+The owner's GitHub account, SSH host aliases and deny lists come from `~/.config/harness-launcher/target-policy.json` (mode 0600), which the owner writes; without it every target command is refused. The terminal check in `target add` is an accident guard, not a security boundary; the boundary is that no sandboxed run can write `~/.config/harness-launcher`. See [Headless target mode](docs/architecture.md#headless-target-mode-code-repositories).
+
+The result `status` is one of `delivered`, `pr_opened` (`--target` only), `no_changes`, `conflict`, `failed`, `timeout`, `budget`, or `refused`. See [Headless isolated runs](docs/architecture.md#headless-isolated-runs) for the contract.
 
 SDK hosts that append their own argv to a command prefix put it after `--passthrough`, which ends launcher keyword parsing and lets explicit caller options override the launcher defaults (`--model`, `--effort`, and `--permission-mode` for Claude; `-p`/`--profile` and `-C`/`--cd` for Codex):
 

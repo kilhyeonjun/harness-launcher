@@ -1,0 +1,50 @@
+{
+  "_note": "Shared digest vectors for harness-launcher target records. canonical = json.dumps(entry, sort_keys=True, separators=(\",\", \":\"), ensure_ascii=False); sha256 is over its UTF-8 bytes. `path` and `about` are not part of the entry; `~` is never expanded. The harness loop reuses this file. All values are placeholders.",
+  "vectors": [
+    {
+      "yaml": "example-repo:                          # name [a-z0-9-]{1,40}\n  github: example-owner/example-repo\n  remote: git@github.com-example:example-owner/example-repo.git\n  base: feat/example-branch\n  path: /Users/example/dev/example-repo\n  about: \"예시 코드 저장소 (example code repository)\"\n  test:\n    group: dev\n    run: [python, -m, pytest, -q]\n    timeout_min: 10\n",
+      "name": "example-repo",
+      "entry": {
+        "name": "example-repo",
+        "github": "example-owner/example-repo",
+        "remote": "git@github.com-example:example-owner/example-repo.git",
+        "base": "feat/example-branch",
+        "test": {
+          "group": "dev",
+          "run": [
+            "python",
+            "-m",
+            "pytest",
+            "-q"
+          ],
+          "timeout_min": 10
+        }
+      },
+      "canonical": "{\"base\":\"feat/example-branch\",\"github\":\"example-owner/example-repo\",\"name\":\"example-repo\",\"remote\":\"git@github.com-example:example-owner/example-repo.git\",\"test\":{\"group\":\"dev\",\"run\":[\"python\",\"-m\",\"pytest\",\"-q\"],\"timeout_min\":10}}",
+      "sha256": "8eacd3074216a36cbd8f584c6e47ec83412d25919bf8016b806bd045e848cba2"
+    },
+    {
+      "name": "notes-2",
+      "entry": {
+        "name": "notes-2",
+        "github": "example-owner/notes-2",
+        "remote": "git@github.com-example2:example-owner/notes-2.git",
+        "base": "main",
+        "test": {
+          "group": "test",
+          "run": [
+            "python",
+            "-m",
+            "pytest",
+            "~/fixtures",
+            "-k",
+            "한글 테스트"
+          ],
+          "timeout_min": 3
+        }
+      },
+      "canonical": "{\"base\":\"main\",\"github\":\"example-owner/notes-2\",\"name\":\"notes-2\",\"remote\":\"git@github.com-example2:example-owner/notes-2.git\",\"test\":{\"group\":\"test\",\"run\":[\"python\",\"-m\",\"pytest\",\"~/fixtures\",\"-k\",\"한글 테스트\"],\"timeout_min\":3}}",
+      "sha256": "d68a3ec8a48712e389130c8eafa0756c02d44fdb030e4f6a9bcec1bda5dd97fc"
+    }
+  ]
+}

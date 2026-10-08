@@ -114,8 +114,29 @@ excluded_aliases() {
 # and work-tree attributes name filter or diff drivers that are not defined.
 # ROOT_GIT_DIR is set by use_session_git; empty means an interactive session.
 ROOT_GIT_DIR="" SOURCE_GIT_DIR=""
+# root_identity <path>: device and inode of the path itself (never followed).
+root_identity() { stat -f '%d %i' "$1" 2>/dev/null || stat -c '%d %i' "$1"; }
+# root_intact <dir> <root>: the session root is still the directory create
+# made: a real directory (not a symlink) with the inode recorded at create;
+# a record from an older launcher without it falls back to the physical
+# path. Anything else (the agent removed the root and put a symlink or
+# another directory there) must never be staged: git would follow it.
+root_intact() {
+  local dir="$1" root="$2"
+  [[ -d "$root" && ! -L "$root" ]] || return 1
+  if [[ -f "$dir/root-inode" && ! -L "$dir/root-inode" ]]; then
+    [[ "$(root_identity "$root")" == "$(<"$dir/root-inode")" ]]
+  else
+    [[ "$(cd "${root%/*}" && pwd -P)/${root##*/}" == "$(cd "$root" && pwd -P)" ]]
+  fi
+}
 use_session_git() {
   local dir; dir="$(session_dir "$1")"; ROOT_GIT_DIR=""
+  # Exit 10: the session root was replaced; the record is kept, nothing staged.
+  root_intact "$dir" "$(<"$dir/session-root")" || {
+    echo "harness-session: refused: the session root of $1 was replaced (a symlink or another directory); nothing staged" >&2
+    return 10
+  }
   # The canonical checkout's git dir: excluded_aliases probes its volume.
   # Exit 8: the source checkout is gone (moved or deleted); the work is kept.
   local source=""
@@ -217,6 +238,7 @@ create() {
   printf '%s\n' "$source" > "$dir/source-root"
   printf '%s\n' "$root" > "$dir/session-root"
   printf '%s\n' "$sha" > "$dir/base-sha"
+  root_identity "$root" > "$dir/root-inode"
   if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
     # Before the agent runs: the base commit and a matching index, owned by
     # the launcher record and outside the sandbox's writable paths.
@@ -983,6 +1005,7 @@ case "${1:-}" in
   gc) shift; [[ $# -eq 0 ]] || exit 2; gc_sessions ;;
   sandbox-check) shift; [[ $# -eq 1 ]] || exit 2; sandbox_check "$1" ;;
   codex-sandbox-profile) shift; [[ $# -eq 8 ]] || exit 2; codex_sandbox_profile "$@" ;;
+  verifier-sandbox-profile) shift; [[ $# -eq 5 ]] || exit 2; verifier_sandbox_profile "$@" ;;
   submit) shift; submit "$1" ;;
   integrate) shift; [[ $# -eq 1 ]] || exit 2; integrate "$1" ;;
   close) shift; [[ $# -eq 1 ]] || exit 2; close_session "$1" ;;
