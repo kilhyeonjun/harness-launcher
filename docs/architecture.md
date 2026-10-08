@@ -821,10 +821,11 @@ result file) is unchanged; the session, delivery and verifier differ.
   journal becomes `PUSHED(<sha>)`; a branch at another commit is `conflict`;
   a `PUSHED` journal whose branch is gone is `failed` (never pushed again).
   A fresh bare repository fetches the branch back and must find the SHA and
-  the manifest. `gh pr list --repo <github> --head <branch> --state all`
-  runs first; only when it is empty, `gh pr create --repo <github> --base
-  <base> --head <branch> --draft --title <subject> --body-file <file>`, from
-  an empty broker-owned directory holding only that file. After a create
+  the manifest.
+  `gh pr list --repo <github> --head <branch> --state all` runs first; only
+  when it is empty,
+  `gh pr create --repo <github> --base <base> --head <branch> --draft --title <subject> --body-file <file>`,
+  from an empty broker-owned directory holding only that file. After a create
   failure or timeout the list is read again before giving up. The journal
   becomes `DELIVERED(<sha>)` and `pr-url` is kept. The PR body opens with a
   note that `loop/` may not follow the repository's branching strategy, and
