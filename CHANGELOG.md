@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.48.1 — 2026-10-08
+
+- Headless verifier sandbox, and the headless codex agent sandbox that
+  extends it: allow POSIX semaphores named `/mp-*`, so test suites that use
+  Python `multiprocessing` locks or events run there. Named semaphores outlive
+  a run; a hostile test could exhaust the system-wide table until reboot.
+- The "verifier rejected" result now says the sandbox has no network at all,
+  not even loopback TCP (it said loopback was allowed).
+
 ## 0.48.0 — 2026-10-08
 
 - `harness-headless --target <name> --target-digest <sha256> --task-id <id>
