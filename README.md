@@ -154,7 +154,10 @@ launch runs from the remote-free session repository while an explicit product `-
 in that product worktree. Session records are written atomically below
 `${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher`. Machine-local
 `config/.local` is never copied, and `projects/` is linked back to the
-canonical harness so existing product worktrees remain available.
+canonical harness so existing product worktrees remain available. Claude
+plugins installed with `--scope project` or `--scope local` for the canonical
+harness also load in the session: the launcher mirrors their install records
+for the session root (see [Claude plugins in isolated sessions](docs/architecture.md#claude-plugins-in-isolated-sessions)).
 
 A profile can set `HARNESS_SESSION_ISOLATION_DEFAULT=1` to route fresh,
 interactive direct-Claude and native-Codex launches into isolation by default.

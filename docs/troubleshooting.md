@@ -306,6 +306,37 @@ config/.local/codex-gateway.env
 
 Check that the gateway is running and the configured URL is correct. Redact the URL and all key values before sharing logs.
 
+## A project-scoped Claude plugin "isn't installed" in an isolated session
+
+`claude plugin list` in an isolated session root reports:
+
+```text
+Plugin "<name>" is enabled in project settings but isn't installed
+```
+
+Claude Code applies a project- or local-scope install record only to the path it
+was installed for, and the session root is a separate clone. Launchers from this
+release copy the canonical root's records into the session root before Claude
+Code starts. Start a new isolated session or continue the existing one with
+`<prefix> --isolated-session <uuid> resume`; the next launch mirrors the record.
+Do not run `claude plugin install --scope project` inside the session: the record
+it adds is tied to that UUID path, and `--scope local` would edit the canonical
+`.claude/settings.local.json` through its symlink.
+
+If the plugin still fails to load, look for a `harness-launcher: warning:` line
+at launch that mentions Claude plugin install records:
+
+- `... not mirrored: <reason>`: the registry was malformed, not format version
+  2, a symlink or hard link, locked by another launcher for 10 seconds, or kept
+  changing; it was not rewritten. "changed right after the write" means the
+  record was written but another process replaced the file at once; the next
+  launch retries.
+- `... were not mirrored into the isolated session`: the helper could not run
+  (no Python 3.11+, or the local environment export failed).
+
+Headless runs and launches with `HARNESS_CLAUDE_PLUGIN_MIRROR=0` in the launching
+environment never mirror.
+
 ## Homebrew still shows an older launcher
 
 ```bash

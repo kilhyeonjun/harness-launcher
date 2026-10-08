@@ -10,6 +10,10 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 HARNESS="$TMP/harness"
 STATE="$TMP/state"
+# Isolated Claude launches mirror plugin install records into Claude Code's
+# user registry; keep every launch here on a fixture config directory.
+export CLAUDE_CONFIG_DIR="$TMP/claude-config"
+unset CLAUDE_CODE_PLUGIN_CACHE_DIR CLAUDE_CODE_USE_COWORK_PLUGINS HARNESS_CLAUDE_PLUGIN_MIRROR
 mkdir -p "$HARNESS/config/.local"
 mkdir -p "$HARNESS/projects/product"
 git -C "$HARNESS" init -q -b main
@@ -280,5 +284,73 @@ cp "$TMP/launcher.env.orig" "$HARNESS/config/launcher.env"
 ) 2>/dev/null || { echo 'FAIL: relaunch after a failed launch did not start'; exit 1; }
 [[ "$(basename "$(sed -n 's/^SESSION=//p' "$TMP/relaunch-log")")" == "$failed_id" ]] || { echo 'FAIL: relaunch used another session'; exit 1; }
 echo 'PASS: failures after isolated-session acquisition finish the session'
+
+# Project-scoped Claude plugin installs apply per project path; an isolated
+# Claude launch mirrors the canonical root's records into its session root.
+REGISTRY="$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"
+mkdir -p "${REGISTRY:h}"
+python3 - "$REGISTRY" "${HARNESS:A}" <<'PY'
+import json, sys
+record = {"scope": "project", "projectPath": sys.argv[2], "installPath": "/cache/official/slack/1.3.0", "version": "1.3.0"}
+json.dump({"version": 2, "plugins": {"slack@official": [record], "tool@market": [{"scope": "user", "installPath": "/cache/market/tool/1.0.0"}]}}, open(sys.argv[1], "w"), indent=2)
+PY
+plugin_records() {
+  python3 - "$REGISTRY" "$1" <<'PY'
+import json, os, sys
+records = json.load(open(sys.argv[1]))["plugins"].get("slack@official", [])
+print(sum(1 for r in records if r.get("projectPath") == os.path.realpath(sys.argv[2])))
+PY
+}
+total_records() { python3 -c 'import json,sys; print(sum(len(v) for v in json.load(open(sys.argv[1]))["plugins"].values()))' "$REGISTRY"; }
+(
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/plugin-log"
+  source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_run "$HARNESS" --isolated base
+) 2>"$TMP/plugin.err"
+plugin_root="$(sed -n 's/^SESSION=//p' "$TMP/plugin-log")"
+[[ -n "$plugin_root" && "$(plugin_records "$plugin_root")" == 1 ]] || { cat "$TMP/plugin.err"; echo 'FAIL: isolated Claude launch must mirror the canonical project plugin record'; exit 1; }
+! grep -q 'not mirrored' "$TMP/plugin.err" || { cat "$TMP/plugin.err"; echo 'FAIL: successful mirror must not warn'; exit 1; }
+(
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/plugin-resume-log"
+  source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_run "$HARNESS" --isolated-session "$(basename "$plugin_root")" base
+) 2>/dev/null
+[[ "$(plugin_records "$plugin_root")" == 1 ]] || { echo 'FAIL: continuation must keep exactly one mirrored record'; exit 1; }
+records_before="$(total_records)"
+(
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/plugin-legacy-log"
+  source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_run "$HARNESS" --no-isolated base
+) 2>/dev/null
+[[ "$(total_records)" == "$records_before" ]] || { echo 'FAIL: non-isolated launch must not touch the plugin registry'; exit 1; }
+(
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" CODEX_LOG="$TMP/plugin-codex-log"
+  source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_run_codex_cli() { printf 'SESSION=%s\n' "${HARNESS_SESSION_ROOT:-}" > "$CODEX_LOG"; }
+  _harness_launcher_run "$HARNESS" --isolated codex base
+) 2>/dev/null
+[[ -n "$(sed -n 's/^SESSION=//p' "$TMP/plugin-codex-log")" && "$(total_records)" == "$records_before" ]] || { echo 'FAIL: isolated Codex launch must not mirror Claude plugin records'; exit 1; }
+# The gate itself: headless runs, the kill switch, and a missing interpreter.
+mkdir -p "$STATE/worktrees/22222222-3333-4444-8555-666666666666"
+mirror_gate() {
+  local out="$1"; shift
+  (
+    export HARNESS_SESSION_STATE_HOME="$STATE" HARNESS_SOURCE_ROOT="${HARNESS:A}"
+    export HARNESS_SESSION_ROOT="$STATE/worktrees/22222222-3333-4444-8555-666666666666" "$@"
+    source "$ROOT/bin/aliases.zsh"
+    isolated_session_id=22222222-3333-4444-8555-666666666666
+    _harness_launcher_isolated_claude_plugins
+  ) 2>"$out"
+}
+mirror_gate "$TMP/gate-headless.err" HARNESS_HEADLESS=1 || { echo 'FAIL: mirror gate must not fail the launch'; exit 1; }
+[[ "$(plugin_records "$STATE/worktrees/22222222-3333-4444-8555-666666666666")" == 0 ]] || { echo 'FAIL: headless runs must not mirror plugin records'; exit 1; }
+mirror_gate "$TMP/gate-off.err" HARNESS_CLAUDE_PLUGIN_MIRROR=0 || { echo 'FAIL: mirror gate must not fail the launch'; exit 1; }
+[[ "$(plugin_records "$STATE/worktrees/22222222-3333-4444-8555-666666666666")" == 0 ]] || { echo 'FAIL: HARNESS_CLAUDE_PLUGIN_MIRROR=0 must skip mirroring'; exit 1; }
+mirror_gate "$TMP/gate-nopy.err" HARNESS_PYTHON_BIN="$TMP/no-such-python" || { echo 'FAIL: a missing interpreter must not fail the launch'; exit 1; }
+grep -q 'harness-launcher: warning: Claude plugin install records were not mirrored into the isolated session' "$TMP/gate-nopy.err" || { cat "$TMP/gate-nopy.err"; echo 'FAIL: a missing interpreter must warn'; exit 1; }
+[[ "$(plugin_records "$STATE/worktrees/22222222-3333-4444-8555-666666666666")" == 0 ]] || { echo 'FAIL: a missing interpreter must not mirror'; exit 1; }
+mirror_gate "$TMP/gate-on.err" || { echo 'FAIL: mirror gate must not fail the launch'; exit 1; }
+[[ "$(plugin_records "$STATE/worktrees/22222222-3333-4444-8555-666666666666")" == 1 ]] || { cat "$TMP/gate-on.err"; echo 'FAIL: the gate must mirror when enabled'; exit 1; }
+echo 'PASS: isolated Claude launches mirror project-scoped plugin install records'
 
 echo 'PASS: --isolated opts root sessions into an isolated repository'

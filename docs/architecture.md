@@ -191,6 +191,39 @@ from submissions. `config/.local` is read from the source boundary and is never
 copied. A heartbeat keeps live `OPEN` sessions from being declared abandoned;
 the UUID workspace remains recoverable after an unclean exit.
 
+#### Claude plugins in isolated sessions
+
+Claude Code applies a `project`- or `local`-scope plugin install record only
+when its `projectPath` is the current project root or shares its canonical Git
+root. The session root is a separate clone, so without help a plugin installed
+with `claude plugin install <id> --scope project` for the canonical root reports
+`isn't installed` there (plugins whose marketplace source is a relative path
+are read in place and are unaffected). Before an interactive isolated session
+starts Claude Code, through any Claude route including gateways and the TUI,
+`bin/claude-plugin-scope-mirror.py` copies each such record whose `projectPath`
+is the canonical root into one for the session root and removes records for
+session roots under the state directory that no longer exist. Plugin identity
+stays `<name>@<marketplace>`, so tool names and `permissions.ask` rules match.
+
+This makes the launcher a writer of Claude Code's user registry
+(`installed_plugins.json` in the plugins directory Claude Code resolves from
+`CLAUDE_CODE_PLUGIN_CACHE_DIR`, `CLAUDE_CONFIG_DIR` and
+`CLAUDE_CODE_USE_COWORK_PLUGINS`). It writes only when a change is needed,
+under `<registry>.harness-launcher.lock`, compares the bytes immediately
+before an atomic replace, and verifies the result; a symlinked, hard-linked,
+malformed or non-version-2 registry is never rewritten. Every failure prints a
+warning and the launch continues. Residual risks: Claude Code does not take
+the launcher lock, so a Claude Code write that lands between the launcher's
+final comparison and its replace is lost (two Claude Code processes already
+race the same way on the file path; under Claude Code's optional storage
+backend, which has its own lock, this is a new but equally short window). A
+Claude process starting at the same moment can also write back an older
+snapshot, which leaves the plugin unloaded in that session until the next
+launch or continuation. Headless runs are excluded because they withhold
+harness-local secrets from unattended agents. `HARNESS_CLAUDE_PLUGIN_MIRROR=0`
+in the launching environment (not in `settings.local.json`) disables the
+mirror.
+
 Profiles may default only fresh interactive direct-Claude and native-Codex
 routes into this boundary. The router classifies arguments before allocating a
 UUID: non-interactive, batch, help, diagnostics, gateway/Kiro, and no-argument

@@ -2,6 +2,23 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.49.2 — 2026-10-08
+
+- Plugins installed with `claude plugin install <id> --scope project` (or
+  `--scope local`) now load in isolated Claude sessions. Claude Code ties those
+  install records to the path they were installed for, and an isolated session
+  is a separate clone, so such a plugin reported `isn't installed` there; a
+  plugin whose marketplace source is a URL or repository (for example the Slack
+  plugin) did not load at all. Before an interactive isolated session starts
+  Claude Code, the launcher copies the canonical root's records into Claude
+  Code's user registry for the session root and removes records for retired
+  session roots. Plugin identity is unchanged, so tool names and
+  `permissions.ask` rules match the canonical root. The registry is rewritten
+  only when needed, under a lock, with a compare-before-replace; a malformed,
+  symlinked or hard-linked registry is left untouched with a warning. Headless
+  runs are excluded. `HARNESS_CLAUDE_PLUGIN_MIRROR=0` disables it. See
+  docs/architecture.md and docs/troubleshooting.md.
+
 ## 0.49.1 — 2026-10-08
 
 - `harness-exec --isolated-session <uuid>` now defaults to the session root,
