@@ -180,6 +180,12 @@ The opt-in isolated-session canary separates three paths:
 - `HARNESS_SESSION_ROOT` is a detached, per-UUID repository with a distinct Git directory and no remote, containing the session's tracked harness state and private index.
 - `HARNESS_RUN_DIR` is the runtime working directory: the session root for harness work, or the original product worktree selected with `--cwd`.
 
+For leading explicit isolation controls, `harness-exec` does not adopt the caller's
+directory. Both `--isolated` and `--isolated-session <uuid>` leave the working-directory
+default to the isolated session, including a precreated UUID opening the launcher TUI.
+An explicit `--cwd` is still validated against the original registered project
+before isolation is acquired.
+
 Machine-local MCP files are referenced from the canonical source and excluded
 from submissions. `config/.local` is read from the source boundary and is never
 copied. A heartbeat keeps live `OPEN` sessions from being declared abandoned;

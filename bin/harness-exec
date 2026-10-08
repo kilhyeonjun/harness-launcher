@@ -13,8 +13,8 @@ Usage: harness-exec <harness-dir> [--cwd <dir>] [launcher arguments...]
 Runs a registered harness without depending on interactive shell startup.
 The current directory is used automatically when it resolves inside the harness;
 otherwise the harness root remains the default. An explicit --cwd must resolve
-inside that harness. A leading --isolated runs in the isolated session root
-instead of the current directory.
+inside that harness. A leading --isolated or --isolated-session <uuid> defaults
+to the isolated session root instead of the current directory.
 EOF
 }
 
@@ -36,10 +36,10 @@ HARNESS_DIR="${HARNESS_DIR:A}"
 
 source "$SCRIPT_DIR/aliases.zsh"
 
-# An explicit --isolated launch runs in its session root; injecting the
-# caller's directory would run it in the canonical checkout instead.
+# Both isolated controls default to their session root; injecting the caller's
+# directory would run in the canonical checkout and fail the TUI's boundary check.
 case "${1:-}" in
-  --cwd|--isolated) ;;
+  --cwd|--isolated|--isolated-session) ;;
   *)
     if HARNESS_CURRENT_DIR="$(harness_resolve_run_dir "$HARNESS_DIR" "$PWD" 2>/dev/null)"; then
       set -- --cwd "$HARNESS_CURRENT_DIR" "$@"
