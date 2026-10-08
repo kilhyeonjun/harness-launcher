@@ -4,6 +4,7 @@ The caller (an external bridge) gets exactly one JSON result file per run; see
 docs/architecture.md "Headless isolated runs" for the contract.
 """
 import argparse
+import contextlib
 import errno
 import fcntl
 import hmac
@@ -12,8 +13,9 @@ import json
 import math
 import os
 import re
-import shutil
 import secrets
+import shlex
+import shutil
 import signal
 import socket
 import stat
@@ -23,11 +25,17 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 BIN = Path(__file__).resolve().parent
+# `-I` keeps the script directory off sys.path; the launcher's own modules
+# sit beside this file.
+sys.path.insert(0, str(BIN))
+import harness_target  # noqa: E402
+from harness_target import Refused  # noqa: E402
 UUID = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
 SESSION_LINE = re.compile(r'^harness-launcher: isolated session (' + UUID + r');', re.M)
 # Caller environment kept for the launcher and Claude. Everything else
@@ -99,8 +107,12 @@ FORWARD_TOKEN_HEADER = 'X-Harness-Forwarder-Token'
 FORWARD_CONCURRENCY = 8
 
 
-class Refused(Exception):
-    pass
+class Outcome(Exception):
+    """A final result other than refused, with its summary."""
+
+    def __init__(self, status, summary):
+        super().__init__(summary)
+        self.status = status
 
 
 class Terminated(Exception):
@@ -119,7 +131,8 @@ def parse_args(argv):
     parser.add_argument('--settings-file')
     parser.add_argument('--model')
     # Validated in validate_agent_args, so a bad value still writes a result.
-    for name in ('--agent', '--effort', '--model-endpoint', '--endpoint-key-file', '--max-model-requests'):
+    for name in ('--agent', '--effort', '--model-endpoint', '--endpoint-key-file', '--max-model-requests',
+                 '--target', '--target-digest', '--task-id', '--approval-sha'):
         parser.add_argument(name)
     return parser.parse_args(argv)
 
@@ -320,7 +333,9 @@ def _mandatory_settings(source, home, caller_deny_read, run_tmp):
     # The session clone has its own Git directory (no hardlinks or alternates)
     # and copied local files, so the canonical source root can be read-denied.
     deny_read = list(dict.fromkeys(homes + sources + list(caller_deny_read)))
-    deny_write = [f'/private/tmp/claude-{uid}', f'/tmp/claude-{uid}']
+    # Launcher records (profiles, target records and policy, the endpoint key)
+    # are written only by the owner, never by a run.
+    deny_write = [f'/private/tmp/claude-{uid}', f'/tmp/claude-{uid}', harness_target.profile_home()]
     write_paths = deny_read + [os.path.join(home, d) for d in HOME_WRITE_DENY] + deny_write
     deny = [f'Read(/{path}/**)' for path in deny_read]
     deny += [f'{tool}(/{path}/**)' for path in write_paths for tool in EDIT_TOOLS]
@@ -444,6 +459,8 @@ def kill_lingering(*roots):
 NO_TRUSTED_GIT = 'headless session record has no trusted git directory; delivery refused, session kept'
 SOURCE_MISSING = ('the source checkout this session was cloned from could not be found (moved or deleted); '
                   'delivery refused, session kept')
+ROOT_REPLACED = ('the session root was replaced during the run (a symlink or another directory); nothing staged '
+                 'or delivered, session kept')
 VERIFIER_REJECTED = ('the repository verifier rejected the session; it runs sandboxed (no network but '
                      'loopback, no credentials, writes only to its candidate); see the run log; session kept')
 
@@ -501,6 +518,8 @@ def _deliver(sid, state, env, cwd, log, message):
         return 'refused', None, NO_TRUSTED_GIT
     if rc == 8:
         return 'refused', None, SOURCE_MISSING
+    if rc == 10:
+        return 'refused', None, ROOT_REPLACED
     if rc == 9:
         return 'failed', None, VERIFIER_REJECTED
     if rc in (3, 5):
@@ -835,8 +854,16 @@ class CodexSession:
         self.beat = threading.Thread(target=self.heartbeat, daemon=True)
         self.beat.start()
 
+    extra_env = {}
+
     def call(self, *args, **kw):
         return subprocess.run([self.iso, *args], env=self.env, stdin=subprocess.DEVNULL, **kw).returncode
+
+    def agents_md(self):
+        return codex_agents_md(self.root)
+
+    def profile_suffix(self, base):
+        return ''
 
     def heartbeat(self):
         while not self.stop.wait(HEARTBEAT_SECONDS):
@@ -862,7 +889,7 @@ def codex_sandbox_profile(session, hdir, run_tmp, exe, host, port, codex_home):
     if made.returncode != 0:
         raise Refused(f'the codex sandbox profile could not be generated: {made.stderr.strip()[-300:]}')
     path = os.path.join(run_tmp, 'codex.sb')
-    write_private(path, made.stdout)
+    write_private(path, made.stdout + session.profile_suffix(made.stdout))
     return path
 
 
@@ -901,7 +928,12 @@ def sandbox_preflight():
 
 def run(args, result, run_tmp):
     hdir = harness_dir(args.harness)
+    target = validate_target_args(args)
+    if target:
+        result.update(target=target['name'], branch=target['branch'], base_sha=None, pr_url=None)
     codex = validate_agent_args(args)
+    if target:
+        load_target(target, os.environ['HOME'])
     if not os.access(LOCKF, os.X_OK):
         # Delivery could never succeed; do not spend the budget first.
         raise Refused(f'{LOCKF} is required for session delivery and is unavailable')
@@ -925,9 +957,12 @@ def run(args, result, run_tmp):
     state = state_home(env)
     log_path = args.result_file + '.log'
     with open(log_path, 'w') as log, tempfile.TemporaryFile('w+') as stdin:
-        stdin.write(prompt.rstrip('\n') + '\n\n' + DELIVERY_NOTE)
+        stdin.write(prompt.rstrip('\n') + '\n\n' + DELIVERY_NOTE + (target_note(target) if target else ''))
         stdin.flush()
         stdin.seek(0)
+        if target:
+            run_target(args, codex, hdir, env, run_tmp, stdin, timeout, log, result, target)
+            return
         if codex:
             outcome = run_codex(args, codex, hdir, env, run_tmp, stdin, timeout, log, result)
         else:
@@ -1034,7 +1069,7 @@ def run_claude(args, caller, hdir, env, state, run_tmp, stdin, timeout, log, log
     return None
 
 
-def run_codex(args, codex, hdir, env, run_tmp, stdin, timeout, log, result):
+def run_codex(args, codex, hdir, env, run_tmp, stdin, timeout, log, result, make_session=None):
     """codex exec under the launcher's Seatbelt profile, its model requests
     through the forwarder; (sid, message, reason) to deliver, or None when the
     result is final. Every preflight refusal comes before the first model
@@ -1050,14 +1085,15 @@ def run_codex(args, codex, hdir, env, run_tmp, stdin, timeout, log, result):
     try:
         if not forwarder.models_ok():
             raise Refused('GET /v1/models through the forwarder did not return 200; check --model-endpoint and the key')
-        session = CodexSession(hdir, env, log)
+        session = make_session() if make_session else CodexSession(hdir, env, log)
         codex_home = os.path.join(run_tmp, CODEX_HOME)
         os.mkdir(codex_home, 0o700)
         write_private(os.path.join(codex_home, 'config.toml'), codex_config(args.model, args.effort, forwarder))
-        write_private(os.path.join(codex_home, 'AGENTS.md'), codex_agents_md(session.root))
+        write_private(os.path.join(codex_home, 'AGENTS.md'), session.agents_md())
         profile = codex_sandbox_profile(session, hdir, run_tmp, exe, host, forwarder.port, codex_home)
         codex_env = {k: v for k, v in env.items() if k != 'CLAUDE_CODE_TMPDIR'}
         codex_env['CODEX_HOME'] = codex_home
+        codex_env.update(session.extra_env)
         codex_preflight(profile, exe, host, args.endpoint_key_file, codex_env, session.root)
         last = os.path.join(run_tmp, LAST_MESSAGE)
         command = [SANDBOX_EXEC, '-f', profile, exe, 'exec', '--json', '-o', last, '-C', session.root, '-']
@@ -1089,6 +1125,687 @@ def run_codex(args, codex, hdir, env, run_tmp, stdin, timeout, log, result):
     else:
         return session.sid, message, message_reason
     return None
+
+
+# === --target: a registered personal code repository, delivered as a draft PR =======
+# See docs/architecture.md "Target mode". The agent works in a launcher-owned
+# clone of the target's base branch under the 0.47 codex profile plus explicit
+# denies; the broker moves its work into a launcher-owned trusted.git through
+# a patch and manifest, checks and verifies it, and pushes a new loop/ branch
+# and opens a draft PR with the owner's gh keyring token, after every agent
+# process is gone.
+
+TARGET_COMPANIONS = ('target_digest', 'task_id', 'approval_sha')
+TASK_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}')
+APPROVAL_SHA = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?')
+TARGET_RULES = ('work-scale.md', 'outcome-control.md', 'performance-observation.md')
+# Agent-sandbox denies under HOME on top of the 0.47 profile and the owner's
+# policy home_deny.
+TARGET_HOME_DENY = ('Library/Keychains', '.config/harness-launcher')
+BASE_DENY = '(deny file-read* file-write* process-exec*'
+DEPENDENCY_FILES = re.compile(r'uv\.lock|uv\.toml|\.python-version|requirements[^/]*\.txt')
+UV_TIMEOUT = 1200
+DEPENDENCY_REASON = '의존성 변경은 오프라인 검증 불가 (dependency changes cannot be verified offline); nothing pushed'
+BRANCH_NOTE = ('Branch note: `loop/` is the harness loop\'s branch prefix and may not follow this repository\'s '
+               'branching strategy.')
+# auto-deliver's secret_patterns (the first is case-sensitive, the rest are
+# not), then GitHub tokens and every PEM private key header.
+SECRET_PATTERNS = [re.compile(r'[A-Za-z0-9_]*_(API_KEY|SECRET|TOKEN|PASSWORD)[A-Za-z0-9_]*\s*=')] + [
+    re.compile(p, re.I) for p in (
+        r'-----BEGIN (PRIVATE KEY|RSA|OPENSSH)-----', r'ghp_[A-Za-z0-9]{36,}', r'sk-[A-Za-z0-9]{32,}',
+        r'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}')] + [
+    re.compile(r'gh[opsur]_[A-Za-z0-9]{36,}'), re.compile(r'github_pat_[A-Za-z0-9_]{80,}'),
+    re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----')]
+JOURNAL = re.compile(r'(PENDING|PUSHED|DELIVERED)\(([0-9a-f]{40}|[0-9a-f]{64})\)')
+
+
+def validate_target_args(args):
+    """None without --target; otherwise the run's target, branch and
+    approval. --target is codex-only and needs every companion option."""
+    if args.target is None:
+        given = [n for n in TARGET_COMPANIONS if getattr(args, n) is not None]
+        if given:
+            raise Refused(f'--{given[0].replace("_", "-")} needs --target')
+        return None
+    if (args.agent or 'claude') != 'codex':
+        raise Refused('--target runs with --agent codex only: code repositories need the deny-default codex sandbox')
+    harness_target.check_name(args.target)
+    if not re.fullmatch(r'[0-9a-f]{64}', args.target_digest or ''):
+        raise Refused('--target needs --target-digest <sha256 of the host record>')
+    if not TASK_ID.fullmatch(args.task_id or ''):
+        raise Refused('--target needs --task-id [A-Za-z0-9][A-Za-z0-9_-]{0,63}')
+    if not APPROVAL_SHA.fullmatch(args.approval_sha or ''):
+        raise Refused('--target needs --approval-sha, a lowercase hex commit SHA')
+    slug = f'{args.task_id}-{args.approval_sha[:8]}'
+    return {'name': args.target, 'digest': args.target_digest, 'task': args.task_id,
+            'approval': args.approval_sha, 'slug': slug, 'branch': f'loop/{slug}'}
+
+
+def load_target(target, home):
+    """The owner's policy, the host record (digest-checked) and the static
+    boundary rules."""
+    policy = harness_target.read_policy()
+    entry, path = harness_target.read_record(target['name'], policy, target['digest'])
+    target.update(entry=entry, policy=policy, path=harness_target.check_live_path(path, home, policy))
+    return target
+
+
+def sbpl(path):
+    if '"' in path or '\n' in path:
+        raise Refused(f'path not usable in a sandbox profile: {path!r}')
+    return '"' + path.replace('\\', '\\\\') + '"'
+
+
+def subpaths(paths):
+    return ' '.join(f'(subpath {sbpl(p)})' for p in dict.fromkeys(paths))
+
+
+def target_profile_rules(base, home, hdir, live, env_dir, base_prefix, home_deny, state):
+    """SBPL appended to a generated agent or verifier profile (base): the
+    prepared environment read and exec only; then every path deny of base
+    again (so the base_prefix allow cannot reopen one), except the state-home
+    lines, which would close the env; then the target denies."""
+    env_paths = [env_dir, os.path.realpath(env_dir), base_prefix]
+    states = {sbpl(p) for p in (state, os.path.realpath(state))}
+    repeat = [line for line in base.splitlines() if line.startswith(BASE_DENY) and 'require-all' not in line
+              and not any(f'(subpath {s})' in line for s in states)]
+    deny = [os.path.join(home, d) for d in TARGET_HOME_DENY] + [harness_target.profile_home(), hdir]
+    deny += [os.path.join(home, d) for d in home_deny if not d.endswith('*')]
+    if live:
+        deny.append(live)
+    deny += [os.path.realpath(p) for p in deny]
+    homes = dict.fromkeys([home, os.path.realpath(home)])
+    regex = ' '.join('(regex #"^%s")' % re.sub(r'([^A-Za-z0-9/_-])', r'\\\1', f'{h}/{d[:-1]}')
+                     for h in homes for d in home_deny if d.endswith('*'))
+    return '\n'.join([f'(allow file-read* process-exec* {subpaths(env_paths)})',
+                      f'(deny file-write* {subpaths(env_paths)})', *repeat,
+                      f'{BASE_DENY} {subpaths(deny)} {regex})']) + '\n'
+
+
+def harness_rules_md(hdir):
+    """CODEX_HOME/AGENTS.md for a target run: only the harness rules that hold
+    in any repository, read from the harness's origin/main (never its work tree)."""
+    parts = ['# Generated by harness-headless for a code repository target — do not edit manually.\n',
+             '# Source-of-truth: harness origin/main .claude/rules/{%s}\n' % ','.join(TARGET_RULES), '\n']
+    for name in TARGET_RULES:
+        shown = subprocess.run(['git', '-C', hdir, '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+                                'cat-file', 'blob', f'origin/main:.claude/rules/{name}'],
+                               stdin=subprocess.DEVNULL, capture_output=True)
+        if shown.returncode != 0:
+            raise Refused(f'the harness origin/main has no .claude/rules/{name}')
+        parts += [f'## {name[:-3]}\n', '\n', shown.stdout.decode('utf-8', errors='replace'), '\n']
+    return ''.join(parts)
+
+
+def git_env(network=False, index=None):
+    """Broker git: no system or global config, no prompts; the ssh agent
+    socket only for network calls."""
+    env = {k: v for k, v in os.environ.items() if k in ('HOME', 'PATH', 'USER', 'LOGNAME', 'LANG')}
+    env.update(GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1', GIT_TERMINAL_PROMPT='0',
+               TMPDIR=tempfile.gettempdir())
+    if network and os.environ.get('SSH_AUTH_SOCK'):
+        env['SSH_AUTH_SOCK'] = os.environ['SSH_AUTH_SOCK']
+    if index:
+        env['GIT_INDEX_FILE'] = str(index)
+    return env
+
+
+HARDENED = ('-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false', '-c', 'gc.auto=0',
+            '-c', 'submodule.recurse=false', '-c', 'diff.external=', '-c', 'core.untrackedCache=false')
+
+
+def git(*args, cwd=None, network=False, index=None, input=None, check=True, timeout=600):
+    done = subprocess.run(['git', *HARDENED, *args], cwd=cwd, env=git_env(network, index), input=input,
+                          stdin=None if input is not None else subprocess.DEVNULL, capture_output=True,
+                          timeout=timeout)
+    if check and done.returncode != 0:
+        raise Outcome('failed', f'broker git {args[0] if not args[0].startswith("--") else args[1]} failed '
+                                f'(exit {done.returncode}): {done.stderr.decode(errors="replace").strip()[-300:]}')
+    return done
+
+
+class Delivery:
+    """Launcher-owned delivery record of one branch (target, task, approval):
+    trusted.git (base and candidate commits), the journal, manifest, message,
+    PR body and pr-url. Never inside a session root or a run's temp base."""
+
+    def __init__(self, state, target):
+        self.parent = Path(state, 'target-delivery', target['name'])
+        self.dir = self.parent / target['slug']
+        self.trusted = self.dir / 'trusted.git'
+        self.lock_file = self.parent / f'{target["slug"]}.lock'
+
+    def lock(self):
+        self.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            raise Refused('another run is delivering this branch')
+        return fd
+
+    def journal(self):
+        try:
+            match = JOURNAL.fullmatch(self.read('journal'))
+        except FileNotFoundError:
+            return None
+        if not match:
+            raise Outcome('failed', f'unreadable delivery journal in {self.dir}')
+        return match.group(1), match.group(2)
+
+    def read(self, name):
+        return (self.dir / name).read_text().strip()
+
+    def read_optional(self, name):
+        try:
+            return self.read(name)
+        except FileNotFoundError:
+            return ''
+
+    def write(self, name, text):
+        fd, tmp = tempfile.mkstemp(dir=self.dir, prefix=f'.{name}.')
+        with os.fdopen(fd, 'w') as out:
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, self.dir / name)
+
+    def fresh(self):
+        """A new record; an earlier one that never reached PENDING is moved
+        aside (kept, never deleted)."""
+        if os.path.lexists(self.dir):
+            os.rename(self.dir, self.parent / f'.retired-{self.dir.name}-{time.time_ns()}')
+        self.dir.mkdir(mode=0o700)
+
+    def git(self, *args, **kw):
+        return git(f'--git-dir={self.trusted}', *args, **kw)
+
+
+class TargetSession:
+    """The agent's work tree for a target run, run_codex's session: a
+    launcher-owned clone of the base branch detached at its SHA, the
+    delivery record's trusted.git with the base and a matching index, and
+    the prepared test environment, all before the agent starts."""
+
+    def __init__(self, hdir, env, log, target, delivery):
+        self.iso, self.env, self.log, self.hdir, self.target = str(BIN / 'session-isolation.sh'), env, log, hdir, target
+        self.sid = str(uuid.uuid4())
+        runs = Path(state_home(env), 'target-runs')
+        runs.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if runs.is_symlink():
+            raise Refused(f'{runs} is a symlink')
+        self.run_dir = runs / self.sid
+        self.run_dir.mkdir(mode=0o700)
+        self.root, self.env_dir = str(self.run_dir / 'root'), str(self.run_dir / 'env')
+        self.lease = True
+        try:
+            self.setup(env, log, target, delivery)
+        except BaseException:
+            # Nothing the agent never saw is worth keeping: the clone, the
+            # env and its source, and the not yet journaled trusted.git.
+            shutil.rmtree(self.run_dir, ignore_errors=True)
+            shutil.rmtree(delivery.trusted, ignore_errors=True)
+            raise
+
+    def setup(self, env, log, target, delivery):
+        entry = target['entry']
+        os.mkdir(self.root, 0o700)
+        git('init', '-q', '--template=', self.root)
+        print(f'harness-launcher: target run {self.sid}: fetching {entry["base"]} of {entry["github"]}', file=log, flush=True)
+        git('-C', self.root, 'fetch', '-q', '--no-tags', entry['remote'],
+            f'+refs/heads/{entry["base"]}:refs/remotes/origin/{entry["base"]}', network=True)
+        self.base = git('-C', self.root, 'rev-parse', '--verify', f'refs/remotes/origin/{entry["base"]}^{{commit}}'
+                        ).stdout.decode().strip()
+        git('-C', self.root, 'checkout', '-q', '--detach', self.base)
+        info = os.lstat(self.root)
+        self.root_id = (info.st_dev, info.st_ino)
+        delivery.trusted.mkdir(mode=0o700)
+        delivery.git('init', '-q', '--bare', '--template=')
+        for key in ('core.ignorecase', 'core.precomposeunicode'):
+            value = git('-C', self.root, 'config', '--bool', '--default', 'false', key).stdout.decode().strip()
+            delivery.git('config', key, value)
+        delivery.git('fetch', '-q', '--no-tags', self.root, f'+refs/remotes/origin/{entry["base"]}:refs/heads/base')
+        delivery.git(f'--work-tree={self.root}', 'read-tree', self.base)
+        delivery.git(f'--work-tree={self.root}', 'update-index', '-q', '--refresh', check=False)
+        self.python, self.base_prefix = prepare_test_env(delivery, self.base, self.run_dir, self.env_dir, entry, log)
+        self.extra_env = {'HARNESS_TARGET_PYTHON': self.python}
+        print(f'harness-launcher: isolated session {self.sid}; headless codex run on target {target["name"]} '
+              f'({entry["base"]} at {self.base})', file=log, flush=True)
+
+    def agents_md(self):
+        return harness_rules_md(self.hdir)
+
+    def profile_suffix(self, base):
+        return target_profile_rules(base, self.env['HOME'], self.hdir, self.target['path'], self.env_dir,
+                                    self.base_prefix, self.target['policy']['home_deny'], str(state_home(self.env)))
+
+    def freeze(self):
+        """After every agent process is gone (H1): move the root where the
+        agent never could write, and require the directory made for it there;
+        a swapped root (a symlink or another directory) stages nothing."""
+        frozen = str(self.run_dir / 'root.frozen')
+        try:
+            os.rename(self.root, frozen)
+            info = os.lstat(frozen)
+        except OSError:
+            info = None
+        if info is None or not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != self.root_id:
+            raise Outcome('failed', 'the session root was replaced during the run (not the directory the launcher '
+                                    'made); nothing staged or pushed')
+        self.root = frozen
+
+    def finish(self):
+        self.lease = None
+
+
+def extract_tree(delivery, sha, dest, index):
+    """sha checked out by git (its own path safety, no .git) into a new
+    broker-owned dir, with index matching it."""
+    os.mkdir(dest, 0o700)
+    delivery.git(f'--work-tree={dest}', 'read-tree', sha, index=index)
+    delivery.git(f'--work-tree={dest}', 'checkout-index', '-a', '-f', '-u', cwd=dest, index=index)
+
+
+def prepare_test_env(delivery, base, run_dir, env_dir, entry, log):
+    """uv sync of the test group on a base clone, outside the sandbox, with
+    network, into a broker-owned venv outside run_tmp and the session root.
+    (venv python, realpath of its sys.base_prefix)."""
+    source = str(run_dir / 'env-source')
+    extract_tree(delivery, base, source, run_dir / 'env-source.index')
+    env = harness_target.base_env()
+    env['UV_PROJECT_ENVIRONMENT'] = env_dir
+    uv = harness_target.tool('uv', env)
+    print(f'harness-launcher: preparing the test environment (uv sync, group {entry["test"]["group"]})', file=log, flush=True)
+    # --no-build: an sdist build would run package code outside every sandbox.
+    try:
+        done = subprocess.run([uv, 'sync', '--frozen', '--no-build', '--no-install-project', '--group',
+                               entry['test']['group']], cwd=source, env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=UV_TIMEOUT)
+        rc, output = done.returncode, done.stdout
+    except subprocess.TimeoutExpired as exc:
+        rc, output = 'timeout', exc.stdout or ''
+        output = output.decode(errors='replace') if isinstance(output, bytes) else output
+    log.write(output)
+    log.flush()
+    if rc != 0 and 'no-build' in output:
+        raise Refused('the test group needs a source (sdist) build, and uv sync runs with --no-build: a build would '
+                      'run package code outside the sandbox. Use wheels-only dependencies for the test group')
+    python = os.path.join(env_dir, 'bin', 'python')
+    if rc != 0 or not os.access(python, os.X_OK):
+        raise Outcome('failed', f'the test environment could not be prepared (uv sync: {rc}); see the run log')
+    found = subprocess.run([python, '-I', '-S', '-c', 'import os, sys; print(os.path.realpath(sys.base_prefix))'],
+                           env={'PATH': '/usr/bin:/bin', 'HOME': env['HOME']}, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=60)
+    prefix = found.stdout.strip()
+    if found.returncode != 0 or not usable_base_prefix(prefix, os.path.realpath(env['HOME']),
+                                                        os.path.realpath(run_dir.parent.parent)):  # <state>/target-runs/<id>
+        raise Outcome('failed', f'the test environment python has an unusable base prefix: {prefix!r}')
+    return python, prefix
+
+
+def usable_base_prefix(prefix, home, state):
+    """A python base prefix the profiles may allow read and exec: absolute,
+    not /, not HOME or the state home or an ancestor of either, and not at or
+    under the state home (other runs, records and trusted git dirs)."""
+    return (prefix.startswith('/') and prefix != '/'
+            and not any((p + '/').startswith(prefix + '/') for p in (home, state))
+            and not (prefix + '/').startswith(state + '/'))
+
+
+def stage_manifest(delivery, index, work_tree, base):
+    """(kind, mode, oid, path) for every path the index changes against base."""
+    listed = delivery.git(f'--work-tree={work_tree}', 'diff', '--cached', '--name-status', '--no-renames', '-z', base,
+                          index=index).stdout.decode('utf-8', 'surrogateescape').split('\0')
+    manifest = []
+    for status, path in zip(listed[0::2], listed[1::2]):
+        if status.startswith('D'):
+            manifest.append(('D', '-', '-', path))
+            continue
+        entry = delivery.git(f'--work-tree={work_tree}', 'ls-files', '-s', '--', f':(literal){path}',
+                             index=index).stdout.decode('utf-8', 'surrogateescape')
+        mode, oid = entry.split()[:2]
+        manifest.append(('F', mode, oid, path))
+    return manifest
+
+
+def build_candidate(delivery, session):
+    """The agent's work tree as a patch and manifest through trusted.git
+    (the agent's own .git is never read), applied onto the base in a fresh
+    broker-owned tree. (manifest, candidate dir, candidate index) or None."""
+    root, base, run_dir = session.root, session.base, session.run_dir
+    delivery.git(f'--work-tree={root}', 'add', '-A', '--', '.', cwd=root)
+    manifest = stage_manifest(delivery, None, root, base)
+    if not manifest:
+        return None
+    check_paths(manifest)
+    patch = delivery.git(f'--work-tree={root}', 'diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv',
+                         '--no-renames', base).stdout
+    (run_dir / 'submission.patch').write_bytes(patch)
+    candidate, index = str(run_dir / 'candidate'), run_dir / 'candidate.index'
+    extract_tree(delivery, base, candidate, index)
+    applied = delivery.git(f'--work-tree={candidate}', 'apply', '--index', '--binary', str(run_dir / 'submission.patch'),
+                           cwd=candidate, index=index, check=False)
+    if applied.returncode != 0 or stage_manifest(delivery, index, candidate, base) != manifest:
+        raise Outcome('failed', 'the submission patch does not reproduce the agent work tree; nothing pushed')
+    return manifest, candidate, index
+
+
+def check_paths(manifest):
+    if any(github_path(path) for _, _, _, path in manifest):
+        raise Refused('the change touches .github/ (workflows run before human review); nothing pushed')
+    if any(mode == '160000' or path.rsplit('/', 1)[-1].casefold() == '.gitmodules' for _, mode, _, path in manifest):
+        raise Refused('the change adds or edits a submodule (gitlink or .gitmodules); nothing pushed')
+
+
+def github_path(path):
+    parts = unicodedata.normalize('NFKC', path).casefold().split('/')
+    return any(part == '.github' for part in parts)
+
+
+def dependency_keys(data):
+    import tomllib  # 3.11+, as the launcher requires; imported late for older test interpreters
+    doc = tomllib.loads(data.decode('utf-8'))
+    project = doc.get('project') if isinstance(doc.get('project'), dict) else {}
+    tool = doc.get('tool') if isinstance(doc.get('tool'), dict) else {}
+    return (project.get('dependencies'), project.get('optional-dependencies'), project.get('requires-python'),
+            doc.get('dependency-groups'), doc.get('build-system'), tool.get('uv'))
+
+
+def dependency_changed(delivery, base, manifest):
+    """Any change (any depth) to uv.lock, uv.toml, .python-version or
+    requirements*.txt, or to [project] dependencies, optional-dependencies or
+    requires-python, [dependency-groups], [build-system] or [tool.uv] of a
+    pyproject.toml (parsed TOML; a candidate that does not parse counts)."""
+    for kind, _, oid, path in manifest:
+        name = path.rsplit('/', 1)[-1]
+        if DEPENDENCY_FILES.fullmatch(name):
+            return True
+        if name != 'pyproject.toml':
+            continue
+        old = delivery.git('cat-file', 'blob', f'{base}:{path}', check=False)
+        new = delivery.git('cat-file', 'blob', oid).stdout if kind == 'F' else None
+        try:
+            before = dependency_keys(old.stdout) if old.returncode == 0 else None
+            after = dependency_keys(new) if new is not None else None
+        except (UnicodeError, ValueError):  # tomllib.TOMLDecodeError is a ValueError
+            return True
+        if before != after:
+            return True
+    return False
+
+
+def placeholder(line):
+    """auto-deliver's KEY=VALUE placeholder test: <...>, $..., empty or masks."""
+    value = line[line.find('=') + 1:].strip().strip('"\'`').strip()
+    return not value or value[0] in '<$' or bool(re.fullmatch(r'[*x.\-_…\s]+', value, re.I))
+
+
+def secret_hits(texts):
+    """Names ('diff: pattern_7') of secret patterns found; never the match."""
+    hits = []
+    for where, text in texts:
+        for i, rx in enumerate(SECRET_PATTERNS):
+            if any(rx.search(line) and not (i == 0 and placeholder(line)) for line in text.splitlines()):
+                hits.append(f'{where}: pattern_{i}')
+    return hits
+
+
+def added_lines(delivery, candidate, index, base):
+    diff = delivery.git(f'--work-tree={candidate}', 'diff', '--cached', '--no-ext-diff', '--no-textconv', '--text',
+                        '-U0', '--no-renames', base, index=index).stdout.decode('utf-8', 'replace')
+    return '\n'.join(line for line in diff.splitlines() if line.startswith('+'))
+
+
+def verifier_profile(session, vcopy, vtmp, env):
+    made = subprocess.run([session.iso, 'verifier-sandbox-profile', vcopy, vtmp, env['HOME'], session.hdir,
+                           session.env_dir], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if made.returncode != 0:
+        raise Outcome('failed', f'the verifier sandbox profile could not be generated: {made.stderr.strip()[-300:]}')
+    return made.stdout + session.profile_suffix(made.stdout)
+
+
+def run_target_verifier(session, candidate, log, env):
+    """test.run (argv[0] is the env python) on a copy of the candidate under
+    the verifier profile plus the read-only env; True when it exits 0."""
+    test = session.target['entry']['test']
+    vcopy = tempfile.mkdtemp(prefix='verifier-copy.', dir=session.run_dir)
+    vtmp = os.path.realpath(tempfile.mkdtemp(prefix='verifier-tmp.', dir='/private/tmp'))
+    try:
+        shutil.copytree(candidate, vcopy, symlinks=True, dirs_exist_ok=True)
+        profile = verifier_profile(session, vcopy, vtmp, env)
+        venv = {k: v for k, v in env.items() if k in ('HOME', 'LANG') or k.startswith('LC_')}
+        venv.update(PATH='/usr/bin:/bin', TMPDIR=vtmp)
+        print(f'harness-headless: verifier: {shlex.join(test["run"])} (timeout {test["timeout_min"]} min)', file=log, flush=True)
+        proc = subprocess.Popen([SANDBOX_EXEC, '-p', profile, session.python, *test['run'][1:]], cwd=vcopy, env=venv,
+                                stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        try:
+            proc.wait(timeout=test['timeout_min'] * 60)
+        except subprocess.TimeoutExpired:
+            print('harness-headless: verifier timed out', file=log, flush=True)
+        finally:
+            kill_group(proc.pid)
+        proc.wait()
+        return proc.returncode == 0
+    finally:
+        kill_lingering(vcopy, vtmp)
+        shutil.rmtree(vcopy, ignore_errors=True)
+        shutil.rmtree(vtmp, ignore_errors=True)
+
+
+def pr_body(target, base, message):
+    entry = target['entry']
+    body = message.split('\n', 1)[1].strip() if '\n' in message else ''
+    lines = [BRANCH_NOTE, '']
+    if body:
+        # A fence longer than any backtick run in the text: shown, never rendered.
+        fence = '`' * max(3, 1 + max((len(run) for run in re.findall(r'`+', body)), default=0))
+        lines += [f'{fence}text', body, fence, '']
+    lines += ['---', f'Task: {target["task"]}', f'Approval: {target["approval"]}',
+              f'Base: {entry["base"]} at {base}',
+              'Opened as a draft by harness-launcher (harness-headless --target); review before merging.']
+    return '\n'.join(lines) + '\n'
+
+
+def commit_candidate(delivery, session, target, manifest, candidate, index, message, log):
+    """Checks, verifier and the commit in trusted.git, then the delivery
+    record up to PENDING; returns the commit SHA."""
+    base = session.base
+    message = message or f'harness session {session.sid}\n'
+    body = pr_body(target, base, message)
+    hits = secret_hits([('diff', added_lines(delivery, candidate, index, base)), ('message', message), ('body', body)])
+    if hits:
+        raise Refused(f'secret pattern matched ({", ".join(hits)}); nothing pushed')
+    if dependency_changed(delivery, base, manifest):
+        raise Outcome('failed', DEPENDENCY_REASON)
+    if not run_target_verifier(session, candidate, log, broker_env(session.env)):
+        raise Outcome('failed', VERIFIER_REJECTED)
+    tree = delivery.git(f'--work-tree={candidate}', 'write-tree', index=index).stdout.decode().strip()
+    text = f'{message.rstrip()}\n\nHarness-Session: {session.sid}\n'
+    ident = {'GIT_AUTHOR_NAME': 'harness-broker', 'GIT_AUTHOR_EMAIL': 'broker@invalid',
+             'GIT_COMMITTER_NAME': 'harness-broker', 'GIT_COMMITTER_EMAIL': 'broker@invalid'}
+    done = subprocess.run(['git', *HARDENED, f'--git-dir={delivery.trusted}', 'commit-tree', tree, '-p', base],
+                          env={**git_env(), **ident}, input=text.encode(), capture_output=True)
+    if done.returncode != 0:
+        raise Outcome('failed', 'broker git commit-tree failed')
+    sha = done.stdout.decode().strip()
+    delivery.git('update-ref', 'refs/heads/delivery', sha)
+    if manifest_mismatch(delivery.trusted, sha, manifest):
+        raise Outcome('failed', 'the candidate commit does not match the manifest; nothing pushed')
+    for name, value in (('manifest', json.dumps(manifest)), ('message', message), ('body', body), ('base-sha', base),
+                        ('run-id', session.sid), ('branch', target['branch']), ('digest', target['digest'])):
+        delivery.write(name, value)
+    delivery.write('journal', f'PENDING({sha})')
+    return sha
+
+
+def manifest_mismatch(git_dir, sha, manifest):
+    """True unless every manifest entry is in sha's tree as recorded."""
+    for kind, mode, oid, path in manifest:
+        listed = git(f'--git-dir={git_dir}', 'ls-tree', sha, '--', f':(literal){path}').stdout
+        entry = listed.decode('utf-8', 'surrogateescape').split()
+        if (kind == 'D') != (not entry) or (entry and entry[:3] != [mode, 'blob' if mode != '160000' else 'commit', oid]):
+            return True
+    return False
+
+
+def remote_branch(delivery, entry, branch):
+    out = delivery.git('ls-remote', entry['remote'], f'refs/heads/{branch}', network=True).stdout.decode()
+    for line in out.splitlines():
+        sha, _, ref = line.partition('\t')
+        if ref == f'refs/heads/{branch}':
+            return sha
+    return None
+
+
+def find_pr(remote, github, branch):
+    rc, out, _, timed_out = remote.gh('pr', 'list', '--repo', github, '--head', branch, '--state', 'all', '--json', 'url')
+    if rc != 0 or timed_out:
+        raise Outcome('failed', f'gh pr list failed ({"timed out" if timed_out else f"exit {rc}"}); the branch is pushed; '
+                                'rerun the same task and approval to open the PR')
+    try:
+        urls = [item['url'] for item in json.loads(out)]
+    except (ValueError, TypeError, KeyError):
+        raise Outcome('failed', 'gh pr list did not return JSON')
+    for url in urls:
+        if re.fullmatch(rf'https://github\.com/{re.escape(github)}/pull/[0-9]+', url):
+            return url
+    return None
+
+
+def deliver_target(delivery, target, log, result):
+    """Broker delivery from the journal: preflight, push (no force) or
+    resume, readback, list-before-create draft PR, DELIVERED."""
+    entry, branch = target['entry'], target['branch']
+    _, sha = delivery.journal()
+    manifest = [tuple(item) for item in json.loads(delivery.read('manifest'))]
+    result.update(commit=sha, base_sha=delivery.read('base-sha'))
+    workdir = tempfile.mkdtemp(prefix='gh.', dir=delivery.dir)
+    try:
+        remote = harness_target.Remote(entry, workdir, target['policy'])
+        remote.check()
+        current = remote_branch(delivery, entry, branch)
+        if current == sha:
+            print(f'harness-headless: {branch} already at {sha}; resuming delivery', file=log, flush=True)
+        elif current is not None:
+            raise Outcome('conflict', f'{branch} exists at another commit; nothing pushed (a new approval starts a new branch)')
+        elif delivery.journal()[0] == 'PUSHED':
+            raise Outcome('failed', f'the journal says {branch} was pushed but the remote has no such branch; not pushed again')
+        else:
+            pushed = delivery.git('push', '-q', entry['remote'], f'{sha}:refs/heads/{branch}', network=True, check=False)
+            if pushed.returncode != 0:
+                after = remote_branch(delivery, entry, branch)
+                if after != sha:
+                    raise Outcome('conflict' if after else 'failed', f'push of {branch} failed; see the run log')
+            delivery.write('journal', f'PUSHED({sha})')
+        readback(delivery, entry, branch, sha, manifest)
+        url = find_pr(remote, entry['github'], branch) or create_pr(remote, delivery, workdir, entry, branch)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    delivery.write('pr-url', url)
+    delivery.write('journal', f'DELIVERED({sha})')
+    result.update(status='pr_opened', pr_url=url)
+
+
+def readback(delivery, entry, branch, sha, manifest):
+    check = tempfile.mkdtemp(prefix='readback.', dir=delivery.dir)
+    try:
+        git('init', '-q', '--bare', '--template=', check)
+        git(f'--git-dir={check}', 'fetch', '-q', '--no-tags', entry['remote'], f'+refs/heads/{branch}:refs/heads/readback',
+            network=True)
+        got = git(f'--git-dir={check}', 'rev-parse', 'refs/heads/readback').stdout.decode().strip()
+        if got != sha or manifest_mismatch(check, sha, manifest):
+            raise Outcome('failed', f'readback of {branch} does not match the delivered commit and manifest')
+    finally:
+        shutil.rmtree(check, ignore_errors=True)
+
+
+def create_pr(remote, delivery, workdir, entry, branch):
+    """gh pr create from the empty broker dir; after a failure or timeout
+    the PR list is read again before giving up."""
+    title = delivery.read('message').split('\n', 1)[0]
+    body = os.path.join(workdir, 'pr-body.md')
+    write_private(body, delivery.read('body') + '\n')
+    try:
+        rc, out, _, timed_out = remote.gh('pr', 'create', '--repo', entry['github'], '--base', entry['base'],
+                                          '--head', branch, '--draft', '--title', title, '--body-file', body)
+    finally:
+        os.unlink(body)
+    url = out.strip().splitlines()[-1] if rc == 0 and not timed_out and out.strip() else None
+    if url and re.fullmatch(rf'https://github\.com/{re.escape(entry["github"])}/pull/[0-9]+', url):
+        return url
+    url = find_pr(remote, entry['github'], branch)
+    if not url:
+        raise Outcome('failed', f'gh pr create {"timed out" if timed_out else f"failed (exit {rc})"} and no PR is '
+                                f'listed for {branch}; rerun the same task and approval to retry')
+    return url
+
+
+def target_note(target):
+    entry = target['entry']
+    return ('\n\nCode repository note from the launcher: this run works on the repository '
+            f'{entry["github"]} (base branch {entry["base"]}). The launcher, not you, pushes your change to the '
+            f'branch {target["branch"]} and opens a draft pull request; do not run git push or gh (there is no '
+            'network). Run the repository tests with: $HARNESS_TARGET_PYTHON '
+            f'{shlex.join(entry["test"]["run"][1:])} (a prepared environment; installing packages is not possible). '
+            'Do not change anything under .github/, uv.lock, or the dependencies in pyproject.toml: such a change '
+            'is not delivered.')
+
+
+def run_target(args, codex, hdir, env, run_tmp, stdin, timeout, log, result, target):
+    """A --target run: resume a journaled delivery, or preflight, the agent,
+    the broker's checks and verifier, and PR delivery."""
+    delivery = Delivery(state_home(env), target)
+    lock = delivery.lock()
+    sessions = []
+    try:
+        journal = delivery.journal()
+        if journal and not hmac.compare_digest(delivery.read_optional('digest'), target['digest']):
+            raise Outcome('failed', f'{target["branch"]} was started under another target record digest; '
+                                    'not resumed (a changed record needs a new approval)')
+        if journal and journal[0] == 'DELIVERED':
+            result.update(status='pr_opened', commit=journal[1], pr_url=delivery.read('pr-url'),
+                          base_sha=delivery.read('base-sha'), session_id=delivery.read('run-id'), exit_code=0)
+            return
+        if journal:
+            print(f'harness-headless: {target["branch"]} has a {journal[0]} delivery; resuming it, no agent run',
+                  file=log, flush=True)
+            result.update(session_id=delivery.read('run-id'), exit_code=0)
+            deliver_target(delivery, target, log, result)
+            return
+        workdir = tempfile.mkdtemp(prefix='gh-preflight.')
+        try:
+            harness_target.Remote(target['entry'], workdir, target['policy']).check()
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+        delivery.fresh()
+
+        def make_session():
+            sessions.append(TargetSession(hdir, env, log, target, delivery))
+            result['base_sha'] = sessions[0].base
+            return sessions[0]
+        outcome = run_codex(args, codex, hdir, env, run_tmp, stdin, timeout, log, result, make_session)
+        if outcome is None:
+            return
+        _, message, message_reason = outcome
+        if not message:
+            print(f'harness-headless: agent commit message unusable: {message_reason}', file=log, flush=True)
+        sessions[0].freeze()
+        built = build_candidate(delivery, sessions[0])
+        if built is None:
+            result['status'] = 'no_changes'
+            return
+        commit_candidate(delivery, sessions[0], target, *built, message, log)
+        deliver_target(delivery, target, log, result)
+    finally:
+        os.close(lock)
+        # Resume needs only the delivery record, never these broker copies.
+        for session in sessions:
+            for name in ('env-source', 'candidate'):
+                shutil.rmtree(session.run_dir / name, ignore_errors=True)
+            for name in ('env-source.index', 'candidate.index'):
+                with contextlib.suppress(FileNotFoundError):
+                    (session.run_dir / name).unlink()
 
 
 def write_result(path, result):
@@ -1130,6 +1847,8 @@ def main(argv):
         run(args, result, run_tmp)
     except Refused as exc:
         result.update(status='refused', summary=str(exc)[:SUMMARY_MAX], exit_code=EXIT_REFUSED)
+    except Outcome as exc:
+        result.update(status=exc.status, summary=str(exc)[:SUMMARY_MAX])
     except Terminated as exc:
         signum = exc.args[0]
         result.update(status='failed', exit_code=128 + signum,

@@ -15,6 +15,9 @@ Usage:
   harness-profile register <harness-dir>
   harness-profile <profile> [launcher arguments...]
   harness-profile checkup prompt-audit (--all | <profile>...) [--mode <preset>] [--max-budget-usd N]
+  harness-profile target add <name> --from <targets.yaml>
+  harness-profile target list
+  harness-profile target show <name>
   <profile> [launcher arguments...]  # through a registered symlink
 
 Registered profile commands use the current directory when it resolves inside
@@ -132,7 +135,7 @@ register_profile() {
     return 2
   }
   case "$HARNESS_PREFIX" in
-    checkup|register)
+    checkup|register|target)
       echo "harness-profile: HARNESS_PREFIX is reserved by harness-profile: $HARNESS_PREFIX" >&2
       return 2
       ;;
@@ -206,6 +209,12 @@ case "${1:-}" in
   checkup)
     shift
     run_checkup "$@"
+    ;;
+  target)
+    shift
+    source "$SCRIPT_DIR/harness-common.sh"
+    python_bin="$(harness_python3_resolve)" || exit $?
+    exec "$python_bin" -I "$SCRIPT_DIR/harness_target.py" "$@"
     ;;
   *)
     profile="$1"

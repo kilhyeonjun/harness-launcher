@@ -855,3 +855,38 @@ leftover="$(find "$STATE" -maxdepth 1 -name 'discard.*'; find "$STATE/sessions/$
 [[ "$rc" != 0 && -z "$leftover" && "$(jfield "$a_id" state)" == ABANDONED ]] || { echo "FAIL: an interrupted discard must clean up and change nothing (rc=$rc): $leftover"; exit 1; }
 iso discard "$a_id" && [[ "$(jfield "$a_id" state)" == DISCARDED ]] || { echo 'FAIL: discard must succeed once the patch can be written'; exit 1; }
 echo 'PASS: discard keeps the work as a patch, retires ABANDONED/CONFLICT to DISCARDED and refuses everything else'
+
+# H1b: a session root replaced by a symlink or by another directory is never
+# staged; sessions without the inode record fall back to a physical-path check.
+mkdir -p "$TMP/swap-target"
+git -C "$TMP/swap-target" init -q -b main
+printf 'stolen\n' > "$TMP/swap-target/stolen.txt"
+expect_root_refused() {  # expect_root_refused <id> <why>
+  local rc=0
+  iso submit "$1" 2>"$TMP/swap.err" || rc=$?
+  [[ "$rc" == 10 ]] && grep -q 'session root' "$TMP/swap.err" \
+    || { cat "$TMP/swap.err"; echo "FAIL: submit of a $2 root must refuse with exit 10 (rc=$rc)"; exit 1; }
+  [[ "$(jfield "$1" state)" == OPEN && ! -e "$STATE/sessions/$1/submission.patch" ]] \
+    || { echo "FAIL: a refused $2 root must stay OPEN with no patch"; exit 1; }
+}
+for kind in symlink directory legacy-symlink; do
+  out="$(create)"
+  s_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; s_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+  [[ -s "$STATE/sessions/$s_id/root-inode" ]] || { echo 'FAIL: create must record the session root inode'; exit 1; }
+  printf 'x\n' > "$s_root/swap-$kind.txt"
+  mv "$s_root" "$TMP/swapped-$kind"
+  case "$kind" in
+    symlink) ln -s "$TMP/swap-target" "$s_root" ;;
+    directory) mkdir "$s_root" && cp -R "$TMP/swapped-$kind/." "$s_root/" ;;
+    legacy-symlink) mv "$STATE/sessions/$s_id/root-inode" "$TMP/root-inode-$s_id" && ln -s "$TMP/swap-target" "$s_root" ;;
+  esac
+  expect_root_refused "$s_id" "$kind"
+done
+[[ -z "$(git -C "$TMP/swap-target" status --porcelain --untracked-files=no)" ]] || { echo 'FAIL: the symlink target was staged'; exit 1; }
+# A session from an older launcher (no inode record) with its own root still submits.
+out="$(create)"
+s_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; s_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+mv "$STATE/sessions/$s_id/root-inode" "$TMP/root-inode-$s_id"
+printf 'legacy\n' > "$s_root/legacy.txt"
+iso submit "$s_id" && [[ "$(jfield "$s_id" state)" == SUBMITTED ]] || { echo 'FAIL: a legacy session with its real root must submit'; exit 1; }
+echo 'PASS: submit refuses a session root replaced by a symlink or another directory'

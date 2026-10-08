@@ -2,6 +2,43 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.48.0 — 2026-10-08
+
+- `harness-headless --target <name> --target-digest <sha256> --task-id <id>
+  --approval-sha <sha>` (with `--agent codex` only; with `--agent claude` it
+  is `refused`): one Codex run on a registered personal code repository,
+  delivered as a draft PR on `loop/<task>-<approval8>`. The launcher clones the
+  base branch itself (never the live checkout), prepares the test env with
+  `uv sync --frozen --no-build --no-install-project --group <group>` before the
+  agent starts, runs the agent under the 0.47 profile plus its path denies
+  repeated after the env allows and denies of `~/Library/Keychains`, the
+  profile home, the owner's `home_deny` paths, the harness root and the live
+  checkout, freezes the session root after the agent (a root replaced by a
+  symlink or another directory fails the run), and moves the work through a
+  patch and manifest into a launcher-owned trusted.git. `.github/`,
+  submodule and secret changes (now also `gh[opsur]_`, `github_pat_` and
+  every PEM private key header, in the diff, message and PR body) are
+  `refused`; dependency changes (lock files, `uv.toml`, `.python-version`,
+  `requirements*.txt`, and the dependency, build and uv tables of
+  `pyproject.toml`) and verifier rejections are `failed`. Push, readback and
+  `gh` run only in the broker with the gh keyring token in the per-call env,
+  journaled `PENDING`/`PUSHED`/`DELIVERED` with resume (bound to the record
+  digest), conflict and list-before-create. A target needs GitHub Actions
+  disabled. New result status `pr_opened` and fields `target`, `branch`,
+  `base_sha`, `pr_url`.
+- `harness-profile target add <name> --from <targets.yaml>` (needs a TTY,
+  shows the entry and its diff, asks for the name again; the live path must be
+  absolute and is stored as its realpath), `target list` and `target show`.
+  The owner's account, SSH aliases and deny lists come from a required
+  `target-policy.json` in the profile home. Shared digest vectors:
+  `test/fixtures/target-digest-vectors.json`.
+- Security: isolated sessions record their root's inode at `create`, and
+  `submit`, `close` and `exit` refuse (exit 10) to stage a root that was
+  replaced by a symlink or another directory; headless runs report it as
+  `refused`.
+- Security: the headless Claude lane's sandbox and edit tools now deny writes
+  to the profile home in use (`~/.config/harness-launcher` by default).
+
 ## 0.47.0 — 2026-10-08
 
 - Security: the headless repository verifier's Seatbelt profile let a
