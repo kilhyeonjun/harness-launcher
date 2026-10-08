@@ -461,8 +461,8 @@ SOURCE_MISSING = ('the source checkout this session was cloned from could not be
                   'delivery refused, session kept')
 ROOT_REPLACED = ('the session root was replaced during the run (a symlink or another directory); nothing staged '
                  'or delivered, session kept')
-VERIFIER_REJECTED = ('the repository verifier rejected the session; it runs sandboxed (no network but '
-                     'loopback, no credentials, writes only to its candidate); see the run log; session kept')
+VERIFIER_REJECTED = ('the repository verifier rejected the session; it runs sandboxed (no network, not even '
+                     'loopback TCP; no credentials; writes only to its candidate); see the run log; session kept')
 
 
 def deliver(sid, state, env, cwd, log, message=None):
