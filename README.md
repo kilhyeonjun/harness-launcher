@@ -27,6 +27,12 @@ AI coding CLIs usually keep sessions, configuration, skills, and MCP servers in 
 
 It also provides consistent `fast`, `base`, `opus`, `plan`, `rich`, and `fable` presets, optional gateway routing for Claude Code, tab completion, and an interactive TUI.
 
+Verified operational release snapshots can preserve an older Homebrew runtime
+while new isolated sessions use another release. Their selected runtime version
+is separate from the installed package version. See
+[preserving a running generation](docs/codex-integration.md#preserving-a-running-generation)
+for ownership, resume and shared-plugin requirements.
+
 ## Requirements
 
 - macOS

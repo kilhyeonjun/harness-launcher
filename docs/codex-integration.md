@@ -524,3 +524,24 @@ Happy wrappers are rejected when `HARNESS_CODEX_SLACK_APPS` is nonempty: their
 internal settings and approval overrides do not preserve this policy. Use the
 native Claude or Codex launcher. Harnesses without this opt-in keep existing
 Happy behavior.
+
+## Preserving a running generation
+
+An operational launcher may stage a full verified published-release snapshot
+beside an existing Homebrew package, and select that immutable directory for
+future UUID-isolated sessions. This is distinct from a Homebrew package upgrade:
+the legacy `opt` path and canonical runtime home remain in use by old sessions.
+The external selector owns release/tag verification, complete package manifests,
+private ownership, resume binding and retention. It must not execute a writable
+checkout, guess a missing resume binding or remove a referenced runtime.
+
+Such launches set `HARNESS_CODEX_GLOBAL_PLUGIN_POLICY=preserve`. Preparation
+still materializes the new isolated home, but does not publish to the global
+bundled marketplace, replace the global Chrome cache/configuration or restart
+its native host. For a Chrome-enabled surface, the proposed assets and existing
+native-host configuration must match; incompatibility fails with
+`global_plugin_incompatible`. It does not silently disable an enabled surface.
+This asset/configuration proof does not establish a live browser connection.
+
+Ordinary launches retain `manage`. Snapshot activation does not run the disabled
+standalone source installer, rewrite Cellar files, or change launch permissions.

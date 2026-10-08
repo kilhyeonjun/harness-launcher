@@ -10,6 +10,11 @@ set -euo pipefail
 
 HARNESS_DIR="${1:?HARNESS_DIR required (positional arg 1)}"
 [[ -d "$HARNESS_DIR" ]] || { echo "harness dir not found: $HARNESS_DIR" >&2; exit 1; }
+GLOBAL_PLUGIN_POLICY="${HARNESS_CODEX_GLOBAL_PLUGIN_POLICY:-manage}"
+case "$GLOBAL_PLUGIN_POLICY" in
+  manage|preserve) ;;
+  *) echo 'ERROR: HARNESS_CODEX_GLOBAL_PLUGIN_POLICY must be manage or preserve' >&2; exit 2 ;;
+esac
 
 CODEX_CONTEXT_MODE="${HARNESS_CODEX_CONTEXT:-272k}"
 case "$CODEX_CONTEXT_MODE" in
@@ -829,7 +834,13 @@ sync_bundled_marketplace_from_app_bundle() {
 # Avoid taking a host-global lock for harness-only preparation that has no cache
 # work to serialize; when cache synchronization is needed it remains fail-closed.
 if [[ "$SURFACE_ENABLED" -eq 0 && -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
-  with_global_codex_lock sync_bundled_marketplace_from_app_bundle
+  if [[ "$GLOBAL_PLUGIN_POLICY" == preserve ]]; then
+    python3 "$SCRIPT_DIR/codex-global-plugin-guard.py" \
+      "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome" \
+      "$HOME/.codex/plugins/cache/openai-bundled/chrome/latest" || exit $?
+  else
+    with_global_codex_lock sync_bundled_marketplace_from_app_bundle
+  fi
 fi
 
 # 2. Generate config.toml content
@@ -840,7 +851,7 @@ mcp_json_files=()
 [[ -f "$HARNESS_DIR/mcp.local.json" ]] && mcp_json_files+=("$HARNESS_DIR/mcp.local.json")
 tmp_config="$(mktemp "$CODEX_HOME/.config.toml.XXXXXX")"
 bundled_marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
-if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+if [[ "$SURFACE_ENABLED" -eq 1 || "$GLOBAL_PLUGIN_POLICY" == preserve ]]; then
   bundled_marketplace="$CODEX_BUNDLED_MARKETPLACE_SOURCE"
 fi
 browser_client_sha256s="$(
@@ -1629,6 +1640,7 @@ prepare_bundled_plugins() {
   # ~/.codex/plugins/cache/openai-bundled/chrome/latest. Keep that link valid
   # even when profiles use a per-harness CODEX_HOME. This touches global
   # cache state, so callers may run it under with_global_codex_lock.
+  [[ "$GLOBAL_PLUGIN_POLICY" == manage ]] || return 0
   ensure_global_bundled_plugin_latest "chrome"
   write_global_chrome_extension_host_config
   restart_global_chrome_extension_host_if_config_changed
@@ -2242,7 +2254,7 @@ PY
     local global_marketplace="$HOME/.codex/.tmp/bundled-marketplaces/openai-bundled"
     local publish_status
     GLOBAL_MARKETPLACE_STAGE=""
-    if [[ -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
+    if [[ "$GLOBAL_PLUGIN_POLICY" == manage && -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
       mkdir -p "$(dirname "$global_marketplace")"
       if [[ ! -d "$global_marketplace" ]] \
          || ! diff -qr "$CODEX_BUNDLED_MARKETPLACE_SOURCE" "$global_marketplace" >/dev/null 2>&1; then
@@ -2577,7 +2589,7 @@ PY
     return "$publish_status"
   }
 
-  if [[ -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
+  if [[ "$GLOBAL_PLUGIN_POLICY" == manage && -f "$CODEX_BUNDLED_MARKETPLACE_SOURCE/plugins/chrome/.codex-plugin/plugin.json" ]]; then
     with_global_codex_lock_current_shell publish_surface_transaction
   else
     publish_status=0
