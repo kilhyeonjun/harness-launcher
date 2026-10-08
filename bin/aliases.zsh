@@ -462,6 +462,30 @@ _harness_launcher_isolated_heartbeat() {
   done
 }
 
+# _harness_launcher_isolated_claude_plugins
+#   Before an isolated Claude launch, mirrors the canonical root's project- and
+#   local-scope Claude plugin install records into the session root: Claude Code
+#   applies those records per project path, and the session is a separate clone.
+#   Reads the caller's isolated_session_id (zsh dynamic scope). Skipped for
+#   headless runs, which must not gain plugins the canonical secrets policy
+#   withholds, and when HARNESS_CLAUDE_PLUGIN_MIRROR=0 is set in the launching
+#   environment (settings.local.json env is not consulted). The helper runs after the
+#   same local env export Claude gets, so both resolve one registry. Never fails
+#   the launch.
+_harness_launcher_isolated_claude_plugins() {
+  [[ -n "${isolated_session_id:-}" && "${HARNESS_HEADLESS:-0}" != 1 && "${HARNESS_CLAUDE_PLUGIN_MIRROR:-1}" != 0 ]] || return 0
+  local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  (
+    harness_export_local_env "$HARNESS_SOURCE_ROOT" || exit 1
+    local py
+    py="$(harness_python3_resolve 2>/dev/null)" || exit 1
+    "$py" -I "$_HARNESS_LAUNCHER_BIN/claude-plugin-scope-mirror.py" ensure \
+      --source-root "$HARNESS_SOURCE_ROOT" --session-root "$HARNESS_SESSION_ROOT" \
+      --worktrees-dir "$state_home/worktrees"
+  ) || echo 'harness-launcher: warning: Claude plugin install records were not mirrored into the isolated session' >&2
+  return 0
+}
+
 _harness_launcher_isolated_finish() {
   local session_id="$1" heartbeat_pid="${2:-}" lease_fd="${3:-}"
   if [[ -n "$heartbeat_pid" ]]; then
@@ -1165,6 +1189,9 @@ _harness_launcher_run_session() {
         || { echo "❌ codex-gateway에 연결할 수 없습니다 ($provider_url)"; return 1; }
       skip_tui=true; shift ;;
   esac
+  # Codex, Kiro CLI and checkup have returned; the routes still here launch
+  # Claude Code (direct or gateway) or the TUI, which can also pick Claude.
+  _harness_launcher_isolated_claude_plugins
 
   while [[ $# -gt 0 ]]; do
     case "$1" in

@@ -9,6 +9,12 @@ skipped=0
 has_lockf=0
 [[ -x /usr/bin/lockf ]] && has_lockf=1
 [[ "${HARNESS_TEST_FORCE_NO_LOCKF:-0}" == "1" ]] && has_lockf=0
+# Isolated Claude launches mirror plugin install records into Claude Code's
+# user registry. Suites that do not set their own config directory must not
+# read the contributor's; test-launcher-isolated.sh re-enables the mirror on a
+# fixture CLAUDE_CONFIG_DIR. (A suite-wide CLAUDE_CONFIG_DIR would break tests
+# that derive ~/.claude from their fixture HOME.)
+export HARNESS_CLAUDE_PLUGIN_MIRROR=0
 
 for test_file in "$ROOT"/test/test-*.sh; do
   test_name="$(basename "$test_file")"
@@ -52,7 +58,7 @@ printf '==> test_mcp_paths.py (%s)\n' "$PYTHON_BIN"
 "$PYTHON_BIN" "$ROOT/test/test_mcp_paths.py"
 passed=$((passed + 1))
 
-for python_test in test_slack_approval_policy.py test_codex_app_server_guard.py test_harness_paseo.py test_herdr_harness_plugin.py test_harness_herdr_web.py test_harness_herdr_usage.py; do
+for python_test in test_slack_approval_policy.py test_claude_plugin_scope_mirror.py test_codex_app_server_guard.py test_harness_paseo.py test_herdr_harness_plugin.py test_harness_herdr_web.py test_harness_herdr_usage.py; do
   printf '==> %s (%s)\n' "$python_test" "$PYTHON_BIN"
   "$PYTHON_BIN" "$ROOT/test/$python_test"
   passed=$((passed + 1))

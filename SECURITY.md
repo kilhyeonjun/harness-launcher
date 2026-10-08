@@ -40,7 +40,7 @@ The maintainer will acknowledge the report through the advisory, validate the im
 Important boundaries:
 
 - `config/launcher.env` is sourced as shell code. Register only trusted project directories.
-- Runtime-specific state is generated under `<project>/.harness/<runtime>`.
+- Runtime-specific state is generated under `<project>/.harness/<runtime>`. One exception: before an interactive isolated Claude session starts, the launcher copies the canonical root's project/local plugin install records into Claude Code's user registry (`installed_plugins.json`) for the session root and removes records for retired session roots. It never adds a plugin or install path the user did not already install, and never rewrites a malformed, symlinked or hard-linked registry.
 - Native Codex auth remains in the user's Codex auth store; project homes reference it rather than copying tokens.
 - `.claude/settings.local.json` can provide local environment values to child runtimes. Treat it as sensitive and keep it out of version control.
 - `.mcp.local.json`, `mcp.local.json`, and `config/.local/**` are intended for machine-local configuration and secrets.
