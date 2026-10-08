@@ -667,6 +667,8 @@ verifier_sandbox_profile() {
   printf ' (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (subpath "/dev/fd"))\n'
   printf '(allow file-ioctl (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (subpath "/dev/fd"))\n'
   printf '(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center"))\n'
+  # Python multiprocessing locks and events: POSIX semaphores named /mp-<random>.
+  printf '(allow ipc-posix-sem (ipc-posix-name-prefix "/mp-"))\n'
   # The state home, then the verifier's own dirs inside it again.
   printf '(deny file-read* file-write* process-exec* (subpath %s) (subpath %s))\n' \
     "$(sbpl_str "$(state_home)")" "$(sbpl_str "$state")"

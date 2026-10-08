@@ -686,6 +686,9 @@ cat >> "$TMP/vfix/core/bin/auto-deliver.sh" <<'EOF'
 if [[ -e verifier-env-probe ]]; then
   env | sed 's/^/VERIFIER-ENV /'
   if ( : > "$HOME/verifier-wrote-home" ) 2>/dev/null; then echo VERIFIER-WROTE-HOME; fi
+  # Test suites use multiprocessing (POSIX semaphores named /mp-*).
+  python3 -c 'import multiprocessing as m; e = m.Event(); e.set(); print("VERIFIER-MP-OK" if e.is_set() else "")' 2>&1 \
+    | sed 's/^/VERIFIER-MP /'
 fi
 EOF
 git -C "$TMP/vfix" -c user.name=t -c user.email=t@example.invalid commit -qam verifier-env-probe
@@ -717,6 +720,8 @@ for mode in headless interactive; do
     v_tmp="$(sed -n 's/^VERIFIER-ENV TMPDIR=//p' "$TMP/venv-$mode.out")"
     [[ "$v_tmp" == */verifier-tmp.* && ! -e "$v_tmp" ]] || { echo "FAIL: the headless verifier needs its own removed temp dir (got '$v_tmp')"; exit 1; }
     ! grep -q VERIFIER-WROTE-HOME "$TMP/venv-$mode.out" && [[ ! -e "$VHOME/verifier-wrote-home" ]] || { echo 'FAIL: the headless verifier wrote to HOME'; exit 1; }
+    grep -qx 'VERIFIER-MP VERIFIER-MP-OK' "$TMP/venv-$mode.out" \
+      || { echo 'FAIL: the headless verifier must allow multiprocessing semaphores'; grep '^VERIFIER-MP' "$TMP/venv-$mode.out"; exit 1; }
   else
     grep -qx 'VERIFIER-ENV GH_TOKEN=leak-gh' "$TMP/venv-$mode.out" && grep -q VERIFIER-WROTE-HOME "$TMP/venv-$mode.out" \
       || { echo 'FAIL: the interactive verifier must run as before'; exit 1; }
