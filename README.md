@@ -259,7 +259,10 @@ harness-exec "$HOME/work-harness" codex base
 
 When the external terminal starts inside the harness, no `--cwd .` is needed. If supplied, `--cwd` must resolve inside the registered harness. This is the supported boundary for Orca and similar worktree managers; see [Orca ADE integration](docs/orca-integration.md).
 
-An explicit leading `--isolated` is not given the current directory: `harness-exec <harness> --isolated --passthrough -p ...` runs in the isolated session root.
+An explicit leading `--isolated` or `--isolated-session <uuid>` defaults to the
+session root without adopting the caller's directory. This also applies when a
+session manager precreates a UUID and opens the no-argument launcher menu.
+An explicit `--cwd` retains precedence and must pass the registered boundary.
 
 Bridges that run one unattended task at a time use `harness-headless`. It never prompts, keeps only an environment allowlist, runs Claude in a fresh isolated session under a launcher-owned sandbox and permission denies (caller settings may only add restrictions or allowed network domains), delivers a successful change through `harness-session close`, and always writes one JSON result:
 

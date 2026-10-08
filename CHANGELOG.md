@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.49.1 — 2026-10-08
+
+- `harness-exec --isolated-session <uuid>` now defaults to the session root,
+  matching `--isolated`. It no longer injects the canonical caller directory,
+  which caused a precreated session's no-argument menu to reject its own working
+  directory. Regression coverage uses the real executable and launcher menu,
+  and verifies the isolated shortcut default and explicit product cwd.
+
 ## 0.49.0 — 2026-10-08
 
 - Codex preparation accepts `HARNESS_CODEX_GLOBAL_PLUGIN_POLICY=preserve` for

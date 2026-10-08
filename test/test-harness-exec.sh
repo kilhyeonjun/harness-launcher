@@ -357,3 +357,38 @@ grep -Fqx "PWD:$GIT_HARNESS_SUB_REAL" "$CLAUDE_LOG" && grep -Fqx 'SESSION:' "$CL
   sed 's/^/  /' "$CLAUDE_LOG" >&2; exit 1; }
 
 echo "PASS: harness-exec keeps the caller cwd for legacy non-interactive launches"
+
+# The release dispatcher precreates a UUID and enters through
+# --isolated-session, including for a fresh no-argument launch. Both isolated
+# controls must default to the session root, even from a source subdirectory.
+session_id="${session_root##*/}"
+# Use the real TUI: a launcher stub misses its own run-directory boundary
+# check, which rejected the canonical cwd injected for a precreated UUID.
+cp -p "$ROOT/bin/launcher.sh" "$PREFIX/share/harness-launcher/launcher.sh"
+MENU_OUT="$TMP/isolated-menu.out"
+for caller in "$GIT_HARNESS/sub" "$TMP"; do
+  (
+    cd "$caller"
+    PATH="$STUB_BIN:/usr/bin:/bin" HOME="$FAKE_HOME" \
+      HARNESS_SESSION_STATE_HOME="$TMP/session-state" \
+      HARNESS_SESSION_HEARTBEAT_SECONDS=0.1 \
+      HARNESS_CODEX_BIN="$TMP/missing-codex" HARNESS_KIRO_BIN="$TMP/missing-kiro" \
+      "$PREFIX/bin/harness-exec" "$GIT_HARNESS" --isolated-session "$session_id" \
+      <<< 'q' > "$MENU_OUT" 2>&1
+  ) || { echo 'FAIL: precreated UUID must open the real launcher menu' >&2; cat "$MENU_OUT" >&2; exit 1; }
+  grep -Fq 'New session' "$MENU_OUT" || {
+    echo 'FAIL: isolated entry did not reach the actual session picker' >&2; cat "$MENU_OUT" >&2; exit 1; }
+done
+echo "PASS: precreated UUID opens the real TUI from inside or outside the source"
+
+run_git_harness --isolated-session "$session_id" --passthrough -p 'resumed task'
+grep -Fqx "PWD:$session_root" "$CLAUDE_LOG" && grep -Fqx "RUN:$session_root" "$CLAUDE_LOG" || {
+  echo 'FAIL: --isolated-session must default to the session root, not the caller cwd' >&2
+  sed 's/^/  /' "$CLAUDE_LOG" >&2; exit 1; }
+echo "PASS: harness-exec --isolated-session defaults to the session root"
+
+run_git_harness --cwd "$GIT_HARNESS/sub" --isolated-session "$session_id" --passthrough -p 'product task'
+grep -Fqx "PWD:$GIT_HARNESS_SUB_REAL" "$CLAUDE_LOG" || {
+  echo 'FAIL: explicit product cwd must still override the isolated default' >&2
+  sed 's/^/  /' "$CLAUDE_LOG" >&2; exit 1; }
+echo "PASS: UUID shortcuts preserve an explicit product cwd"
