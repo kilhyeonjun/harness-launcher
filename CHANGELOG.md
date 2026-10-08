@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.49.0 — 2026-10-08
+
+- Codex preparation accepts `HARNESS_CODEX_GLOBAL_PLUGIN_POLICY=preserve` for
+  verified session-runtime snapshots. It leaves the global bundled marketplace,
+  Chrome cache, native-host configuration and host process intact. A Chrome
+  surface must match the existing bridge assets and configuration or preparation
+  fails explicitly. The default `manage` policy retains existing behavior.
+
 ## 0.48.0 — 2026-10-08
 
 - `harness-headless --target <name> --target-digest <sha256> --task-id <id>
