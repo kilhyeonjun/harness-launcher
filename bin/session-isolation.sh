@@ -599,11 +599,13 @@ sbpl_str() { local value="${1//\\/\\\\}"; printf '"%s"' "${value//\"/\\\"}"; }
 # /Library: only the toolchain parts, not Application Support, Preferences,
 # Managed Preferences, Logs or Keychains.
 SANDBOX_SYSTEM_READ=(/usr /bin /sbin /System /Library/Developer /Library/Frameworks /Library/Apple /Library/Perl
-  /private/var/db/timezone /private/var/select /dev)
+  /private/var/db/timezone /private/var/select)
 SANDBOX_SYSTEM_EXEC=(/usr /bin /sbin /System /Library/Developer /private/var/select)
 SANDBOX_ETC_READ=(/private/etc/hosts /private/etc/passwd /private/etc/group /private/etc/localtime
   /private/etc/services /private/etc/protocols /private/etc/shells /private/etc/ssl)
 SANDBOX_TOOL_PREFIXES=(/opt/homebrew /usr/local)
+# Credential stores under HOME, denied even inside an allowed tree.
+SANDBOX_HOME_DENY=(.ssh .hermes buzz .config/gh .aws .claude Library/Keychains .git-credentials .netrc .config/git)
 verifier_sandbox_profile() {
   local copy tmp home source="$4" trusted state path entry name prefix
   copy="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; trusted="$(phys "$5")"; state="$(phys "$(state_home)")"
@@ -626,18 +628,20 @@ verifier_sandbox_profile() {
     [[ "$entry" != / && "$home/" != "$entry/"* && "$state/" != "$entry/"* ]] || continue
     read+=("$entry"); exec+=("$entry")
   done
-  for path in "$home/.ssh" "$home/.hermes" "$home/buzz" "$home/.config/gh" "$home/.aws" "$home/.claude" \
-      "$home/Library/Keychains" "$home/.git-credentials" "$home/.netrc" "$home/.config/git" \
-      /Library/Keychains "$source"; do
-    deny+=("$path")
-    [[ ! -e "$path" ]] || deny+=("$(phys "$path")")
-  done
+  for name in "${SANDBOX_HOME_DENY[@]}"; do deny+=("$home/$name"); done
+  deny+=(/Library/Keychains "$source")
+  for path in "${deny[@]}"; do [[ ! -e "$path" ]] || deny+=("$(phys "$path")"); done
   printf '(version 1)\n(deny default)\n'
   printf '(allow process-fork)\n(allow process-exec*'
   for path in "${exec[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
   printf ')\n(allow file-read-metadata)\n(allow file-read*'
   for path in "${read[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
-  printf ' (literal "/"))\n(allow file-write* (subpath %s) (subpath %s)' "$(sbpl_str "$copy")" "$(sbpl_str "$tmp")"
+  printf ' (literal "/"))\n'
+  # Not all of /dev (the user's terminals are /dev/ttys*): the listing itself
+  # (ttyname) and the devices a process needs.
+  printf '(allow file-read* (literal "/dev") (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random")'
+  printf ' (literal "/dev/urandom") (literal "/dev/tty") (literal "/dev/dtracehelper") (subpath "/dev/fd"))\n'
+  printf '(allow file-write* (subpath %s) (subpath %s)' "$(sbpl_str "$copy")" "$(sbpl_str "$tmp")"
   printf ' (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (subpath "/dev/fd"))\n'
   printf '(allow file-ioctl (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (subpath "/dev/fd"))\n'
   printf '(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center"))\n'
@@ -663,7 +667,12 @@ verifier_sandbox_profile() {
   printf '(allow sysctl-read)\n(deny sysctl-read (sysctl-name-prefix "kern.proc"))\n'
   printf '(allow mach-lookup'
   for name in "${SANDBOX_MACH_ALLOW[@]}"; do printf ' (global-name "%s")' "$name"; done
-  printf ')\n(allow signal (target same-sandbox))\n(allow process-info* (target same-sandbox))\n'
+  printf ')\n(allow signal (target same-sandbox))\n'
+  # The same-sandbox allow alone does not stop KERN_PROCARGS2 or KERN_PROC_PID
+  # on outside processes (measured on macOS 26: argv and environment of the
+  # broker and launcher were readable); an explicit deny does, with the
+  # sandbox's own processes allowed again.
+  printf '(deny process-info*)\n(allow process-info* (target same-sandbox))\n'
 }
 # sandbox_check <sandbox-exec>: does the profile load and run here?
 sandbox_check() {
@@ -673,6 +682,44 @@ sandbox_check() {
   "$exe" -p "$(verifier_sandbox_profile "$dir/candidate" "$dir/tmp" "${HOME:?}" "$dir/source" "$dir/trusted")" /usr/bin/true || rc=$?
   rm -rf "$dir"
   return "$rc"
+}
+# codex_sandbox_profile <root> <tmp> <home> <source> <codex> <port> <codex-home> <host>:
+# the headless Codex agent's profile, the only boundary around the whole codex
+# process tree. The verifier profile with the session root and the run's temp
+# dir as its copy and temp dir and the resolved codex binary as its trusted
+# path, plus read and exec of exactly the code-mode host beside it, PTYs
+# (codex runs commands in one) and TCP to exactly the
+# launcher's forwarder port. Seatbelt names loopback only as `localhost`, so
+# that is `localhost:<port>`, never a wildcard port. After every allow: the
+# verifier's credential stores, ~/.codex, ~/.config/harness-launcher (the
+# endpoint key), the source checkout, the state home except the session root
+# (other sessions' worktrees and records), and writes to the launcher's
+# CODEX_HOME files.
+codex_sandbox_profile() {
+  local root tmp home source="$4" exe="$5" port="$6" host="$8" codex_home state name path
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] || { echo 'harness-session: invalid forwarder port' >&2; return 2; }
+  root="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; codex_home="$(phys "$7")"
+  verifier_sandbox_profile "$1" "$2" "$3" "$source" "$exe" || return
+  # PTYs as Codex's own Seatbelt policy grants them: openpty(), and a slave
+  # tty only with the sandbox extension the kernel issues for a PTY opened
+  # inside the sandbox, never a terminal opened outside it.
+  printf '(allow pseudo-tty)\n(allow file-read* file-write* file-ioctl (literal "/dev/ptmx"))\n'
+  printf '(allow file-read* file-write* file-ioctl (require-all (regex #"^/dev/ttys[0-9]+$") (extension "com.apple.sandbox.pty")))\n'
+  printf '(allow file-read* process-exec* (literal %s))\n' "$(sbpl_str "$host")"
+  printf '(allow network-outbound (remote tcp "localhost:%s"))\n' "$port"
+  local -a deny=(/Library/Keychains "$source")
+  for name in "${SANDBOX_HOME_DENY[@]}" .codex .config/harness-launcher; do deny+=("$home/$name"); done
+  for path in "${deny[@]}"; do [[ ! -e "$path" ]] || deny+=("$(phys "$path")"); done
+  printf '(deny file-read* file-write* process-exec*'
+  for path in "${deny[@]}"; do printf ' (subpath %s)' "$(sbpl_str "$path")"; done
+  printf ')\n'
+  for state in "$(state_home)" "$(phys "$(state_home)")"; do
+    printf '(deny file-read* file-write* process-exec* (require-all (subpath %s) (require-not (subpath %s))))\n' \
+      "$(sbpl_str "$state")" "$(sbpl_str "$root")"
+  done
+  # Neither file can be rewritten, replaced or renamed, nor CODEX_HOME moved.
+  printf '(deny file-write* (literal %s) (literal %s) (literal %s))\n' "$(sbpl_str "$codex_home")" \
+    "$(sbpl_str "$codex_home/config.toml")" "$(sbpl_str "$codex_home/AGENTS.md")"
 }
 run_repository_verifier() {
   local candidate="$1" id="$2" remote="$3" baseline="$4" trusted verifier help_output
@@ -935,6 +982,7 @@ case "${1:-}" in
   heartbeat) shift; heartbeat_session "$1" ;;
   gc) shift; [[ $# -eq 0 ]] || exit 2; gc_sessions ;;
   sandbox-check) shift; [[ $# -eq 1 ]] || exit 2; sandbox_check "$1" ;;
+  codex-sandbox-profile) shift; [[ $# -eq 8 ]] || exit 2; codex_sandbox_profile "$@" ;;
   submit) shift; submit "$1" ;;
   integrate) shift; [[ $# -eq 1 ]] || exit 2; integrate "$1" ;;
   close) shift; [[ $# -eq 1 ]] || exit 2; close_session "$1" ;;

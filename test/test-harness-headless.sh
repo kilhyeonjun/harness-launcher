@@ -40,6 +40,8 @@ printf 'VERIFIER-ENV TMPDIR=%s CLAUDE_CODE_TMPDIR=%s\n' "\${TMPDIR:-}" "\${CLAUD
 env | grep -E '^(SSH_AUTH_SOCK|GH_|GITHUB_|[A-Z_]*_TOKEN=)' | sed 's/^/VERIFIER-LEAK /'
 { git remote -v; git -C "\$(dirname "\$0")/../.." remote -v; } 2>/dev/null | sed 's/^/VERIFIER-REMOTE /'
 [[ ! -e "$TMP/verify-fail" ]] || exit 92
+# The broker process that started the sandboxed verifier, for the breach probes.
+export VERIFIER_BROKER_PID=\$PPID
 for t in "\$TEST_HARNESS_DIR"/verify-tests/*.sh; do
   [[ -e "\$t" ]] || continue
   bash "\$t" || exit 93
@@ -186,6 +188,9 @@ case "\$mode" in
   error) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"total_cost_usd":0.5,"num_turns":2,"result":"boom","session_id":"'\$sid'"}'; exit 1 ;;
   hang)
     sleep 300 & echo \$! > "$TMP/grandchild.pid"
+    # Its own session (kill_group misses it); cwd in the session root.
+    perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' sleep 300 > /dev/null 2>&1 &
+    echo \$! > "$TMP/setsid.pid"
     echo \$\$ > "$TMP/child.pid"
     wait ;;
   wait)
@@ -200,12 +205,28 @@ printf '%s\n' '{"_note":"bridge policy","permissions":{"deny":["Read(//secret/**
 
 headless() {
   rm -f "$TMP/claude-argv" "$TMP/claude-env" "$TMP/claude-pwd"
-  ${HEADLESS_EXEC:+exec} env -i PATH="${EXTRA_PATH:+$EXTRA_PATH:}$TMP/failgit:$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+  ${HEADLESS_EXEC:+exec} ${HEADLESS_TTY:+python3} ${HEADLESS_TTY:+"$TMP/ctty.py"} env -i PATH="${EXTRA_PATH:+$EXTRA_PATH:}$TMP/failgit:$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
     HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" \
     ANTHROPIC_API_KEY=leak-api BUZZ_TOKEN=leak-buzz TELEGRAM_BOT_TOKEN=leak-telegram \
+    ${HARNESS_CODEX_BIN:+"HARNESS_CODEX_BIN=$HARNESS_CODEX_BIN"} \
     "$PREFIX/bin/harness-headless" hh --prompt-file "$PROMPT" --result-file "$RESULT" \
     --lock-file "$LOCK" --budget-usd 2 --timeout-min "${TIMEOUT_MIN:-1}" "$@"
 }
+# ctty.py <command...>: run the command in a new session whose controlling
+# terminal is a fresh PTY, as from an operator's terminal.
+cat > "$TMP/ctty.py" <<'PY'
+import os, pty, sys
+saved = [os.dup(fd) for fd in (0, 1, 2)]
+pid, master = pty.fork()
+if pid == 0:
+    # The test's own stdio again, with one slave descriptor kept open: macOS
+    # drops the controlling terminal on the slave's last close.
+    os.set_inheritable(os.dup(0), True)
+    for fd, orig in enumerate(saved):
+        os.dup2(orig, fd)
+    os.execvp(sys.argv[1], sys.argv[1:])
+raise SystemExit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+PY
 field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))[sys.argv[2]]; print("null" if v is None else v)' "$RESULT" "$1"; }
 # On failure, print the result and the launcher/Claude/broker log next to it.
 fail() {
@@ -636,8 +657,11 @@ printf 'https://%s:%s@%s\n' user "$fake" example.invalid > "$FAKE_HOME/.git-cred
 cp "$FAKE_HOME/.git-credentials" "$FAKE_HOME/.config/git/credentials"
 printf '%s %s %s %s %s %s\n' machine example.invalid login user password "$fake" > "$FAKE_HOME/.netrc"
 printf '[user]\n\tname = Fixture User\n\temail = fixture@example.invalid\n[http "https://example.invalid/"]\n\textraHeader = %s %s\n' 'Authorization: Bearer' "$fake" > "$FAKE_HOME/.gitconfig"
-python3 - "$FAKE_HOME/.orbstack/run/docker.sock" "$TMP/listen-port" <<'PY' &
-import socket, sys, time
+python3 - "$FAKE_HOME/.orbstack/run/docker.sock" "$TMP/listen-port" "$TMP/breach-tty" <<'PY' &
+import os, pty, socket, sys, time
+# A terminal the user has open: a PTY made outside the sandbox.
+m, s = pty.openpty()
+open(sys.argv[3], 'w').write(os.ttyname(s))
 unix = socket.socket(socket.AF_UNIX); unix.bind(sys.argv[1]); unix.listen()
 tcp = socket.socket(); tcp.bind(('127.0.0.1', 0)); tcp.listen()
 open(sys.argv[2], 'w').write(str(tcp.getsockname()[1]))
@@ -653,17 +677,18 @@ BREACH_STATE="$TMP/xdg/state"
 mkdir -p "$BREACH_STATE/sessions/other/trusted.git" "$TMP/xdg/bin"
 printf 'other-session-%s\n' record > "$BREACH_STATE/sessions/other/journal"
 printf '[remote "origin"]\n\turl = https://example.invalid/other.git\n' > "$BREACH_STATE/sessions/other/trusted.git/config"
-printf 'LOOP_PORT=%s\nOUTSIDE_PID=%s\nLAUNCHCTL_MARKER=%s\nLAUNCHCTL_LABEL=%s\nOUTSIDE_TOKEN=%s\nOUTSIDE_BIN=%s\nOTHER_SESSION=%s\n' \
+printf 'LOOP_PORT=%s\nOUTSIDE_PID=%s\nLAUNCHCTL_MARKER=%s\nLAUNCHCTL_LABEL=%s\nOUTSIDE_TOKEN=%s\nOUTSIDE_BIN=%s\nOTHER_SESSION=%s\nOUTSIDE_TTY=%s\n' \
   "$(cat "$TMP/listen-port")" "$listener" "$TMP/launchctl-ran" "harness-breach-$$" "$TMP/outside/token" "$TMP/outside/echo-copy" \
-  "$BREACH_STATE/sessions/other" > "$TMP/breach.env"
+  "$BREACH_STATE/sessions/other" "$(cat "$TMP/breach-tty")" > "$TMP/breach.env"
 cat > "$TMP/breach.sh" <<'EOF'
 #!/bin/bash
 # An agent-written test that reaches for the network, local services, HOME,
 # secrets, the keychain, git credentials, launchd, LaunchServices, AppleEvents
 # and processes outside the sandbox. It "passes" only if it got everything.
 source "$(dirname "$0")/breach.env"
-LOOP_PORT="$LOOP_PORT" OUTSIDE_PID="$OUTSIDE_PID" OUTSIDE_TOKEN="$OUTSIDE_TOKEN" OTHER_SESSION="$OTHER_SESSION" python3 - <<'PY'
-import ctypes, ctypes.util, errno, os, signal, socket
+LOOP_PORT="$LOOP_PORT" OUTSIDE_PID="$OUTSIDE_PID" OUTSIDE_TOKEN="$OUTSIDE_TOKEN" OTHER_SESSION="$OTHER_SESSION" \
+  OUTSIDE_TTY="$OUTSIDE_TTY" python3 - <<'PY'
+import ctypes, ctypes.util, errno, os, signal, socket, subprocess
 home = os.environ['HOME']
 def probe(name, f):
     try:
@@ -700,6 +725,29 @@ def process_table():
     if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value == 0:
         raise OSError(ctypes.get_errno() or errno.EPERM, 'kern.proc')
 probe('process-table', process_table)
+def outside_process(mib_tail):
+    # KERN_PROCARGS2 (argv and environment) and KERN_PROC_PID of the broker.
+    def f():
+        libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+        mib = (ctypes.c_int * (1 + len(mib_tail)))(1, *mib_tail)
+        size = ctypes.c_size_t(0)
+        if libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
+            raise OSError(ctypes.get_errno() or errno.EPERM, 'sysctl size')
+        buf = ctypes.create_string_buffer(size.value)
+        if libc.sysctl(mib, len(mib), buf, ctypes.byref(size), None, 0) != 0:
+            raise OSError(ctypes.get_errno() or errno.EPERM, 'sysctl')
+    return f
+broker = int(os.environ['VERIFIER_BROKER_PID'])
+probe('procargs-broker', outside_process((49, broker)))
+probe('procpid-broker', outside_process((14, 1, broker)))
+# Control: the same reads of the probe's own child, inside the sandbox.
+own = subprocess.Popen(['/bin/sleep', '30'])
+probe('procargs-own-child', outside_process((49, own.pid)))
+probe('procpid-own-child', outside_process((14, 1, own.pid)))
+own.kill()
+probe('outside-pty', lambda: os.close(os.open(os.environ['OUTSIDE_TTY'], os.O_RDONLY | os.O_NOCTTY)))
+# The broker runs with the operator's terminal as its controlling terminal.
+probe('dev-tty', lambda: os.close(os.open('/dev/tty', os.O_RDWR)))
 PY
 check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then echo "PROBE $name ALLOWED"; else echo "PROBE $name blocked"; fi; }
 check security security find-generic-password -s harness-breach-probe -w
@@ -736,7 +784,7 @@ rm -f "$FAKE_HOME/breach-wrote-home"
 echo breach > "$TMP/mode"
 remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
 STATE_MAIN="$STATE"; STATE="$BREACH_STATE"; EXTRA_PATH="$TMP/xdg"
-headless || fail 'breach run must exit 0'
+HEADLESS_TTY=1 headless || fail 'breach run must exit 0'
 STATE="$STATE_MAIN"; unset EXTRA_PATH
 sleep 1
 /bin/launchctl remove "harness-breach-$$" 2>/dev/null || true
@@ -749,12 +797,17 @@ for blocked in 'network EPERM' 'loopback EPERM' 'docker-socket EPERM' 'write-hom
     'read-git-credentials EPERM' 'read-xdg-git-credentials EPERM' 'read-netrc EPERM' 'read-gitconfig EPERM' \
     'read-outside-token EPERM' 'process-table EPERM' 'exec-outside blocked' \
     'read-other-session EPERM' 'read-other-trusted-git EPERM' 'list-state-home EPERM' 'list-home EPERM' \
-    'read-library-prefs EPERM' 'pf-system-socket EPERM' \
+    'read-library-prefs EPERM' 'pf-system-socket EPERM' 'procargs-broker EPERM' 'procpid-broker EPERM' \
+    'outside-pty EPERM' 'dev-tty ENXIO' \
     'env-credentials blocked' 'copy-remote blocked' 'git-config-token blocked' \
     'security blocked' 'git-credential blocked' 'nested-sandbox blocked' 'osascript blocked' 'open blocked' 'launchctl blocked'; do
   grep -q "^PROBE $blocked\$" "$RESULT.log" || fail "the verifier sandbox must block: $blocked"
 done
-! grep -q 'ALLOWED' "$RESULT.log" || fail 'a sandboxed probe was allowed'
+for allowed in procargs-own-child procpid-own-child; do
+  grep -q "^PROBE $allowed ALLOWED\$" "$RESULT.log" || fail "the verifier sandbox must allow the control: $allowed"
+done
+! grep -v -e '^PROBE procargs-own-child ALLOWED$' -e '^PROBE procpid-own-child ALLOWED$' "$RESULT.log" | grep -q 'ALLOWED' \
+  || fail 'a sandboxed probe was allowed'
 [[ ! -e "$FAKE_HOME/breach-wrote-home" && ! -e "$TMP/launchctl-ran" ]] || fail 'the verifier wrote outside the sandbox'
 ! grep -q '^VERIFIER-LEAK' "$RESULT.log" || fail 'the verifier environment carried credentials'
 ! grep -q '^VERIFIER-REMOTE' "$RESULT.log" || fail 'a clone the verifier can read kept its remote URL'
@@ -903,6 +956,7 @@ term_tmp="$(sed -n 's/^CLAUDE_CODE_TMPDIR=//p' "$TMP/claude-env")"
 for pidfile in "$TMP/child.pid" "$TMP/grandchild.pid"; do
   ! kill -0 "$(cat "$pidfile")" 2>/dev/null || fail 'SIGTERM must kill the whole process group'
 done
+! kill -0 "$(cat "$TMP/setsid.pid")" 2>/dev/null || fail 'SIGTERM must kill a process that left the process group'
 echo 'PASS: harness-headless handles SIGTERM by killing the group and writing a result'
 
 # --- refused ------------------------------------------------------------------------
@@ -997,3 +1051,797 @@ PY
   [[ ! -e "$TMP/claude-argv" ]] && grep -q sandbox "$RESULT" || fail "an unusable sandbox ($sandbox) must refuse before launching claude"
 done
 echo 'PASS: harness-headless refuses before launch when the verifier sandbox is unavailable'
+
+# === --agent codex ===================================================================
+# Same isolated session, delivery and result contract; only the agent process
+# differs. The fake codex runs under the generated Seatbelt profile, so it can
+# read only what the sandbox allows: it reports on stderr (the run log), and
+# test control travels in the prompt (MODE=<mode>). The model endpoint is the
+# Responses stub; the launcher's forwarder adds the key.
+UP="$TMP/upstream"
+mkdir -p "$UP" "$TMP/outside"
+printf 'stub-model\n' > "$UP/model"
+python3 "$ROOT/test/fixtures/responses_stub.py" "$UP" &
+upstream=$!
+trap 'kill "$upstream" 2>/dev/null; rm -rf "$TMP"' EXIT
+for _ in $(seq 50); do [[ -s "$UP/port" ]] && break; sleep 0.1; done
+UP_PORT="$(cat "$UP/port")"
+ENDPOINT="http://127.0.0.1:$UP_PORT/v1"
+# The production location of the endpoint key, under the fake HOME.
+KEY_FILE="$FAKE_HOME/.config/harness-launcher/cliproxy-headless.key"
+mkdir -p "$(dirname "$KEY_FILE")"
+KEY="sk-fixture-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+(umask 077 && printf '%s\n' "$KEY" > "$KEY_FILE")
+CODEX_ARGS=(--agent codex --model stub-model --model-endpoint "$ENDPOINT" --endpoint-key-file "$KEY_FILE")
+# Rules the launcher concatenates into CODEX_HOME/AGENTS.md, on origin/main.
+git clone -q "$REMOTE" "$TMP/rules-clone"
+mkdir -p "$TMP/rules-clone/.claude/rules"
+printf '# Fixture rule\n\nRULE-FIXTURE-BODY\n' > "$TMP/rules-clone/.claude/rules/fixture.md"
+printf 'INDEX-NOT-COPIED\n' > "$TMP/rules-clone/.claude/rules/_index.md"
+git -C "$TMP/rules-clone" add .claude/rules
+git -C "$TMP/rules-clone" -c user.name=t -c user.email=t@example.invalid commit -qm rules
+git -C "$TMP/rules-clone" push -q origin HEAD:main
+codex_prompt() { printf 'Fix the typo.\nMODE=%s\n' "$1" > "$PROMPT"; }
+
+# The fake codex, its code-mode host and a sibling sit in a directory not on
+# PATH: only the profile's exact allows let the first two run.
+mkdir -p "$TMP/vendor"
+HARNESS_CODEX_BIN="$TMP/vendor/codex"
+cat > "$TMP/vendor/codex" <<'EOF'
+#!/bin/bash
+# Fake codex: answers --version; for `exec`, reports what it was given on
+# stderr (the run log) and then acts on MODE=<mode> from the prompt.
+[[ "${1:-}" != --version ]] || { echo 'codex-cli 0.0.0-fake'; exit 0; }
+[[ "${1:-}" == exec ]] || exit 64
+args=("$@") out=""
+for ((i = 0; i < ${#args[@]}; i++)); do [[ "${args[i]}" != -o ]] || out="${args[i+1]}"; done
+{
+  printf 'FAKE-CODEX-ARGV'; printf ' [%s]' "$@"; printf '\n'
+  printf 'FAKE-CODEX-PWD %s\n' "$PWD"
+  env | sed 's/^/FAKE-CODEX-ENV /'
+  ls -A "$CODEX_HOME" | sed 's/^/FAKE-CODEX-HOME /'
+  stat -f 'FAKE-CODEX-HOME-MODE %Lp' "$CODEX_HOME"
+  sed 's/^/FAKE-CODEX-CONFIG /' "$CODEX_HOME/config.toml"
+  sed 's/^/FAKE-CODEX-AGENTS /' "$CODEX_HOME/AGENTS.md"
+} >&2
+prompt="$(cat)"
+printf '%s\n' "$prompt" | sed 's/^/FAKE-CODEX-STDIN /' >&2
+mode="$(printf '%s\n' "$prompt" | sed -n 's/^MODE=//p' | head -n 1)"
+post() {  # post <n>: n model requests through the forwarder named in config.toml
+  python3 - "$CODEX_HOME/config.toml" "$1" >&2 <<'PY'
+import http.client, json, re, sys
+config = open(sys.argv[1]).read()
+port = int(re.search(r'^base_url = "http://127\.0\.0\.1:(\d+)/v1"$', config, re.M).group(1))
+model = re.search(r'^model = "(.*)"$', config, re.M).group(1)
+token = re.search(r'"X-Harness-Forwarder-Token" = "([0-9a-f]+)"', config).group(1)
+for _ in range(int(sys.argv[2])):
+    c = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+    c.request('POST', '/v1/responses', json.dumps({'model': model, 'input': []}),
+              {'Content-Type': 'application/json', 'Authorization': 'Bearer forged-by-agent', 'Cookie': 'c=1',
+               'X-Harness-Forwarder-Token': token})
+    r = c.getresponse()
+    print('FAKE-CODEX-POST', r.status, b'response.completed' in r.read())
+PY
+}
+ok() {  # ok <summary>: the --json events and -o file of two finished turns
+  echo '{"type":"thread.started","thread_id":"t"}'
+  echo '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":0,"output_tokens":7}}'
+  echo 'not json'
+  echo '{"type":"turn.completed","usage":{"input_tokens":5,"cached_input_tokens":0,"output_tokens":2}}'
+  printf '%s' "$1" > "$out"
+}
+case "$mode" in
+  change)
+    post 1
+    printf 'codex %s\n' "$$" > codex-change.txt
+    printf 'feat: codex change\n\nWritten by the fake codex.\n' > "$HARNESS_COMMIT_MESSAGE_FILE"
+    ok 'codex: summary' ;;
+  none) post 1; ok 'codex: nothing to do' ;;
+  cap) printf 'cap %s\n' "$$" > cap-change.txt; post 3; ok 'codex: capped'; exit 1 ;;
+  fail) printf 'fail %s\n' "$$" > fail-change.txt; printf 'boom' > "$out"; exit 3 ;;
+  hang)
+    sleep 300 & echo "FAKE-CODEX-GRANDCHILD $!" >&2
+    # Its own session: kill_group misses it; its cwd is the session root.
+    perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' sleep 300 > /dev/null 2>&1 &
+    echo "FAKE-CODEX-SETSID $!" >&2
+    wait ;;
+  probe) LAUNCHER_PID=$PPID CODEX_DIR="$(dirname "$0")" bash @STUB@/codex-probe.sh >&2; ok 'codex: probed' ;;
+esac
+EOF
+sed -i '' "s|@STUB@|$STUB|" "$TMP/vendor/codex"
+printf '#!/bin/sh\n[ "$1" != --version ] || exit 70\nexit 0\n' > "$TMP/vendor/codex-badversion"
+# Code mode's host, which codex runs from beside its own binary.
+printf '#!/bin/sh\n[ "$1" = --help ] || exit 64\necho FAKE-HOST-HELP\n' > "$TMP/vendor/codex-code-mode-host"
+chmod +x "$TMP/vendor/codex" "$TMP/vendor/codex-badversion" "$TMP/vendor/codex-code-mode-host"
+
+# --- arguments: per-agent validation, all refused before any agent starts ------------
+refuse() {  # refuse <why> <harness-headless args...>
+  local why="$1"; shift
+  rm -f "$RESULT" "$RESULT.log"
+  headless "$@" || fail "a refused run must write a result: $why"
+  [[ "$(field status)" == refused && "$(field exit_code)" == 2 && "$(field session_id)" == null ]] || fail "must be refused: $why"
+  [[ ! -e "$TMP/claude-argv" ]] && ! grep -q '^FAKE-CODEX-ARGV' "$RESULT.log" 2>/dev/null || fail "a refused run started an agent: $why"
+  ! grep -qF "$KEY" "$RESULT" || fail "a refusal printed the key: $why"
+}
+codex_prompt none
+refuse 'unknown agent' --agent gpt
+refuse 'claude effort outside low..xhigh' --effort max
+refuse 'claude effort minimal' --effort minimal
+refuse 'claude with an endpoint' --model-endpoint "$ENDPOINT"
+refuse 'claude with a key file' --endpoint-key-file "$KEY_FILE"
+refuse 'claude with a request cap' --max-model-requests 5
+refuse 'codex effort max' "${CODEX_ARGS[@]}" --effort max
+refuse 'codex without an endpoint' --agent codex --model stub-model --endpoint-key-file "$KEY_FILE"
+refuse 'codex without a key file' --agent codex --model stub-model --model-endpoint "$ENDPOINT"
+refuse 'codex without a model' --agent codex --model-endpoint "$ENDPOINT" --endpoint-key-file "$KEY_FILE"
+refuse 'codex model outside the safe set' --agent codex --model 'a"b' --model-endpoint "$ENDPOINT" --endpoint-key-file "$KEY_FILE"
+refuse 'codex with caller settings' "${CODEX_ARGS[@]}" --settings-file "$TMP/caller-settings.json"
+for endpoint in "http://localhost:$UP_PORT/v1" "https://127.0.0.1:$UP_PORT/v1" "http://127.0.0.1:$UP_PORT/v2" \
+    "http://127.0.0.1:$UP_PORT/v1/" "http://127.0.0.1:0/v1" "http://127.0.0.1:99999/v1" "http://10.0.0.1:$UP_PORT/v1" \
+    "http://user@127.0.0.1:$UP_PORT/v1" "http://127.0.0.1:$UP_PORT/v1?x=1" "http://[::1]:$UP_PORT/v1"; do
+  refuse "endpoint $endpoint" --agent codex --model stub-model --model-endpoint "$endpoint" --endpoint-key-file "$KEY_FILE"
+done
+for cap in 0 -1 1.5 x ''; do
+  refuse "request cap '$cap'" "${CODEX_ARGS[@]}" --max-model-requests "$cap"
+done
+mkdir -p "$TMP/keys"
+ln -s "$KEY_FILE" "$TMP/keys/link.key"
+(umask 022 && printf 'open-key\n' > "$TMP/keys/open.key")
+(umask 077 && : > "$TMP/keys/empty.key" && printf 'two words\n' > "$TMP/keys/space.key" && mkdir "$TMP/keys/dir.key")
+(umask 077 && printf '%s\n' "$KEY" > "$TMP/keys/base.key") && ln "$TMP/keys/base.key" "$TMP/keys/hard.key"
+for key in link open empty space dir missing hard; do
+  refuse "key file $key" --agent codex --model stub-model --model-endpoint "$ENDPOINT" --endpoint-key-file "$TMP/keys/$key.key"
+done
+python3 - "$ROOT/bin" "$KEY_FILE" <<'PY' || fail 'a key file owned by another user must be refused'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import harness_headless as h
+uid = os.getuid()
+h.os.getuid = lambda: uid + 1
+try:
+    h.endpoint_key(sys.argv[2])
+except h.Refused as exc:
+    assert 'owned' in str(exc), exc
+else:
+    raise SystemExit('accepted')
+PY
+echo 'PASS: harness-headless validates --agent, --effort, the endpoint, the key file and the request cap per agent'
+
+# --- claude: --effort is launcher-owned settings, absent unless given ----------------
+printf '%s\n' 'Fix the typo.' > "$PROMPT"
+echo none > "$TMP/mode"
+headless --effort xhigh || fail 'claude effort run must exit 0'
+expect_status no_changes
+python3 - "$TMP/claude-argv" <<'PY' || fail 'claude --effort must be the mandatory effortLevel'
+import json, sys
+argv = open(sys.argv[1]).read().split('\0')[:-1]
+assert '--effort' not in argv, argv
+settings = json.loads(argv[argv.index('--settings') + 1])
+assert settings['effortLevel'] == 'xhigh' and settings['alwaysThinkingEnabled'] is True, settings
+PY
+headless --effort low || fail 'claude low effort run must exit 0'
+python3 - "$TMP/claude-argv" <<'PY' || fail 'claude low effort must not force thinking'
+import json, sys
+argv = open(sys.argv[1]).read().split('\0')[:-1]
+settings = json.loads(argv[argv.index('--settings') + 1])
+assert settings['effortLevel'] == 'low' and 'alwaysThinkingEnabled' not in settings, settings
+PY
+headless || fail 'claude run without effort must exit 0'
+python3 - "$TMP/claude-argv" <<'PY' || fail 'claude without --effort must not set effortLevel'
+import json, sys
+argv = open(sys.argv[1]).read().split('\0')[:-1]
+settings = json.loads(argv[argv.index('--settings') + 1])
+assert 'effortLevel' not in settings and 'alwaysThinkingEnabled' not in settings, settings
+PY
+echo 'PASS: harness-headless passes the claude effort only as launcher-owned settings'
+
+# --- forwarder: loopback-only, fixed paths and model, key added, request cap ---------
+python3 - "$ROOT/bin" "$UP_PORT" "$KEY" "$UP" <<'PY' || fail 'forwarder contract'
+import contextlib, http.client, io, json, os, socket, sys, time
+sys.path.insert(0, sys.argv[1])
+import harness_headless as h
+up_port, key, up = int(sys.argv[2]), sys.argv[3], sys.argv[4]
+err = io.StringIO()
+def upstream_posts():
+    lines = open(os.path.join(up, 'requests.jsonl')).read().splitlines()
+    return [json.loads(l) for l in lines if json.loads(l)['method'] == 'POST']
+def req(fw, method, path, body=None, headers=None, host=None, raw=None, token=True):
+    c = http.client.HTTPConnection('127.0.0.1', fw.port, timeout=10)
+    c.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+    if host != '':
+        c.putheader('Host', host or '127.0.0.1:%d' % fw.port)
+    if token:
+        c.putheader('X-Harness-Forwarder-Token', fw.token if token is True else token)
+    data = raw if raw is not None else (json.dumps(body).encode() if body is not None else b'')
+    for k, v in (headers or {}).items():
+        c.putheader(k, v)
+    if method == 'POST' and not {'Transfer-Encoding', 'Content-Length'} & set(headers or {}):
+        c.putheader('Content-Length', str(len(data)))
+    c.endheaders(data or None)
+    r = c.getresponse()
+    return r.status, r.read()
+ok_body = {'model': 'stub-model', 'input': []}
+with contextlib.redirect_stderr(err):
+    fw = h.Forwarder(up_port, key, 'stub-model', 2)
+    fw.start()
+    try:
+        assert req(fw, 'GET', '/v1/models')[0] == 200
+        assert h.ForwardHandler.timeout == 60
+        # The per-run token from config.toml is required on every request.
+        assert len(fw.token) == 32 and req(fw, 'GET', '/v1/models', token=False)[0] == 403
+        assert req(fw, 'GET', '/v1/models', token='0' * 32)[0] == 403
+        assert req(fw, 'POST', '/v1/responses', body=ok_body, token=False)[0] == 403
+        # The forwarder also owns ::1 at its port: nothing else can listen there.
+        v6 = socket.socket(socket.AF_INET6)
+        try:
+            v6.bind(('::1', fw.port))
+        except OSError:
+            pass
+        else:
+            raise AssertionError('::1 at the forwarder port is free')
+        finally:
+            v6.close()
+        for host in ('localhost:%d' % fw.port, '127.0.0.1', '127.0.0.1:%d' % up_port, 'evil.example:%d' % fw.port, ''):
+            assert req(fw, 'GET', '/v1/models', host=host)[0] == 403, host
+        assert req(fw, 'GET', '/v1/models', headers={'Origin': 'http://127.0.0.1:%d' % fw.port})[0] == 403
+        for method, path in (('GET', '/v1/responses'), ('POST', '/v1/models'), ('POST', '/v1/chat/completions'),
+                             ('GET', '/v1/models?x=1'), ('GET', '/v2/models'), ('GET', '/v1/../v1/models'),
+                             ('GET', '/'), ('GET', 'http://127.0.0.1:%d/v1/models' % up_port), ('PUT', '/v1/responses'),
+                             ('DELETE', '/v1/responses')):
+            assert req(fw, method, path, body=ok_body if method in ('POST', 'PUT') else None)[0] in (404, 405, 501), (method, path)
+        for body in ({'model': 'other-model', 'input': []}, {'input': []}, {'model': ['stub-model']}):
+            assert req(fw, 'POST', '/v1/responses', body=body)[0] == 403, body
+        # Duplicate keys: a parser upstream may read the other one.
+        for raw in (b'{not json', b'["stub-model"]', b'', b'{"model":"stub-model","model":"other-model"}',
+                    b'{"model":"other-model","model":"stub-model"}', b'{"model":"stub-model","input":[],"input":[]}',
+                    b'{"model":"stub-model","input":[{"a":1,"a":2}]}'):
+            assert req(fw, 'POST', '/v1/responses', raw=raw)[0] == 400, raw
+        # Refused from the declared length, before the body is read.
+        assert req(fw, 'POST', '/v1/responses', headers={'Content-Length': str(h.FORWARD_BODY_MAX + 1)})[0] == 413
+        assert req(fw, 'POST', '/v1/responses', headers={'Transfer-Encoding': 'chunked'}, raw=b'0\r\n\r\n')[0] in (411, 413)
+        assert fw.requests == 0 and not fw.exhausted, 'rejected requests must not count'
+        before = len(upstream_posts())
+        status, data = req(fw, 'POST', '/v1/responses', body=ok_body,
+                           headers={'Authorization': 'Bearer caller', 'Cookie': 'a=b', 'Proxy-Authorization': 'x',
+                                    'Connection': 'X-Drop', 'X-Drop': '1', 'X-Unknown': '1', 'OpenAI-Beta': 'b',
+                                    'X-Codex-Turn-Metadata': 'm', 'Session-Id': 's', 'Accept': 'text/event-stream'})
+        assert status == 200 and b'response.completed' in data, (status, data)
+        sent = upstream_posts()[-1]
+        assert sent['authorization'] == 'Bearer ' + key and sent['cookie'] is None, 'key added, caller credentials dropped'
+        dropped = {'proxy-authorization', 'x-drop', 'x-unknown', 'cookie', 'x-harness-forwarder-token', 'connection'}
+        assert not dropped & set(sent['headers']), sent['headers']
+        assert {'openai-beta', 'x-codex-turn-metadata', 'session-id', 'accept'} <= set(sent['headers']), sent['headers']
+        assert req(fw, 'POST', '/v1/responses', body=ok_body)[0] == 200
+        assert req(fw, 'POST', '/v1/responses', body=ok_body)[0] == 403 and fw.exhausted, 'request cap'
+        assert len(upstream_posts()) == before + 2, 'the cap stops requests before upstream'
+        assert fw.requests == 2
+        open(os.path.join(up, 'redirect'), 'w').close()
+        try:
+            assert req(fw, 'GET', '/v1/models')[0] == 502, 'redirects are not followed or passed on'
+        finally:
+            os.unlink(os.path.join(up, 'redirect'))
+    finally:
+        fw.close()
+    # SSE is relayed as it arrives.
+    fw = h.Forwarder(up_port, key, 'stub-model', 5)
+    fw.start()
+    with open(os.path.join(up, 'delay'), 'w') as f:
+        f.write('1.5')
+    try:
+        c = http.client.HTTPConnection('127.0.0.1', fw.port, timeout=10)
+        c.request('POST', '/v1/responses', json.dumps(ok_body),
+                  {'Content-Type': 'application/json', 'X-Harness-Forwarder-Token': fw.token})
+        start = time.monotonic()
+        r = c.getresponse()
+        first = r.read1(65536)
+        first_at = time.monotonic() - start
+        rest = r.read()
+        total = time.monotonic() - start
+        assert b'response.created' in first and b'response.completed' not in first, first
+        assert first_at < 1.0 and total >= 2.5 and b'response.completed' in rest, (first_at, total)
+    finally:
+        os.unlink(os.path.join(up, 'delay'))
+        fw.close()
+    # At most 8 requests at once; the 9th is answered 503 at once.
+    import threading
+    fw = h.Forwarder(up_port, key, 'stub-model', 50)
+    fw.start()
+    with open(os.path.join(up, 'delay'), 'w') as f:
+        f.write('1')
+    try:
+        results = []
+        workers = [threading.Thread(target=lambda: results.append(req(fw, 'POST', '/v1/responses', body=ok_body)[0]))
+                   for _ in range(8)]
+        for w in workers:
+            w.start()
+        time.sleep(0.7)
+        assert req(fw, 'GET', '/v1/models')[0] == 503
+        for w in workers:
+            w.join()
+        assert results == [200] * 8, results
+        assert req(fw, 'GET', '/v1/models')[0] == 200
+    finally:
+        os.unlink(os.path.join(up, 'delay'))
+        fw.close()
+    # An idle client is dropped after the handler timeout.
+    h.ForwardHandler.timeout = 1
+    fw = h.Forwarder(up_port, key, 'stub-model', 5)
+    fw.start()
+    try:
+        idle = socket.create_connection(('127.0.0.1', fw.port), timeout=5)
+        start = time.monotonic()
+        assert idle.recv(1) == b'' and time.monotonic() - start < 4
+        idle.close()
+    finally:
+        h.ForwardHandler.timeout = 60
+        fw.close()
+    # A handler error closes the connection and prints nothing.
+    fw = h.Forwarder(up_port, key, 'stub-model', 5)
+    fw.start()
+    admit = h.ForwardHandler.admit
+    h.ForwardHandler.admit = lambda self, fw: (_ for _ in ()).throw(RuntimeError('boom ' + key))
+    try:
+        try:
+            status = req(fw, 'GET', '/v1/models')[0]
+        except (http.client.HTTPException, OSError):
+            status = None
+        assert status in (None, 500), status
+    finally:
+        h.ForwardHandler.admit = admit
+        fw.close()
+    # The upstream is down: a gateway error, no hang.
+    s = socket.socket(); s.bind(('127.0.0.1', 0)); dead = s.getsockname()[1]; s.close()
+    fw = h.Forwarder(dead, key, 'stub-model', 5)
+    fw.start()
+    try:
+        assert req(fw, 'GET', '/v1/models')[0] == 502
+    finally:
+        fw.close()
+assert err.getvalue() == '', 'the forwarder must not log: %r' % err.getvalue()[:200]
+PY
+echo 'PASS: the forwarder admits only its own Host and paths, adds the key, streams SSE and caps requests'
+
+# --- preflight: every check refuses before the agent starts --------------------------
+codex_prompt none
+HARNESS_CODEX_BIN=/nonexistent/codex refuse 'no codex binary' "${CODEX_ARGS[@]}"
+grep -q codex "$RESULT" || fail 'a missing codex must be named'
+dead_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+refuse 'models unreachable' --agent codex --model stub-model --model-endpoint "http://127.0.0.1:$dead_port/v1" --endpoint-key-file "$KEY_FILE"
+grep -q 'models' "$RESULT" || fail 'an unreachable endpoint must be named'
+: > "$UP/redirect"
+refuse 'models redirected' "${CODEX_ARGS[@]}"
+rm -f "$UP/redirect"
+open_sessions() { { grep -l '^state=OPEN$' "$STATE"/sessions/*/journal 2>/dev/null || true; } | wc -l | tr -d ' '; }
+open_before="$(open_sessions)"
+HARNESS_CODEX_BIN="$TMP/vendor/codex-badversion" refuse 'codex --version fails under the profile' "${CODEX_ARGS[@]}"
+grep -q 'sandbox' "$RESULT" || fail 'a sandbox start failure must say so'
+# No code-mode host beside codex, or one that does not run under the profile.
+mkdir -p "$TMP/nohost" "$TMP/badhost"
+cp "$TMP/vendor/codex" "$TMP/nohost/codex" && cp "$TMP/vendor/codex" "$TMP/badhost/codex"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/badhost/codex-code-mode-host" && chmod +x "$TMP/badhost/codex-code-mode-host"
+HARNESS_CODEX_BIN="$TMP/nohost/codex" refuse 'no code-mode host beside codex' "${CODEX_ARGS[@]}"
+grep -q 'codex-code-mode-host' "$RESULT" || fail 'a missing code-mode host must be named'
+HARNESS_CODEX_BIN="$TMP/badhost/codex" refuse 'code-mode host fails under the profile' "${CODEX_ARGS[@]}"
+grep -q 'codex-code-mode-host' "$RESULT" || fail 'a failing code-mode host must be named'
+# A codex or host others could rewrite: group or other write.
+for which in codex codex-code-mode-host; do
+  rm -rf "$TMP/writable-$which"; mkdir "$TMP/writable-$which"
+  cp -p "$TMP/vendor/codex" "$TMP/vendor/codex-code-mode-host" "$TMP/writable-$which/"
+  for bit in g+w o+w; do
+    chmod 755 "$TMP/writable-$which/$which" && chmod "$bit" "$TMP/writable-$which/$which"
+    HARNESS_CODEX_BIN="$TMP/writable-$which/codex" refuse "$which $bit" "${CODEX_ARGS[@]}"
+    grep -q 'writable' "$RESULT" || fail "a $bit $which must be named"
+  done
+done
+[[ "$(open_sessions)" == "$open_before" ]] || fail 'a refused codex preflight must not leave an OPEN session'
+# A key the agent sandbox could read (a PATH directory is readable) is refused.
+(umask 077 && printf '%s\n' "$KEY" > "$STUB/readable.key")
+refuse 'key readable inside the sandbox' --agent codex --model stub-model --model-endpoint "$ENDPOINT" --endpoint-key-file "$STUB/readable.key"
+grep -q 'readable' "$RESULT" || fail 'a sandbox-readable key must be named'
+rm -f "$STUB/readable.key"
+rm -f "$RESULT"
+env -i PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+  HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" HARNESS_CODEX_BIN="$HARNESS_CODEX_BIN" \
+  python3 - "$ROOT/bin" hh --prompt-file "$PROMPT" --result-file "$RESULT" --lock-file "$LOCK" \
+  --budget-usd 1 --timeout-min 1 "${CODEX_ARGS[@]}" <<'PY' || fail 'a forwarder that cannot start must still exit 0'
+import sys
+sys.path.insert(0, sys.argv[1])
+import harness_headless as h
+def boom(*a, **k):
+    raise OSError(48, 'Address already in use')
+h.Forwarder.start = boom
+raise SystemExit(h.main(sys.argv[2:]))
+PY
+expect_status refused
+grep -q forwarder "$RESULT" || fail 'a forwarder start failure must be named'
+open_before="$(open_sessions)"
+rm -f "$RESULT"
+env -i PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$FAKE_HOME" TMPDIR="$TMP" \
+  HARNESS_PROFILE_HOME="$PROFILES" HARNESS_SESSION_STATE_HOME="$STATE" HARNESS_CODEX_BIN="$HARNESS_CODEX_BIN" \
+  python3 - "$ROOT/bin" hh --prompt-file "$PROMPT" --result-file "$RESULT" --lock-file "$LOCK" \
+  --budget-usd 1 --timeout-min 1 "${CODEX_ARGS[@]}" <<'PY' || fail 'a lease failure must still exit 0'
+import sys
+sys.path.insert(0, sys.argv[1])
+import harness_headless as h
+def busy(*a, **k):
+    raise BlockingIOError(35, 'Resource temporarily unavailable')
+h.fcntl.lockf = busy
+raise SystemExit(h.main(sys.argv[2:]))
+PY
+[[ "$(field status)" == failed && "$(open_sessions)" == "$open_before" ]] || fail 'a lease failure after create must finish the session'
+echo 'PASS: harness-headless refuses a codex run before it starts when any preflight check fails'
+
+# --- delivered: CODEX_HOME, argv, env, key isolation, result and commit message ------
+codex_prompt change
+up_before="$(wc -l < "$UP/requests.jsonl" | tr -d ' ')"
+headless "${CODEX_ARGS[@]}" --effort high || fail 'codex delivered run must exit 0'
+expect_status delivered
+sid="$(field session_id)"
+session_root="$STATE/worktrees/$sid"
+[[ "$(field commit)" == "$(git --git-dir="$REMOTE" rev-parse main)" ]] || fail 'codex commit must be the delivered remote SHA'
+git --git-dir="$REMOTE" show main:codex-change.txt >/dev/null || fail 'the codex change must reach the remote'
+[[ "$(git --git-dir="$REMOTE" log -1 --format=%B main)" == "$(printf 'feat: codex change\n\nWritten by the fake codex.\n\nHarness-Session: %s' "$sid")" ]] \
+  || fail 'the codex commit message must be delivered'
+[[ "$(field summary)" == 'codex: summary' && "$(field cost_usd)" == null && "$(field num_turns)" == 2 \
+   && "$(field transcript)" == null && "$(field exit_code)" == 0 ]] || fail 'codex result fields'
+python3 -c 'import json,sys; r = json.load(open(sys.argv[1])); assert r["usage"] == {"input_tokens": 16, "output_tokens": 9}, r' "$RESULT" \
+  || fail 'usage must sum the turn.completed events'
+log="$RESULT.log"
+run_tmp="$(sed -n 's/^FAKE-CODEX-ENV TMPDIR=//p' "$log")"
+[[ "$run_tmp" == /private/tmp/hh-* && ! -e "$run_tmp" ]] || fail "the codex temp base must be private and removed, got '$run_tmp'"
+expected_argv="FAKE-CODEX-ARGV [exec] [--json] [-o] [$run_tmp/last-message.md] [-C] [$session_root] [-]"
+grep -qxF "$expected_argv" "$log" || fail "codex argv, expected: $expected_argv"
+grep -qxF "FAKE-CODEX-PWD $session_root" "$log" || fail 'codex must run in the session root'
+grep -qxF "FAKE-CODEX-ENV CODEX_HOME=$run_tmp/codex-home" "$log" || fail 'CODEX_HOME must be under the run temp base'
+grep -qxF "FAKE-CODEX-ENV HARNESS_COMMIT_MESSAGE_FILE=$run_tmp/commit-message" "$log" || fail 'codex must be told where to write the commit message'
+! grep -q '^FAKE-CODEX-ENV CLAUDE_CODE_TMPDIR=' "$log" || fail 'codex gets no Claude temp variable'
+[[ "$(sed -n 's/^FAKE-CODEX-HOME //p' "$log" | sort | tr '\n' ' ')" == 'AGENTS.md config.toml ' ]] || fail 'CODEX_HOME must hold exactly config.toml and AGENTS.md'
+grep -qx 'FAKE-CODEX-HOME-MODE 700' "$log" || fail 'CODEX_HOME must be 0700'
+sed -n 's/^FAKE-CODEX-CONFIG //p' "$log" > "$TMP/codex-config.toml"
+python3 - "$TMP/codex-config.toml" "$UP_PORT" <<'PY' || fail 'codex config.toml contract'
+import re, sys, tomllib
+text = open(sys.argv[1]).read()
+c = tomllib.loads(text)
+loop = c['model_providers']['loop']
+port = re.fullmatch(r'http://127\.0\.0\.1:(\d+)/v1', loop['base_url'])
+assert port and int(port.group(1)) != int(sys.argv[2]), 'base_url must be the forwarder, not the endpoint'
+assert c['model'] == 'stub-model' and c['model_provider'] == 'loop' and c['model_reasoning_effort'] == 'high', c
+assert c['approval_policy'] == 'never' and c['sandbox_mode'] == 'danger-full-access', c
+assert loop['wire_api'] == 'responses' and loop['supports_websockets'] is False and loop['requires_openai_auth'] is False, loop
+assert 'env_key' not in loop and 'env_http_headers' not in loop, loop
+assert list(loop['http_headers']) == ['X-Harness-Forwarder-Token'], loop
+assert re.fullmatch(r'[0-9a-f]{32}', loop['http_headers']['X-Harness-Forwarder-Token']), loop
+assert c['history'] == {'persistence': 'none'}, c
+# Code mode stays on: code-mode models need it (the host is allowed instead).
+assert 'features' not in c, c
+for absent in ('mcp_servers', 'hooks', 'notify', 'projects', 'profiles'):
+    assert absent not in c, absent
+PY
+grep -qx 'FAKE-CODEX-AGENTS RULE-FIXTURE-BODY' "$log" && ! grep -q 'INDEX-NOT-COPIED' "$log" \
+  || fail 'CODEX_HOME/AGENTS.md must concatenate the session .claude/rules/*.md without _index.md'
+grep -qF 'FAKE-CODEX-STDIN Delivery note from the launcher:' "$log" && grep -qx 'FAKE-CODEX-STDIN MODE=change' "$log" \
+  || fail 'the prompt and the delivery note must reach codex on stdin'
+grep -qx 'FAKE-CODEX-POST 200 True' "$log" || fail 'codex must reach the model through the forwarder'
+python3 - "$UP/requests.jsonl" "$up_before" "$KEY" <<'PY' || fail 'the forwarder must replace the agent credentials with the key'
+import json, sys
+lines = open(sys.argv[1]).read().splitlines()[int(sys.argv[2]):]
+posts = [json.loads(l) for l in lines if json.loads(l)['method'] == 'POST']
+assert len(posts) == 1, len(posts)
+assert posts[0]['authorization'] == 'Bearer ' + sys.argv[3] and posts[0]['cookie'] is None, 'credentials'
+PY
+for leak in "$KEY" leak-api leak-buzz leak-telegram; do
+  ! grep -qF -- "$leak" "$log" "$RESULT" || fail "secret $leak reached the codex env, argv, config, AGENTS.md, log or result"
+done
+echo 'PASS: harness-headless --agent codex delivers through the broker with a launcher-built CODEX_HOME and no key in reach'
+
+# --- no_changes, failed, request cap ---------------------------------------------------
+codex_prompt none
+headless "${CODEX_ARGS[@]}" || fail 'codex no_changes run must exit 0'
+expect_status no_changes
+grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail 'a clean codex session must close'
+[[ "$(field summary)" == 'codex: nothing to do' ]] || fail 'no_changes keeps the codex summary'
+codex_prompt fail
+remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
+headless "${CODEX_ARGS[@]}" || fail 'codex failed run must exit 0'
+expect_status failed
+[[ "$(field summary)" == boom && "$(field exit_code)" == 3 && "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] \
+  || fail 'a failed codex run keeps its summary and exit code and delivers nothing'
+grep -qx state=ABANDONED "$STATE/sessions/$(field session_id)/journal" || fail 'a failed codex session must be kept'
+codex_prompt cap
+headless "${CODEX_ARGS[@]}" --max-model-requests 2 || fail 'codex capped run must exit 0'
+expect_status budget
+[[ "$(grep -c '^FAKE-CODEX-POST 200 True$' "$RESULT.log")" == 2 && "$(grep -c '^FAKE-CODEX-POST 403' "$RESULT.log")" == 1 ]] \
+  || fail 'the forwarder must refuse the request over the cap'
+[[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail 'a capped codex run delivers nothing'
+grep -q 'request' "$RESULT" || fail 'a capped run must say so'
+echo 'PASS: harness-headless maps codex no_changes, failure and the request cap'
+
+# --- Seatbelt: what the codex process tree can and cannot reach ------------------------
+mkdir -p "$FAKE_HOME/.ssh" "$FAKE_HOME/.hermes" "$FAKE_HOME/buzz" "$FAKE_HOME/.codex" "$FAKE_HOME/.claude" \
+  "$FAKE_HOME/.config/gh" "$FAKE_HOME/Library/Keychains"
+for f in .ssh/id_fixture .hermes/state.json buzz/token .codex/auth.json .claude/.credentials.json .config/gh/hosts.yml \
+    Library/Keychains/login.keychain-db .zsh_history; do
+  printf 'secret-%s\n' fixture > "$FAKE_HOME/$f"
+done
+other="$(ls "$STATE/sessions" | grep -v "^$sid\$" | head -n 1)"
+# A terminal the user has open: a PTY made outside the sandbox.
+python3 -c 'import os, pty, time
+m, s = pty.openpty()
+print(os.ttyname(s), flush=True); time.sleep(600)' > "$TMP/outside-tty" &
+tty_holder=$!
+for _ in $(seq 50); do [[ -s "$TMP/outside-tty" ]] && break; sleep 0.1; done
+python3 -c 'import socket, time
+s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen()
+print(s.getsockname()[1], flush=True); time.sleep(600)' > "$TMP/other-port" &
+other_listener=$!
+for _ in $(seq 50); do [[ -s "$TMP/other-port" ]] && break; sleep 0.1; done
+printf 'OTHER_RECORD=%s\nOTHER_ROOT=%s\nSOURCE_FILE=%s\nUP_PORT=%s\nOTHER_PORT=%s\nOUTSIDE_PID=%s\nOUTSIDE_DIR=%s\nKEY_FILE=%s\nSTATE_SESSIONS=%s\nOUTSIDE_TTY=%s\n' \
+  "$STATE/sessions/$other" "$STATE/worktrees/$other" "$SOURCE/tracked.txt" "$UP_PORT" "$(cat "$TMP/other-port")" \
+  "$other_listener" "$TMP/outside" "$KEY_FILE" "$STATE/sessions" "$(cat "$TMP/outside-tty")" > "$STUB/codex-probe.env"
+cat > "$STUB/codex-probe.sh" <<'EOF'
+#!/bin/bash
+# Probes from inside the agent sandbox, one `PROBE <name> <ALLOWED|errno>` each.
+set -a; source "$(dirname "$0")/codex-probe.env"; set +a
+python3 - <<'PY'
+import errno, http.client, os, re, socket, subprocess
+E, home, root = os.environ, os.environ['HOME'], os.getcwd()
+def probe(name, f):
+    try:
+        f()
+        print('PROBE', name, 'ALLOWED')
+    except socket.timeout:
+        print('PROBE', name, 'TIMEOUT')
+    except OSError as e:
+        print('PROBE', name, errno.errorcode.get(e.errno, e.errno))
+def read(path):
+    return lambda: open(path, 'rb').read()
+def write(path):
+    def f():
+        open(path, 'w').write('x')
+        os.unlink(path)
+    return f
+def child(command):
+    def f():
+        if subprocess.run(['/bin/bash', '-c', command], stderr=subprocess.DEVNULL).returncode:
+            raise OSError(errno.EPERM, command)
+    return f
+def connect(port, host='127.0.0.1', timeout=5):
+    return lambda: socket.create_connection((host, port), timeout=timeout).close()
+config = open(E['CODEX_HOME'] + '/config.toml').read()
+FORWARDER = int(re.search(r'127\.0\.0\.1:(\d+)/v1', config).group(1))
+def models():
+    token = re.search(r'"X-Harness-Forwarder-Token" = "([0-9a-f]+)"', config).group(1)
+    c = http.client.HTTPConnection('127.0.0.1', FORWARDER, timeout=10)
+    c.request('GET', '/v1/models', headers={'X-Harness-Forwarder-Token': token})
+    if c.getresponse().status != 200:
+        raise OSError(errno.EACCES, 'models')
+def own_pty():
+    import pty
+    m, s = pty.openpty()
+    os.ttyname(s)
+    os.write(s, b'x\n')
+    if os.read(m, 8) != b'x\r\n':
+        raise OSError(errno.EIO, 'pty')
+def procargs(pid):
+    def f():
+        import ctypes, ctypes.util
+        libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+        mib, size = (ctypes.c_int * 3)(1, 49, pid), ctypes.c_size_t(65536)
+        buf = ctypes.create_string_buffer(65536)
+        if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+            raise OSError(ctypes.get_errno() or errno.EPERM, 'kern.procargs2')
+    return f
+def procpid(pid):
+    def f():
+        import ctypes, ctypes.util
+        libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
+        mib, size = (ctypes.c_int * 4)(1, 14, 1, pid), ctypes.c_size_t(4096)
+        buf = ctypes.create_string_buffer(4096)
+        if libc.sysctl(mib, 4, buf, ctypes.byref(size), None, 0) != 0 or size.value == 0:
+            raise OSError(ctypes.get_errno() or errno.EPERM, 'kern.proc.pid')
+    return f
+def replace_config():
+    tmp = os.path.join(E['CODEX_HOME'], 'config.new')
+    open(tmp, 'w').write('x')
+    try:
+        os.replace(tmp, os.path.join(E['CODEX_HOME'], 'config.toml'))
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+probe('read-root', read(os.path.join(root, 'tracked.txt')))
+probe('read-system', read('/usr/bin/true'))
+probe('read-codex-home', read(E['CODEX_HOME'] + '/AGENTS.md'))
+# names and fixture paths kept apart: a (name, credential path) literal reads as a secret to scanners
+names = 'ssh hermes buzz codex claude gh keychain history'.split()
+paths = ['.ssh/id_fixture', '.hermes/state.json', 'buzz/token', '.codex/auth.json', '.claude/.credentials.json',
+         '.config/gh/hosts.yml', 'Library/Keychains/login.keychain-db', '.zsh_history']
+assert len(names) == len(paths)
+for name, path in zip(names, paths):
+    probe('read-' + name, read(os.path.join(home, path)))
+probe('read-key', read(E['KEY_FILE']))
+probe('read-other-record', read(os.path.join(E['OTHER_RECORD'], 'journal')))
+probe('read-other-root', read(os.path.join(E['OTHER_ROOT'], 'tracked.txt')))
+probe('list-sessions', lambda: os.listdir(E['STATE_SESSIONS']))
+probe('read-source', read(E['SOURCE_FILE']))
+probe('write-root', write(os.path.join(root, 'probe-write.txt')))
+probe('write-tmp', write(os.path.join(E['TMPDIR'], 'probe-write.txt')))
+probe('write-outside', write(os.path.join(E['OUTSIDE_DIR'], 'probe-write.txt')))
+probe('write-home', write(os.path.join(home, 'probe-write.txt')))
+probe('write-codex-config', lambda: open(E['CODEX_HOME'] + '/config.toml', 'a').close())
+probe('write-codex-agents', lambda: open(E['CODEX_HOME'] + '/AGENTS.md', 'a').close())
+probe('child-write-root', child('printf x > child-write.txt && rm child-write.txt'))
+probe('child-write-outside', child('printf x > "$OUTSIDE_DIR/child-write.txt"'))
+probe('child-read-ssh', child('cat "$HOME/.ssh/id_fixture" > /dev/null'))
+probe('net-external', connect(443, '1.1.1.1'))
+probe('net-upstream-direct', connect(int(E['UP_PORT'])))
+probe('net-other-loopback', connect(int(E['OTHER_PORT'])))
+probe('net-forwarder', models)
+probe('signal-outside', lambda: os.kill(int(E['OUTSIDE_PID']), 0))
+probe('own-pty', own_pty)
+probe('outside-pty', lambda: os.close(os.open(E['OUTSIDE_TTY'], os.O_RDONLY | os.O_NOCTTY)))
+probe('read-dev-disk', read('/dev/disk0'))
+probe('net-forwarder-v6', connect(FORWARDER, '::1', 2))
+probe('rename-codex-home', lambda: os.rename(E['CODEX_HOME'], E['CODEX_HOME'] + '.x'))
+probe('rename-codex-config', lambda: os.rename(E['CODEX_HOME'] + '/config.toml', E['CODEX_HOME'] + '/x.toml'))
+probe('replace-codex-config', replace_config)
+probe('procargs-launcher', procargs(int(E['LAUNCHER_PID'])))
+probe('procpid-launcher', procpid(int(E['LAUNCHER_PID'])))
+# Control: the same reads of the probe's own child, inside the sandbox.
+own = subprocess.Popen(['/bin/sleep', '30'])
+probe('procargs-own-child', procargs(own.pid))
+probe('procpid-own-child', procpid(own.pid))
+own.kill()
+probe('exec-code-mode-host', child('"$CODEX_DIR/codex-code-mode-host" --help > /dev/null'))
+probe('exec-codex-sibling', child('"$CODEX_DIR/codex-badversion" --help'))
+probe('read-codex-sibling', read(os.path.join(E['CODEX_DIR'], 'codex-badversion')))
+PY
+EOF
+codex_prompt probe
+# PATH directories are readable in the profile; these sit inside denied trees,
+# so only the denies placed after every allow keep them closed.
+EXTRA_PATH="$FAKE_HOME/.hermes:$FAKE_HOME/.config/harness-launcher:$STATE/sessions:$FAKE_HOME/.ssh:$FAKE_HOME/.codex:$FAKE_HOME/.claude:$FAKE_HOME/.config/gh" \
+  headless "${CODEX_ARGS[@]}" || fail 'codex probe run must exit 0'
+kill "$other_listener" "$tty_holder" 2>/dev/null || true
+expect_status no_changes
+for allowed in read-root read-system read-codex-home write-root write-tmp child-write-root net-forwarder own-pty exec-code-mode-host \
+    procargs-own-child procpid-own-child; do
+  grep -qx "PROBE $allowed ALLOWED" "$RESULT.log" || fail "the agent sandbox must allow: $allowed"
+done
+for denied in read-ssh read-hermes read-buzz read-codex read-claude read-gh read-keychain read-history read-key \
+    read-other-record read-other-root list-sessions read-source write-outside write-home write-codex-config \
+    write-codex-agents child-write-outside child-read-ssh net-external net-upstream-direct net-other-loopback signal-outside \
+    outside-pty read-dev-disk rename-codex-home rename-codex-config replace-codex-config procargs-launcher procpid-launcher \
+    exec-codex-sibling read-codex-sibling; do
+  grep -qx "PROBE $denied EPERM" "$RESULT.log" || fail "the agent sandbox must deny: $denied"
+done
+# ::1 at the forwarder port: the forwarder's own bound, never-listening socket
+# (a connect times out or is refused), or a sandbox deny.
+grep -qx -e 'PROBE net-forwarder-v6 EPERM' -e 'PROBE net-forwarder-v6 ECONNREFUSED' -e 'PROBE net-forwarder-v6 TIMEOUT' "$RESULT.log" \
+  || fail 'the agent must not reach ::1 at the forwarder port'
+[[ ! -e "$TMP/outside/probe-write.txt" && ! -e "$TMP/outside/child-write.txt" && ! -e "$FAKE_HOME/probe-write.txt" ]] \
+  || fail 'the agent wrote outside the session root'
+! grep -q 'secret-fixture' "$RESULT.log" || fail 'a secret reached the run log'
+echo 'PASS: the codex sandbox denies secrets, other sessions, outside writes and every network but the forwarder'
+
+# --- timeout ---------------------------------------------------------------------------
+codex_prompt hang
+TIMEOUT_MIN=0.1 headless "${CODEX_ARGS[@]}" || fail 'codex timeout run must exit 0'
+expect_status timeout
+grandchild="$(sed -n 's/^FAKE-CODEX-GRANDCHILD //p' "$RESULT.log")"
+[[ -n "$grandchild" ]] && ! kill -0 "$grandchild" 2>/dev/null || fail 'a codex timeout must kill the process tree'
+! grep -qx state=OPEN "$STATE/sessions/$(field session_id)/journal" || fail 'a timed-out codex session must be finished'
+python3 - "$STATE/sessions/$(field session_id)/runtime.lock" <<'PY' || fail 'the session lease must be released'
+import fcntl, sys
+with open(sys.argv[1], 'r+') as f:
+    fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+PY
+codex_prompt hang
+rm -f "$RESULT" "$RESULT.log"
+HEADLESS_EXEC=1 headless "${CODEX_ARGS[@]}" > /dev/null 2>&1 &
+runner=$!
+for _ in $(seq 1 200); do grep -q '^FAKE-CODEX-GRANDCHILD' "$RESULT.log" 2>/dev/null && break; sleep 0.05; done
+for _ in $(seq 1 200); do grep -q '^FAKE-CODEX-SETSID' "$RESULT.log" 2>/dev/null && break; sleep 0.05; done
+grandchild="$(sed -n 's/^FAKE-CODEX-GRANDCHILD //p' "$RESULT.log")"
+setsid_child="$(sed -n 's/^FAKE-CODEX-SETSID //p' "$RESULT.log")"
+[[ -n "$grandchild" && -n "$setsid_child" ]] || fail 'codex hang run did not start'
+term_sid="$(sed -n 's/^harness-launcher: isolated session \([0-9A-F-]*\);.*/\1/p' "$RESULT.log")"
+python3 - "$STATE/sessions/$term_sid/runtime.lock" <<'PY' || fail 'the session lease must be held while codex runs'
+import fcntl, sys
+with open(sys.argv[1], 'r+') as f:
+    try:
+        fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+kill -TERM "$runner"
+wait "$runner" || true
+expect_status failed
+! kill -0 "$grandchild" 2>/dev/null || fail 'SIGTERM must kill the codex process tree'
+! kill -0 "$setsid_child" 2>/dev/null || fail 'SIGTERM must kill a process that left the codex process group'
+[[ -n "$term_sid" ]] && ! grep -qx state=OPEN "$STATE/sessions/$term_sid/journal" || fail 'SIGTERM must finish the codex session'
+echo 'PASS: harness-headless --agent codex stops the process tree on timeout or SIGTERM and finishes the session'
+
+# --- rules: a symlinked rule is refused, never read outside the sandbox ----------------
+python3 - "$ROOT/bin" "$TMP/rules-root" "$FAKE_HOME/.ssh/id_fixture" <<'PY' || fail 'codex AGENTS.md rules'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import harness_headless as h
+root, secret = sys.argv[2], sys.argv[3]
+rules = os.path.join(root, '.claude', 'rules')
+os.makedirs(rules)
+open(os.path.join(rules, 'b.md'), 'w').write('B\n')
+open(os.path.join(rules, 'a.md'), 'w').write('A\n')
+open(os.path.join(rules, '_index.md'), 'w').write('I\n')
+text = h.codex_agents_md(root)
+assert text.index('## a\n\nA\n') < text.index('## b\n\nB\n') and 'I\n' not in text.split('\n', 3)[3], text
+os.symlink(secret, os.path.join(rules, 'c.md'))
+try:
+    h.codex_agents_md(root)
+except h.Refused:
+    pass
+else:
+    raise SystemExit('a symlinked rule was read')
+PY
+echo 'PASS: CODEX_HOME/AGENTS.md concatenates regular rule files and refuses a symlink'
+
+# --- R4: the real codex binary under the generated profile (no model cost) ------------
+# A codex install with codex-code-mode-host beside it (the npm vendor build
+# ships one; a standalone ~/.local/bin/codex may not).
+# HARNESS_TEST_REAL_CODEX wins, then the newest such install: an older
+# catalog does not know gpt-6.1-sol.
+REAL_CODEX="$(python3 - "${HARNESS_TEST_REAL_CODEX:-}" \
+  "$HOME"/.local/share/mise/installs/node/*/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex \
+  "$HOME/.local/bin/codex" <<'PY'
+import os, re, subprocess, sys
+found = []
+for path in sys.argv[1:]:
+    if not (path and os.path.isfile(path) and os.access(path, os.X_OK)
+            and os.access(os.path.join(os.path.dirname(path), 'codex-code-mode-host'), os.X_OK)):
+        continue
+    out = subprocess.run([path, '--version'], capture_output=True, text=True).stdout
+    match = re.search(r'(\d+)\.(\d+)\.(\d+)', out)
+    if match:
+        found.append((path == sys.argv[1], tuple(map(int, match.groups())), path))
+print(max(found)[2] if found else '')
+PY
+)"
+if [[ -z "$REAL_CODEX" ]]; then
+  echo 'SKIP: no real codex with codex-code-mode-host beside it (set HARNESS_TEST_REAL_CODEX); the R4 real-binary sandbox test did not run'
+else
+  # Login-shell dotfiles exist; inside the sandbox they are unreadable and the
+  # shell still runs the command.
+  for f in .zshenv .zprofile .zshrc .bash_profile; do printf 'export DOTFILE_SEEN=%s\n' "$f" > "$FAKE_HOME/$f"; done
+  printf '%s\n' "printf 'real %s\n' ok > real-codex.txt && echo WRITE-OK; cat '$FAKE_HOME/.ssh/id_fixture' && echo READ-ALLOWED || echo READ-DENIED; printf x > '$TMP/outside/real-codex' && echo OUT-ALLOWED || echo OUT-DENIED; echo \"DOTFILE=\${DOTFILE_SEEN:-none}\"" > "$UP/command"
+  printf 'real codex done\n' > "$UP/final"
+  printf '*** Begin Patch\n*** Add File: patched.txt\n+patched by apply_patch\n*** End Patch\n' > "$UP/patch"
+  printf '%s\n' 'Run the command.' > "$PROMPT"
+  up_before="$(wc -l < "$UP/requests.jsonl" | tr -d ' ')"
+  # The production model name: codex uses its real tool set (apply_patch,
+  # exec_command) and request headers for it.
+  printf 'gpt-6.1-sol\n' > "$UP/model"
+  HARNESS_CODEX_BIN="$REAL_CODEX" TIMEOUT_MIN=3 headless --agent codex --model gpt-6.1-sol --model-endpoint "$ENDPOINT" \
+    --endpoint-key-file "$KEY_FILE" --effort low || fail 'real codex run must exit 0'
+  expect_status delivered
+  git --git-dir="$REMOTE" show main:real-codex.txt >/dev/null || fail 'the real codex write inside the session root must be delivered'
+  [[ ! -e "$TMP/outside/real-codex" ]] || fail 'the real codex wrote outside the session root'
+  [[ "$(field summary)" == 'real codex done' ]] || fail 'the summary must be the real codex -o file'
+  python3 - "$UP/requests.jsonl" "$up_before" "$KEY" "$RESULT" <<'PY' || fail 'real codex tool output'
+import json, sys
+lines = [json.loads(l) for l in open(sys.argv[1]).read().splitlines()[int(sys.argv[2]):]]
+posts = [l for l in lines if l['method'] == 'POST']
+assert posts and all(p['authorization'] == 'Bearer ' + sys.argv[3] and p['model'] == 'gpt-6.1-sol' for p in posts), 'forwarded'
+# Everything codex 0.160 sends passes the header allowlist; nothing else does.
+sent = set().union(*(p['headers'] for p in posts))
+assert {'originator', 'session-id', 'x-codex-turn-metadata', 'x-openai-internal-codex-responses-lite'} <= sent, sent
+assert 'x-harness-forwarder-token' not in sent, sent
+out = '\n'.join(o for p in posts for o in p['outputs'])
+assert 'Success. Updated the following files' in out, out
+assert 'WRITE-OK' in out and 'READ-DENIED' in out and 'OUT-DENIED' in out and 'DOTFILE=none' in out, out
+assert 'READ-ALLOWED' not in out and 'secret-fixture' not in out, out
+result = json.load(open(sys.argv[4]))
+assert result['usage']['input_tokens'] > 0 and result['usage']['output_tokens'] > 0 and result['num_turns'] == 1, result
+PY
+  [[ "$(git --git-dir="$REMOTE" show main:patched.txt)" == 'patched by apply_patch' ]] || fail 'the real codex apply_patch edit must be delivered'
+  echo "PASS: the real codex ($("$REAL_CODEX" --version 2>/dev/null)) runs under the generated profile: apply_patch and in-root write allowed, secret read and outside write denied"
+fi

@@ -2,6 +2,60 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.47.0 — 2026-10-08
+
+- Security: the headless repository verifier's Seatbelt profile let a
+  sandboxed test read the argv and environment of processes outside the
+  sandbox (`KERN_PROCARGS2`, `KERN_PROC_PID`; measured on macOS 26 against the
+  broker that starts it): its same-sandbox process-info allow did not deny
+  the rest. The profile now ends with `(deny process-info*)` and `(allow
+  process-info* (target same-sandbox))`, and the verifier breach test probes
+  both sysctls against the broker pid.
+- Security: the headless repository verifier could read every `/dev/ttys*`
+  terminal the user had open (the profile allowed all of `/dev`) and, when
+  `harness-headless` ran from a terminal, open the operator's terminal as
+  `/dev/tty`. Its profile now reads only `/dev` itself and a fixed device
+  list, and the launcher runs the broker in a new session with no controlling
+  terminal.
+- `harness-headless --agent codex`: one unattended Codex run in the same
+  isolated session, delivery and result contract as Claude. The launcher
+  creates the session itself (headless clone, lease, heartbeat), writes a
+  fresh 0700 `CODEX_HOME` with only `config.toml` (a `loop` provider on the
+  Responses API, `approval_policy = "never"`, `sandbox_mode =
+  "danger-full-access"`, history off, no MCP servers, hooks, notify or project
+  trust) and `AGENTS.md` (the clone's `.claude/rules/*.md`), and runs `codex
+  exec --json -o` under a deny-default Seatbelt profile from the verifier
+  family: reads of toolchains, the session root and the run's temp directory,
+  writes only there, the verifier's fixed `/dev` list, PTYs only through the sandbox PTY
+  extension (never the user's open terminals), no inspection of outside
+  processes (`KERN_PROCARGS2` included), TCP only to the forwarder's exact
+  loopback port, and denies after every allow for credential stores,
+  `~/.codex`, `~/.claude`, `~/.hermes`, `~/.config/harness-launcher`, the
+  source checkout and other sessions. Model requests go through a per-run
+  forwarder thread of the launcher, the only holder of the endpoint key:
+  exact `Host`, no `Origin`, a per-run token from `config.toml`, only `POST
+  /v1/responses` and `GET /v1/models`, the configured model only (duplicate
+  JSON keys refused), an allowlist of request headers with the key added, no
+  redirects, unbuffered SSE, at most 8 requests at once, a request cap
+  (`--max-model-requests`, default 400, over it the status is `budget`), `::1`
+  at its port held by the forwarder, and no logging. A signal kills
+  processes left under the session root or temp directory before the session
+  is finished, on the Claude path too. New options `--agent`, `--effort` (per agent),
+  `--model-endpoint` (`http://127.0.0.1:<port>/v1` only),
+  `--endpoint-key-file` (regular 0600 file of the user with one link, no
+  symlink, unreadable inside the sandbox) and `--max-model-requests`. Preflight refuses before any
+  model request when codex, the key, the forwarder, `GET /v1/models` or
+  `codex --version` or `codex-code-mode-host --help` under the profile
+  fails. Code-mode models (gpt-6.1-sol) need the `codex-code-mode-host` that
+  ships beside the npm vendor codex binary: the launcher requires it next to
+  the resolved binary, refuses either file when it is not owned by the user
+  or root or is group- or other-writable, and the sandbox allows exactly that file; point
+  `HARNESS_CODEX_BIN` at the vendor binary. Results add an optional
+  `usage: {input_tokens, output_tokens}`; `cost_usd` is null for Codex.
+- `harness-headless --effort` for Claude sets the launcher-owned
+  `effortLevel` (`low`, `medium`, `high`, `xhigh`; `xhigh` also turns thinking
+  on). Calls without the new options are unchanged.
+
 ## 0.46.2 — 2026-10-08
 
 - herdr plugin: a turn that ends in a pane out of sight is now treated as

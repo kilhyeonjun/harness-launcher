@@ -259,7 +259,18 @@ Bridges that run one unattended task at a time use `harness-headless`. It never 
 
 ```bash
 harness-headless <profile> --prompt-file task.md --result-file result.json \
-  --lock-file run.lock --budget-usd 5 --timeout-min 60 [--settings-file extra.json] [--model sonnet]
+  --lock-file run.lock --budget-usd 5 --timeout-min 60 [--settings-file extra.json] [--model sonnet] \
+  [--effort low|medium|high|xhigh]
+```
+
+`--agent codex` runs Codex in the same isolated session and delivery path instead, under a launcher-generated Seatbelt profile, with model requests through a per-run loopback forwarder that alone holds the endpoint key. Codex must have `codex-code-mode-host` beside it, as the npm vendor build does; set `HARNESS_CODEX_BIN` to that binary:
+
+```bash
+harness-headless <profile> --agent codex --model gpt-6.1-sol --effort medium \
+  --model-endpoint http://127.0.0.1:<port>/v1 \
+  --endpoint-key-file ~/.config/harness-launcher/cliproxy-headless.key \
+  [--max-model-requests 400] --prompt-file task.md --result-file result.json \
+  --lock-file run.lock --budget-usd 5 --timeout-min 30
 ```
 
 The result `status` is one of `delivered`, `no_changes`, `conflict`, `failed`, `timeout`, `budget`, or `refused`. See [Headless isolated runs](docs/architecture.md#headless-isolated-runs) for the contract.

@@ -266,10 +266,19 @@ Manifest-enabled homes also keep an atomic successful-input fingerprint plus a s
 
 ### Headless isolated runs
 
-`harness-headless <profile> --prompt-file F --result-file R --lock-file L --budget-usd N --timeout-min M [--settings-file S] [--model X]`
-runs one unattended Claude task for a registered profile. It is the only
-non-interactive route that works inside an isolated session. Interactive and
-legacy routes do not change.
+`harness-headless <profile> --prompt-file F --result-file R --lock-file L --budget-usd N --timeout-min M [--settings-file S] [--model X] [--effort E] [--agent claude|codex] [--model-endpoint U --endpoint-key-file K [--max-model-requests Q]]`
+runs one unattended Claude (default) or Codex task for a registered profile.
+It is the only non-interactive route that works inside an isolated session.
+Interactive and legacy routes do not change, and a call without the new
+options behaves exactly as before.
+
+- **Agent options.** `--agent` is `claude` (default) or `codex`. `--effort` is
+  `low`, `medium`, `high` or `xhigh` for Claude (Claude Code's `effortLevel`
+  values; `max` is session-only) and `minimal`, `low`, `medium`, `high` or
+  `xhigh` for Codex. `--model-endpoint`, `--endpoint-key-file` and
+  `--max-model-requests` are Codex-only; Codex also needs `--model` (a plain
+  name) and refuses `--settings-file`, which holds Claude settings. Every
+  invalid combination is `refused` with a result file, before anything starts.
 
 - **Lock and lifetime.** It holds an exclusive `flock` on `L` from start until
   the result file is in place, including delivery, and stays in the
@@ -324,6 +333,149 @@ legacy routes do not change.
   - `S` may contain only `_note`, `permissions.deny`,
     `sandbox.filesystem.denyRead` and `sandbox.network.allowedDomains` (string
     lists, added to the mandatory ones). Any other key is `refused`.
+  - `--effort E` becomes `effortLevel: E` in the mandatory block, so no
+    caller setting overrides it; `xhigh` also sets `alwaysThinkingEnabled:
+    true` (the API rejects `xhigh` without thinking, as the launcher's own
+    `rich` mode handles). Without `--effort` neither key is set.
+- **Codex.** `--agent codex` keeps the lock, environment allowlist, temp
+  directory, commit-message file, timeout, lingering-process kill, broker,
+  verifier and result writing above; only the agent process differs.
+  - *Session.* `harness-headless` runs the launcher's own steps itself:
+    `harness-session gc`, `session-isolation.sh create` with
+    `HARNESS_HEADLESS=1` (the same headless clone and `trusted.git`), the
+    `runtime.lock` lease (`fcntl` lock, as the launcher's `zsystem flock`), the
+    `harness-launcher: isolated session <uuid>` line in `R.log`, a heartbeat
+    every 30 s, and `exit` after Codex ends and lingering processes are
+    killed. A lease failure right after `create` runs `exit` at once, so no
+    unleased `OPEN` session is left. It never runs `harness-exec`,
+    `harness-codex`, `codex-home-prepare.sh` or anything under
+    `.harness/codex`, which write to the canonical checkout.
+  - *Binary.* The launcher's `harness_codex_bin_resolve`
+    (`HARNESS_CODEX_BIN`, then `PATH`), with symlinks followed, and the
+    `codex-code-mode-host` beside it, which must be an executable regular file;
+    both must be owned by the user or root with no group or other write (else
+    `refused`). Code-mode models such as gpt-6.1-sol run every tool
+    through that host; with code mode off they have no tool at all (measured
+    live: "code-mode host is disabled"). The npm vendor build ships both
+    (`.../@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/`); a
+    standalone `codex` may not, so point `HARNESS_CODEX_BIN` at the vendor
+    binary, not at a `mise` shim or the npm `codex.js` wrapper. The sandbox
+    allows exactly these two files.
+  - *CODEX_HOME.* A fresh 0700 `<temp dir>/codex-home` with exactly two
+    launcher-written 0600 files. `config.toml`: `model`, `model_provider =
+    "loop"`, `model_reasoning_effort` (only with `--effort`), `approval_policy
+    = "never"`, `sandbox_mode = "danger-full-access"` (Codex's own Seatbelt
+    cannot nest under the launcher's), `check_for_update_on_startup = false`,
+    `[model_providers.loop]` with `base_url` the forwarder, `wire_api =
+    "responses"`, `supports_websockets = false`, `requires_openai_auth =
+    false`, `stream_idle_timeout_ms = 300000`, no `env_key`, and
+    `http_headers` holding only the run's forwarder token
+    (`X-Harness-Forwarder-Token`, 128 random bits), and `[history]
+    persistence = "none"`; no MCP servers, hooks, notify, profiles or project
+    trust entries (so a repository `.codex/` config is not loaded).
+    `AGENTS.md`: the session clone's `.claude/rules/*.md` except `_index.md`,
+    concatenated as `codex-home-prepare.sh`'s fallback does (`## <name>` and
+    the file), read outside the sandbox before Codex starts; a symlinked rule
+    or rules directory is `refused`. The clone's own root `AGENTS.md` still
+    applies as Codex's project instructions. Codex writes its own state into
+    `CODEX_HOME`, so the directory stays writable; the sandbox cannot rewrite,
+    replace or rename the two files or move the directory, but it can add
+    other files there, which only a Codex the agent starts itself would read,
+    inside the same sandbox. The running Codex has already read its
+    configuration.
+  - *Command.* `sandbox-exec -f <temp dir>/codex.sb <codex> exec --json -o
+    <temp dir>/last-message.md -C <session root> -`, in the session root, in its
+    own process group, the prompt and delivery note on stdin. The environment
+    is the allowlist above plus `CODEX_HOME`, without `CLAUDE_CODE_TMPDIR`.
+  - *Forwarder.* A thread of `harness-headless`, outside the sandbox, the only
+    process that ever holds the key. It listens on `127.0.0.1`, random port,
+    HTTP/1.0 with one request per connection, and also binds `::1` at the same
+    port without listening, so no other service can be reached there. At most
+    8 requests run at once (503 beyond that), and a client silent for 60 s is
+    dropped. It answers 403 unless `Host` is exactly `127.0.0.1:<port>`,
+    there is no `Origin` header (DNS rebinding, browsers) and the one
+    `X-Harness-Forwarder-Token` header matches the run's token (so no other
+    local process can use it), and 404 for anything but `POST /v1/responses`
+    and `GET /v1/models` (exact paths, no query). A `POST` needs one
+    `Content-Length` of at most 32 MiB (411, 413) and a JSON object body with
+    no duplicate key anywhere (400: a parser upstream could read the other
+    `model`) whose `model` is `--model` (403). It counts accepted `POST`s;
+    past `--max-model-requests` (default 400) it answers 403 and the run
+    becomes `budget`. Upstream it sends only allowlisted request headers:
+    `Accept`, `Content-Type`, `User-Agent`, `OpenAI-Beta`, `originator`,
+    `version`, `session_id`/`session-id`, `conversation_id`/`conversation-id`,
+    `thread-id`, `x-client-request-id`,
+    `x-openai-internal-codex-responses-lite` and `x-codex-*` (what Codex 0.160
+    sends, checked by the real-binary test), minus any named in `Connection`;
+    it sets `Host` and `Content-Length` and adds `Authorization: Bearer
+    <key>`. It talks to the validated endpoint only; a 3xx becomes 502 and is
+    never followed. The answer is relayed chunk by chunk without buffering
+    (SSE), with an upstream read timeout of 330 s (Codex's stream idle timeout
+    plus 30 s); when Codex disconnects, the upstream connection closes. It
+    never logs a request line, header or body, and a handler error closes the
+    connection without a traceback.
+  - *Key file.* `--endpoint-key-file` must be a regular file opened without
+    following a symlink, with one link, owned by the current user, mode 0600,
+    holding one printable token. Only the launcher reads it; the key never
+    appears in argv, the environment, `config.toml`, `R.log` or the result,
+    and a refusal never quotes it. The production place is
+    `~/.config/harness-launcher/cliproxy-headless.key`, which the sandbox
+    denies.
+  - *Endpoint.* `--model-endpoint` must be exactly `http://127.0.0.1:<port>/v1`.
+  - *Sandbox.* The Seatbelt profile (`harness-session codex-sandbox-profile`)
+    is the only boundary around the whole Codex process tree. It is the
+    verifier profile below, with the session root and the temp directory as
+    its copy and temp dir and the resolved Codex binary as its trusted path:
+    deny by default; exec and read of system and toolchain trees, `PATH`
+    directories, the session root, the temp directory (so `CODEX_HOME`) and
+    the binary; writes only to the session root, the temp directory and a few
+    devices; unix sockets only inside the temp directory; signals only within
+    the sandbox, no `kern.proc` sysctl, and of `/dev` only the fixed device
+    list. Changed for Codex:
+    - PTYs as Codex's own Seatbelt policy grants them (its unified exec runs
+      commands in one): `(allow pseudo-tty)`, `/dev/ptmx`, and a
+      `/dev/ttys*` slave only with the `com.apple.sandbox.pty` extension the
+      kernel issues for a PTY opened inside the sandbox. A terminal the user
+      has open is never readable, writable or ioctl-able (Codex's own policy
+      also allows ioctl on any slave; this one does not).
+    - Read and exec of exactly the code-mode host beside the binary.
+    - Network: TCP to exactly `localhost:<forwarder port>`. Seatbelt only
+      accepts `*` or `localhost` as a host, so loopback at that one port is
+      the narrowest rule it can express; no other port, no `localhost:*`.
+    - Placed after every allow: denies for `~/.ssh`, `~/.hermes`, `~/buzz`,
+      `~/.codex`, `~/.claude`, `~/.config/gh`, `~/.config/harness-launcher`,
+      `~/.aws`, `~/Library/Keychains`, `/Library/Keychains`,
+      `~/.git-credentials`, `~/.netrc`, `~/.config/git` and the source
+      checkout (tests put each of `.ssh`, `.codex`, `.claude`, `.config/gh`,
+      `.hermes` and `.config/harness-launcher` on `PATH`, which the profile
+      reads, and the deny still holds), the state home except the session
+      root (other sessions' records and worktrees), and writes to
+      `CODEX_HOME` itself and its two files.
+
+    Login-shell dotfiles and Codex's skill folders under `HOME` are
+    unreadable; the real-binary test shows Codex 0.160 runs its `zsh -lc`
+    commands and `apply_patch` edits regardless.
+  - *Preflight.* Each of these is `refused` before the first model request:
+    no Codex binary; a key file that fails the checks above; a forwarder that
+    does not start; `GET /v1/models` through the forwarder not answering 200;
+    `sandbox-exec -f <profile> <codex> --version` or
+    `codex-code-mode-host --help` under the profile failing; and the key file
+    being readable inside the sandbox (`/bin/cat` under the profile). The last
+    two run after the session clone exists, so that session is finished
+    (`CLOSED`) on refusal.
+  - *Signals.* `SIGTERM`, `SIGINT` and `SIGHUP` kill the process group and
+    then every process left under the session root or temp directory (one
+    `lsof` snapshot, so also one that called `setsid`), finish the session and
+    release the lease before the `failed` result is written. The Claude path
+    does the same.
+  - *Result.* `summary` is the `-o` file (read without following a symlink,
+    at most 3000 characters), `cost_usd` is null (a subscription),
+    `num_turns` counts `turn.completed` events (null without any),
+    `transcript` is null, and `usage: {"input_tokens", "output_tokens"}` sums
+    those events' usage when there is at least one. Status: `timeout`; else
+    `budget` when the request cap was hit; else `failed` for a nonzero Codex
+    exit (summary the `-o` file or `codex exited N`); else delivery as for
+    Claude.
 - **Commit message.** The broker delivers the work tree as one commit; the
   agent's own commits are not kept as commits. `harness-headless` appends a
   delivery note to the prompt asking the agent to write that commit's message
@@ -431,7 +583,10 @@ legacy routes do not change.
   those trees plus `/Library/Developer`, `/Library/Frameworks`,
   `/Library/Apple` and `/Library/Perl` (not Application Support,
   Preferences, Logs or Keychains), `/private/var/db/timezone`,
-  `/private/var/select`, `/dev` and a few `/private/etc` files (`hosts`,
+  `/private/var/select`, of `/dev` only the directory listing itself (for
+  `ttyname`), `null`, `zero`, `random`, `urandom`, `tty`, `dtracehelper` and
+  `/dev/fd` (never a `/dev/ttys*` terminal the user has open), and a few
+  `/private/etc` files (`hosts`,
   `passwd`, `group`, `localtime`, `services`, `protocols`, `shells`, `ssl`),
   with the Homebrew `etc` and `var` denied except its OpenSSL and CA config;
   file metadata anywhere (path resolution: `stat`, not directory listings);
@@ -440,7 +595,14 @@ legacy routes do not change.
   no Docker socket, no `PF_SYSTEM` kernel-control sockets); writes only
   to the copy, a fresh per-verify temp dir outside `HOME` (`TMPDIR` under
   `/private/tmp`, removed afterwards), `/dev/null`, `/dev/tty`,
-  `/dev/dtracehelper` and `/dev/fd`. The state home (other sessions'
+  `/dev/dtracehelper` and `/dev/fd`. The launcher runs the broker in a new
+  session, so the verifier has no controlling terminal and `/dev/tty` never
+  reaches the operator's. Process inspection ends with an
+  explicit `(deny process-info*)` and then `(allow process-info* (target
+  same-sandbox))`: the same-sandbox allow alone did not stop
+  `KERN_PROCARGS2` or `KERN_PROC_PID` on outside processes on macOS 26 (the
+  broker's and launcher's argv and environment were readable), even with no
+  `sysctl-read` allowed. The state home (other sessions'
   worktrees, records and trusted git dirs) is denied even when a `PATH`
   directory holds it, with only the copy and the trusted verifier inside it
   allowed again. Nothing under `HOME` or the state home is
@@ -462,23 +624,53 @@ legacy routes do not change.
   tokens are not passed. Interactive sessions run the verifier as before.
 - **Result.** Written atomically (temp file and rename) to `R`, always with
   `"version": 1`:
-  `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`.
-  `budget` is Claude subtype `error_max_budget_usd`; `failed` covers other
-  Claude errors, a missing Claude result, signals and delivery failures.
+  `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result or Codex -o file, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`,
+  plus the optional `"usage":{"input_tokens":<int>,"output_tokens":<int>}`
+  for Codex runs that reported usage.
+  `budget` is Claude subtype `error_max_budget_usd` or the Codex request cap;
+  `failed` covers other Claude or Codex errors, a missing Claude result,
+  signals and delivery failures.
   `refused` (`exit_code` 2 before launch) means the run could not start
   without input or broke containment: an unknown profile, a host
   without `/usr/bin/lockf` (delivery could never lock), a host without
   `/usr/bin/sandbox-exec` or where the verifier profile does not load (checked
   with `harness-session sandbox-check`), an empty or
   unreadable prompt, a non-positive budget or timeout, a settings key outside
-  the allowed set, a refused headless clone, or a headless record without its
-  trusted git dir.
+  the allowed set, an invalid agent option, a failed Codex preflight, a
+  refused headless clone, or a headless record without its trusted git dir.
   Launcher and Claude stderr go to `R.log`. The command exits 0 whenever `R`
   was written and nonzero otherwise.
 
 Bash deny rules match command text and are guardrails only; containment
 comes from the mandatory sandbox. User and project settings files still merge
 under the flag settings.
+
+Headless Codex threat model. The agent and everything it starts run as the
+user under one deny-default Seatbelt profile, with Codex's own approvals and
+sandbox off; the profile is the boundary. Inside it the agent can read
+toolchains, the session clone and the run's temp directory, write only the
+clone and that directory, and open one TCP connection target: the forwarder.
+It cannot read the endpoint key, the user's agent homes (`~/.codex`,
+`~/.claude`, `~/.hermes`), credential stores, the source checkout or other
+sessions, open the user's terminals, reach the model endpoint, other loopback
+services (Hermes, herdr, the model proxy itself) or the internet, or signal or
+inspect (argv, environment) processes outside the sandbox. Residual risks,
+accepted:
+
+- A child command can call the forwarder too, and spend model requests as
+  Codex itself could. It never sees the key, the forwarder admits only the
+  configured model and the two paths, and the per-run request cap bounds the
+  spend; the key is a dedicated, revocable headless key.
+- Seatbelt names loopback only as `localhost`, so the network rule also
+  matches `::1` at the forwarder's port; the forwarder holds that address
+  itself (bound, not listening), so nothing answers there.
+- The forwarder token is in `config.toml`, which the agent can read; it keeps
+  other local processes, not the agent, from using the forwarder.
+- The sandbox can read `PATH` directories and toolchain trees; secrets kept
+  there (outside the denied paths) are readable. Keep the key file in
+  `~/.config/harness-launcher`; a key readable inside the sandbox is refused.
+- Codex reaches the model with the full conversation each request; the
+  forwarder checks the model name, not the content.
 
 ### Restore fidelity and the launch record
 
