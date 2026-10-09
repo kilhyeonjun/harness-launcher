@@ -240,7 +240,7 @@ harness_claude_launch_settings() {
       optins="$("$py" "$1/runtime_hooks_optin.py" "$2" 2>/dev/null)"
       case " $optins " in
         *" ssot=1 "*)
-          cmd="/bin/sh -c 's=\"\$HOME/.local/share/harness-service/kh-dev/bin/harness-session-hook\"; [ -x \"\$s\" ] && { /bin/sh \"\$s\" --runtime claude >/dev/null 2>&1; exit 0; }; cat >/dev/null'"
+          cmd="/bin/sh -c 's=\"\$HOME/.local/share/harness-service/bin/harness-session-hook\"; [ -x \"\$s\" ] && { /bin/sh \"\$s\" --runtime claude >/dev/null 2>&1; exit 0; }; cat >/dev/null'"
           local event entry
           entry="[{\"hooks\":[{\"type\":\"command\",\"command\":\"$(harness_json_escape "$cmd")\",\"timeout\":5}]}]"
           for event in UserPromptSubmit Stop; do hooks="$hooks${hooks:+,}\"$event\":$entry"; done

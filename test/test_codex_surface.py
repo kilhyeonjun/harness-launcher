@@ -1285,6 +1285,16 @@ out.mkdir(parents=True, exist_ok=True)
             result = subprocess.run(command, shell=True, input='payload', text=True,
                                     capture_output=True, env={'HOME': str(self.home), 'PATH': '/usr/bin:/bin'})
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        callback = self.home / '.local/share/harness-service/bin/harness-session-hook'
+        callback.parent.mkdir(parents=True)
+        callback.write_text('#!/bin/sh\ncat > "$HOME/ssot-input"\necho bad-output\nexit 2\n')
+        callback.chmod(0o755)
+        command = enabled['Stop'][-1]['hooks'][0]['command']
+        result = subprocess.run(command, shell=True, input='native-final-payload', text=True,
+                                capture_output=True, env={'HOME': str(self.home), 'PATH': '/usr/bin:/bin'})
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        self.assertTrue((self.home / 'ssot-input').exists(), 'host callback was not invoked')
+        self.assertEqual((self.home / 'ssot-input').read_text(), 'native-final-payload')
         self.prepare(HARNESS_SSOT_SESSION_HOOKS='0')
         self.assertEqual(self.compiler_calls(), 2)
         optin.unlink()

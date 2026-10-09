@@ -12,7 +12,7 @@ Other runtime integrations keep their existing launcher.env opt-ins.
 
 Claude launch settings and generated Codex hooks append UserPromptSubmit and
 Stop callbacks after existing hooks. They invoke the optional host callback
-`$HOME/.local/share/harness-service/kh-dev/bin/harness-session-hook` with
+`$HOME/.local/share/harness-service/bin/harness-session-hook` with
 `--runtime claude` or `--runtime codex`. Both callbacks discard output and errors
 and always exit successfully, including when the host callback is absent.
 They never block continuation or change permissions. Codex's normal hook trust

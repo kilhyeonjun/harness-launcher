@@ -1989,7 +1989,7 @@ RUNTIME_HOOK_REGISTRY = (
     },
     {
         "name": "ssot",
-        "script": "$HOME/.local/share/harness-service/kh-dev/bin/harness-session-hook",
+        "script": "$HOME/.local/share/harness-service/bin/harness-session-hook",
         "argument": "--runtime codex",
         "events": ("UserPromptSubmit", "Stop"),
         "timeout": 5,
