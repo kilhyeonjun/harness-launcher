@@ -8,7 +8,9 @@ A profile may opt in with `config/ssot-session-hooks.json`:
 
 Only this exact object with a boolean true enables the integration. Missing,
 malformed or unknown-key files disable it; process environment is ignored.
-Other runtime integrations keep their existing launcher.env opt-ins.
+Other runtime integrations keep their existing launcher.env opt-ins. In isolated
+sessions the opt-in comes from that session snapshot; the launch record still
+binds to the canonical source root even when its checkout is older.
 
 Claude launch settings and generated Codex hooks append UserPromptSubmit and
 Stop callbacks after existing hooks. They invoke the optional host callback

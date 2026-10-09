@@ -4,6 +4,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## 0.50.1 — 2026-10-09
 
+- Read Claude response-collection opt-in from the actual session snapshot,
+  retaining the canonical launch-record binding when its checkout is stale.
+
 - Preserve host-optional MCP policies when a server definition is absent:
   explicitly non-required servers are omitted with their policy. Required and
   malformed server policies still fail validation.
