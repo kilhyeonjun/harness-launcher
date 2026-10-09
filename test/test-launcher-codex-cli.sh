@@ -455,7 +455,7 @@ STUB_APPS_SEQUENCE="$TEST_TEMP/output-codex-cli-apps-sequence.txt"
   _HARNESS_LAUNCHER_BIN="$TEST_BIN"
 
   printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
-    'HARNESS_CODEX_APPS_ALLOWLIST=" asdk_app_one, asdk_app_two,asdk_app_one "' \
+    'HARNESS_CODEX_APPS_ALLOWLIST=" asdk_app_one, connector_calendar, templated_apps_fixture,connector_calendar,asdk_app_one "' \
     > "$TEST_HARNESS/config/launcher.env"
   _harness_launcher_run "$TEST_HARNESS" codex base
   printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' > "$TEST_HARNESS/config/launcher.env"
@@ -465,7 +465,7 @@ STUB_APPS_SEQUENCE="$TEST_TEMP/output-codex-cli-apps-sequence.txt"
   _harness_launcher_run "$TEST_HARNESS" codex exec prompt
 ) 2>/dev/null || exit 1
 apps_prepare_values=("${(@f)$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$STUB_APPS_SEQUENCE")}")
-[[ "${apps_prepare_values[*]}" = "asdk_app_one,asdk_app_two <UNSET> <UNSET>" ]] || {
+[[ "${apps_prepare_values[*]}" = "asdk_app_one,connector_calendar,templated_apps_fixture <UNSET> <UNSET>" ]] || {
   echo "FAIL: native Codex app allowlist leaked or was not normalized across consecutive launches"
   cat "$STUB_APPS_SEQUENCE"
   exit 1
@@ -487,18 +487,18 @@ STUB_ONESHOT_APPS_SEQUENCE="$TEST_TEMP/output-codex-cli-oneshot-apps-sequence.tx
   printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
     'HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_default"' \
     > "$TEST_HARNESS/config/launcher.env"
-  _harness_launcher_run "$TEST_HARNESS" codex --app asdk_app_yogiyo --app asdk_app_default base
+  _harness_launcher_run "$TEST_HARNESS" codex --app connector_calendar --app templated_apps_fixture --app asdk_app_default base
   _harness_launcher_run "$TEST_HARNESS" codex base
 ) 2>/dev/null || exit 1
 oneshot_apps_values=("${(@f)$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$STUB_ONESHOT_APPS_SEQUENCE")}")
-[[ "${oneshot_apps_values[*]}" = "asdk_app_default,asdk_app_yogiyo asdk_app_default" ]] || {
+[[ "${oneshot_apps_values[*]}" = "asdk_app_default,connector_calendar,templated_apps_fixture asdk_app_default" ]] || {
   echo "FAIL: native Codex one-shot app did not merge, deduplicate, or expire"
   cat "$STUB_ONESHOT_APPS_SEQUENCE"
   exit 1
 }
 echo "PASS: native Codex --app opt-in is merged, deduplicated, and one-shot"
 
-for invalid_oneshot_app in 'not-an-app' '_default' 'asdk_app_bad.dot'; do
+for invalid_oneshot_app in 'not-an-app' '_default' 'asdk_app_bad.dot' 'asdk_app_' 'connector_' 'templated_apps_' 'connector_-bad' 'templated_apps__bad' 'connector_bad.dot'; do
   invalid_oneshot_stub="$TEST_TEMP/output-invalid-oneshot-app-${invalid_oneshot_app//[^A-Za-z0-9]/_}.txt"
   : > "$invalid_oneshot_stub"
   (
@@ -706,7 +706,7 @@ raw_apps_prepare_values=("${(@f)$(sed -n 's/^PREPARE_APPS_ALLOWLIST://p' "$STUB_
 }
 echo "PASS: direct codex wrapper isolates app allowlist across launches"
 
-for invalid_app in 'not-an-app' '_default' 'asdk_app_bad.dot'; do
+for invalid_app in 'not-an-app' '_default' 'asdk_app_bad.dot' 'asdk_app_' 'connector_' 'templated_apps_' 'connector_-bad' 'templated_apps__bad' 'connector_bad.dot'; do
   printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
     "HARNESS_CODEX_APPS_ALLOWLIST=\"$invalid_app\"" > "$TEST_HARNESS/config/launcher.env"
   invalid_apps_stub="$TEST_TEMP/output-invalid-app-${invalid_app//[^A-Za-z0-9]/_}.txt"

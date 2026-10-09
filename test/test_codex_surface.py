@@ -1601,7 +1601,7 @@ out.mkdir(parents=True, exist_ok=True)
             self.assertEqual(config["marketplaces"]["external"]["source"], "/tmp/external")
             self.assertTrue(config["plugins"]["external@marketplace"]["enabled"])
 
-        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_alpha")
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_alpha,connector_calendar,templated_apps_fixture")
         self.assertEqual(self.compiler_calls(), 2)
         assert_runtime_preserved()
         with (self.codex_home / "config.toml").open("rb") as stream:
@@ -1612,14 +1612,16 @@ out.mkdir(parents=True, exist_ok=True)
             {
                 "_default": {"enabled": False},
                 "asdk_app_alpha": {"enabled": True},
+                "connector_calendar": {"enabled": True},
+                "templated_apps_fixture": {"enabled": True},
             },
         )
-        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_alpha")
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_alpha,connector_calendar,templated_apps_fixture")
         self.assertEqual(self.compiler_calls(), 2, "unchanged app allowlist was not warm")
 
         with (self.codex_home / "config.toml").open("a", encoding="utf-8") as stream:
             stream.write('\n[apps.asdk_app_rogue]\nenabled = true\n')
-        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_alpha")
+        self.prepare(HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_alpha,connector_calendar,templated_apps_fixture")
         self.assertEqual(self.compiler_calls(), 3, "unlisted app bypass stayed warm")
         assert_runtime_preserved()
         with (self.codex_home / "config.toml").open("rb") as stream:
@@ -1629,6 +1631,8 @@ out.mkdir(parents=True, exist_ok=True)
             {
                 "_default": {"enabled": False},
                 "asdk_app_alpha": {"enabled": True},
+                "connector_calendar": {"enabled": True},
+                "templated_apps_fixture": {"enabled": True},
             },
         )
 

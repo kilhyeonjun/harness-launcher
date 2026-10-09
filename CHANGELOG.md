@@ -2,6 +2,12 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.49.4 — 2026-10-09
+
+- Accept explicitly allowlisted Codex connector and templated app IDs alongside
+  app IDs. Keep unnamed apps disabled, preserve cold/warm revocation, and reject
+  malformed or reserved names before preparation.
+
 ## 0.49.3 — 2026-10-09
 
 - Fresh manifest-enabled isolated Codex sessions inherit verified unchanged
