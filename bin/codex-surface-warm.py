@@ -11,6 +11,10 @@ import stat as stat_module
 import tomllib
 import importlib.util
 
+_hook_trust_spec = importlib.util.spec_from_file_location("codex_hook_trust_surface", Path(__file__).with_name("codex-hook-trust.py"))
+hook_trust = importlib.util.module_from_spec(_hook_trust_spec)
+_hook_trust_spec.loader.exec_module(hook_trust)
+
 
 SURFACE_FIXED_OUTPUTS = (
     "AGENTS.md",
@@ -387,7 +391,9 @@ def output_signatures(codex_home, external_prefixes=()):
     def add(relative, required=True):
         path = os.path.join(codex_home, relative)
         if os.path.islink(path) or os.path.isfile(path):
-            signatures[relative] = sha256_signature(path)
+            signatures[relative] = (hook_trust.profile_signature(path)
+                                    if relative in hook_trust.PROFILE_FILES and not os.path.islink(path)
+                                    else sha256_signature(path))
         elif required:
             cold()
 

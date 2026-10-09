@@ -2,6 +2,16 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.49.3 — 2026-10-09
+
+- Fresh manifest-enabled isolated Codex sessions inherit verified unchanged
+  canonical hook approvals instead of prompting for the same hooks again.
+  Broker root/inode, snapshot script bytes and exact native hook fingerprints
+  gate each entry. Existing disabled/foreign decisions survive; changed or
+  unapproved hooks retain native review. No global config or hook-trust bypass
+  is used. Native per-profile approvals also survive cold regeneration;
+  adding hook trust no longer invalidates the warm surface.
+
 ## 0.49.2 — 2026-10-08
 
 - Plugins installed with `claude plugin install <id> --scope project` (or

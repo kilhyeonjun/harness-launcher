@@ -294,6 +294,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     --launcher-file "$SCRIPT_DIR/slack-approval-policy.py"
     --launcher-file "$SCRIPT_DIR/mcp_paths.py"
     --launcher-file "$SCRIPT_DIR/runtime_hooks_optin.py"
+    --launcher-file "$SCRIPT_DIR/codex-hook-trust.py"
     --launcher-file "$SCRIPT_DIR/harness-launch-record"
     --launcher-file "$SCRIPT_DIR/codex-hook-adapter.sh"
     --launcher-file "$SCRIPT_DIR/codex-pretool-adapter.py"
@@ -1364,6 +1365,18 @@ write_profile() {
     echo "# Codex profile overlay selected via: codex --profile $name"
     printf '%s\n' "$@"
   } > "$tmp"
+  if [[ -f "$dest" ]]; then
+    python3 - "$SCRIPT_DIR/codex-hook-trust.py" "$tmp" "$dest" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+spec = importlib.util.spec_from_file_location("profile_hook_state", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+candidate, live = map(Path, sys.argv[2:])
+candidate.write_text(module.preserve_profile(candidate.read_text(), live.read_bytes()))
+PY
+  fi
   if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
     rm -f "$tmp"
   else
@@ -2326,6 +2339,9 @@ if spec is None or spec.loader is None:
 surface = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = surface
 spec.loader.exec_module(surface)
+trust_spec = importlib.util.spec_from_file_location("codex_hook_trust_publish", resolver_path.with_name("codex-hook-trust.py"))
+hook_trust = importlib.util.module_from_spec(trust_spec)
+trust_spec.loader.exec_module(hook_trust)
 external_prefixes = surface.external_agent_prefixes(
     json.loads((candidate / "skill-catalog.json").read_text(encoding="utf-8"))
 )
@@ -2478,20 +2494,25 @@ def quarantine_conflicts(actions) -> None:
         if conflict_index == 1:
             wait_gate(quarantine_ready, quarantine_release)
 
-generated_config = (candidate / "config.toml").read_text(encoding="utf-8")
 catalog = json.loads((candidate / "skill-catalog.json").read_text(encoding="utf-8"))
 
-def merge_and_publish_config(actions, saved: Path) -> None:
-    destination = published / "config.toml"
-    source = candidate / "config.toml"
+def merge_and_publish_config(actions, saved: Path, relative="config.toml") -> None:
+    destination = published / relative
+    source = candidate / relative
+    generated = source.read_text(encoding="utf-8")
     for attempt in range(5):
         expected = identity(destination)
-        live_content = destination.read_text(encoding="utf-8") if expected is not None else ""
-        merged = surface.merge_runtime_config(generated_config, live_content, catalog, published)
+        live_content = ((destination.read_text(encoding="utf-8") if relative == "config.toml" else destination.read_bytes())
+                        if expected is not None else "")
+        if relative == "config.toml":
+            merged = surface.merge_runtime_config(generated, live_content, catalog, published)
+            merged = hook_trust.inherit(merged, candidate / "hooks.json", published)
+        else:
+            merged = hook_trust.preserve_profile(generated, live_content)
         temporary = source.with_name(f".{source.name}.late-merge.{os.getpid()}")
         temporary.write_text(merged, encoding="utf-8")
         os.replace(temporary, source)
-        if attempt == 0:
+        if attempt == 0 and relative == "config.toml":
             wait_gate(config_ready, config_release)
         if expected is None:
             try:
@@ -2539,8 +2560,8 @@ try:
         source = candidate / relative
         destination = published / relative
         saved = rollback / relative
-        if relative == "config.toml":
-            merge_and_publish_config(actions, saved)
+        if relative == "config.toml" or relative in hook_trust.PROFILE_FILES:
+            merge_and_publish_config(actions, saved, relative)
         else:
             publish_pair(actions, source, destination, saved)
         if inject_failure and index == 4:

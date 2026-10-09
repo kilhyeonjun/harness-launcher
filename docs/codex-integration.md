@@ -337,6 +337,40 @@ auth, hook trust, skill choices, and external plugin state, then returns to the
 warm path. The warm validator also rejects an unexpected `[apps.*]` table and
 repairs it from the configured allowlist.
 
+## Hook trust in isolated sessions
+
+Fresh manifest-enabled isolated homes inherit an existing canonical hook approval
+only when the launcher session record binds the source, physical session root,
+inode and base snapshot. Each entry must retain the same event, matcher, handler
+position and attributes. Only literal `core/hooks/*.sh` arguments may move from
+the canonical root to the isolated root; their bytes must match both the source
+and the recorded Git snapshot. The four registered launcher callbacks may move only to the currently verified
+package's exact script token when both old and current files match the approved
+SHA. Every other argument, matcher and handler attribute remains exact; Orca and
+Herdr host commands stay literal. The derived native hash is written inside the existing
+atomic config publication, without changing global config or plugin approvals.
+
+A private source approval record under launcher state is captured by an operator
+only after the concrete native approval and source audit. It binds the approved
+snapshot/base blob provenance, native executable/version, the complete hook set
+with a versioned literal-root-normalized digest, and script/callback hashes;
+the launcher only reads it and never creates or refreshes approvals. The raw
+approved-file digest is audit metadata: new isolated paths necessarily change
+those bytes. Enforcement uses the versioned normalized complete hook set and
+per-script hashes verified against both approved and current Git base blobs.
+
+Native `--profile rich` saves hook decisions in `rich.config.toml`. Preparation
+preserves exact profile hook-state blocks through cold publication and its CAS,
+and warm signatures exclude only those mutable blocks. Other profile content
+still invalidates the surface and is repaired from launcher policy.
+
+An explicit target decision wins, including disabled hooks. Missing, stale,
+unknown, changed or unsupported evidence retains native hook review. Unchanged
+warm launches preserve runtime trust. This carries an existing approval across
+an equivalent path; it does not enable `--dangerously-bypass-hook-trust` or approve
+new hooks. Legacy homes without a surface manifest retain their existing review
+behavior. The command fingerprint subset is verified against Codex 0.161.
+
 ## Auth behavior
 
 `CODEX_HOME/auth.json` links to the active native Codex auth file. This keeps login selection global while sessions, MCP config, rules, skills, and history remain project-scoped.

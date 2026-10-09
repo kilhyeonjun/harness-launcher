@@ -173,8 +173,9 @@ Limits:
 - Sessions of the same harness that ran in the same directory share one Claude
   project directory, so the transcript check alone does not tell them apart;
   the `provider-sessions` owner count does.
-- An isolated Codex session is not covered by the herdr or Orca status
-  hooks, because its Codex home clone lacks hook trust.
+- A manifest-enabled isolated Codex session inherits unchanged approved herdr
+  and Orca status hooks after broker/source verification. Unapproved or changed
+  callbacks retain native review.
 - A plain `<prefix>` launch that opens the interactive picker has no session id
   to map.
 
@@ -268,7 +269,8 @@ can write. They come only from the **launch record**:
   reads the launcher's environment (`HARNESS_LAUNCH_APPROVAL`, `_SANDBOX`,
   `_BYPASS`, `HARNESS_LAUNCH_PROFILE`, `_SOURCE_ROOT`, `_ISOLATED`),
   exported around the agent process only, inherited values cleared first.
-  Isolated Codex homes lack hook trust, so isolated Codex sessions have no record.
+  Manifest-enabled isolated Codex homes inherit a verified unchanged canonical
+  approval for this callback; missing or changed approvals retain native review.
 - Nested launches. The hook decides from process ancestry, not from the
   environment: starting at the `claude` or `codex` process that ran the hook, if
   any further ancestor's executable basename is exactly `claude` or `codex`
