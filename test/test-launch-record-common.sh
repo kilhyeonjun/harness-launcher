@@ -74,6 +74,16 @@ s="$(HARNESS_SESSION_ROOT=/s HARNESS_SESSION_ID='x;id' harness_claude_launch_set
 case "$(hook_of "$s")" in *--harness-session-id*) fail 'a non-UUID session id must not be passed' ;; esac
 [ -z "$(harness_claude_launch_settings "$ROOT/bin" "$(printf '/r\033x')" false plan "")" ] || fail 'a control character must drop the hook'
 [ -z "$(harness_claude_launch_settings "$TMP/no-bin" /r false plan "")" ] || fail 'no hook script must print nothing'
+# The grant binds the canonical source, while opt-in follows the session snapshot.
+mkdir -p "$TMP/session/config"
+printf '{"enabled":true}\n' > "$TMP/session/config/ssot-session-hooks.json"
+s="$(harness_claude_launch_settings "$ROOT/bin" "$WEIRD" false plan "" "$TMP/session")"
+"$PY" -c 'import json,sys; h=json.loads(sys.argv[1])["hooks"]; assert "Stop" in h and "UserPromptSubmit" in h' "$s" || fail 'session opt-in lost with stale canonical source'
+id=0d5d1f3e-0000-4000-8000-0000000000c3
+run_hook "$(hook_of "$s")" $id
+case "$(record_of $id)" in *"source_root=$WEIRD"*) ;; *) fail 'config root displaced source grant' ;; esac
+s="$(harness_claude_launch_settings "$ROOT/bin" "$TMP/session" false plan "" "$WEIRD")"
+"$PY" -c 'import json,sys; assert "Stop" not in json.loads(sys.argv[1])["hooks"]' "$s" || fail 'canonical opt-in overrode disabled session'
 echo "PASS($SHELL_NAME)"
 BODY
 

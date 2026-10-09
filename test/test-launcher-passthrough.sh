@@ -300,3 +300,20 @@ EOF
   has_sequence "$OUT" --permission-mode bypassPermissions || fail 'Claude bypass grant changed' "$OUT"
 done
 echo 'PASS: three-profile Claude bypass file settings stay out of argv and merged files are cleaned'
+
+# The shortcut adapter passes the actual session config separately from its grant.
+mkdir -p "$TEST_TEMP/stale/config"
+printf '{"enabled":true}\n' > "$TEST_HARNESS/config/ssot-session-hooks.json"
+SETTINGS="$(
+ source "$LAUNCHER_DIR/bin/aliases.zsh"
+ HARNESS_DIR="$TEST_HARNESS"
+ HARNESS_SOURCE_ROOT="$TEST_TEMP/stale"
+ _harness_launcher_claude_launch_settings false plan ''
+)"
+python3 - "$SETTINGS" "$TEST_TEMP/stale" <<'PYCODE'
+import json,sys
+h=json.loads(sys.argv[1])["hooks"]
+assert "Stop" in h and "UserPromptSubmit" in h, "session opt-in lost"
+assert sys.argv[2] in h["SessionStart"][0]["hooks"][0]["command"], "source binding changed"
+PYCODE
+echo 'PASS: shortcut session opt-in preserves canonical launch binding'

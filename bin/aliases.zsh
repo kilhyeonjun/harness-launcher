@@ -413,7 +413,7 @@ _harness_launcher_claude_launch_context() {
 #   harness_claude_launch_settings (harness-common.sh, shared with launcher.sh)
 #   with this launch's source root.
 _harness_launcher_claude_launch_settings() {
-  harness_claude_launch_settings "$_HARNESS_LAUNCHER_BIN" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$@"
+  harness_claude_launch_settings "$_HARNESS_LAUNCHER_BIN" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$@" "${HARNESS_DIR:A}"
 }
 
 # _harness_launcher_isolated_record_run_dir

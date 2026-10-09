@@ -1172,6 +1172,8 @@ def resolve_mcp(manifest: dict, *, profile: str, home: Path, repo_root: Path, co
     profile_policies = mcp["profiles"][profile].get("policies", {})
     for name in profile_policies:
         if name not in owners:
+            if name in undefined and profile_policies[name].get("required") is False:
+                continue
             fail(
                 f"mcp profile {profile!r}.policies server {name!r} has no emitted MCP definition"
             )

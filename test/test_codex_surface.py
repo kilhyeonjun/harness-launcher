@@ -547,6 +547,22 @@ class ResolverTests(SurfaceFixture):
         expected = manifest["mcp"]["profiles"]["default"]["policies"]["context7"]
         self.assertEqual(catalog["mcp"]["policies"]["context7"], expected)
 
+    def test_explicit_optional_policy_is_dropped_when_host_definition_is_absent(self):
+        manifest = base_manifest()
+        manifest['mcp']['profiles']['default']['enabled'].append('host-service')
+        manifest['mcp']['profiles']['default']['policies'] = {
+            'host-service': {'required': False, 'tools': {'read': {'approval_mode': 'approve'}}}
+        }
+        self.manifest.write_text(json.dumps(manifest), encoding='utf-8')
+        self.run_resolver()
+        catalog = self.read_catalog()['mcp']
+        self.assertNotIn('host-service', catalog['enabled'])
+        self.assertNotIn('host-service', catalog['policies'])
+        manifest['mcp']['profiles']['default']['policies']['host-service']['required'] = True
+        self.manifest.write_text(json.dumps(manifest), encoding='utf-8')
+        rejected = self.run_resolver(expect=2)
+        self.assertIn('has no emitted MCP definition', rejected.stderr)
+
     def test_product_managed_mcp_policy_without_emitted_definition_fails(self):
         # Product/plugin-only computer-use has no generated [mcp_servers] table
         # where a tool policy could be applied.

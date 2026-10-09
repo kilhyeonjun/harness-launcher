@@ -816,3 +816,17 @@ reset_plan
 echo 'PASS: launch record — the picker records the Claude grant, root, isolation and 1M context'
 
 echo 'ALL launcher TUI tests passed'
+
+reset_plan
+printf '{"enabled":true}\n' > "$TEST_HARNESS/config/ssot-session-hooks.json"
+OUT="$TEST_TEMP/session-optin.out"; STUB="$TEST_TEMP/session-optin.stub"
+run_tui $'1\n2\n1\n' "$OUT" "$STUB" HARNESS_SOURCE_ROOT="$TEST_TEMP/stale-canonical"
+python3 - "$STUB.argv" "$TEST_TEMP/stale-canonical" <<'PYCODE'
+import json,sys
+from pathlib import Path
+args=Path(sys.argv[1]).read_text().splitlines()
+h=json.loads(args[args.index("--settings")+1])["hooks"]
+assert "Stop" in h and "UserPromptSubmit" in h, "TUI session opt-in lost"
+assert sys.argv[2] in h["SessionStart"][0]["hooks"][0]["command"], "TUI source binding changed"
+PYCODE
+echo 'PASS: TUI session opt-in preserves canonical launch binding'

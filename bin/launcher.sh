@@ -1063,7 +1063,7 @@ launch_claude() {
     [ "$CHOICE_PERM" = "default" ] || launch_grant="$CHOICE_PERM"
     case "$model" in *"[1m]") launch_context=1m ;; esac
     launch_settings="$(harness_claude_launch_settings "$LAUNCHER_BIN_DIR" "$(harness_launch_source_root)" \
-      false "$launch_grant" "$launch_context")"
+      false "$launch_grant" "$launch_context" "$HARNESS_DIR")"
     [ -z "$launch_settings" ] || args+=(--settings "$launch_settings")
   fi
 

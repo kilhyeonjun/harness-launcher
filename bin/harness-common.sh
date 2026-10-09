@@ -210,7 +210,7 @@ harness_launch_record_export_codex() {
   return 0
 }
 
-# harness_claude_launch_settings <bin-dir> <source-root> <force-thinking:true|false> <permission> <context>
+# harness_claude_launch_settings <bin-dir> <source-root> <force-thinking:true|false> <permission> <context> [config-root]
 #   Prints the one launcher-owned --settings JSON: the forced-thinking setting
 #   (xhigh/max) merged with the SessionStart hook that writes the launch record.
 #   The grant, source root and isolation are ARGUMENTS of the hook command, not
@@ -219,7 +219,7 @@ harness_launch_record_export_codex() {
 #   stdout would become session context). Prints nothing when there is nothing
 #   to set.
 harness_claude_launch_settings() {
-  local hook="$1/harness-launch-record" py cmd out="" isolated=0 perm="" hooks="" optins=""
+  local hook="$1/harness-launch-record" py cmd out="" isolated=0 perm="" hooks="" optins="" config_root="${6:-$2}"
   local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
   [ -z "${HARNESS_SESSION_ROOT:-}" ] || isolated=1
   [ "$3" = true ] && out='"alwaysThinkingEnabled":true'
@@ -237,7 +237,7 @@ harness_claude_launch_settings() {
       *) hooks="\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$(harness_json_escape "$cmd")\",\"timeout\":5}]}]" ;;
     esac
     if [ -f "$1/runtime_hooks_optin.py" ]; then
-      optins="$("$py" "$1/runtime_hooks_optin.py" "$2" 2>/dev/null)"
+      optins="$("$py" "$1/runtime_hooks_optin.py" "$config_root" 2>/dev/null)"
       case " $optins " in
         *" ssot=1 "*)
           cmd="/bin/sh -c 's=\"\$HOME/.local/share/harness-service/bin/harness-session-hook\"; [ -x \"\$s\" ] && { /bin/sh \"\$s\" --runtime claude >/dev/null 2>&1; exit 0; }; cat >/dev/null'"
