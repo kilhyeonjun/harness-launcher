@@ -1374,7 +1374,7 @@ spec = importlib.util.spec_from_file_location("profile_hook_state", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 candidate, live = map(Path, sys.argv[2:])
-candidate.write_text(module.preserve_profile(candidate.read_text(), live.read_text()))
+candidate.write_text(module.preserve_profile(candidate.read_text(), live.read_bytes()))
 PY
   fi
   if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
@@ -2502,7 +2502,8 @@ def merge_and_publish_config(actions, saved: Path, relative="config.toml") -> No
     generated = source.read_text(encoding="utf-8")
     for attempt in range(5):
         expected = identity(destination)
-        live_content = destination.read_text(encoding="utf-8") if expected is not None else ""
+        live_content = ((destination.read_text(encoding="utf-8") if relative == "config.toml" else destination.read_bytes())
+                        if expected is not None else "")
         if relative == "config.toml":
             merged = surface.merge_runtime_config(generated, live_content, catalog, published)
             merged = hook_trust.inherit(merged, candidate / "hooks.json", published)

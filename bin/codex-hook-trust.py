@@ -40,13 +40,25 @@ def split_profile_state(text):
 
 
 def profile_signature(path):
-    managed, _ = split_profile_state(Path(path).read_text())
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return "invalid-profile:unreadable"
+    try:
+        managed, _ = split_profile_state(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return "invalid-profile:" + hashlib.sha256(raw).hexdigest()
     return "sha256:" + hashlib.sha256(managed.encode()).hexdigest()
 
 
 def preserve_profile(candidate, live):
     managed, _ = split_profile_state(candidate)
-    _, state = split_profile_state(live)
+    try:
+        if isinstance(live, bytes):
+            live = live.decode("utf-8")
+        _, state = split_profile_state(live)
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        state = ""
     result = managed + ("\n" + state if state else "")
     tomllib.loads(result)
     return result

@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_codex_surface as fixtures
 
+@unittest.skipUnless(Path("/usr/bin/lockf").is_file(), "requires macOS /usr/bin/lockf")
 class IsolatedTrustIntegrationTests(unittest.TestCase):
     def build(self, tweak=lambda source, target, record: None, post_prepare=None):
         fixture = fixtures.PrepareIntegrationTests('runTest')
@@ -178,6 +179,21 @@ class IsolatedTrustIntegrationTests(unittest.TestCase):
             self.assertEqual(before,p.read_bytes(),'repair of unmanaged profile drift lost hook decisions')
             self.assertEqual(len(tomllib.loads(p.read_text())['hooks']['state']),48)
         self.build(post_prepare=approved_profile)
+
+    def test_malformed_native_profile_repairs_without_inheriting_bad_state(self):
+        def malformed_profile(fixture, source, target, record):
+            p = target / '.harness/codex/rich.config.toml'
+            env = dict(HARNESS_CODEX_SLACK_APPS='', HARNESS_SOURCE_ROOT=str(source),
+                       HARNESS_SESSION_ROOT=str(target), HARNESS_SESSION_ID=record.name,
+                       HARNESS_SESSION_STATE_HOME=str(record.parents[1]))
+            for content in (b'[hooks.state.\"broken\"\ntrusted_hash=\"unverified\"\n', b'\xff\xfeinvalid'):
+                with self.subTest(content=content):
+                    p.write_bytes(content)
+                    fixture.prepare(**env)
+                    repaired = tomllib.loads(p.read_text())
+                    self.assertNotIn('state', repaired.get('hooks', {}))
+                    self.assertEqual(repaired['model'], 'gpt-6.1-sol')
+        self.build(post_prepare=malformed_profile)
 
     def test_native_0161_current_hash_fixture(self):
         spec=importlib.util.spec_from_file_location('codex_hook_trust_test',ROOT/'bin/codex-hook-trust.py')
