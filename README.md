@@ -634,3 +634,7 @@ For vulnerabilities or credential-handling problems, do not open a public issue.
 ## License
 
 [MIT](LICENSE)
+
+Fresh manifest-enabled isolated Codex sessions carry existing canonical hook
+approvals across verified equivalent script paths. Changed or unapproved hooks
+still require native review; see [hook trust](docs/codex-integration.md#hook-trust-in-isolated-sessions).

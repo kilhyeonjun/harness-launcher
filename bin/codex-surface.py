@@ -26,6 +26,10 @@ import tomllib
 from typing import Iterable
 import importlib.util
 
+_hook_trust_spec = importlib.util.spec_from_file_location("codex_hook_trust_surface", Path(__file__).with_name("codex-hook-trust.py"))
+hook_trust = importlib.util.module_from_spec(_hook_trust_spec)
+_hook_trust_spec.loader.exec_module(hook_trust)
+
 
 SCHEMA_VERSION = 1
 PRODUCT_MCP_SERVERS = {"computer-use"}
@@ -1859,7 +1863,10 @@ def surface_output_signatures(codex_home: Path) -> dict[str, str]:
         if path.is_symlink():
             signatures[relative] = f"symlink:{os.readlink(path)}"
         elif path.is_file():
-            signatures[relative] = f"sha256:{sha256(path)}"
+            if relative in hook_trust.PROFILE_FILES:
+                signatures[relative] = hook_trust.profile_signature(path)
+            else:
+                signatures[relative] = f"sha256:{sha256(path)}"
         elif required:
             fail(f"launcher-owned runtime output is missing: {path}")
 
