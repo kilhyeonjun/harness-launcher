@@ -6,6 +6,9 @@
 
 A profile-aware Zsh launcher for Claude Code, OpenAI Codex CLI, and Kiro CLI. Register one or more project directories, give each a short command, and keep runtime state isolated per project.
 
+Optional profile-scoped response collection is documented in
+[Native response collection](docs/session-collector.md).
+
 ```text
 wh             interactive runtime and mode picker
 wh base        Claude Code with the base preset

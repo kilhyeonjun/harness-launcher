@@ -2,6 +2,13 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.50.0 — 2026-10-09
+
+- Add profile-scoped optional UserPromptSubmit/Stop callbacks for native final
+  response collection. Claude launch settings and generated Codex hooks share
+  a strict JSON opt-in, preserve existing hooks and fail open when the host
+  callback is unavailable. Native Codex hook trust remains required.
+
 ## 0.49.4 — 2026-10-09
 
 - Accept explicitly allowlisted Codex connector and templated app IDs alongside
