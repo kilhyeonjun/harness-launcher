@@ -432,7 +432,7 @@ for item in sys.argv[1].split(","):
     app_id = item.strip()
     if not app_id:
         continue
-    if not re.fullmatch(r"asdk_app_[A-Za-z0-9_-]+", app_id):
+    if not re.fullmatch(r"(?:asdk_app_|connector_|templated_apps_)[A-Za-z0-9][A-Za-z0-9_-]*", app_id):
         raise SystemExit(f"invalid Codex app allowlist id: {app_id!r}")
     if app_id not in apps:
         apps.append(app_id)

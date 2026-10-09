@@ -306,8 +306,11 @@ A project opts in by naming the app ids it needs in its trusted
 HARNESS_CODEX_APPS_ALLOWLIST="asdk_app_<id>,asdk_app_<other-id>"
 ```
 
-The launcher trims and deduplicates supported `asdk_app_...` ids before every
-native Codex preparation. Invalid ids fail before preparation; an empty or
+The launcher trims and deduplicates supported `asdk_app_...`, `connector_...`,
+and `templated_apps_...` ids before every native Codex preparation. The suffix
+starts with a letter or digit and contains only letters, digits, `_`, or `-`,
+matching the [official app ID format](https://developers.openai.com/plugins/deploy/submission-errors).
+Invalid ids fail before preparation; an empty or
 omitted value is explicitly unset, so a prior launch or an ambient caller
 environment cannot enable an app.
 
