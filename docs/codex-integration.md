@@ -513,6 +513,11 @@ Shared hooks should prefer an explicit runtime identity over a stale
 
 ### Slack user approval across launch modes
 
+An exact MCP profile may declare a tool allowlist and per-tool approval modes
+without changing the native sandbox or global approval policy. If a host-local
+server is absent, its policy is omitted only when it explicitly declares
+`required: false`; required or malformed definitions remain errors.
+
 An enabled Slack connector must be explicitly identified with
 `HARNESS_CODEX_SLACK_APPS="asdk_app_<id>"`; every named id must also be in
 `HARNESS_CODEX_APPS_ALLOWLIST`. Other connectors do not inherit this policy.
