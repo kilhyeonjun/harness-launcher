@@ -1945,12 +1945,13 @@ if os.path.isfile(title_sync):
         {"hooks": [{"type": "command", "command": command, "timeout": 3000}]}
     )
 
-# Runtime hook registry. Each row is enabled per harness by a literal
+# Runtime hook registry. Original rows are enabled per harness by a literal
 # assignment in launcher.env (HARNESS_ORCA_AGENT_HOOKS=1,
 # HARNESS_HERDR_AGENT_HOOKS=1, HARNESS_LAUNCH_RECORD_HOOKS=1), resolved by runtime_hooks_optin.py; the process
 # environment is ignored. An opted-in row appends one matcher-less entry per
 # listed event after every existing entry, in registry order, so the
-# harness-owned hooks keep their order. Rows are emitted whether or not the
+# harness-owned hooks keep their order. The ssot row instead reads strict
+# config/ssot-session-hooks.json through the same resolver. Rows are emitted whether or not the
 # script exists at prepare time: the warm path returns on a fingerprint match
 # before this generator runs, so an existence-dependent row would never appear
 # once a runtime integration was installed after a prepare.
@@ -1984,6 +1985,13 @@ RUNTIME_HOOK_REGISTRY = (
         "name": "launch_record",
         "command": " ".join((shlex.quote(python_bin), shlex.quote(launch_record_hook), "codex")),
         "events": ("SessionStart",),
+        "timeout": 5,
+    },
+    {
+        "name": "ssot",
+        "script": "$HOME/.local/share/harness-service/bin/harness-session-hook",
+        "argument": "--runtime codex",
+        "events": ("UserPromptSubmit", "Stop"),
         "timeout": 5,
     },
 )

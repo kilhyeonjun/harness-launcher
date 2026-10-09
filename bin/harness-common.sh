@@ -219,7 +219,7 @@ harness_launch_record_export_codex() {
 #   stdout would become session context). Prints nothing when there is nothing
 #   to set.
 harness_claude_launch_settings() {
-  local hook="$1/harness-launch-record" py cmd out="" isolated=0 perm=""
+  local hook="$1/harness-launch-record" py cmd out="" isolated=0 perm="" hooks="" optins=""
   local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
   [ -z "${HARNESS_SESSION_ROOT:-}" ] || isolated=1
   [ "$3" = true ] && out='"alwaysThinkingEnabled":true'
@@ -234,9 +234,21 @@ harness_claude_launch_settings() {
     # A control character would break the hand-built JSON; record nothing instead.
     case "$cmd" in
       *[[:cntrl:]]*) ;;
-      *) out="$out${out:+,}\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$(harness_json_escape "$cmd")\",\"timeout\":5}]}]}" ;;
+      *) hooks="\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$(harness_json_escape "$cmd")\",\"timeout\":5}]}]" ;;
     esac
+    if [ -f "$1/runtime_hooks_optin.py" ]; then
+      optins="$("$py" "$1/runtime_hooks_optin.py" "$2" 2>/dev/null)"
+      case " $optins " in
+        *" ssot=1 "*)
+          cmd="/bin/sh -c 's=\"\$HOME/.local/share/harness-service/bin/harness-session-hook\"; [ -x \"\$s\" ] && { /bin/sh \"\$s\" --runtime claude >/dev/null 2>&1; exit 0; }; cat >/dev/null'"
+          local event entry
+          entry="[{\"hooks\":[{\"type\":\"command\",\"command\":\"$(harness_json_escape "$cmd")\",\"timeout\":5}]}]"
+          for event in UserPromptSubmit Stop; do hooks="$hooks${hooks:+,}\"$event\":$entry"; done
+          ;;
+      esac
+    fi
   fi
+  [ -z "$hooks" ] || out="$out${out:+,}\"hooks\":{$hooks}"
   [ -z "$out" ] || printf '%s\n' "{$out}"
 }
 
