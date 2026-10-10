@@ -42,7 +42,7 @@ SESSION_LINE = re.compile(r'^harness-launcher: isolated session (' + UUID + r');
 # (API keys, bot tokens, ...) is dropped before anything is launched.
 ENV_ALLOW = ('HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG')
 # Launcher state location only, so `harness-session` sees the same sessions.
-ENV_LAUNCHER = ('HARNESS_SESSION_STATE_HOME', 'XDG_STATE_HOME')
+ENV_LAUNCHER = ('HARNESS_SESSION_STATE_HOME', 'XDG_STATE_HOME', 'HARNESS_SESSION_RETENTION_SECONDS')
 HOME_DENY = ('.hermes', 'buzz', '.ssh', '.config/gh', '.aws', '.claude')
 # Edit-tool denies only (persistence vectors that are not secrets).
 HOME_WRITE_DENY = ('Library/LaunchAgents',)

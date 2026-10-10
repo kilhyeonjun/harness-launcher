@@ -2,6 +2,21 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.51.0 — 2026-10-10
+
+- Preserve supported native Codex transcripts and index files in verified private
+  archives before terminal session cleanup. Changed or unsafe sources retain
+  their worktrees. The `archive` retention mode also stops older numeric-only
+  engines before deletion; ordinary headless callers need the selected-release
+  dispatcher described in docs/herdr-web-ui.md.
+- Add a bounded target-local conversation catalog, exact owner-bound resume and
+  explicit archive forks into fresh private homes. Rebuild the selected native
+  index from verified raw records and keep imported parent identity separate
+  from new session ownership. Authentication and configuration are excluded.
+- Add the pure `harness-plan` JSON interface for model, effort, context and
+  independent permission controls. Managed Web controls preview and recheck
+  these plans while preserving existing runtime policies and fast-start callers.
+
 ## 0.50.1 — 2026-10-09
 
 - Read Claude response-collection opt-in from the actual session snapshot,
