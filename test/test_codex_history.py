@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -684,6 +685,178 @@ class CodexHistoryTest(unittest.TestCase):
         (record / "session-root").write_text(str(root))
         result = json.loads(self.run_history("protect-pool", "--source-root", str(self.source_root), "--state-home", str(state), "--codex-bin", "/no/codex/binary").stdout)
         self.assertTrue(result["safe_to_gc"])
+
+    def test_generic_import_ledger_suppresses_only_parent_native_uuid_from_new_owner(self):
+        state = self.base / "generic-import-ledger"
+        old_owner = "11111111-2222-4333-8444-555555555556"
+        new_owner = "11111111-2222-4333-8444-555555555557"
+        child_native = "22222222-2222-4333-8444-555555555556"
+        def owner(identifier, native_ids):
+            root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+            home = root / ".harness/codex"
+            shutil.copytree(self.home, home, symlinks=True)
+            rollout = next(path for path in (home / "sessions").rglob("*.jsonl") if "session_meta" in path.read_text())
+            value = json.loads(rollout.read_text().splitlines()[0]); value["payload"]["id"] = native_ids[0]
+            rollout.write_text(json.dumps(value) + "\n")
+            for native in native_ids[1:]:
+                (rollout.parent / ("rollout-child-" + native + ".jsonl")).write_text(json.dumps({"type":"session_meta","payload":{"id":native}}) + "\n")
+            record.mkdir(parents=True)
+            for name, value in (("source-root", str(self.source_root)), ("session-root", str(root)),
+                                ("root-inode", history_module.root_inode(root)), ("runtime.lock", ""),
+                                ("lease-v1", "1\n"), ("journal", "state=CLOSED\nidentity=\nheartbeat=2026-10-10T00:00:00Z\n")):
+                (record / name).write_text(value)
+            return root, record
+        old_root, _ = owner(old_owner, [NATIVE_THREAD_ID])
+        new_root, new_record = owner(new_owner, [NATIVE_THREAD_ID, child_native])
+        ledger = {"schema": 1, "session_id": new_owner, "source_root": str(self.source_root.resolve()),
+                  "imports": [{"runtime": "codex", "native_id": NATIVE_THREAD_ID, "source_owner": old_owner}]}
+        ledger_path = new_record / "restored-native-sessions"
+        ledger_path.write_text(json.dumps(ledger, sort_keys=True) + "\n")
+        ledger_path.chmod(0o600)
+        shutil.move(self.home, self.base / "hidden-canonical-native-home")
+        listed = json.loads(self.run_history("catalog", "--source-root", str(self.source_root), "--state-home", str(state)).stdout)
+        parent = next(row for row in listed["entries"] if row["native_id"] == NATIVE_THREAD_ID)
+        self.assertEqual((parent["status"], parent["home"]), ("live", str(old_root / ".harness/codex")))
+        child = next(row for row in listed["entries"] if row["native_id"] == child_native)
+        self.assertEqual((child["status"], child["home"]), ("live", str(new_root / ".harness/codex")))
+        prepared = json.loads(self.run_history("prepare", "--source-root", str(self.source_root), "--state-home", str(state), "--native-id", child_native).stdout)
+        manifest = json.loads((state / "native-history/snapshots" / prepared["snapshot_id"] / "manifest.json").read_text())
+        self.assertEqual(manifest["native_import_provenance"]["imports"], [{"runtime": "codex", "native_id": NATIVE_THREAD_ID, "source_owner": old_owner}])
+        parent_raw = next(path for path in (new_root / ".harness/codex/sessions").rglob("*.jsonl") if NATIVE_THREAD_ID in path.name)
+        archived_parent = state / "native-history/snapshots" / prepared["snapshot_id"] / "data" / parent_raw.relative_to(new_root / ".harness/codex")
+        self.assertTrue(archived_parent.is_file())
+        self.assertEqual(archived_parent.read_bytes(), parent_raw.read_bytes())
+        shutil.move(new_root / ".harness/codex", self.base / "masked-imported-child-home")
+        after_mask = json.loads(self.run_history("catalog", "--source-root", str(self.source_root), "--state-home", str(state)).stdout)
+        parent_rows = [row for row in after_mask["entries"] if row["native_id"] == NATIVE_THREAD_ID]
+        child_rows = [row for row in after_mask["entries"] if row["native_id"] == child_native]
+        self.assertEqual([(row["status"], row["home"]) for row in parent_rows], [("live", str(old_root / ".harness/codex"))])
+        self.assertEqual([(row["status"], row["snapshot_id"]) for row in child_rows], [("snapshot", prepared["snapshot_id"])])
+
+    def test_invalid_generic_import_ledger_holds_before_child_native_body_parse(self):
+        state = self.base / "invalid-generic-import-ledger"
+        identifier = "11111111-2222-4333-8444-555555555556"
+        root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+        home = root / ".harness/codex"
+        (home / "sessions/2026/10/10").mkdir(parents=True)
+        body = home / "sessions/2026/10/10" / ("rollout-" + NATIVE_THREAD_ID + ".jsonl")
+        body.write_text("{ malformed child body\n")
+        record.mkdir(parents=True)
+        for name, value in (("source-root", str(self.source_root)), ("session-root", str(root)),
+                            ("root-inode", history_module.root_inode(root)), ("runtime.lock", ""),
+                            ("lease-v1", "1\n"), ("journal", "state=CLOSED\nidentity=\nheartbeat=2026-10-10T00:00:00Z\n")):
+            (record / name).write_text(value)
+        ledger = record / "restored-native-sessions"
+        ledger.write_text(json.dumps({"schema": 1, "session_id": identifier, "source_root": "/wrong-source", "imports": []}) + "\n")
+        ledger.chmod(0o600)
+        proc = self.run_history("catalog", "--source-root", str(self.source_root), "--state-home", str(state), expected=2)
+        self.assertNotIn("malformed child body", proc.stdout + proc.stderr)
+
+    def test_invalid_generic_import_ledgers_hold_before_child_body_parse(self):
+        variants = {
+            "wrong_source": {"schema": 1, "source_root": "/wrong", "imports": []},
+            "same_owner": {"schema": 1, "source_root": str(self.source_root.resolve()), "imports": [{"runtime":"codex", "native_id":NATIVE_THREAD_ID, "source_owner":"11111111-2222-4333-8444-555555555556"}]},
+            "unknown_field": {"schema": 1, "source_root": str(self.source_root.resolve()), "imports": [], "unexpected": True},
+        }
+        for name, value in variants.items():
+            with self.subTest(name=name):
+                state = self.base / ("strict-import-" + name)
+                identifier = "11111111-2222-4333-8444-555555555556"
+                root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+                home = root / ".harness/codex"
+                (home / "sessions/2026/10/10").mkdir(parents=True)
+                body = home / "sessions/2026/10/10" / ("rollout-" + NATIVE_THREAD_ID + ".jsonl")
+                body.write_text(json.dumps({"type":"session_meta", "payload":{"id":NATIVE_THREAD_ID}}) + "\n")
+                record.mkdir(parents=True)
+                for field, content in (("source-root", str(self.source_root)), ("session-root", str(root)),
+                                       ("root-inode", history_module.root_inode(root)), ("runtime.lock", ""),
+                                       ("lease-v1", "1\n"), ("journal", "state=CLOSED\nidentity=\nheartbeat=2026-10-10T00:00:00Z\n")):
+                    (record / field).write_text(content)
+                value = {**value, "session_id": identifier}
+                ledger = record / "restored-native-sessions"
+                ledger.write_text(json.dumps(value) + "\n"); ledger.chmod(0o600)
+                original_open = Path.open
+                def guarded_open(path, *args, **kwargs):
+                    if path == body:
+                        raise AssertionError("invalid ledger reached child native body")
+                    return original_open(path, *args, **kwargs)
+                args = type("Args", (), {"source_root": str(self.source_root), "state_home": str(state), "legacy_state_home": None})()
+                with mock.patch.object(Path, "open", guarded_open):
+                    with self.assertRaisesRegex(history_module.Refusal, "invalid imported Native ledger"):
+                        history_module.catalog_value(args)
+
+    def test_isolated_snapshot_requires_exact_original_root_inode_before_native_read(self):
+        for label, inode in (("missing", None), ("mismatch", "0 0\n")):
+            with self.subTest(label=label):
+                state = self.base / ("isolated-snapshot-inode-" + label)
+                identifier = "11111111-2222-4333-8444-555555555556"
+                root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+                home = root / ".harness/codex"
+                shutil.copytree(self.home, home, symlinks=True)
+                record.mkdir(parents=True)
+                (record / "source-root").write_text(str(self.source_root))
+                (record / "session-root").write_text(str(root))
+                if inode is not None:
+                    (record / "root-inode").write_text(inode)
+                before = digest_tree(home)
+                self.run_history("snapshot", "--source", str(home), "--catalog", str(state / "native-history"),
+                                 "--receipt", str(record / "native-history-snapshot.json"), "--source-root", str(self.source_root),
+                                 "--isolation-id", identifier, "--runtime-revision", RUNTIME_REVISION, expected=2)
+                self.assertEqual(digest_tree(home), before)
+                self.assertFalse((state / "native-history/snapshots").exists())
+                self.assertFalse((record / "native-history-snapshot.json").exists())
+
+    def test_snapshot_holds_when_valid_import_ledger_changes_during_copy(self):
+        state = self.base / "ledger-copy-race"
+        identifier, old_owner = "11111111-2222-4333-8444-555555555556", "11111111-2222-4333-8444-555555555557"
+        root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+        home = root / ".harness/codex"
+        shutil.copytree(self.home, home, symlinks=True)
+        record.mkdir(parents=True)
+        for name, value in (("source-root", str(self.source_root)), ("session-root", str(root)), ("root-inode", history_module.root_inode(root))):
+            (record / name).write_text(value)
+        ledger = record / "restored-native-sessions"
+        ledger.write_text(json.dumps({"schema":1,"session_id":identifier,"source_root":str(self.source_root.resolve()),"imports":[{"runtime":"codex","native_id":NATIVE_THREAD_ID,"source_owner":old_owner}]}) + "\n")
+        ledger.chmod(0o600)
+        args = type("Args", (), {"source":str(home), "catalog":str(state / "native-history"), "receipt":str(record / "receipt.json"), "source_root":str(self.source_root), "isolation_id":identifier, "runtime_revision":RUNTIME_REVISION})()
+        original = history_module.archive_children
+        def mutate_after_copy(*values):
+            result = original(*values)
+            ledger.write_text(ledger.read_text() + "\n")
+            return result
+        with mock.patch.object(history_module, "archive_children", mutate_after_copy):
+            with self.assertRaises(history_module.Refusal):
+                history_module.snapshot(args)
+        snapshots = state / "native-history/snapshots"
+        self.assertFalse(any(path.name[0] != "." for path in snapshots.iterdir()))
+        self.assertFalse((record / "receipt.json").exists())
+
+    def test_verify_holds_changed_import_ledger_before_native_proof(self):
+        state = self.base / "ledger-verify-race"
+        identifier, old_owner = "11111111-2222-4333-8444-555555555556", "11111111-2222-4333-8444-555555555557"
+        root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+        home = root / ".harness/codex"
+        shutil.copytree(self.home, home, symlinks=True)
+        record.mkdir(parents=True)
+        for name, value in (("source-root", str(self.source_root)), ("session-root", str(root)), ("root-inode", history_module.root_inode(root))):
+            (record / name).write_text(value)
+        ledger = record / "restored-native-sessions"
+        ledger.write_text(json.dumps({"schema":1,"session_id":identifier,"source_root":str(self.source_root.resolve()),"imports":[{"runtime":"codex","native_id":NATIVE_THREAD_ID,"source_owner":old_owner}]}) + "\n")
+        ledger.chmod(0o600)
+        receipt = record / "receipt.json"
+        snap_args = type("Args", (), {"source":str(home), "catalog":str(state / "native-history"), "receipt":str(receipt), "source_root":str(self.source_root), "isolation_id":identifier, "runtime_revision":RUNTIME_REVISION})()
+        captured = self.run_history("snapshot", "--source", str(home), "--catalog", str(state / "native-history"), "--receipt", str(receipt), "--source-root", str(self.source_root), "--isolation-id", identifier, "--runtime-revision", RUNTIME_REVISION)
+        snapshot = json.loads(captured.stdout)["snapshot_id"]
+        ledger.write_text(ledger.read_text() + "\n")
+        shutil.move(home, self.base / "masked-ledger-verify-home")
+        verify_args = type("Args", (), {"catalog":str(state / "native-history"), "snapshot":snapshot, "source":str(home), "codex_bin":"/bin/true"})()
+        called = []
+        fake_native = types.SimpleNamespace(NativeVerificationError=RuntimeError,
+                                            verify_native=lambda *unused: called.append(True))
+        with mock.patch.dict(sys.modules, {"codex_history_native": fake_native}):
+            with self.assertRaises(history_module.Refusal):
+                history_module.verify(verify_args)
+        self.assertEqual(called, [])
 
 
     def test_unreadable_quarantined_directory_cannot_hide_a_uuid_collision(self):

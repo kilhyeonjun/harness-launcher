@@ -325,6 +325,74 @@ def manifest_id(value):
     return hashlib.sha256(encoded).hexdigest()
 
 
+def imported_native_tuples(items, owner):
+    if not isinstance(items, list) or len(items) > 10000:
+        refuse('invalid imported Native ledger')
+    seen = set()
+    for item in items:
+        if (not isinstance(item, dict) or set(item) != {'runtime', 'native_id', 'source_owner'}
+                or item['runtime'] != 'codex' or not isinstance(item['native_id'],str)
+                or not UUID.fullmatch(item['native_id']) or not isinstance(item['source_owner'],str)
+                or not UUID.fullmatch(item['source_owner'])
+                or item['source_owner'].lower() == owner.lower()
+                or item['native_id'].lower() in seen):
+            refuse('invalid imported Native ledger')
+        seen.add(item['native_id'].lower())
+    return seen
+
+
+def native_import_provenance(home, source, owner):
+    if owner == 'canonical':return None
+    home = Path(home)
+    state = home.parent.parent.parent.parent
+    if home != state/'worktrees'/owner/'.harness/codex':return None
+    record = state/'sessions'/owner
+    bound_path(record, state)
+    path = record/'restored-native-sessions'
+    try:metadata = path.lstat()
+    except FileNotFoundError:return None
+    except OSError:refuse('invalid imported Native ledger')
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+            or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600):
+        refuse('invalid imported Native ledger')
+    def unique_keys(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:raise ValueError('duplicate ledger key')
+            value[key] = item
+        return value
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            stamp = lambda info:(info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns,
+                                info.st_uid,info.st_nlink,info.st_mode)
+            if before.st_size > 65536 or stamp(before) != stamp(metadata):raise ValueError('ledger changed')
+            raw = stream.read(65537)
+            if len(raw) > 65536 or stamp(os.fstat(stream.fileno())) != stamp(before) or stamp(path.lstat()) != stamp(before):
+                raise ValueError('ledger changed')
+        value = json.loads(raw, object_pairs_hook=unique_keys)
+        if (not isinstance(value,dict) or set(value) != {'schema','session_id','source_root','imports'}
+                or type(value['schema']) is not int or value['schema'] != 1
+                or value['session_id'] != owner or value['source_root'] != str(Path(source).resolve())):
+            raise ValueError('invalid ledger binding')
+        imported_native_tuples(value['imports'], owner)
+    except (OSError, ValueError, UnicodeError, TypeError):
+        refuse('invalid imported Native ledger')
+    return {'imports':value['imports'], 'ledger_sha256':hashlib.sha256(raw).hexdigest()}
+
+
+def snapshot_import_ids(value):
+    proof = value.get('native_import_provenance')
+    if proof is None:return set()
+    owner = value.get('isolation_id','')
+    if (not UUID.fullmatch(str(owner)) or not isinstance(proof,dict)
+            or set(proof) != {'imports','ledger_sha256'}
+            or not re.fullmatch('[0-9a-f]{64}',str(proof['ledger_sha256']))):
+        refuse('invalid imported Native ledger')
+    return imported_native_tuples(proof['imports'],owner)
+
+
 def validate_provenance(args):
     canonical = args.isolation_id == "canonical"
     if not canonical and not UUID.fullmatch(args.isolation_id):
@@ -339,11 +407,17 @@ def validate_provenance(args):
         state = Path(args.catalog).absolute().parent
         bound_path(source,state)
         record = state / "sessions" / args.isolation_id / "source-root"
+        bound_path(record.parent,state)
         expected = state / "worktrees" / args.isolation_id / ".harness" / "codex"
         if source != expected or not regular(record):
             refuse("isolated source provenance is unverified")
         if record.read_text(encoding="utf-8").strip() != str(root):
             refuse("isolated source root mismatches provenance")
+        inode = record.parent/'root-inode'
+        try:valid_inode = regular(inode) and inode.read_text().strip() == root_inode(source.parent.parent)
+        except (OSError, UnicodeError):valid_inode = False
+        if not valid_inode:
+            refuse('unverified Native root inode')
     else:bound_path(source,root)
     return source, root
 
@@ -379,6 +453,7 @@ def snapshot(args):
     source, root = validate_provenance(args)
     catalog = Path(args.catalog)
     receipt = Path(args.receipt)
+    imports = native_import_provenance(source, root, args.isolation_id)
     if catalog.exists() and (catalog.is_symlink() or not catalog.is_dir()):
         refuse("unsafe catalog")
     children = source_children(source)
@@ -397,6 +472,8 @@ def snapshot(args):
         after = source_inventory(source, children)
         if after != before:
             refuse("source changed during snapshot")
+        if native_import_provenance(source, root, args.isolation_id) != imports:
+            refuse('imported Native ledger changed during snapshot')
         archive = inventory(data)
         revision=args.runtime_revision
         if args.isolation_id != 'canonical' and source == catalog.parent/'worktrees'/args.isolation_id/'.harness/codex':
@@ -404,6 +481,7 @@ def snapshot(args):
         base = {"schema_version": 1, "source": str(source), "source_root": str(root),
                 "isolation_id": args.isolation_id, "runtime_revision": revision,
                 "source_inventory": before, "archive_inventory": archive}
+        if imports is not None:base['native_import_provenance'] = imports
         if source == catalog.parent/'worktrees'/args.isolation_id/'.harness/codex':
             lineage=catalog.parent/'sessions'/args.isolation_id/'native-history-restore.json'
             if lineage.exists():
@@ -455,6 +533,7 @@ def load_snapshot(catalog, snapshot_id):
         refuse("snapshot identity mismatch")
     if manifest_id({key:item for key,item in value.items() if key!='snapshot_id'}) != snapshot_id:
         refuse('snapshot manifest hash mismatch')
+    snapshot_import_ids(value)
     return root, value
 
 
@@ -512,6 +591,10 @@ def restore(args):
 
 def verify(args):
     root, manifest = load_snapshot(args.catalog, args.snapshot)
+    def check_imports():
+        if native_import_provenance(Path(manifest['source']),Path(manifest['source_root']),manifest['isolation_id']) != manifest.get('native_import_provenance'):
+            refuse('imported Native ledger changed before retirement')
+    check_imports()
     if inventory(root / "data") != manifest.get("archive_inventory"):
         refuse("archived content hash mismatch")
     source = Path(args.source).absolute()
@@ -544,6 +627,7 @@ def verify(args):
             raise Refusal("native history probe failed") from error
     if source_inventory(source, source_children(source)) != manifest.get("source_inventory"):
         refuse("retained native source changed during verification")
+    check_imports()
     result = {"schema_version": 1, "snapshot_id": args.snapshot, "safe_to_retire": True, "proof": proof}
     receipt = root / 'verifications' / (manifest_id(result)+'.json')
     if receipt.exists():
@@ -688,7 +772,10 @@ def home_entries(home, source, isolation, origin, status, snapshot_id):
             for path in directory.rglob('*'):
                 if path.is_dir() or path.is_symlink():bound_path(path,home)
     values = [];selected=None;lineage=None
+    imported = set()
     if isolation and isolation!='canonical' and UUID.fullmatch(isolation) and status=='live':
+        proof = native_import_provenance(home,source,isolation)
+        if proof is not None:imported = imported_native_tuples(proof['imports'],isolation)
         state=home.parent.parent.parent.parent
         receipt=state/'sessions'/isolation/'native-history-restore.json'
         if receipt.exists():
@@ -710,6 +797,7 @@ def home_entries(home, source, isolation, origin, status, snapshot_id):
                 row = json.loads(line)
                 payload = row.get("payload") if isinstance(row, dict) else None
                 if row.get("type") == "session_meta" and isinstance(payload, dict) and UUID.fullmatch(str(payload.get("id", ""))):
+                    if payload['id'].lower() in imported:break
                     if selected and payload['id']!=selected:break
                     values.append({"native_id": payload["id"], "home": str(home), "source_root": str(source),
                                    "isolation_id": isolation, "origin_runtime": origin, "snapshot_id": snapshot_id,
@@ -741,6 +829,8 @@ def snapshot_entries(store, source):
             continue
         rows=home_entries(path / "data", source, value.get("isolation_id"), value.get("runtime_revision"),
                           "snapshot", value.get("snapshot_id"))
+        imported = snapshot_import_ids(value)
+        rows = [row for row in rows if row['native_id'].lower() not in imported]
         if value.get('restored_native_id'):rows=[row for row in rows if row['native_id']==value['restored_native_id']]
         for row in rows:
             row['_source_home']=value['source'];row['_manifest']=value

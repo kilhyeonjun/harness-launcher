@@ -72,6 +72,17 @@ mkdir -p "$STATE/sessions/$ISO" "$STATE/worktrees/$ISO/.harness/codex/sessions/2
 print -r -- "${HARNESS:A}" > "$STATE/sessions/$ISO/source-root"
 : > "$STATE/worktrees/$ISO/.harness/codex/sessions/2026/09/30/rollout-2026-09-30T01-02-03-$CODEX_ID.jsonl"
 resolve codex resume $CODEX_ID; [[ $RC == 0 && "$OUT" == "$ISO" ]] || fail "isolated owner must win, got $RC [$OUT]"
+FORK=ABCDEF02-2222-4333-8444-555555555555
+CHILD=44444444-2222-4333-8444-555555555555
+mkdir -p "$STATE/sessions/$FORK" "$STATE/worktrees/$FORK/.harness/codex/sessions/2026/09/30"
+print -r -- "${HARNESS:A}" > "$STATE/sessions/$FORK/source-root"
+: > "$STATE/worktrees/$FORK/.harness/codex/sessions/2026/09/30/rollout-parent-$CODEX_ID.jsonl"
+: > "$STATE/worktrees/$FORK/.harness/codex/sessions/2026/09/30/rollout-child-$CHILD.jsonl"
+printf '{"schema":1,"session_id":"%s","source_root":"%s","imports":[{"runtime":"codex","native_id":"%s","source_owner":"%s"}]}' "$FORK" "${HARNESS:A}" "$CODEX_ID" "$ISO" > "$STATE/sessions/$FORK/restored-native-sessions"
+chmod 600 "$STATE/sessions/$FORK/restored-native-sessions"
+resolve codex resume $CODEX_ID; [[ $RC == 0 && "$OUT" == "$ISO" ]] || fail "imported parent must retain its original owner, got $RC [$OUT]"
+resolve codex resume $CHILD; [[ $RC == 0 && "$OUT" == "$FORK" ]] || fail "new child must belong to fork workspace, got $RC [$OUT]"
+rm -rf "$STATE/sessions/$FORK" "$STATE/worktrees/$FORK"
 rm -rf "$STATE/sessions/$ISO" "$STATE/worktrees/$ISO"
 echo 'PASS: B4 resolver returns 4 only for a source-only Codex rollout'
 

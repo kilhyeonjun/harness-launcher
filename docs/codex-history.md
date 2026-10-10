@@ -49,8 +49,10 @@ rule, service or daemon.
   UUID. A Native UUID lease spans preparation, fresh creation and Native exit.
 - `protect-pool --state-home STATE --source-root ROOT --codex-bin BIN` verifies
   every terminal native-bearing root regardless of age, plus every old tomb,
-  before an immutable older runtime can execute its GC. Unknown or unverified
+before an immutable older runtime can execute its GC. Unknown or unverified
   candidates refuse that launch; old-runtime retention has a 24-hour floor.
+  An explicit `archive` retention sentinel remains intact so numeric-only
+  older engines refuse deletion.
 - `presence --source HOME --anchor STATE` returns `native` or `absent` only
   after validating accessible, owned directory ancestry. Permission errors,
   redirected paths and failed checks hold the original root or old tomb.
@@ -63,6 +65,20 @@ restored history without access to the original pathname. Failure restores the
 root; crashes retain staging. Delete only after a durable successful native
 restore receipt and final source validation. Old `.retired-*` remnants receive
 the same protection; a filename is not deletion authorization.
+The managed conversation catalog also retains its verified transcript archive.
+That transcript backup alone does not authorize Native root deletion. Missing
+original inode provenance or an invalid imported-parent ledger holds the root
+before Native data is copied. Valid imported-parent source-owner tuples and
+ledger hashes remain in Native snapshots; imported parents do not become new
+owners in either live or archived Native catalogs.
+Fresh Native restores retain all context originals but assign ownership only to
+the selected UUID. The managed catalog validates the private restore receipt and
+its source-bound, content-addressed Native manifest before reading transcripts.
+Its transcript archive preserves that selection after the live home is removed;
+changed receipt metadata or a different selection blocks archive reuse.
+Existing transcript-only archives remain available through the managed
+conversation catalog. The Native CLI catalog discovers its verified Native
+snapshots; conversion of older transcript-only archives is not performed.
 
 Do not reopen DELIVERED or DISCARDED journals to recover conversation data.
 Historical native resumes use a fresh owned Git session and compatible verified

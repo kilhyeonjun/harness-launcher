@@ -75,6 +75,21 @@ _harness_launcher_session_records_claude() {
   return 1
 }
 
+# A restored parent is lookup material for an explicit fork, not a native
+# session owned by the new workspace. The private ledger binds that import.
+_harness_launcher_session_imported_codex() {
+  local python
+  [[ -e "$1/restored-native-sessions" || -L "$1/restored-native-sessions" ]] || return 1
+  python="$(harness_python3_resolve)" || return 2
+  "$python" -B -c 'import sys; from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from harness_session_catalog import imported_ids
+try: imports=imported_ids(Path(sys.argv[2]),Path(sys.argv[3]),sys.argv[4],strict=True)
+except ValueError: raise SystemExit(2)
+raise SystemExit(0 if sys.argv[5].lower() in imports else 1)' \
+    "$_HARNESS_LAUNCHER_BIN" "$1" "$2" "$3" "$4"
+}
+
 # _harness_launcher_claude_transcript_exists <state-home> <session name> <lowercase id>
 #   Claude stores transcripts at <config>/projects/<cwd with non-alnum -> ->/<id>.jsonl.
 #   The cwd is the session root or one of the run directories the launcher
@@ -159,10 +174,15 @@ _harness_launcher_resolve_restore() {
   local sessions="$state_home/sessions" dir name recorded
   local -a owners=() hits=() recorders=() record_only=()
   if $is_codex; then
-    local rollout
+    local rollout import_status
     for rollout in "$state_home"/worktrees/*/.harness/codex/sessions/*/*/*/rollout-*-$id.jsonl(N); do
       [[ -f "$rollout" && ! -L "$rollout" ]] || continue
       name="${${rollout#$state_home/worktrees/}%%/*}"
+      if _harness_launcher_session_imported_codex "$sessions/$name" "$source_root" "$name" "$id"; then
+        continue
+      else
+        import_status=$?; (( import_status == 1 )) || return 3
+      fi
       hits+=("$name")
     done
   else

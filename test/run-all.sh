@@ -30,6 +30,7 @@ for test_file in "$ROOT"/test/test-*.sh; do
         test-codex-observability-profile.sh|test-codex-migrate-to-symlinks.sh|\
         test-codex-project-trust.sh|\
         test-session-isolation.sh|test-session-isolation-concurrency.sh|\
+        test-session-transcript-retention.sh|\
         test-harness-headless.sh|test-headless-target.sh)
         printf '==> %s (SKIP: /usr/bin/lockf unavailable)\n' "$test_name"
         skipped=$((skipped + 1))
@@ -59,7 +60,7 @@ printf '==> test_mcp_paths.py (%s)\n' "$PYTHON_BIN"
 "$PYTHON_BIN" "$ROOT/test/test_mcp_paths.py"
 passed=$((passed + 1))
 
-for python_test in test_codex_hook_trust.py test_slack_approval_policy.py test_claude_plugin_scope_mirror.py test_codex_app_server_guard.py test_harness_paseo.py test_herdr_harness_plugin.py test_harness_herdr_web.py test_harness_herdr_usage.py; do
+for python_test in test_codex_hook_trust.py test_slack_approval_policy.py test_claude_plugin_scope_mirror.py test_codex_app_server_guard.py test_harness_paseo.py test_herdr_harness_plugin.py test_harness_herdr_web.py test_harness_herdr_usage.py test_launch_plan.py test_session_archive.py test_session_catalog.py test_session_restore.py test_headless_retention_compat.py; do
   printf '==> %s (%s)\n' "$python_test" "$PYTHON_BIN"
   "$PYTHON_BIN" "$ROOT/test/$python_test"
   passed=$((passed + 1))

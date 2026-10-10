@@ -355,6 +355,9 @@ retire_native_root() {
   output="$("$py" -I "$helper" snapshot --source "$root/.harness/codex" --catalog "$catalog" \
     --receipt "$receipt" --source-root "$source" --isolation-id "$id" --runtime-revision "$revision")" || return 1
   snapshot="$(printf '%s' "$output" | "$py" -I -c 'import json,sys; print(json.load(sys.stdin)["snapshot_id"])')" || return 1
+  # Strict Native provenance/ledger validation precedes transcript copying.
+  # Preserve the managed conversation catalog as well as the full Native store.
+  archive_session_transcripts "$(state_home)" "$id" "$source" "$root" || return 1
   if [[ "$staged" != 1 ]]; then
     [[ ! -e "$tomb" && ! -L "$tomb" ]] && mv "$root" "$tomb" || return 1
   fi
@@ -365,12 +368,83 @@ retire_native_root() {
   fi
   rm -rf -- "$tomb"
 }
+archive_verified() {
+  local state="$1" id="$2" source="$3" script
+  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_archive.py"
+  [[ -f "$script" && ! -L "$script" ]] || return 1
+  python3 "$script" verify --state "$state" --owner "$id" --source "$source" >/dev/null 2>&1
+}
+archive_session_transcripts() {
+  local state="$1" id="$2" source="$3" root="$4" script
+  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_archive.py"
+  [[ -f "$script" && ! -L "$script" ]] || return 1
+  python3 "$script" archive --state "$state" --owner "$id" --source "$source" --root "$root" >/dev/null 2>&1 \
+    && archive_verified "$state" "$id" "$source"
+}
+resume_hold_preserves_root() {
+  local dir="$1" id="$2" source="$3" hold pid start held_source held_id request actual
+  for hold in "$dir"/resume-hold-*.json; do
+    [[ -e "$hold" || -L "$hold" ]] || continue
+    [[ -f "$hold" && ! -L "$hold" && "$(stat -f '%u %l' "$hold" 2>/dev/null || stat -c '%u %h' "$hold")" == "$(id -u) 1" ]] || return 0
+    {
+      IFS= read -r pid
+      IFS= read -r start
+      IFS= read -r held_source
+      IFS= read -r held_id
+      IFS= read -r request
+    } < <(python3 - "$hold" <<'PY'
+import json,sys
+try:
+    value=json.load(open(sys.argv[1]))
+    keys=('pid','start','source_root','session_id','request_id')
+    if set(value) != set(keys) or not isinstance(value['pid'],int) or any(not isinstance(value[k],str) or not value[k] for k in keys[1:]): raise ValueError
+    if any('\n' in value[k] or '\r' in value[k] for k in keys[1:]): raise ValueError
+    for key in keys: print(value[key])
+except Exception: pass
+PY
+)
+    [[ -n "$pid" && "$held_source" == "$source" && "$held_id" == "$id" && "$request" =~ ^[A-Za-z0-9._-]+$ ]] || return 0
+    actual="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')"
+    if [[ -z "$actual" || "$actual" != "$start" ]]; then rm -f -- "$hold"; continue; fi
+    return 0
+  done
+  return 1
+}
+reserve_hold() {
+  local id="$1" request="$2" pid="$3" started="$4" source="$5" dir recorded actual hold tmp
+  valid_id "$id" && [[ "$request" =~ ^[A-Za-z0-9._-]+$ && "$pid" =~ ^[1-9][0-9]*$ && -n "$started" ]] || return 2
+  dir="$(session_dir "$id")"
+  [[ -d "$dir" && ! -L "$dir" && -f "$dir/source-root" && ! -L "$dir/source-root" ]] || return 2
+  IFS= read -r recorded < "$dir/source-root"
+  [[ "$recorded" == "$source" ]] || return 2
+  actual="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')"
+  [[ "$actual" == "$started" ]] || return 2
+  hold="$dir/resume-hold-$request.json"; [[ ! -e "$hold" && ! -L "$hold" ]] || return 2
+  tmp="$(mktemp "$dir/.resume-hold.XXXXXX")" || return 2
+  python3 - "$tmp" "$pid" "$started" "$source" "$id" "$request" <<'PY'
+import json,sys
+with open(sys.argv[1], 'w') as out:
+    json.dump(dict(zip(('pid','start','source_root','session_id','request_id'),
+                       (int(sys.argv[2]),*sys.argv[3:]))), out, separators=(',',':'))
+    out.write('\n')
+PY
+  chmod 600 "$tmp" && mv -f "$tmp" "$hold" || { rm -f "$tmp"; return 2; }
+}
+release_hold() {
+  local id="$1" request="$2" hold
+  valid_id "$id" && [[ "$request" =~ ^[A-Za-z0-9._-]+$ ]] || return 2
+  hold="$(session_dir "$id")/resume-hold-$request.json"
+  [[ -e "$hold" || -L "$hold" ]] || return 0
+  [[ -f "$hold" && ! -L "$hold" && "$(stat -f '%u %l' "$hold" 2>/dev/null || stat -c '%u %h' "$hold")" == "$(id -u) 1" ]] || return 2
+  rm -f -- "$hold"
+}
 gc_unlocked() {
   local state sessions worktrees retention now started scanned=0 retired=0 retained=0
   local dir id journal status epoch age marker lock root source expected tomb tomb_name tomb_id tomb_nonce
   local history_helper history_python presence
   state="$(state_home)"; sessions="$state/sessions"; worktrees="$state/worktrees"
   retention="${HARNESS_SESSION_RETENTION_SECONDS:-86400}"
+  [[ "$retention" == archive ]] && retention=86400
   [[ "$retention" =~ ^[0-9]+$ ]] && [[ "$retention" -le 604800 ]] || {
     echo 'ERROR: HARNESS_SESSION_RETENTION_SECONDS must be 0..604800' >&2
     return 2
@@ -395,6 +469,10 @@ gc_unlocked() {
       # protect-pool can recover/validate an owner-bound remnant explicitly.
       retained=$((retained + 1)); continue
     fi
+    dir="$sessions/$tomb_id"
+    [[ -f "$dir/source-root" && ! -L "$dir/source-root" ]] || continue
+    IFS= read -r source < "$dir/source-root"
+    archive_verified "$state" "$tomb_id" "$source" || continue
     rm -rf -- "$tomb"
   done
   for tomb in "$worktrees"/.archiving-*; do
@@ -434,6 +512,7 @@ gc_unlocked() {
       [[ "$(cd "${root%/*}" && pwd -P)/${root##*/}" == "$expected" ]] || exit 16
       [[ "$(cd "$root" && pwd -P)" == "$expected" && -d "$source" && "$(cd "$source" && pwd -P)" != "$expected" ]] || exit 17
       root_intact "$dir" "$root" || exit 17
+      resume_hold_preserves_root "$dir" "$id" "$source" && exit 21
       # Binding checks above establish this physical path; keep the recorded
       # spelling for provenance even when system temp paths have aliases.
       presence="$("$history_python" -I "$history_helper" presence --source "$expected/.harness/codex" --anchor "$state")" || exit 21
@@ -444,6 +523,7 @@ gc_unlocked() {
         exit 0
       fi
       [[ "$presence" == absent ]] || exit 21
+      archive_session_transcripts "$state" "$id" "$source" "$root" || exit 22
       tomb="$worktrees/.retired-$id-${BASHPID:-$$}"
       [[ ! -e "$tomb" && ! -L "$tomb" ]] || exit 18
       mv "$root" "$tomb" || exit 19
@@ -1081,11 +1161,13 @@ case "${1:-}" in
   list) list ;;
   heartbeat) shift; heartbeat_session "$1" ;;
   gc) shift; [[ $# -eq 0 ]] || exit 2; gc_sessions ;;
+  reserve-hold) shift; [[ $# -eq 5 ]] || exit 2; reserve_hold "$@" ;;
+  release-hold) shift; [[ $# -eq 2 ]] || exit 2; release_hold "$@" ;;
   sandbox-check) shift; [[ $# -eq 1 ]] || exit 2; sandbox_check "$1" ;;
   codex-sandbox-profile) shift; [[ $# -eq 8 ]] || exit 2; codex_sandbox_profile "$@" ;;
   verifier-sandbox-profile) shift; [[ $# -eq 5 ]] || exit 2; verifier_sandbox_profile "$@" ;;
   submit) shift; submit "$1" ;;
   integrate) shift; [[ $# -eq 1 ]] || exit 2; integrate "$1" ;;
   close) shift; [[ $# -eq 1 ]] || exit 2; close_session "$1" ;;
-  *) echo 'usage: harness-session {create|resume|transition|exit|recover|list|heartbeat|gc|submit|integrate|close|discard|sandbox-check}' >&2; exit 2 ;;
+  *) echo 'usage: harness-session {create|resume|transition|exit|recover|list|heartbeat|gc|reserve-hold|release-hold|submit|integrate|close|discard|sandbox-check}' >&2; exit 2 ;;
 esac

@@ -132,7 +132,7 @@ exact_tomb="$STATE/worktrees/.retired-$legacy_id-1"
 mkdir "$suffix_tomb" "$exact_tomb"; printf keep > "$suffix_tomb/sentinel"
 HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
 [[ -f "$suffix_tomb/sentinel" ]] || { echo 'FAIL: tomb cleanup must reject a numeric prefix with arbitrary suffix'; exit 1; }
-[[ ! -e "$exact_tomb" ]] || { echo 'FAIL: exact stale tombstones must be cleaned'; exit 1; }
+[[ -d "$exact_tomb" ]] || { echo 'FAIL: a tombstone without archive proof must be retained'; exit 1; }
 
 malformed="$(create)"; malformed_id="$(printf '%s\n' "$malformed" | sed -n 's/^HARNESS_SESSION_ID=//p')"; malformed_root="$(printf '%s\n' "$malformed" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$malformed_id"
