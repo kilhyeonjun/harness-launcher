@@ -11,7 +11,7 @@ from itertools import islice
 from typing import Dict, Optional
 from pathlib import Path
 
-from harness_session_archive import ArchiveError, verify
+from harness_session_archive import ArchiveError, verify, native_restore_selection
 
 MAX_SESSIONS = 1000
 PREFIX_BYTES = 64 * 1024
@@ -193,10 +193,15 @@ def _source_sessions(state, profile, source, problems):
         try:imported=imported_ids(directory,source,directory.name,strict=True)
         except ValueError:
             _problem(problems,profile,'unsafe_session_import');continue
+        try:selected=native_restore_selection(state,directory.name,source)
+        except ArchiveError:
+            _problem(problems,profile,'unsafe_native_restore');continue
         for path in _transcripts(root / '.harness', problems, profile):
             item = _record(profile, directory.name, source, root / '.harness' / 'codex', path, availability,
                            launcher_id=directory.name)
             if item and item['native_id'] in imported:
+                continue
+            if item and selected and item['native_id'].lower() != selected['native_id'].lower():
                 continue
             if item:
                 if len(records)>=MAX_SESSIONS:
@@ -226,12 +231,15 @@ def _archives(state, profile, source, problems):
             continue
         listed = {entry['path'] for entry in manifest['files']}
         imported = {item['native_id'] for item in manifest.get('restored_native_imports', [])}
+        selected = manifest.get('native_restore_selection')
         for path in _transcripts(archive, problems, profile):
             if str(path.relative_to(archive)) not in listed:
                 _problem(problems,profile,'archive_inventory')
                 continue
             item = _record(profile, archive.name, source, archive / 'codex', path, 'archived', True, archive.name)
             if item and item['native_id'] in imported:
+                continue
+            if item and selected and item['native_id'].lower() != selected['native_id'].lower():
                 continue
             if item:
                 if len(records)>=MAX_SESSIONS:

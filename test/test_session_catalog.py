@@ -215,6 +215,49 @@ class SessionCatalogTest(unittest.TestCase):
             ids={item['native_id'] for item in catalog(state,{'demo':source},home)['items']}
             self.assertEqual(ids,{child})
 
+    def test_native_restore_selection_assigns_only_selected_uuid_to_new_owner_live_and_archive(self):
+        from harness_session_archive import archive
+        from harness_session_catalog import catalog
+        old='11111111-1111-4111-8111-111111111111';new='11111111-1111-4111-8111-111111111112'
+        parent='22222222-2222-4222-8222-222222222222';child='33333333-3333-4333-8333-333333333333';snapshot='a'*64
+        with tempfile.TemporaryDirectory() as tmp:
+            state,source,home=Path(tmp,'state'),Path(tmp,'source'),Path(tmp,'home');source.mkdir()
+            def owner(identifier, natives):
+                root=state/'worktrees'/identifier;folder=root/'.harness/codex/sessions';folder.mkdir(parents=True)
+                for native in natives:(folder/(native+'.jsonl')).write_text(json.dumps({'type':'session_meta','payload':{'id':native}})+'\n'+json.dumps({'type':'turn_context','payload':{}})+'\n')
+                record=state/'sessions'/identifier;record.mkdir(parents=True)
+                (record/'source-root').write_text(str(source.resolve()));(record/'session-root').write_text(str(root));(record/'journal').write_text('state=CLOSED\n');(record/'runtime.lock').touch()
+                return root,record
+            old_root,_=owner(old,[parent]);new_root,new_record=owner(new,[parent,child])
+            receipt=new_record/'native-history-restore.json'
+            from test_session_archive import native_restore_fixture
+            snapshot=native_restore_fixture(source,state,new_root/'.harness/codex',receipt,child)
+            import shutil;shutil.rmtree(source/'.harness/codex')
+            live=catalog(state,{'demo':source},home)['items']
+            self.assertEqual({(item['native_id'],item['launcher_session_id']) for item in live},{(parent,old),(child,new)})
+            saved=archive(root=new_root,state=state,owner_id=new,source_root=source)
+            self.assertEqual(len(list((saved/'codex/sessions').glob('*.jsonl'))),2)
+            shutil.rmtree(new_root);receipt.unlink()
+            archived=catalog(state,{'demo':source},home)['items']
+            self.assertEqual({(item['native_id'],item['launcher_session_id']) for item in archived},{(parent,old),(child,new)})
+
+    def test_invalid_native_restore_receipt_is_partial_before_transcript_read(self):
+        import harness_session_catalog as module
+        from test_session_archive import native_restore_fixture
+        owner='11111111-1111-4111-8111-111111111111';native='22222222-2222-4222-8222-222222222222'
+        with tempfile.TemporaryDirectory() as tmp:
+            state,source=Path(tmp,'state'),Path(tmp,'source');source.mkdir()
+            root=state/'worktrees'/owner;raw=root/'.harness/codex/sessions'/(native+'.jsonl');raw.parent.mkdir(parents=True)
+            raw.write_text(json.dumps({'type':'session_meta','payload':{'id':native}})+'\n')
+            record=state/'sessions'/owner;record.mkdir(parents=True)
+            for name,value in {'source-root':str(source.resolve()),'session-root':str(root),'journal':'state=CLOSED\n','runtime.lock':''}.items():(record/name).write_text(value)
+            receipt=record/'native-history-restore.json';native_restore_fixture(source,state,root/'.harness/codex',receipt,native)
+            import shutil;shutil.rmtree(source/'.harness/codex');receipt.chmod(0o644)
+            with mock.patch.object(module,'_record',side_effect=AssertionError('transcript read before restore proof')):
+                result=module.catalog(state,{'demo':source},Path(tmp,'home'))
+            self.assertEqual(result['items'],[]);self.assertEqual(result['status'],'partial')
+            self.assertIn({'code':'unsafe_native_restore','profile':'demo'},result['problems'])
+
 
 if __name__ == '__main__':
     unittest.main()

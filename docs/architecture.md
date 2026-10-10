@@ -285,6 +285,16 @@ rereads state while holding the runtime lease, validates that the workspace is t
 a same-parent tombstone, and removes only that tombstone. The durable journal is
 retained. The default grace is 24 hours and the accepted range is 0–7 days.
 
+Native Codex data has a separate lifetime. For Native-bearing roots GC first
+creates a private immutable snapshot in `<state>/native-history`, masks the
+original root in recoverable `.archiving-*` staging, then verifies a derived
+restore through the characterized Native binary. Original and other Native
+homes are unreadable to that probe. All raw rollout bytes and paginated items
+must match; unknown artifacts, live writers or failed verification retain the
+root. Old Native `.retired-*` tombs stay recoverable. Archives and completed
+journals are outside the workspace GC target and are never automatically pruned.
+See [Durable native Codex history](codex-history.md).
+
 Delivery has one kernel-locked lane per host. The session submits a base SHA,
 binary patch, NUL-delimited path/mode/blob manifest, canonical source, and
 canonical remote bound by one digest and rechecked before and after verification.

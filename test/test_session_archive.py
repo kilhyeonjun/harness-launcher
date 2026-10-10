@@ -6,11 +6,31 @@ import json
 import sys
 import tempfile
 import unittest
+import shutil
+import subprocess
 from unittest import mock
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
+
+
+def native_restore_fixture(source, state, home, receipt, native):
+    """Exercise the real Native snapshot/restore metadata contract on owned data."""
+    source, state = source.resolve(), state.resolve()
+    original = source / '.harness/codex'
+    shutil.copytree(home, original)
+    helper = Path(__file__).resolve().parents[1] / 'bin/codex-history.py'
+    result = subprocess.run([sys.executable, '-I', str(helper), 'snapshot', '--source', str(original),
+        '--catalog', str(state / 'native-history'), '--receipt', str(state / 'captured.json'),
+        '--source-root', str(source), '--isolation-id', 'canonical', '--runtime-revision', 'a'*40],
+        capture_output=True, text=True, check=True)
+    snapshot = json.loads(result.stdout)['snapshot_id']
+    shutil.rmtree(home)
+    subprocess.run([sys.executable, '-I', str(helper), 'restore', '--catalog', str(state / 'native-history'),
+        '--snapshot', snapshot, '--destination', str(home), '--receipt', str(receipt),
+        '--native-id', native, '--origin-runtime', 'a'*40], capture_output=True, text=True, check=True)
+    return snapshot
 
 
 class SessionArchiveTest(unittest.TestCase):
@@ -109,6 +129,70 @@ class SessionArchiveTest(unittest.TestCase):
 
             manifest = verify(archive=state / 'archives' / owner, owner_id=owner, source_root=source)
             self.assertEqual(manifest['grant_provenance']['codex'][0]['profile'], 'base')
+
+    def test_archive_persists_valid_native_restore_selection_and_reuses_only_matching_selection(self):
+        from harness_session_archive import archive, verify, ArchiveError
+        owner='11111111-1111-4111-8111-111111111111';native='22222222-2222-4222-8222-222222222222';snapshot='a'*64
+        with tempfile.TemporaryDirectory() as tmp:
+            root,state,source=Path(tmp,'root'),Path(tmp,'state'),Path(tmp,'source');source.mkdir()
+            raw=root/'.harness/codex/sessions'/(native+'.jsonl');raw.parent.mkdir(parents=True)
+            raw.write_text(json.dumps({'type':'session_meta','payload':{'id':native}})+'\n'+json.dumps({'type':'turn_context','payload':{}})+'\n')
+            record=state/'sessions'/owner;record.mkdir(parents=True)
+            receipt=record/'native-history-restore.json'
+            snapshot=native_restore_fixture(source,state,root/'.harness/codex',receipt,native)
+            saved=archive(root=root,state=state,owner_id=owner,source_root=source)
+            manifest=verify(archive=saved,owner_id=owner,source_root=source)
+            self.assertEqual(manifest['native_restore_selection'],{'native_id':native,'snapshot_id':snapshot})
+            self.assertEqual((saved/'codex/sessions'/(native+'.jsonl')).read_bytes(),raw.read_bytes())
+            self.assertEqual(archive(root=root,state=state,owner_id=owner,source_root=source),saved)
+            value=json.loads(receipt.read_text());value['native_id']='33333333-3333-4333-8333-333333333333'
+            receipt.write_text(json.dumps(value)+'\n')
+            with self.assertRaises(ArchiveError):archive(root=root,state=state,owner_id=owner,source_root=source)
+
+    def test_native_restore_metadata_invalid_before_body_and_race_blocks_publication(self):
+        import harness_session_archive as module
+        owner='11111111-1111-4111-8111-111111111111';native='22222222-2222-4222-8222-222222222222'
+        cases=('mode','duplicate','source','hash','receipt-shape','receipt-link','manifest-link','race')
+        for case in cases:
+            with self.subTest(case=case),tempfile.TemporaryDirectory() as tmp:
+                root,state,source=Path(tmp,'root'),Path(tmp,'state'),Path(tmp,'source');source.mkdir()
+                raw=root/'.harness/codex/sessions'/(native+'.jsonl');raw.parent.mkdir(parents=True)
+                raw.write_text(json.dumps({'type':'session_meta','payload':{'id':native}})+'\n')
+                record=state/'sessions'/owner;record.mkdir(parents=True);receipt=record/'native-history-restore.json'
+                snapshot=native_restore_fixture(source,state,root/'.harness/codex',receipt,native)
+                original=raw.read_bytes();manifest=state/'native-history/snapshots'/snapshot/'manifest.json'
+                if case=='mode':receipt.chmod(0o644)
+                elif case=='duplicate':receipt.write_text(receipt.read_text().replace('{','{"native_id":"'+native+'",',1))
+                elif case in ('source','hash'):
+                    value=json.loads(manifest.read_text());value['source_root']='foreign' if case=='source' else str(source.resolve());value['unexpected']='changed'
+                    manifest.write_text(json.dumps(value))
+                elif case=='receipt-shape':receipt.write_text('{"snapshot_id":"'+snapshot+'"}')
+                elif case in ('receipt-link','manifest-link'):
+                    target=receipt if case=='receipt-link' else manifest
+                    outside=Path(tmp,'outside');target.rename(outside);target.symlink_to(outside)
+                if case=='race':
+                    original_copy=module._copy_file
+                    def changed(*args):
+                        result=original_copy(*args);receipt.write_text(receipt.read_text()+'\n');return result
+                    with mock.patch.object(module,'_copy_file',side_effect=changed),self.assertRaises(module.ArchiveError):
+                        module.archive(root=root,state=state,owner_id=owner,source_root=source)
+                else:
+                    with mock.patch.object(module,'_candidate_files',side_effect=AssertionError('body scanned before receipt proof')),self.assertRaises(module.ArchiveError):
+                        module.archive(root=root,state=state,owner_id=owner,source_root=source)
+                self.assertEqual(raw.read_bytes(),original);self.assertFalse((state/'archives'/owner).exists())
+
+    def test_preexisting_archive_without_selection_cannot_be_reused_after_native_restore(self):
+        import harness_session_archive as module
+        owner='11111111-1111-4111-8111-111111111111';native='22222222-2222-4222-8222-222222222222'
+        with tempfile.TemporaryDirectory() as tmp:
+            root,state,source=Path(tmp,'root'),Path(tmp,'state'),Path(tmp,'source');source.mkdir()
+            raw=root/'.harness/codex/sessions'/(native+'.jsonl');raw.parent.mkdir(parents=True)
+            raw.write_text(json.dumps({'type':'session_meta','payload':{'id':native}})+'\n')
+            saved=module.archive(root=root,state=state,owner_id=owner,source_root=source);before=(saved/'manifest.json').read_bytes()
+            record=state/'sessions'/owner;record.mkdir(parents=True)
+            native_restore_fixture(source,state,root/'.harness/codex',record/'native-history-restore.json',native)
+            with self.assertRaises(module.ArchiveError):module.archive(root=root,state=state,owner_id=owner,source_root=source)
+            self.assertEqual((saved/'manifest.json').read_bytes(),before)
 
 
 class ArchiveSafetyTest(unittest.TestCase):

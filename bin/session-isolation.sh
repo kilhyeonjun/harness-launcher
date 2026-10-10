@@ -203,14 +203,23 @@ headless_local_files() {
   done
 }
 create() {
-  local source="$1" root state id base sha dir local_file
+  local source="$1" local_only="${2:-0}" root state id base sha dir local_file has_origin=0
   source="$(cd "$source" && pwd -P)"
   git -C "$source" rev-parse --is-inside-work-tree >/dev/null
   state="$(state_home)"; mkdir -p "$state/sessions" "$state/worktrees"
   if git -C "$source" remote get-url origin >/dev/null 2>&1; then
-    git -C "$source" fetch -q origin main:refs/remotes/origin/main
+    has_origin=1
+    [[ "$local_only" == 1 ]] || git -C "$source" fetch -q origin main:refs/remotes/origin/main
   fi
-  base="$(git -C "$source" rev-parse --verify -q origin/main 2>/dev/null || git -C "$source" rev-parse HEAD)"
+  if [[ "$local_only" == 1 && "$has_origin" == 1 ]]; then
+    base="$(git -C "$source" rev-parse --verify -q refs/remotes/origin/main)" || {
+      echo 'harness-session: offline restore requires a cached origin/main' >&2; return 2;
+    }
+  elif [[ "$local_only" == 1 ]]; then
+    base="$(git -C "$source" rev-parse --verify -q refs/heads/main)" || return 2
+  else
+    base="$(git -C "$source" rev-parse --verify -q origin/main 2>/dev/null || git -C "$source" rev-parse HEAD)"
+  fi
   sha="$(git -C "$source" rev-parse "$base^{commit}")"
   id="$(new_id)"; dir="$state/sessions/$id"; root="$state/worktrees/$id"
   mkdir -p "$dir"
@@ -330,6 +339,35 @@ terminal_epoch() {
   date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$value" +%s 2>/dev/null \
     || date -u -d "$value" +%s 2>/dev/null
 }
+# Called only under the stock per-root lease. Native verification must see the
+# original pathname disappear; failures restore the same directory/inode.
+retire_native_root() {
+  local root="$1" tomb="$2" dir="$3" source="$4" id="$5" staged="${6:-0}"
+  local helper py native catalog receipt output snapshot revision='legacy-unknown'
+  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-history.py"
+  [[ -f "$helper" && ! -L "$helper" ]] || return 1
+  source "$(dirname "$helper")/harness-common.sh"
+  py="$(harness_python3_resolve)" && native="$(harness_codex_bin_resolve)" || return 1
+  catalog="$(state_home)/native-history"
+  receipt="$dir/native-history-snapshot-${BASHPID:-$$}-$(date -u +%s).json"
+  # Binding provenance is checked by the managed entry; legacy origin is
+  # explicitly unknown rather than borrowing the currently selected pin.
+  output="$("$py" -I "$helper" snapshot --source "$root/.harness/codex" --catalog "$catalog" \
+    --receipt "$receipt" --source-root "$source" --isolation-id "$id" --runtime-revision "$revision")" || return 1
+  snapshot="$(printf '%s' "$output" | "$py" -I -c 'import json,sys; print(json.load(sys.stdin)["snapshot_id"])')" || return 1
+  # Strict Native provenance/ledger validation precedes transcript copying.
+  # Preserve the managed conversation catalog as well as the full Native store.
+  archive_session_transcripts "$(state_home)" "$id" "$source" "$root" || return 1
+  if [[ "$staged" != 1 ]]; then
+    [[ ! -e "$tomb" && ! -L "$tomb" ]] && mv "$root" "$tomb" || return 1
+  fi
+  if ! "$py" -I "$helper" verify --catalog "$catalog" --snapshot "$snapshot" \
+      --source "$tomb/.harness/codex" --codex-bin "$native" >/dev/null; then
+    if [[ "$staged" != 1 && ! -e "$root" && ! -L "$root" ]]; then mv "$tomb" "$root" || return 1; fi
+    return 1
+  fi
+  rm -rf -- "$tomb"
+}
 archive_verified() {
   local state="$1" id="$2" source="$3" script
   script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_archive.py"
@@ -403,6 +441,7 @@ release_hold() {
 gc_unlocked() {
   local state sessions worktrees retention now started scanned=0 retired=0 retained=0
   local dir id journal status epoch age marker lock root source expected tomb tomb_name tomb_id tomb_nonce
+  local history_helper history_python presence
   state="$(state_home)"; sessions="$state/sessions"; worktrees="$state/worktrees"
   retention="${HARNESS_SESSION_RETENTION_SECONDS:-86400}"
   [[ "$retention" == archive ]] && retention=86400
@@ -411,19 +450,44 @@ gc_unlocked() {
     return 2
   }
   mkdir -p "$sessions" "$worktrees"
-  [[ ! -L "$sessions" && ! -L "$worktrees" ]] || return 2
+  [[ ! -L "$state" && ! -L "$sessions" && ! -L "$worktrees" ]] || return 2
+  state="$(cd "$state" && pwd -P)" || return 2
   sessions="$(cd "$sessions" && pwd -P)"; worktrees="$(cd "$worktrees" && pwd -P)"
+  history_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-history.py"
+  [[ -f "$history_helper" && ! -L "$history_helper" ]] || return 2
+  source "$(dirname "$history_helper")/harness-common.sh"
+  history_python="$(harness_python3_resolve)" || return 2
   now="$(date -u +%s)"; started="$now"
 
   for tomb in "$worktrees"/.retired-*; do
     [[ -d "$tomb" && ! -L "$tomb" ]] || continue
     tomb_name="${tomb##*/}"; tomb_id="${tomb_name#.retired-}"; tomb_id="${tomb_id%-*}"; tomb_nonce="${tomb_name##*-}"
     valid_id "$tomb_id" && [[ "$tomb_nonce" =~ ^[0-9]+$ ]] || continue
+    presence="$("$history_python" -I "$history_helper" presence --source "$tomb/.harness/codex" --anchor "$state")" || { retained=$((retained + 1)); continue; }
+    if [[ "$presence" != absent ]]; then
+      # Old tombs have no successful Native restore receipt. Preserve them;
+      # protect-pool can recover/validate an owner-bound remnant explicitly.
+      retained=$((retained + 1)); continue
+    fi
     dir="$sessions/$tomb_id"
     [[ -f "$dir/source-root" && ! -L "$dir/source-root" ]] || continue
     IFS= read -r source < "$dir/source-root"
     archive_verified "$state" "$tomb_id" "$source" || continue
     rm -rf -- "$tomb"
+  done
+  for tomb in "$worktrees"/.archiving-*; do
+    [[ -d "$tomb" && ! -L "$tomb" ]] || continue
+    tomb_name="${tomb##*/}"; tomb_id="${tomb_name#.archiving-}"; tomb_id="${tomb_id%-*}"; tomb_nonce="${tomb_name##*-}"
+    valid_id "$tomb_id" && [[ "$tomb_nonce" =~ ^[0-9]+$ ]] || continue
+    dir="$sessions/$tomb_id"; root="$worktrees/$tomb_id"
+    [[ ! -e "$root" && ! -L "$root" && -f "$dir/runtime.lock" && ! -L "$dir/runtime.lock" ]] || { retained=$((retained + 1)); continue; }
+    (
+      exec 8>"$dir/runtime.lock"; /usr/bin/lockf -s -t 0 8 || exit 11
+      terminal_record_valid "$dir" && root_intact "$dir" "$tomb" || exit 12
+      [[ "$(<"$dir/session-root")" == "$root" ]] || exit 12
+      mv "$tomb" "$root"
+    ) || true
+    retained=$((retained + 1))
   done
 
   for dir in "$sessions"/*; do
@@ -447,9 +511,20 @@ gc_unlocked() {
       [[ "${root##*/}" == "$id" && -d "$root" && ! -L "$root" ]] || exit 15
       [[ "$(cd "${root%/*}" && pwd -P)/${root##*/}" == "$expected" ]] || exit 16
       [[ "$(cd "$root" && pwd -P)" == "$expected" && -d "$source" && "$(cd "$source" && pwd -P)" != "$expected" ]] || exit 17
+      root_intact "$dir" "$root" || exit 17
       resume_hold_preserves_root "$dir" "$id" "$source" && exit 21
+      # Binding checks above establish this physical path; keep the recorded
+      # spelling for provenance even when system temp paths have aliases.
+      presence="$("$history_python" -I "$history_helper" presence --source "$expected/.harness/codex" --anchor "$state")" || exit 21
+      if [[ "$presence" == native ]]; then
+        [[ -z "${HARNESS_HISTORY_SOURCE_ROOT:-}" || "$source" == "$HARNESS_HISTORY_SOURCE_ROOT" ]] || exit 21
+        tomb="$worktrees/.archiving-$id-${BASHPID:-$$}"
+        retire_native_root "$root" "$tomb" "$dir" "$source" "$id" || exit 21
+        exit 0
+      fi
+      [[ "$presence" == absent ]] || exit 21
       archive_session_transcripts "$state" "$id" "$source" "$root" || exit 22
-      tomb="$worktrees/.retired-$id-$BASHPID"
+      tomb="$worktrees/.retired-$id-${BASHPID:-$$}"
       [[ ! -e "$tomb" && ! -L "$tomb" ]] || exit 18
       mv "$root" "$tomb" || exit 19
       rm -rf -- "$tomb" || exit 20
@@ -1073,7 +1148,7 @@ discard_unlocked() {
   )
 }
 case "${1:-}" in
-  create) shift; [[ $# -eq 1 ]] || exit 2; create "$1" ;;
+  create) shift; if [[ "${1:-}" == --local ]]; then shift; [[ $# -eq 1 ]] || exit 2; create "$1" 1; else [[ $# -eq 1 ]] || exit 2; create "$1"; fi ;;
   discard) shift; [[ $# -eq 1 ]] || exit 2; with_lock discard_unlocked "$1" ;;
   resume) shift; [[ $# -eq 2 ]] || exit 2; resume_session "$1" "$2" ;;
   transition)

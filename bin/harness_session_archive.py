@@ -254,6 +254,79 @@ def _restored_imports(state, owner_id, source_root):
         raise ArchiveError('invalid restored import ledger') from exc
 
 
+def _private_json(path, limit):
+    before = _regular(path)
+    if stat.S_IMODE(before.st_mode) != 0o600:
+        raise ArchiveError('native restore metadata is not private')
+    value = _json_owned(path, limit)
+    size, digest = _hash_file(path, limit)
+    after = _regular(path)
+    if (_stamp(before), before.st_mode, before.st_uid, before.st_nlink) != (
+            _stamp(after), after.st_mode, after.st_uid, after.st_nlink):
+        raise ArchiveError('native restore metadata changed while reading')
+    return value, digest
+
+
+def _selection(value):
+    if (not isinstance(value, dict) or set(value) != {'native_id', 'snapshot_id'}
+            or not isinstance(value['native_id'], str) or not UUID.fullmatch(value['native_id'])
+            or not isinstance(value['snapshot_id'], str) or not re.fullmatch('[0-9a-f]{64}', value['snapshot_id'])):
+        raise ArchiveError('invalid native restore selection')
+    return value
+
+
+def _native_restore_proof(state, owner_id, source_root):
+    """Read only bounded metadata; never consult copied context to assign ownership."""
+    _identity(owner_id, source_root)
+    state = Path(state)
+    try:
+        _directory(state)
+        for directory in (state / 'sessions', state / 'sessions' / owner_id):
+            try:
+                _directory(directory)
+                with os.scandir(directory) as entries:
+                    next(entries, None)
+            except FileNotFoundError:
+                return None
+        receipt = state / 'sessions' / owner_id / 'native-history-restore.json'
+        try:
+            os.lstat(receipt)
+        except FileNotFoundError:
+            return None
+        value, receipt_hash = _private_json(receipt, 65536)
+        required = {'native_id', 'snapshot_id', 'destination_sha256'}
+        if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'origin_runtime'}
+                or not isinstance(value['destination_sha256'], str)
+                or not re.fullmatch('[0-9a-f]{64}', value['destination_sha256'])
+                or ('origin_runtime' in value and (not isinstance(value['origin_runtime'], str)
+                    or not re.fullmatch('[0-9a-f]{40}|legacy-unknown', value['origin_runtime'])))):
+            raise ArchiveError('invalid native restore receipt')
+        selected = _selection({key: value[key] for key in ('native_id', 'snapshot_id')})
+        store = state / 'native-history'
+        snapshot = store / 'snapshots' / selected['snapshot_id']
+        for directory in (store, store / 'snapshots', snapshot):
+            _directory(directory)
+            if stat.S_IMODE(directory.lstat().st_mode) != 0o700:
+                raise ArchiveError('native snapshot metadata is not private')
+        manifest, manifest_hash = _private_json(snapshot / 'manifest.json', MAX_MANIFEST_BYTES)
+        if (not isinstance(manifest, dict) or type(manifest.get('schema_version')) is not int
+                or manifest['schema_version'] != 1 or manifest.get('snapshot_id') != selected['snapshot_id']
+                or manifest.get('source_root') != str(Path(source_root).resolve())):
+            raise ArchiveError('native restore snapshot binding mismatch')
+        encoded = json.dumps({key: item for key, item in manifest.items() if key != 'snapshot_id'},
+                             sort_keys=True, separators=(',', ':')).encode()
+        if hashlib.sha256(encoded).hexdigest() != selected['snapshot_id']:
+            raise ArchiveError('native restore snapshot hash mismatch')
+        return selected, receipt_hash, manifest_hash
+    except (OSError, TypeError, ValueError, KeyError) as exc:
+        raise ArchiveError('invalid native restore metadata') from exc
+
+
+def native_restore_selection(state, owner_id, source_root):
+    proof = _native_restore_proof(state, owner_id, source_root)
+    return proof[0] if proof else None
+
+
 def _native_id(path):
     if path.suffix != '.jsonl':
         return None
@@ -330,7 +403,7 @@ def verify(*, archive, owner_id, source_root):
         _identity(owner_id, source_root); _directory(archive)
         manifest = _json_owned(archive / 'manifest.json', MAX_MANIFEST_BYTES)
         required = {'version','session_id','source_root','grant_provenance','grant_provenance_sha256','files'}
-        if (not isinstance(manifest,dict) or not required <= set(manifest) or set(manifest)-required-{'restored_native_imports'}
+        if (not isinstance(manifest,dict) or not required <= set(manifest) or set(manifest)-required-{'restored_native_imports','native_restore_selection'}
                 or type(manifest.get('version')) is not int or manifest['version'] != MANIFEST_VERSION
                 or manifest['session_id'] != owner_id or manifest['source_root'] != str(Path(source_root).resolve())):
             raise ArchiveError('archive manifest identity mismatch')
@@ -339,6 +412,7 @@ def verify(*, archive, owner_id, source_root):
         if manifest['grant_provenance_sha256'] != hashlib.sha256(encoded_grants).hexdigest():
             raise ArchiveError('archive grant provenance mismatch')
         _valid_imports(manifest.get('restored_native_imports',[]), owner_id)
+        if 'native_restore_selection' in manifest: _selection(manifest['native_restore_selection'])
         files = manifest['files']
         if not isinstance(files,list) or len(files)>MAX_FILES: raise ArchiveError('invalid archive file inventory')
         actual, total = set(), 0
@@ -368,7 +442,9 @@ def verify(*, archive, owner_id, source_root):
         raise ArchiveError('invalid archive proof') from exc
 
 
-def _assert_current_source(root,files,records,state,owner_id,source_root,imports):
+def _assert_current_source(root,files,records,state,owner_id,source_root,imports,selection_proof):
+    if _native_restore_proof(state,owner_id,source_root) != selection_proof:
+        raise ArchiveError('native restore ownership changed during archive')
     if files!=_candidate_files(root):raise ArchiveError('archive source inventory changed')
     current=[];total=0
     for source in files:
@@ -386,9 +462,11 @@ def archive(*, root, state, owner_id, source_root):
     _identity(owner_id,source_root)
     _directory(root)
     base = root / '.harness'
-    files = _candidate_files(root)
     state.mkdir(parents=True,exist_ok=True,mode=0o700)
     _directory(state)
+    selection_proof = _native_restore_proof(state,owner_id,source_root)
+    selected = selection_proof[0] if selection_proof else None
+    files = _candidate_files(root)
     archives = state / 'archives'
     archives.mkdir(parents=True, exist_ok=True, mode=0o700)
     _directory(archives)
@@ -396,7 +474,9 @@ def archive(*, root, state, owner_id, source_root):
     target = archives / owner_id
     if target.exists():
         manifest=verify(archive=target,owner_id=owner_id,source_root=source_root)
-        _assert_current_source(root,files,manifest['files'],state,owner_id,source_root,manifest.get('restored_native_imports',[]))
+        if manifest.get('native_restore_selection') != selected:
+            raise ArchiveError('archive native restore ownership mismatch')
+        _assert_current_source(root,files,manifest['files'],state,owner_id,source_root,manifest.get('restored_native_imports',[]),selection_proof)
         return target
     with tempfile.TemporaryDirectory(prefix=f'.{owner_id}.', dir=archives) as temp:
         staging = Path(temp)
@@ -414,9 +494,10 @@ def archive(*, root, state, owner_id, source_root):
                     'restored_native_imports': _restored_imports(state, owner_id, source_root),
                     'grant_provenance_sha256': hashlib.sha256(json.dumps(
                         provenance, sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
+        if selected is not None: manifest['native_restore_selection'] = selected
         _write_manifest(staging, manifest)
         verify(archive=staging, owner_id=owner_id, source_root=source_root)
-        _assert_current_source(root,files,records,state,owner_id,source_root,manifest['restored_native_imports'])
+        _assert_current_source(root,files,records,state,owner_id,source_root,manifest['restored_native_imports'],selection_proof)
         _fsync_tree(staging)
         os.replace(staging, target)
         _fsync_tree(archives)

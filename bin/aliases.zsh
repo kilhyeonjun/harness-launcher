@@ -37,9 +37,11 @@ _harness_launcher_mcp_local_configs() { harness_mcp_local_configs "$@"; }
 _harness_launcher_validate_mcp_local_configs() { harness_validate_mcp_local_configs "$@"; }
 
 _harness_launcher_isolated_session_create() {
-  local source_root="$1" session_id="${2:-}" output key value
+  local source_root="$1" session_id="${2:-}" creation="${3:-}" output key value
   if [[ -n "$session_id" ]]; then
     output="$("$_HARNESS_LAUNCHER_BIN/session-isolation.sh" resume "$source_root" "$session_id")" || return $?
+  elif [[ "$creation" == local ]]; then
+    output="$("$_HARNESS_LAUNCHER_BIN/session-isolation.sh" create --local "$source_root")" || return $?
   else
     output="$("$_HARNESS_LAUNCHER_BIN/session-isolation.sh" create "$source_root")" || return $?
   fi
@@ -248,6 +250,166 @@ _harness_launcher_restore_resume_id() {
   fi
   [[ "$id" =~ $_HARNESS_LAUNCHER_UUID_RE ]] || return 1
   print -r -- "${(L)id}"
+}
+
+# _harness_launcher_codex_history_select <source-root> <list|continue|native-uuid>
+# Reads only the source-bound private catalog.  `list` returns the catalog JSON;
+# selections return a narrow key/value record that callers validate again before
+# touching an isolated home.  A noninteractive continuation must name a UUID
+# when more than one local history is available.
+_harness_launcher_codex_history_select() {
+  local source_root="$1" mode="$2" helper py state output interactive=0
+  helper="$_HARNESS_LAUNCHER_BIN/codex-history.py"
+  [[ -f "$helper" && ! -L "$helper" ]] || return 1
+  py="$(harness_python3_resolve 2>/dev/null)" || return 1
+  state="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  output="$("$py" -I "$helper" catalog --source-root "$source_root" --state-home "$state" \
+    --legacy-state-home "${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher")" || return $?
+  if [[ "$mode" == list ]]; then
+    print -r -- "$output"
+    return 0
+  fi
+  [[ -t 0 && -t 1 ]] && interactive=1
+  "$py" -c '
+import json, re, sys
+mode, source, interactive = sys.argv[1:]
+uuid = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)
+try:
+    entries = json.load(sys.stdin)["entries"]
+except (json.JSONDecodeError, KeyError, TypeError):
+    raise SystemExit(2)
+entries = [row for row in entries if isinstance(row, dict) and row.get("source_local") is True and row.get("source_root") == source and row.get("status") in {"canonical", "live", "snapshot"} and row.get("reason") is None and uuid.fullmatch(str(row.get("native_id", "")))]
+if mode == "continue":
+    if interactive != "1" and len(entries) != 1:
+        raise SystemExit(2)
+    entries.sort(key=lambda row: str(row.get("updated_at", "")), reverse=True)
+    if not entries:
+        raise SystemExit(2)
+elif uuid.fullmatch(mode):
+    entries = [row for row in entries if row["native_id"].lower() == mode.lower()]
+    if len(entries) != 1:
+        raise SystemExit(2)
+else:
+    raise SystemExit(2)
+row = entries[0]
+for key in ("native_id", "home", "source_root", "isolation_id", "origin_runtime", "snapshot_id", "updated_at", "status", "reason"):
+    value = row.get(key)
+    if value is not None and (not isinstance(value, str) or "\n" in value or "\r" in value):
+        raise SystemExit(2)
+    print("{}={}".format(key, value or str()))
+' "$mode" "$source_root" "$interactive" <<< "$output"
+}
+
+# _harness_launcher_codex_history_request [launcher argv...]
+# Recognizes only the public, unambiguous history shortcuts before Codex's
+# normal argument parser can start a native process.
+_harness_launcher_codex_history_request() {
+  [[ "${1:-}" == codex ]] || return 1
+  case "${2:-}" in
+    continue) [[ $# -eq 2 ]] && print -r -- continue ;;
+    resume)
+      case "${3:-}" in
+        --list) [[ $# -eq 3 ]] && print -r -- list ;;
+        '') [[ $# -eq 2 ]] && print -r -- list ;;
+        *) [[ "$3" =~ $_HARNESS_LAUNCHER_UUID_RE && $# -eq 3 ]] && print -r -- "${(L)3}" ;;
+      esac
+      ;;
+  esac
+}
+
+# _harness_launcher_codex_history_prepare <source-root> <native-uuid>
+# Converts a trusted, snapshotless canonical catalog row into immutable private
+# history before a fresh isolation is created.  The helper refuses any origin
+# it cannot bind safely (including active or nonterminal isolated writers).
+_harness_launcher_codex_history_prepare() {
+  local source_root="$1" native_id="$2" helper py state
+  [[ "$native_id" =~ $_HARNESS_LAUNCHER_UUID_RE ]] || return 2
+  helper="$_HARNESS_LAUNCHER_BIN/codex-history.py"
+  [[ -f "$helper" && ! -L "$helper" ]] || return 2
+  py="$(harness_python3_resolve 2>/dev/null)" || return 2
+  state="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  "$py" -I "$helper" prepare --source-root "$source_root" --state-home "$state" --native-id "$native_id" \
+    --legacy-state-home "${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher"
+}
+
+_harness_launcher_codex_history_lease_acquire() {
+  local native_id="$1" state history leases lock
+  [[ "$native_id" =~ $_HARNESS_LAUNCHER_UUID_RE ]] || return 2
+  state="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  history="$state/native-history"; leases="$history/leases"; lock="$leases/${(L)native_id}.lock"
+  [[ ! -e "$history" && ! -L "$history" || -d "$history" && ! -L "$history" ]] || return 2
+  mkdir -p "$leases" && chmod 700 "$history" "$leases" || return 2
+  [[ -d "$leases" && ! -L "$leases" ]] || return 2
+  [[ -e "$lock" || -L "$lock" ]] || umask 077 > "$lock"
+  [[ -f "$lock" && ! -L "$lock" ]] || return 2
+  chmod 600 "$lock" || return 2
+  zmodload zsh/system || return 2
+  zsystem flock -t 0 -f HARNESS_NATIVE_HISTORY_LEASE_FD "$lock" 2>/dev/null || return 2
+}
+
+_harness_launcher_codex_history_lease_release() {
+  [[ -n "${HARNESS_NATIVE_HISTORY_LEASE_FD:-}" ]] || return 0
+  if [[ "${HARNESS_NATIVE_HISTORY_LEASE_ADOPTED:-0}" != 1 ]]; then
+    zsystem flock -u "$HARNESS_NATIVE_HISTORY_LEASE_FD" 2>/dev/null || true
+  else
+    exec {HARNESS_NATIVE_HISTORY_LEASE_FD}>&- 2>/dev/null || true
+  fi
+  HARNESS_NATIVE_HISTORY_LEASE_FD=""
+  HARNESS_NATIVE_HISTORY_LEASE_ADOPTED=0
+}
+
+_harness_launcher_codex_history_lease_adopt() {
+  local native_id="$1" fd="${HARNESS_CODEX_HISTORY_LEASE_FD:-}" state lock actual expected
+  local -A held metadata
+  [[ "$native_id" =~ $_HARNESS_LAUNCHER_UUID_RE && "$fd" =~ '^[1-9][0-9]+$' ]] || return 2
+  state="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  lock="$state/native-history/leases/${(L)native_id}.lock"
+  [[ -f "$lock" && ! -L "$lock" ]] || return 2
+  zmodload zsh/stat || return 2
+  zstat -H held -f "$fd" 2>/dev/null || return 2
+  zstat -H metadata "$lock" 2>/dev/null || return 2
+  [[ "$held[device]:$held[inode]" == "$metadata[device]:$metadata[inode]" ]] || return 2
+  (( (held[mode] & 8#777) == 8#600 && held[uid] == EUID && held[nlink] == 1 )) || return 2
+  HARNESS_NATIVE_HISTORY_LEASE_FD="$fd"
+  HARNESS_NATIVE_HISTORY_LEASE_ADOPTED=1
+}
+
+# _harness_launcher_codex_history_restore <source-root> <generated-codex-home>
+# Hydrates only an Entry-selected immutable snapshot after home preparation.
+# The catalog is consulted again so inherited environment never chooses another
+# profile's archive or substitutes origin provenance.
+_harness_launcher_codex_history_restore() {
+  local source_root="$1" destination="$2" native_id="${HARNESS_CODEX_HISTORY_NATIVE_ID:-}"
+  local snapshot_id="${HARNESS_CODEX_HISTORY_SNAPSHOT_ID:-}" origin_runtime="${HARNESS_CODEX_HISTORY_ORIGIN_RUNTIME:-}"
+  local state helper py selection key value selected_snapshot="" selected_origin="" selected_source="" selected_home="" selected_isolation="" receipt session
+  local expected_home="${HARNESS_CODEX_HISTORY_HOME:-}" expected_isolation="${HARNESS_CODEX_HISTORY_ORIGIN_ISOLATION:-}"
+  [[ -n "$native_id$snapshot_id$origin_runtime" ]] || return 0
+  [[ "$native_id" =~ $_HARNESS_LAUNCHER_UUID_RE && "$snapshot_id" =~ '^[0-9a-f]{64}$' ]] || return 2
+  [[ "$origin_runtime" == legacy-unknown || "$origin_runtime" =~ '^[0-9a-f]{40}$' ]] || return 2
+  selection="$(_harness_launcher_codex_history_select "$source_root" "$native_id")" || return 2
+  while IFS='=' read -r key value; do
+    case "$key" in
+      source_root) selected_source="$value" ;;
+      snapshot_id) selected_snapshot="$value" ;;
+      origin_runtime) selected_origin="$value" ;;
+      home) selected_home="$value" ;;
+      isolation_id) selected_isolation="$value" ;;
+    esac
+  done <<< "$selection"
+  [[ "$selected_source" == "$source_root" && "$selected_snapshot" == "$snapshot_id" && "$selected_origin" == "$origin_runtime" ]] || return 2
+  [[ -z "$expected_home" || "$expected_home" == "$selected_home" ]] || return 2
+  [[ -z "$expected_isolation" || "$expected_isolation" == "$selected_isolation" ]] || return 2
+  [[ "$HARNESS_SESSION_ID" =~ $_HARNESS_LAUNCHER_UUID_RE ]] || return 2
+  state="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  session="$state/sessions/$HARNESS_SESSION_ID"
+  [[ -d "$session" && ! -L "$session" && -d "$destination" && ! -L "$destination" ]] || return 2
+  receipt="$session/native-history-restore.json"
+  [[ ! -e "$receipt" && ! -L "$receipt" ]] || return 2
+  helper="$_HARNESS_LAUNCHER_BIN/codex-history.py"
+  [[ -f "$helper" && ! -L "$helper" ]] || return 2
+  py="$(harness_python3_resolve 2>/dev/null)" || return 2
+  "$py" -I "$helper" restore --catalog "$state/native-history" --snapshot "$snapshot_id" \
+    --destination "$destination" --receipt "$receipt" --native-id "$native_id" --origin-runtime "$origin_runtime" >/dev/null
 }
 
 # _harness_launcher_restore_probe <claude|codex> <lowercase id>
@@ -985,6 +1147,15 @@ _harness_launcher_run() {
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
   local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
+  local HARNESS_NATIVE_HISTORY_LEASE_FD=""
+  local HARNESS_NATIVE_HISTORY_LEASE_ADOPTED=0
+  {
+  if [[ -n "${HARNESS_CODEX_HISTORY_LEASE_FD:-}" ]]; then
+    _harness_launcher_codex_history_lease_adopt "${HARNESS_CODEX_HISTORY_NATIVE_ID:-}" || {
+      echo 'harness-launcher: inherited Codex history lease is invalid' >&2
+      return 2
+    }
+  fi
   local config_root="$HARNESS_DIR"
   unset HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS
   source "$HARNESS_DIR/config/launcher.env"
@@ -1042,8 +1213,56 @@ _harness_launcher_run() {
 
   case "$HARNESS_SESSION_ISOLATION_DEFAULT" in 0|1) ;; *) echo 'harness-launcher: HARNESS_SESSION_ISOLATION_DEFAULT must be 0 or 1' >&2; return 2;; esac
   case "${HARNESS_SESSION_ISOLATION-}" in ''|0|1) ;; *) echo 'harness-launcher: HARNESS_SESSION_ISOLATION must be 0 or 1' >&2; return 2;; esac
-  local isolated=false explicit_isolation_control=false created_isolated_session=false
+  local isolated=false explicit_isolation_control=false created_isolated_session=false history_local_create=false
   local requested_session_id="" isolation_route="" orca_resume=false orca_resume_id=""
+  local history_request="" history_selection="" history_native_id="" history_snapshot_id="" history_origin_runtime="" history_key history_value
+  if [[ -f "$_HARNESS_LAUNCHER_BIN/codex-history.py" && ! -L "$_HARNESS_LAUNCHER_BIN/codex-history.py" ]]; then
+    history_request="$(_harness_launcher_codex_history_request "$@")" || true
+  fi
+  if [[ "$history_request" == list ]]; then
+    _harness_launcher_codex_history_select "${HARNESS_DIR:A}" list
+    return $?
+  fi
+  if [[ -n "$history_request" ]]; then
+    history_selection="$(_harness_launcher_codex_history_select "${HARNESS_DIR:A}" "$history_request")" || {
+      echo 'harness-launcher: durable Codex history selection requires an exact local native UUID' >&2
+      return 2
+    }
+    while IFS='=' read -r history_key history_value; do
+      case "$history_key" in
+        native_id) history_native_id="$history_value" ;;
+        snapshot_id) history_snapshot_id="$history_value" ;;
+        origin_runtime) history_origin_runtime="$history_value" ;;
+      esac
+    done <<< "$history_selection"
+    _harness_launcher_codex_history_lease_acquire "$history_native_id" || {
+      echo 'harness-launcher: selected Codex history is already active' >&2
+      return 2
+    }
+    if [[ -z "$history_snapshot_id" ]]; then
+      _harness_launcher_codex_history_prepare "${HARNESS_DIR:A}" "$history_native_id" >/dev/null || {
+        _harness_launcher_codex_history_lease_release
+        echo 'harness-launcher: selected Codex history cannot be prepared safely' >&2
+        return 2
+      }
+      history_selection="$(_harness_launcher_codex_history_select "${HARNESS_DIR:A}" "$history_native_id")" || return 2
+      history_snapshot_id="" history_origin_runtime=""
+      while IFS='=' read -r history_key history_value; do
+        case "$history_key" in
+          snapshot_id) history_snapshot_id="$history_value" ;;
+          origin_runtime) history_origin_runtime="$history_value" ;;
+        esac
+      done <<< "$history_selection"
+    fi
+    if [[ -n "$history_snapshot_id" ]]; then
+      export HARNESS_CODEX_HISTORY_NATIVE_ID="$history_native_id"
+      export HARNESS_CODEX_HISTORY_SNAPSHOT_ID="$history_snapshot_id"
+      export HARNESS_CODEX_HISTORY_ORIGIN_RUNTIME="$history_origin_runtime"
+      set -- codex resume "$history_native_id"
+      isolated=true
+      history_local_create=true
+    fi
+  fi
   if [[ "${1:-}" == "--isolated" ]]; then
     isolated=true; explicit_isolation_control=true
     shift
@@ -1086,7 +1305,7 @@ _harness_launcher_run() {
   if $isolated; then
     isolation_route="$(harness_session_isolation_default_route 1 "$@")" || return $?
     [[ "$isolation_route" != invalid ]] || { echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2; }
-    if [[ -z "$requested_session_id" && "$isolation_route" == reject ]]; then
+    if ! $history_local_create && [[ -z "$requested_session_id" && "$isolation_route" == reject ]]; then
       orca_resume_id="$(_harness_launcher_resolve_restore "${HARNESS_DIR:A}" "$@")"
       case $? in
         0) requested_session_id="$orca_resume_id"; orca_resume=true ;;
@@ -1109,7 +1328,7 @@ _harness_launcher_run() {
         $orca_resume && echo "harness-launcher: could not restore isolated session $requested_session_id" >&2
         return "$resume_rc"
       }
-      "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" gc >/dev/null 2>&1 || echo 'harness-launcher: warning: isolated-session GC failed; workspaces retained' >&2
+      HARNESS_HISTORY_SOURCE_ROOT="$source_root" "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" gc >/dev/null 2>&1 || echo 'harness-launcher: warning: isolated-session GC failed; workspaces retained' >&2
       _harness_launcher_isolated_session_create "$source_root" "$requested_session_id" || {
         local resume_rc=$?
         zsystem flock -u "$HARNESS_SESSION_LEASE_FD" 2>/dev/null || true
@@ -1117,8 +1336,12 @@ _harness_launcher_run() {
         return "$resume_rc"
       }
     else
-      "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" gc >/dev/null 2>&1 || echo 'harness-launcher: warning: isolated-session GC failed; workspaces retained' >&2
-      _harness_launcher_isolated_session_create "$source_root" || return $?
+      HARNESS_HISTORY_SOURCE_ROOT="$source_root" "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" gc >/dev/null 2>&1 || echo 'harness-launcher: warning: isolated-session GC failed; workspaces retained' >&2
+      if $history_local_create; then
+        _harness_launcher_isolated_session_create "$source_root" "" local || return $?
+      else
+        _harness_launcher_isolated_session_create "$source_root" || return $?
+      fi
       _harness_launcher_isolated_lease_acquire "$HARNESS_SESSION_ID" || return $?
       created_isolated_session=true
     fi
@@ -1136,7 +1359,24 @@ _harness_launcher_run() {
       fi
     fi
   fi
-  local isolated_session_id="${HARNESS_SESSION_ID:-}" isolated_heartbeat_pid=""
+  local isolated_session_id="${HARNESS_SESSION_ID:-}" isolated_heartbeat_pid="" native_history_lease_id=""
+  native_history_lease_id="${HARNESS_CODEX_HISTORY_NATIVE_ID:-}"
+  [[ "$native_history_lease_id" =~ $_HARNESS_LAUNCHER_UUID_RE ]] || native_history_lease_id="$(_harness_launcher_codex_history_request "$@" 2>/dev/null || true)"
+  if [[ "$native_history_lease_id" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
+    if [[ -n "${HARNESS_NATIVE_HISTORY_LEASE_FD:-}" ]]; then
+      :
+    elif [[ -n "${HARNESS_CODEX_HISTORY_LEASE_FD:-}" ]]; then
+      _harness_launcher_codex_history_lease_adopt "$native_history_lease_id" || {
+        echo 'harness-launcher: inherited Codex history lease is invalid' >&2
+        return 2
+      }
+    else
+      _harness_launcher_codex_history_lease_acquire "$native_history_lease_id" || {
+      echo 'harness-launcher: selected Codex history is already active' >&2
+      return 2
+      }
+    fi
+  fi
   # Every exit after the isolated session is acquired, including error
   # returns, stops a started heartbeat and finishes the session once.
   {
@@ -1146,6 +1386,9 @@ _harness_launcher_run() {
     if [[ -n "$isolated_session_id" ]]; then
       _harness_launcher_isolated_finish "$isolated_session_id" "$isolated_heartbeat_pid" "${HARNESS_SESSION_LEASE_FD:-}"
     fi
+  }
+  } always {
+    _harness_launcher_codex_history_lease_release
   }
 }
 
@@ -1939,6 +2182,10 @@ _harness_launcher_run_codex_cli() {
   else
     _harness_launcher_export_codex_runtime_env "$HARNESS_DIR" || return $?
   fi
+  _harness_launcher_codex_history_restore "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$CODEX_HOME" || {
+    echo 'harness-launcher: durable Codex history restore was refused; no model was launched' >&2
+    return 2
+  }
 
   local -a HARNESS_SLACK_ARGV=()
   harness_slack_codex_argv "$_HARNESS_SLACK_POLICY" "${codex_restore_args[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}" || return $?

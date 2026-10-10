@@ -24,7 +24,8 @@ printf 'fixture-auth-excluded\n' > "$WORK/.harness/codex/auth.json"
 cp "$WORK/.harness/$REL" "$TMP/original.jsonl"
 "$ROOT/bin/session-isolation.sh" close "$ID"
 "$ROOT/bin/session-isolation.sh" gc
-[[ ! -e "$WORK" ]] || { echo 'FAIL: verified transcript archive should permit terminal root GC'; exit 1; }
+[[ -d "$WORK" ]] || { echo 'FAIL: transcript-only backup must not authorize Native root deletion without full restoration proof'; exit 1; }
+cmp "$TMP/original.jsonl" "$WORK/.harness/$REL" || { echo 'FAIL: held Native original must remain unchanged'; exit 1; }
 cmp "$TMP/original.jsonl" "$HARNESS_SESSION_STATE_HOME/archives/$ID/$REL" || { echo 'FAIL: GC deleted the only native transcript without exact durable backup'; exit 1; }
 [[ ! -e "$HARNESS_SESSION_STATE_HOME/archives/$ID/codex/auth.json" ]] || { echo 'FAIL: transcript archive must exclude auth'; exit 1; }
 python3 - "$HARNESS_SESSION_STATE_HOME/archives/$ID" "$ID" <<'PY'

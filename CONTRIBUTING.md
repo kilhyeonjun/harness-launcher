@@ -99,7 +99,12 @@ Tests should use temporary homes, fake runtimes, and fake project directories. T
 
 Changes must preserve these boundaries:
 
-- Runtime state stays under `<project>/.harness/<runtime>`. The only exception is `bin/claude-plugin-scope-mirror.py`, which edits Claude Code's user plugin registry for isolated session roots; changes there must keep its fail-closed validation, lock, compare-before-replace and launcher-owned-path rules.
+- Runtime homes stay under `<project>/.harness/<runtime>`. Native history archives
+  and source-bound metadata live in `<state>/native-history`, outside disposable
+  Git roots; auth, generated configuration and grants are excluded. Another
+  exception is `bin/claude-plugin-scope-mirror.py`, which edits Claude Code's user
+  plugin registry for isolated session roots; preserve its ownership and locking
+  boundaries.
 - Generated runtime homes are not the durable source for user-authored config or skills.
 - Native Codex auth is referenced through the selected auth file; do not copy or transform refresh tokens.
 - Shared global Codex cache writes remain serialized with macOS `lockf`.

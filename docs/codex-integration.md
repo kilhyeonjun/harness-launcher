@@ -68,7 +68,11 @@ Before launch, `codex-home-prepare.sh` converges:
 └── history.jsonl
 ```
 
-The exact set depends on available source files and installed Codex features. The directory is generated runtime state and should be ignored by Git.
+The exact set depends on available source files and installed Codex features.
+Configuration and adapters are generated; Native sessions and databases are
+durable user data sharing the same directory. Both are ignored by Git. See
+[Durable native Codex history](codex-history.md) for source-local discovery,
+restoration and workspace retirement.
 
 When `config/codex-surface.json` exists, preparation uses its exact skill, Claude-plugin, Codex-only, and MCP allowlists instead of importing every available source. See [Codex surface manifests](codex-surface.md) for schema version `1`, profile selection, and warm-path invalidation.
 
@@ -416,8 +420,10 @@ command through `/hooks` when Codex requests it.
 <prefix> codex astra           new session with Astra at medium effort
 <prefix> codex base 1m         explicit long-context session
 <prefix> codex [profile] work   new session with the work MCP surface (any profile)
-<prefix> codex continue        resume --last
-<prefix> codex resume          resume picker
+<prefix> codex continue        source-local history selection
+<prefix> codex resume          source-local history catalog
+<prefix> codex resume --list   metadata JSON, no Native or model launch
+<prefix> codex resume <uuid>   fresh local restore of exact Native history
 ```
 
 The interactive launcher also supports forking the last Codex session. Extra runtime arguments pass through after launcher parsing.

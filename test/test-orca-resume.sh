@@ -189,6 +189,10 @@ run_codex() { # <log> [ENV=val ...] -- args
   (
     export PATH="$TMP/bin:/usr/bin:/bin" HARNESS_SESSION_STATE_HOME="$STATE" STUB_LOG="$log" "${envs[@]}"
     source "$ROOT/bin/aliases.zsh"
+    # Exercise the owning-root resolver retained for older pinned runtimes.
+    # Current durable catalog/restore uses real metadata in its own integration
+    # suite; these deliberately empty rollout fixtures carry only filenames.
+    _harness_launcher_codex_history_request() { return 1; }
     _harness_launcher_run_codex_cli() { printf 'SESSION=%s\nARGS=%s\n' "${HARNESS_SESSION_ROOT:-}" "$*" > "$STUB_LOG"; }
     _harness_launcher_run "$HARNESS" "$@"
   ) >/dev/null 2>"$log.err"
