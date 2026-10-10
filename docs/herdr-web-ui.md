@@ -1,5 +1,15 @@
 # herdr web ui
 
+## Managed workspace creation and previous conversations
+
+Hosts with a managed launcher release can expose registered profile capabilities to the Web UI. Quick start preserves the profile preset. Detailed controls use the same pure `harness_launch_plan.py` planner as the terminal JSON interface, validate model/effort/context combinations, and preview the exact launcher arguments before an explicit Start. Codex approval and sandbox remain separate controls; existing source policy, including Slack approval requirements, is preserved. Claude offers standard or 1m native context aliases. Requested context is configuration, not a guarantee of model or account support.
+
+Previous conversations are selected by a target-local opaque catalog ID, never `--last`. Exact resume retains its launcher owner, home and bound release. A retired conversation is copied from a verified private archive into a fresh owner for an explicit fork; the original journal/archive remain unchanged. Missing permission provenance requires an explicit permission selection. Raw conversation text and authentication are not returned by the catalog or copied to another PC/profile.
+
+Favorites and recent selections restore validated settings on the selected PC. Picking one never starts an agent. Recent entries are recorded only after the owned process is confirmed started. Uncertain startup reconciles the existing request and workspace without resending terminal input.
+
+Isolation GC archives supported Codex native data before retiring a terminal worktree. `HARNESS_SESSION_RETENTION_SECONDS=archive` enables the compatible default policy: old numeric-only engines refuse cleanup before deletion. Managed hosts must also route ordinary `harness-headless` through the verified selected release because old headless drops this environment variable. Explicit execution of an old absolute headless binary is outside that managed route.
+
 [herdr web ui](https://github.com/devswha/herdr-web-ui) is a herdr plugin: a browser client with chat, a live terminal, approval cards, and a file browser for every agent pane. `harness-herdr-web` installs it **local-only, behind a token**, and checks that it stays that way.
 
 Supported: the pinned release `v0.3.34` (commit `efd017b1a42c`) on macOS, with herdr 0.9.1 and Bun 1.4 or later.

@@ -93,13 +93,15 @@ fi
 
 LEASE_START="$TMP/lease-start"; LEASE_RELEASE="$TMP/lease-release"
 (
-  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/lease-owner-log"
+  export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" HARNESS_SESSION_RETENTION_SECONDS=0 ISOLATED_LOG="$TMP/lease-owner-log"
   export WAIT_START="$LEASE_START" WAIT_RELEASE="$LEASE_RELEASE"
   source "$ROOT/bin/aliases.zsh"
   _harness_launcher_run "$HARNESS" --isolated-session "$first_id" base
 ) & lease_owner_pid=$!
 for _ in {1..300}; do [[ -f "$LEASE_START" ]] && break; sleep 0.05; done
 [[ -f "$LEASE_START" ]] || { kill "$lease_owner_pid" 2>/dev/null || true; echo 'FAIL: lease owner did not enter the runtime'; exit 1; }
+HARNESS_SESSION_STATE_HOME="$STATE" HARNESS_SESSION_RETENTION_SECONDS=0 "$ROOT/bin/session-isolation.sh" gc
+[[ -d "$root" ]] || { touch "$LEASE_RELEASE"; wait "$lease_owner_pid"; echo 'FAIL: a requested owner lease must be acquired before GC can retire its root'; exit 1; }
 if (
   export PATH="$TMP:$PATH" HARNESS_SESSION_STATE_HOME="$STATE" ISOLATED_LOG="$TMP/lease-contender-log"
   source "$ROOT/bin/aliases.zsh"
