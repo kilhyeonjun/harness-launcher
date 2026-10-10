@@ -2,6 +2,21 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.51.0 — 2026-10-10
+
+- Keep source-local Native Codex history outside disposable Git session roots.
+  Terminal roots can be retired only after an immutable snapshot, source
+  consistency checks and an offline Native restoration proof of complete raw
+  rollouts and paginated parent/fork history. Active writers, unknown artifacts
+  and uncharacterized Native versions retain their workspaces.
+- `codex resume` and `codex resume --list` show the source-local history catalog;
+  an exact Native UUID resumes into a fresh local isolation without reopening a
+  delivered Git session. Legacy homes and archives remain discoverable. Auth,
+  generated settings and permission grants are excluded from history archives.
+  Legacy roots without verified inode provenance appear as metadata-only HOLD
+  warnings while other verified conversations remain discoverable.
+  See [Codex history](docs/codex-history.md) for migration and current limits.
+
 ## 0.50.1 — 2026-10-09
 
 - Read Claude response-collection opt-in from the actual session snapshot,

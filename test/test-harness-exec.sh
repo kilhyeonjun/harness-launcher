@@ -105,7 +105,7 @@ fi
 
 echo "PASS: registered profile commands use the current workspace"
 
-for session in resume fork; do
+for session in fork; do
   : > "$LOG"
   PATH="$STUB_BIN:/usr/bin:/bin" \
     HARNESS_CODEX_BIN="$STUB_BIN/codex" \
@@ -119,7 +119,16 @@ for session in resume fork; do
   }
 done
 
-echo "PASS: Codex resume and fork preserve the explicit worktree"
+echo "PASS: Codex fork preserves the explicit worktree"
+
+: > "$LOG"
+PATH="$STUB_BIN:/usr/bin:/bin" \
+  HARNESS_CODEX_BIN="$STUB_BIN/codex" \
+  HARNESS_EXEC_TEST_LOG="$LOG" \
+  "$PREFIX/bin/harness-exec" "$HARNESS" --cwd "$WORKTREE" codex resume > "$TMP/empty-history.json"
+[[ ! -s "$LOG" ]] || { echo 'FAIL: empty history catalog launched Native'; exit 1; }
+grep -Fq '"entries": []' "$TMP/empty-history.json" || { echo 'FAIL: empty history catalog was not shown'; exit 1; }
+echo 'PASS: Codex resume lists the source-local catalog before a Native selection'
 
 if "$PREFIX/bin/harness-exec" "$HARNESS" --cwd >"$TMP/missing-cwd.out" 2>"$TMP/missing-cwd.err"; then
   echo "FAIL: harness-exec accepted --cwd without a directory" >&2

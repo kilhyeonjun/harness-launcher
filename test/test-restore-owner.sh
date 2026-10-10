@@ -5,6 +5,8 @@
 # the source CODEX_HOME, or a Claude session whose launch record says
 # isolated=0 for this harness. An isolated owner still wins, transcripts alone
 # are not proof, and forced isolation keeps rejecting.
+# This suite covers the compatibility resolver for older pinned releases.
+# Current Native catalog/fresh-restore behavior has its own real-metadata tests.
 set -e
 unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM HARNESS_HOST_DEFAULT_MODE CLAUDECODE CODEX_THREAD_ID; unset -m 'HERDR_*' 'ORCA_*' 'CMUX_*' || true
 
@@ -103,6 +105,7 @@ spawn env ROOT=$env(ROOT) HARNESS=$env(HARNESS) STATE=$env(STATE) TMP=$env(TMP) 
   [[ -z "$ISO_FORCE" ]] || export HARNESS_SESSION_ISOLATION=1
   unset CMUX_WORKSPACE_ID CMUX_TAB_ID CMUX_SURFACE_ID
   source "$ROOT/bin/aliases.zsh"
+  _harness_launcher_codex_history_request() { return 1; }
   _harness_launcher_run_codex_cli() { printf 'SESSION=%s\nARGS=%s\n' "${HARNESS_SESSION_ROOT:-}" "$*" > "$STUB_LOG"; }
   eval "set -- $TEST_ARGS"
   _harness_launcher_run "$HARNESS" "$@"
