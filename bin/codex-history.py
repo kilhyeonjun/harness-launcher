@@ -73,6 +73,23 @@ def bound_path(path, anchor):
         except OSError:refuse('unreadable path boundary')
 
 
+def native_presence(path, anchor):
+    """Absence is trusted only after every existing directory is accessible."""
+    path = Path(path)
+    bound_path(path, anchor)
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        refuse('unreadable Native presence boundary')
+    return True
+
+
+def presence(args):
+    print('native' if native_presence(Path(args.source), Path(args.anchor)) else 'absent')
+
+
 def secure_dir(path):
     path.mkdir(parents=True, exist_ok=True)
     if path.is_symlink() or not path.is_dir():
@@ -788,6 +805,8 @@ def protect_pool(args):
     worktrees = state / "worktrees"
     sessions = state / "sessions"
     source = Path(args.source_root).absolute()
+    bound_path(worktrees, state)
+    bound_path(sessions, state)
     if not worktrees.exists() and not sessions.exists():
         print(json.dumps({'schema_version':1,'safe_to_gc':True}));return
     if not worktrees.is_dir() or worktrees.is_symlink() or not sessions.is_dir() or sessions.is_symlink():
@@ -795,11 +814,13 @@ def protect_pool(args):
     # Older GC removes tombs without consulting their leases. Recover each
     # recognized, owner-bound Native tomb first; never bless an unknown name.
     for tomb in worktrees.glob('.*-*'):
+        if not tomb.is_dir() and not tomb.is_symlink():continue
         native=tomb/'.harness/codex'
-        if not native.exists() and not native.is_symlink():continue
+        if not native_presence(native, state):continue
         match=re.fullmatch(r'\.(?:retired|archiving)-([0-9a-fA-F-]{36})-(\d+)',tomb.name)
         if not match or tomb.is_symlink():refuse('unverified Native tomb')
         identifier=match.group(1);record=sessions/identifier;expected=worktrees/identifier
+        bound_path(record, state)
         lock=record/'runtime.lock'
         if expected.exists() or expected.is_symlink() or not all(regular(record/name) for name in ('source-root','session-root','root-inode','journal','lease-v1','runtime.lock')):
             refuse('Native tomb owner is unverified')
@@ -809,12 +830,13 @@ def protect_pool(args):
             if not terminal_journal(record/'journal',record):refuse('Native tomb is not terminal')
             os.rename(tomb,expected)
     for record in sessions.iterdir():
+        bound_path(record, state)
         if not UUID.fullmatch(record.name) or record.is_symlink() or not record.is_dir():
             refuse("unsafe session record")
         root_file, source_file, lock, journal, inode = record / "session-root", record / "source-root", record / "runtime.lock", record / "journal", record / "root-inode"
         root=worktrees/record.name
         native=root/'.harness/codex'
-        if not native.exists() and not native.is_symlink():continue
+        if not native_presence(native, state):continue
         if not all(regular(path) for path in (root_file, source_file, lock, journal, inode,record/'lease-v1')):
             refuse("unverified session record")
         if source_file.read_text(encoding="utf-8").strip() != str(source):
@@ -828,7 +850,7 @@ def protect_pool(args):
             continue
         if not args.codex_bin:refuse('Native binary unavailable for pool proof')
         native = root / ".harness" / "codex"
-        if not native.exists():
+        if not native_presence(native, state):
             continue
         with runtime_lease(lock):
             if not terminal_journal(journal,record) or (record/'lease-v1').read_text()!='1\n' or inode.read_text().strip()!=root_inode(root):refuse('Native candidate changed')
@@ -850,7 +872,8 @@ def protect_pool(args):
                 if tomb.exists() and not root.exists(): os.rename(tomb, root)
     # Every Native-bearing unrecorded directory would also be an old GC target.
     for root in worktrees.iterdir():
-        if (root/'.harness/codex').exists() and not (sessions/root.name).is_dir():refuse('unbound Native root')
+        if not root.is_dir() and not root.is_symlink():continue
+        if native_presence(root/'.harness/codex', state) and not (sessions/root.name).is_dir():refuse('unbound Native root')
     print(json.dumps({"schema_version": 1, "safe_to_gc": True}, sort_keys=True))
 
 
@@ -963,6 +986,9 @@ def terminal_journal(path,record=None):
 def parser():
     root = argparse.ArgumentParser()
     commands = root.add_subparsers(dest="command", required=True)
+    presence_parser = commands.add_parser("presence")
+    for name in ("source", "anchor"):
+        presence_parser.add_argument("--" + name, required=True)
     snap = commands.add_parser("snapshot")
     for name in ("source", "catalog", "receipt", "source-root", "isolation-id", "runtime-revision"):
         snap.add_argument("--" + name, required=True)
@@ -992,7 +1018,8 @@ def parser():
 def main(argv):
     args = parser().parse_args(argv)
     return {"snapshot": snapshot, "restore": restore, "verify": verify,
-            "catalog": catalog, "protect-pool": protect_pool, "prepare": prepare}[args.command](args)
+            "catalog": catalog, "protect-pool": protect_pool, "prepare": prepare,
+            "presence": presence}[args.command](args)
 
 
 if __name__ == "__main__":

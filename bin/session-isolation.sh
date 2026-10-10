@@ -368,6 +368,7 @@ retire_native_root() {
 gc_unlocked() {
   local state sessions worktrees retention now started scanned=0 retired=0 retained=0
   local dir id journal status epoch age marker lock root source expected tomb tomb_name tomb_id tomb_nonce
+  local history_helper history_python presence
   state="$(state_home)"; sessions="$state/sessions"; worktrees="$state/worktrees"
   retention="${HARNESS_SESSION_RETENTION_SECONDS:-86400}"
   [[ "$retention" =~ ^[0-9]+$ ]] && [[ "$retention" -le 604800 ]] || {
@@ -375,15 +376,21 @@ gc_unlocked() {
     return 2
   }
   mkdir -p "$sessions" "$worktrees"
-  [[ ! -L "$sessions" && ! -L "$worktrees" ]] || return 2
+  [[ ! -L "$state" && ! -L "$sessions" && ! -L "$worktrees" ]] || return 2
+  state="$(cd "$state" && pwd -P)" || return 2
   sessions="$(cd "$sessions" && pwd -P)"; worktrees="$(cd "$worktrees" && pwd -P)"
+  history_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-history.py"
+  [[ -f "$history_helper" && ! -L "$history_helper" ]] || return 2
+  source "$(dirname "$history_helper")/harness-common.sh"
+  history_python="$(harness_python3_resolve)" || return 2
   now="$(date -u +%s)"; started="$now"
 
   for tomb in "$worktrees"/.retired-*; do
     [[ -d "$tomb" && ! -L "$tomb" ]] || continue
     tomb_name="${tomb##*/}"; tomb_id="${tomb_name#.retired-}"; tomb_id="${tomb_id%-*}"; tomb_nonce="${tomb_name##*-}"
     valid_id "$tomb_id" && [[ "$tomb_nonce" =~ ^[0-9]+$ ]] || continue
-    if [[ -e "$tomb/.harness/codex" || -L "$tomb/.harness/codex" ]]; then
+    presence="$("$history_python" -I "$history_helper" presence --source "$tomb/.harness/codex" --anchor "$state")" || { retained=$((retained + 1)); continue; }
+    if [[ "$presence" != absent ]]; then
       # Old tombs have no successful Native restore receipt. Preserve them;
       # protect-pool can recover/validate an owner-bound remnant explicitly.
       retained=$((retained + 1)); continue
@@ -427,12 +434,16 @@ gc_unlocked() {
       [[ "$(cd "${root%/*}" && pwd -P)/${root##*/}" == "$expected" ]] || exit 16
       [[ "$(cd "$root" && pwd -P)" == "$expected" && -d "$source" && "$(cd "$source" && pwd -P)" != "$expected" ]] || exit 17
       root_intact "$dir" "$root" || exit 17
-      if [[ -e "$root/.harness/codex" || -L "$root/.harness/codex" ]]; then
+      # Binding checks above establish this physical path; keep the recorded
+      # spelling for provenance even when system temp paths have aliases.
+      presence="$("$history_python" -I "$history_helper" presence --source "$expected/.harness/codex" --anchor "$state")" || exit 21
+      if [[ "$presence" == native ]]; then
         [[ -z "${HARNESS_HISTORY_SOURCE_ROOT:-}" || "$source" == "$HARNESS_HISTORY_SOURCE_ROOT" ]] || exit 21
         tomb="$worktrees/.archiving-$id-${BASHPID:-$$}"
         retire_native_root "$root" "$tomb" "$dir" "$source" "$id" || exit 21
         exit 0
       fi
+      [[ "$presence" == absent ]] || exit 21
       tomb="$worktrees/.retired-$id-${BASHPID:-$$}"
       [[ ! -e "$tomb" && ! -L "$tomb" ]] || exit 18
       mv "$root" "$tomb" || exit 19

@@ -622,6 +622,69 @@ class CodexHistoryTest(unittest.TestCase):
         self.run_history("prepare", "--source-root", str(self.source_root), "--state-home", str(state), "--native-id", native, expected=2)
         self.assertFalse((state / "native-history/snapshots").exists())
 
+    def test_protect_pool_holds_unreadable_native_root_and_tomb_without_mutation(self):
+        state = self.base / "unreadable-protect-pool"
+        identifier = "11111111-2222-4333-8444-555555555556"
+        root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+        home = root / ".harness/codex"
+        (home / "sessions").mkdir(parents=True)
+        (home / "sessions/native.jsonl").write_text("native sentinel\n")
+        record.mkdir(parents=True)
+        for name, value in (("source-root", str(self.source_root)), ("session-root", str(root)),
+                            ("root-inode", history_module.root_inode(root)), ("runtime.lock", ""),
+                            ("lease-v1", "1\n"), ("journal", "state=CLOSED\nidentity=\nheartbeat=2026-10-10T00:00:00Z\n")):
+            (record / name).write_text(value)
+        before = digest_tree(home)
+        root_inode_before = history_module.root_inode(root)
+        denied = root / ".harness"
+        denied.chmod(0)
+        try:
+            self.run_history("protect-pool", "--source-root", str(self.source_root), "--state-home", str(state), "--codex-bin", "/bin/true", expected=2)
+        finally:
+            denied.chmod(0o700)
+        self.assertEqual(digest_tree(home), before)
+        self.assertTrue(root.exists())
+        self.assertEqual(history_module.root_inode(root), root_inode_before)
+        self.assertFalse((state / "native-history/snapshots").exists())
+
+        tomb_state = self.base / "unreadable-unrecorded-native-tomb"
+        (tomb_state / "sessions").mkdir(parents=True)
+        tomb = tomb_state / "worktrees/.retired-33333333-3333-4333-8333-333333333333-77"
+        (tomb / ".harness/codex/sessions").mkdir(parents=True)
+        sentinel = tomb / ".harness/codex/sessions/native.jsonl"
+        sentinel.write_text("unrecorded native tomb sentinel\n")
+        tomb_digest = digest_tree(tomb)
+        (tomb / ".harness").chmod(0)
+        try:
+            self.run_history("protect-pool", "--source-root", str(self.source_root), "--state-home", str(tomb_state), "--codex-bin", "/bin/true", expected=2)
+        finally:
+            (tomb / ".harness").chmod(0o700)
+        self.assertEqual(digest_tree(tomb), tomb_digest)
+
+
+    def test_protect_pool_holds_symlinked_native_tomb_in_an_independent_pool(self):
+        state = self.base / "symlinked-native-tomb"
+        linked = state / "worktrees/.retired-44444444-4444-4444-8444-444444444444-78"
+        linked.mkdir(parents=True)
+        (state / "sessions").mkdir()
+        foreign = self.base / "foreign-harness"; (foreign / "codex").mkdir(parents=True)
+        (linked / ".harness").symlink_to(foreign, target_is_directory=True)
+        self.run_history("protect-pool", "--source-root", str(self.source_root), "--state-home", str(state), "--codex-bin", "/bin/true", expected=2)
+
+    def test_protect_pool_allows_non_native_pool_without_codex_binary(self):
+        state = self.base / "non-native-pool"
+        (state / "worktrees").mkdir(parents=True)
+        (state / "sessions").mkdir()
+        (state / "worktrees/.DS_Store").write_text("non-native fixture")
+        (state / "worktrees/.retired-11111111-2222-4333-8444-555555555555-42").write_text("regular non-native tomb lookalike")
+        identifier = "11111111-2222-4333-8444-555555555556"
+        root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+        root.mkdir(); record.mkdir()
+        (record / "source-root").write_text(str(self.source_root))
+        (record / "session-root").write_text(str(root))
+        result = json.loads(self.run_history("protect-pool", "--source-root", str(self.source_root), "--state-home", str(state), "--codex-bin", "/no/codex/binary").stdout)
+        self.assertTrue(result["safe_to_gc"])
+
 
     def test_unreadable_quarantined_directory_cannot_hide_a_uuid_collision(self):
         state=self.base/'unreadable-quarantine'

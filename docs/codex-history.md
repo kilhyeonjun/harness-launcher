@@ -21,7 +21,7 @@ rule, service or daemon.
 ## Internal interfaces
 
 `bin/codex-history.py` provides on-demand `snapshot`, `restore`, `verify`,
-`catalog` and `protect-pool` operations; it is not a new public executable.
+`catalog`, `presence` and `protect-pool` operations; it is not a new public executable.
 
 - `snapshot --source HOME --catalog STORE --receipt RECEIPT --source-root ROOT
   --isolation-id UUID --runtime-revision REV` records immutable native data,
@@ -51,6 +51,9 @@ rule, service or daemon.
   every terminal native-bearing root regardless of age, plus every old tomb,
   before an immutable older runtime can execute its GC. Unknown or unverified
   candidates refuse that launch; old-runtime retention has a 24-hour floor.
+- `presence --source HOME --anchor STATE` returns `native` or `absent` only
+  after validating accessible, owned directory ancestry. Permission errors,
+  redirected paths and failed checks hold the original root or old tomb.
 
 ## Retirement and recovery
 
