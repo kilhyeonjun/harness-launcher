@@ -25,7 +25,8 @@ for test_file in "$ROOT"/test/test-*.sh; do
   if [[ "$has_lockf" -eq 0 ]]; then
     case "$test_name" in
       test-codex-config-preservation.sh|test-codex-global-mcp-drift.sh|\
-        test-codex-home-lock.sh|test-codex-home-prepare.sh|\
+      test-codex-home-lock.sh|test-codex-home-prepare.sh|\
+        test-codex-history-gc.sh|test-codex-history-resume-integration.sh|\
         test-codex-observability-profile.sh|test-codex-migrate-to-symlinks.sh|\
         test-codex-project-trust.sh|\
         test-session-isolation.sh|test-session-isolation-concurrency.sh|\
