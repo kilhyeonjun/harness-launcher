@@ -89,7 +89,7 @@ generates the same `hooks.json`.
 | --- | --- | --- | --- | --- | --- |
 | orca | `HARNESS_ORCA_AGENT_HOOKS=1` | `$HOME/.orca/agent-hooks/codex-hook.sh` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop` | none | 5 |
 | herdr | `HARNESS_HERDR_AGENT_HOOKS=1` | `$HOME/.codex/herdr-agent-state.sh` | `SessionStart` | `session` | 10 |
-| launch_record | `HARNESS_LAUNCH_RECORD_HOOKS=1` | `harness-launch-record codex` (launcher-owned) | `SessionStart` | none | 5 |
+| launch_record | `HARNESS_LAUNCH_RECORD_HOOKS=1` | `harness-launch-record codex` (launcher-owned) | `SessionStart` | none (`--callback` and timeout 10 when the ssot opt-in is also on) | 5 |
 
 The `orca` and `herdr` rows run the same status-only, fail-open command:
 
@@ -112,6 +112,12 @@ The `launch_record` row is not a host script. It runs the launcher's own
 [Restore fidelity](#restore-fidelity). Enabling it changes `hooks.json`, so rerun
 the harness's Codex hook trust step afterwards; Codex will not run an untrusted
 hook.
+With the ssot opt-in also on, the row becomes `harness-launch-record codex --callback`
+(timeout 10), and carrying it into an isolated home additionally requires a
+`callbacks` entry with the sha256 of
+`$HOME/.local/share/harness-service/bin/harness-session-hook` in the hook-approval
+grant. Only `SessionStart` runs the host callback in such carried sessions
+(see [session-collector](session-collector.md)).
 
 ## Resume routing
 
@@ -284,14 +290,18 @@ can write. They come only from the **launch record**:
   the launcher-owned profile (`fast|base|sol|astra|plan|rich`, not a caller `-p`),
   plus the source root and isolation.
 - A `SessionStart` hook the launcher injects runs `harness-launch-record`, which
-  writes `<state>/launch-records/<agent>-<session_id>` (mode 0600). It opens the
+  writes `<state>/launch-records/<agent>-<session_id>` (mode 0600), plus one empty
+  `.parent-<hash>` marker (mode 0600) per fork launch that keeps the fork parent for
+  the process's first record only; markers are not pruned, like the records. It opens the
   `launch-records` directory with `O_DIRECTORY|O_NOFOLLOW`, writes a private temp
   file and renames it through that descriptor, so a symlink at the path is
   replaced, never followed and a symlinked directory is refused. The reader
   opens the same way and also requires a regular file owned by the current user
   with a single link. Keys: `permission`, `approval`, `sandbox`, `bypass`,
   `profile=<name>`, `source_root`, `isolated=0|1`, `harness_session_id`,
-  `context=1m`; each value
+  `context=1m`, and for automatic session linking (see
+  [session-collector](session-collector.md)) `source`, `agent_pid`,
+  `agent_start`, `task_id`, `parent_native`; each value
   is checked against a fixed vocabulary before it is written or read.
 - Claude: the hook rides the launcher's own `--settings`, merged with the forced
   thinking setting into one JSON (`{"alwaysThinkingEnabled":true,"hooks":{...}}`).

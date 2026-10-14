@@ -1991,7 +1991,10 @@ RUNTIME_HOOK_REGISTRY = (
         "name": "ssot",
         "script": "$HOME/.local/share/harness-service/bin/harness-session-hook",
         "argument": "--runtime codex",
-        "events": ("UserPromptSubmit", "Stop"),
+        # SessionStart is the tail of the launch_record command (record, then
+        # callback, one sequential command), never a row of its own; SubagentStart
+        # is emitted only together with launch_record (capture needs the record).
+        "events": ("UserPromptSubmit", "Stop", "SessionStart", "SubagentStart"),
         "timeout": 5,
     },
 )
@@ -2003,13 +2006,24 @@ def runtime_hook_command(script, argument):
         f"[ -x \"$s\" ] && {{ {invoke} >/dev/null 2>&1; exit 0; }}; cat >/dev/null'"
     )
 
+combined = runtime_optins.get("launch_record", False) and runtime_optins.get("ssot", False)
 for row in RUNTIME_HOOK_REGISTRY:
     if not runtime_optins.get(row["name"], False):
         continue
     row_command = row.get("command") or runtime_hook_command(row["script"], row["argument"])
+    row_timeout = row["timeout"]
+    if combined and row["name"] == "launch_record":
+        # Record, then host callback, in the helper itself. Its `ps` read keeps
+        # its own 5s limit, so the hook gets 10s.
+        row_command += " --callback"
+        row_timeout = 10
     for event in row["events"]:
+        if row["name"] == "ssot" and (event == "SessionStart" or (event == "SubagentStart" and not combined)):
+            # SessionStart rides the launch_record command; session/subagent
+            # capture needs that record, so ssot alone adds neither row.
+            continue
         config["hooks"].setdefault(event, []).append(
-            {"hooks": [{"type": "command", "command": row_command, "timeout": row["timeout"]}]}
+            {"hooks": [{"type": "command", "command": row_command, "timeout": row_timeout}]}
         )
 
 json.dump(config, sys.stdout, indent=2)

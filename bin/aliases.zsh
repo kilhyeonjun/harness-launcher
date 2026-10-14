@@ -570,11 +570,85 @@ _harness_launcher_claude_launch_grant() {
   esac
 }
 
-# _harness_launcher_export_launch_env <approval> <sandbox> <bypass> <profile>
+# _harness_launcher_export_launch_env <approval> <sandbox> <bypass> <profile> <network> [task-id] [parent-native]
 #   Codex only; run inside the agent's subshell. harness_launch_record_export_codex
 #   (harness-common.sh, shared with launcher.sh) with this launch's source root.
 _harness_launcher_export_launch_env() {
   harness_launch_record_export_codex "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$@"
+}
+
+# _harness_launcher_task_value <flag> <value>
+#   Validates the Task UUID that `--task` carries (P3-L auto-link). Prints the
+#   value; returns 2 with a message otherwise.
+_harness_launcher_task_value() {
+  if [[ "${2-}" =~ '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' ]]; then
+    print -r -- "${(L)2}"
+  else
+    echo "harness-launcher: $1 requires a Task UUID" >&2
+    return 2
+  fi
+}
+
+# _harness_launcher_fork_resume_id <--resume value>
+#   The native session id a Claude --resume value names: a UUID, or the verified
+#   fork locator harness_claude_fork.py rewrites a UUID to (an absolute transcript
+#   path `$HOME/.claude/projects/<project>/<native-uuid>.jsonl`, whose basename is
+#   that id). Anything else (relative, `..`, another root, nested) names no parent.
+_harness_launcher_fork_resume_id() {
+  local value="${1-}" uuid_re='[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
+  if [[ "$value" =~ ^${uuid_re}$ ]]; then
+    print -r -- "${(L)value}"
+  elif [[ -n "$HOME" && "$value" == "$HOME/.claude/projects/"* && "$value" != *..* && "$value" != *[[:cntrl:]]* ]]; then
+    local rest="${value#"$HOME/.claude/projects/"}"
+    [[ "$rest" =~ ^[^/]+/${uuid_re}\.jsonl$ ]] && print -r -- "${(L)${rest:t:r}}"
+  fi
+  return 0
+}
+
+# _harness_launcher_fork_parent <claude|codex> [args...]
+#   Prints the explicit native session id a fork starts from, or nothing: Claude
+#   `--resume|-r <uuid>` together with `--fork-session`; Codex `fork <uuid>`.
+_harness_launcher_fork_parent() {
+  local agent="$1"; shift
+  local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+  local -a argv=("$@")
+  local i arg id="" fork=false
+  if [[ "$agent" == codex ]]; then
+    for (( i = 1; i <= ${#argv}; i++ )); do
+      if [[ "${argv[i]}" == -* ]]; then
+        # A bare -i/--image takes several values: where `fork` sits is unknowable.
+        [[ "${argv[i]}" == (-i|--image) ]] && return 0
+        # Skip the value of a known top-level option (`-m X fork <uuid>`).
+        [[ "${argv[i]}" == *=* ]] || ! harness_codex_option_takes_value "${argv[i]}" || (( i++ ))
+        continue
+      fi
+      [[ "${argv[i]}" == fork && "${argv[i+1]-}" =~ $uuid_re ]] && print -r -- "${(L)argv[i+1]}"
+      return 0
+    done
+    return 0
+  fi
+  # Options whose next argument is a value, never a control (as harness_claude_fork.py).
+  local -a value_opts=(--model --effort --permission-mode --settings --setting-sources
+    --mcp-config --allowedTools --allowed-tools --disallowedTools --disallowed-tools --tools
+    --system-prompt --append-system-prompt --system-prompt-file --append-system-prompt-file
+    --agent --agents --add-dir --output-format --input-format --json-schema --max-turns
+    --max-budget-usd --fallback-model --session-id --plugin-dir --betas --name --thinking
+    --max-thinking-tokens)
+  local resumes=0
+  for (( i = 1; i <= ${#argv}; i++ )); do
+    arg="${argv[i]}"
+    case "$arg" in
+      --) break ;;
+      --fork-session) fork=true ;;
+      --resume|-r) id="$(_harness_launcher_fork_resume_id "${argv[i+1]-}")"; (( resumes++ )); (( i++ )) ;;
+      --resume=*) id="$(_harness_launcher_fork_resume_id "${arg#--resume=}")"; (( resumes++ )) ;;
+      *) (( ${value_opts[(Ie)$arg]} )) && (( i++ )) ;;
+    esac
+  done
+  # Two --resume controls are ambiguous (as in harness_claude_fork.py): no parent.
+  (( resumes == 1 )) || id=""
+  $fork && [[ -n "$id" ]] && print -r -- "$id"
+  return 0
 }
 
 # _harness_launcher_claude_launch_context
@@ -592,11 +666,11 @@ _harness_launcher_claude_launch_context() {
   [[ "$model" == *"[1m]" ]] && print -r -- 1m
 }
 
-# _harness_launcher_claude_launch_settings <force-thinking:true|false> <permission> <context>
+# _harness_launcher_claude_launch_settings <force-thinking:true|false> <permission> <context> [task-id] [parent-native]
 #   harness_claude_launch_settings (harness-common.sh, shared with launcher.sh)
 #   with this launch's source root.
 _harness_launcher_claude_launch_settings() {
-  harness_claude_launch_settings "$_HARNESS_LAUNCHER_BIN" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$@" "${HARNESS_DIR:A}"
+  harness_claude_launch_settings "$_HARNESS_LAUNCHER_BIN" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$1" "$2" "$3" "${HARNESS_DIR:A}" "${4-}" "${5-}"
 }
 
 # _harness_launcher_isolated_record_run_dir
@@ -1435,7 +1509,7 @@ _harness_launcher_run() {
 #   caller's locals (zsh dynamic scope) and sets its isolated_heartbeat_pid.
 _harness_launcher_run_session() {
   local -a claude_args=() claude_passthrough_args=() claude_passthrough_opts=() claude_prompt_args=()
-  local session_flag="" skip_tui=false env_effort="" provider_url="" gateway_api_key="" provider_name=""
+  local session_flag="" skip_tui=false env_effort="" provider_url="" gateway_api_key="" provider_name="" launch_task=""
   local mode_applied=false mcp_surface="full" passthrough=false passthrough_force_thinking=false
   local host_default_base=false
   [[ "${host_default_mode-}" == base && "${1:-}" == base && "${2:-}" == --passthrough ]] && host_default_base=true
@@ -1565,6 +1639,9 @@ _harness_launcher_run_session() {
         skip_tui=true; shift ;;
       continue) session_flag="--continue"; skip_tui=true; shift ;;
       resume)   session_flag="--resume"; skip_tui=true; shift ;;
+      --task)
+        launch_task="$(_harness_launcher_task_value --task "${2-}")" || return $?
+        skip_tui=true; shift 2 ;;
       bypass)       claude_args+=(--permission-mode bypassPermissions); skip_tui=true; shift ;;
       acceptEdits)  claude_args+=(--permission-mode acceptEdits); skip_tui=true; shift ;;
       dontAsk)      claude_args+=(--permission-mode dontAsk); skip_tui=true; shift ;;
@@ -1653,7 +1730,9 @@ _harness_launcher_run_session() {
     local launch_grant launch_settings launch_context
     launch_grant="$(_harness_launcher_claude_launch_grant)"
     launch_context="$(_harness_launcher_claude_launch_context)"
-    launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant" "$launch_context")" || return $?
+    local launch_parent
+    launch_parent="$(_harness_launcher_fork_parent claude "${claude_args[@]}" "${claude_passthrough_opts[@]}")"
+    launch_settings="$(_harness_launcher_claude_launch_settings "$force_thinking" "$launch_grant" "$launch_context" "$launch_task" "$launch_parent")" || return $?
     [[ -z "$launch_settings" ]] || claude_args+=(--settings "$launch_settings")
     if [[ "${HARNESS_HEADLESS:-0}" == 1 && -n "${HARNESS_SESSION_ROOT:-}" ]]; then
       claude_args+=(--settings "$(harness_headless_session_settings "${HARNESS_SESSION_ROOT:A}")")
@@ -2053,7 +2132,7 @@ _harness_launcher_run_codex_cli() {
   local freeform=false
   local passthrough=false context_explicit=false
   local -a codex_args=() codex_passthrough_args=() codex_restore_args=()
-  local launch_approval="" launch_sandbox="" launch_network="" launch_bypass="" launch_profile=""
+  local launch_approval="" launch_sandbox="" launch_network="" launch_bypass="" launch_profile="" launch_task="" launch_parent=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2114,6 +2193,13 @@ _harness_launcher_run_codex_cli() {
           HARNESS_CODEX_CONTEXT="$1"; context_explicit=true
         fi
         shift ;;
+      --task)
+        if $freeform; then
+          codex_args+=("$1"); shift
+        else
+          launch_task="$(_harness_launcher_task_value --task "${2-}")" || return $?
+          shift 2
+        fi ;;
       resume)              subcmd="resume"; shift ;;
       continue)            subcmd="resume"; codex_args+=(--last); shift ;;
       fork)                subcmd="fork"; codex_args+=(--last); shift ;;
@@ -2134,6 +2220,7 @@ _harness_launcher_run_codex_cli() {
   _harness_launcher_codex_restore_apply
   _harness_launcher_codex_launch_grant "${codex_restore_args[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}"
   export HARNESS_CODEX_CONTEXT
+  launch_parent="$(_harness_launcher_fork_parent codex "${codex_passthrough_args[@]}")"
 
   # Caller wins after the marker. A caller -C/--cd must stay inside the
   # harness; a relative one resolves against the directory Codex starts in.
@@ -2267,15 +2354,15 @@ _harness_launcher_run_codex_cli() {
   _harness_launcher_announce_run_dir "${caller_run_dir:-$run_dir}"
   if [[ -n "$subcmd" ]]; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" "$launch_network" \
+    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" "$launch_network" "$launch_task" "$launch_parent" \
       && "${launch_cmd[@]}" "$subcmd" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   elif $use_happy; then
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" "$launch_network" \
+    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" "$launch_network" "$launch_task" "$launch_parent" \
       && "${launch_cmd[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   else
     harness_codex_cmux_broker_start "$_HARNESS_LAUNCHER_BIN/codex-cmux-title-sync.py"
-    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" "$launch_network" \
+    (cd "$run_dir" && _harness_launcher_export_launch_env "$launch_approval" "$launch_sandbox" "$launch_bypass" "$launch_profile" "$launch_network" "$launch_task" "$launch_parent" \
       && "${launch_cmd[@]}" "${codex_head[@]}" "${codex_args[@]}" "${codex_passthrough_args[@]}")
   fi
   local rc=$?
