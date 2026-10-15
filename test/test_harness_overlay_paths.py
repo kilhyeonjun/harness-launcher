@@ -36,6 +36,15 @@ class OverlayPathTests(unittest.TestCase):
         candidate = "A/B/C/D/E/CAFE\u0301/RULES/LONGS.MD"
         self.assertTrue(self.helper.path_matches(candidate, [overlay]))
 
+    def test_casefold_special_character_matches_at_full_depth(self):
+        overlay = "a/b/c/d/e/longs.md"
+        self.assertTrue(self.helper.path_matches("A/B/C/D/E/LONG\u017f.MD", [overlay]))
+        self.assertTrue(self.helper.path_matches("A/STRASSE", ["a/stra\u00dfe"]))
+
+    def test_deep_siblings_do_not_match(self):
+        overlay = "a/b/c/d/e/longs.md"
+        self.assertFalse(self.helper.path_matches("a/b/c/d/e/other.md", [overlay]))
+
     def test_nul_newline_and_literal_glob_paths(self):
         paths = ["overlay/line\nname", "overlay/[literal]*?.md"]
         path_file = self.write_paths(paths)

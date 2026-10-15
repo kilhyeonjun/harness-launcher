@@ -600,7 +600,7 @@ fail_closed_row() {
 }
 alias_path=$'project\xc5\xbf/x'
 fail_closed_row headless worktree '--name-only --no-renames -z' fc1.txt "$alias_path"
-fail_closed_row headless worktree '--cached --quiet' fc2.txt
+fail_closed_row headless worktree 'diff --no-ext-diff --ignore-submodules=all --cached' fc2.txt
 fail_closed_row headless worktree '--name-status' fc3.txt
 fail_closed_row headless worktree 'ls-tree' fc4.txt
 fail_closed_row headless worktree 'icase)' fc5.txt

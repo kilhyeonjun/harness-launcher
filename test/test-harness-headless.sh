@@ -582,10 +582,13 @@ EOF
 chmod +x "$TMP/failgit/git"
 echo variants > "$TMP/mode"
 printf 'excluded|dir|project\xc5\xbf\n' > "$TMP/variants"
-for pattern in '--name-only --no-renames -z' '--cached --quiet' '--name-status' 'ls-tree'; do
+# The plain cached diff now emits a patch rather than using --quiet.
+cached_diff_pattern="diff --no-ext-diff --ignore-submodules=all --cached $(git --git-dir="$REMOTE" rev-parse main) --"
+for pattern in '--name-only --no-renames -z' "$cached_diff_pattern" '--name-status' 'ls-tree'; do
   printf '%s' "$pattern" > "$TMP/fail-git"
   remote_before="$(git --git-dir="$REMOTE" rev-parse main)"
   headless || fail "run with failing git '$pattern' must exit 0"
+  grep -Fq "injected git failure: $pattern" "$RESULT.log" || fail "git failure injector must fire for '$pattern'"
   expect_status failed
   [[ "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] || fail "run with failing git '$pattern' must deliver nothing"
   ! grep -qx state=CLOSED "$STATE/sessions/$(field session_id)/journal" || fail "session with failing git '$pattern' must be kept"

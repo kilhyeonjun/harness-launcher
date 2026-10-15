@@ -36,6 +36,107 @@ for _excluded in "${EXCLUDED_PATHS[@]}"; do
   EXCLUDED_PATHSPEC+=(":(exclude,icase)$_excluded"); EXCLUDED_ICASE+=(":(icase)$_excluded")
 done
 unset _excluded
+# Release overlays are per-session and are deliberately kept out of the
+# bootstrap filesystem-alias probe above.  The helper is the single source of
+# truth for Unicode folding, literal pathspecs and the fixed argv cap.
+OVERLAY_PATH_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/harness-overlay-paths.py"
+OVERLAY_PATHS_FILE=""
+delivery_exclusions_file() {
+  local output="$1" path
+  : > "$output"
+  for path in "${EXCLUDED_PATHS[@]}"; do printf '%s\0' "$path" >> "$output"; done
+  [[ -z "$OVERLAY_PATHS_FILE" || ! -f "$OVERLAY_PATHS_FILE" || -L "$OVERLAY_PATHS_FILE" ]] || cat "$OVERLAY_PATHS_FILE" >> "$output"
+  printf '.harness/\0' >> "$output"
+}
+delivery_pathspecs() {
+  local list="$1" mode="$2"
+  "$OVERLAY_PATH_HELPER" pathspecs --paths "$list" --mode "$mode"
+}
+delivery_uses_argv() { "$OVERLAY_PATH_HELPER" within-argv-limit --paths "$1" --mode exclude; }
+delivery_read_pathspecs() {
+  local list="$1" mode="$2" path
+  DELIVERY_PATHSPECS=()
+  while IFS= read -r -d '' path; do DELIVERY_PATHSPECS+=("$path"); done < <(delivery_pathspecs "$list" "$mode")
+}
+overlay_path_in_submission() {
+  local paths="$1" list
+  list="$(mktemp "$(state_home)/overlay-exclusions.XXXXXX")" || return 2
+  delivery_exclusions_file "$list"
+  python3 -c '
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("overlay_paths", sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+excluded = module.read_nul_paths(__import__("pathlib").Path(sys.argv[2]))
+for raw in sys.stdin.buffer.read().split(b"\0"):
+    if raw and module.path_matches(os.fsdecode(raw), excluded):
+        sys.exit(0)
+sys.exit(1)
+' "$OVERLAY_PATH_HELPER" "$list" < "$paths"
+  local rc=$?
+  rm -f "$list"
+  [[ "$rc" == 0 ]] && { echo 'harness-session: refused: overlay_path_in_submission' >&2; return 0; }
+  [[ "$rc" == 1 ]] && return 1
+  return 2
+}
+delivery_filter_statuses() {
+  # porcelain=v1 -z --no-renames emits one `XY path` record per NUL.
+  local input="$1" exclusions="$2"
+  python3 -c '
+import importlib.util, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("overlay_paths", sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+excluded = module.read_nul_paths(Path(sys.argv[2]))
+for record in sys.stdin.buffer.read().split(b"\0"):
+    if len(record) < 4:
+        continue
+    status, path = record[:3], record[3:]
+    if path and not module.path_matches(os.fsdecode(path), excluded):
+        sys.stdout.buffer.write(status + b"\0" + path + b"\0")
+' "$OVERLAY_PATH_HELPER" "$exclusions" < "$input"
+}
+delivery_matching_paths() {
+  local input="$1" exclusions="$2"
+  python3 -c '
+import importlib.util, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("overlay_paths", sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+excluded = module.read_nul_paths(Path(sys.argv[2]))
+for raw in sys.stdin.buffer.read().split(b"\0"):
+    if raw and module.path_matches(os.fsdecode(raw), excluded):
+        sys.stdout.buffer.write(raw + b"\0")
+' "$OVERLAY_PATH_HELPER" "$exclusions" < "$input"
+}
+delivery_cached_diff() {
+  # delivery_cached_diff <root> <base> <output> <git diff args...>
+  local root="$1" base="$2" output="$3" list reset_specs tmp index changed matching rc=0 active_index="${GIT_INDEX_FILE:-}"; shift 3
+  list="$(mktemp "$(state_home)/delivery-paths.XXXXXX")" || return 1
+  delivery_exclusions_file "$list"
+  if delivery_uses_argv "$list"; then
+    delivery_read_pathspecs "$list" exclude || { rm -f "$list"; return 1; }
+    root_git "$root" diff "$@" "$base" -- . "${DELIVERY_PATHSPECS[@]}" > "$output" || rc=$?
+  else
+    # The real index is never changed: reset exclusions only in a copy.
+    index="$active_index"
+    [[ -n "$index" ]] || index="${ROOT_GIT_DIR:+$ROOT_GIT_DIR/index}"
+    [[ -n "$index" ]] || index="$(session_git -C "$root" rev-parse --path-format=absolute --git-path index)" || { rm -f "$list"; return 1; }
+    tmp="$(mktemp -d "$(state_home)/overlay-index.XXXXXX")" || { rm -f "$list"; return 1; }
+    reset_specs="$tmp/reset-pathspecs"
+    delivery_pathspecs "$list" reset > "$reset_specs" || { rm -rf "$tmp"; rm -f "$list"; return 1; }
+    export GIT_INDEX_FILE="$tmp/index"
+    changed="$tmp/changed-paths"; matching="$tmp/matching-paths"
+    { cp "$index" "$GIT_INDEX_FILE" && root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only -z "$base" > "$changed" \
+        && delivery_matching_paths "$changed" "$list" > "$matching" \
+        && { [[ ! -s "$matching" ]] || root_git "$root" reset -q "$base" --pathspec-from-file="$matching" --pathspec-file-nul; } \
+        && root_git "$root" reset -q "$base" --pathspec-from-file="$reset_specs" --pathspec-file-nul \
+        && root_git "$root" diff "$@" "$base" -- . > "$output"; } || rc=1
+    unset GIT_INDEX_FILE
+    rm -rf "$tmp"
+  fi
+  rm -f "$list"
+  return "$rc"
+}
 # stage_worktree <root> <base>: stage the session work tree. `add` never names
 # the excluded paths: an exclude pathspec that names a gitignored file (the
 # copied or linked machine-local files are usually ignored) makes `add -A`
@@ -44,14 +145,19 @@ unset _excluded
 # ignores them through info/exclude), interactive ones to HEAD so submit can
 # still refuse excluded paths the session committed.
 stage_worktree() {
-  local list path
+  local list path reset_list reset_specs
   local -a aliases=()
   root_git "$1" add -A -- . || return 1
+  reset_list="$(mktemp "$(state_home)/reset-paths.XXXXXX")" || return 1
+  delivery_exclusions_file "$reset_list"
+  reset_specs="$(mktemp "$(state_home)/reset-pathspecs.XXXXXX")" || { rm -f "$reset_list"; return 1; }
+  delivery_pathspecs "$reset_list" reset > "$reset_specs" || { rm -f "$reset_list" "$reset_specs"; return 1; }
   if [[ -n "$ROOT_GIT_DIR" ]]; then
-    root_git "$1" reset -q "$2" -- "${EXCLUDED_ICASE[@]}" || return 1
+    root_git "$1" reset -q "$2" --pathspec-from-file="$reset_specs" --pathspec-file-nul || { rm -f "$reset_list" "$reset_specs"; return 1; }
   else
-    session_git -C "$1" reset -q -- "${EXCLUDED_ICASE[@]}" || return 1
+    session_git -C "$1" reset -q HEAD --pathspec-from-file="$reset_specs" --pathspec-file-nul || { rm -f "$reset_list" "$reset_specs"; return 1; }
   fi
+  rm -f "$reset_list" "$reset_specs"
   # Names git's ASCII-only icase misses but the filesystem folds onto an
   # excluded entry (projectſ is projects on APFS) are reset the same way.
   list="$(mktemp "$(state_home)/aliases.XXXXXX")" || return 1
@@ -132,6 +238,7 @@ root_intact() {
 }
 use_session_git() {
   local dir; dir="$(session_dir "$1")"; ROOT_GIT_DIR=""
+  OVERLAY_PATHS_FILE="$dir/overlay-paths"
   # Exit 10: the session root was replaced; the record is kept, nothing staged.
   root_intact "$dir" "$(<"$dir/session-root")" || {
     echo "harness-session: refused: the session root of $1 was replaced (a symlink or another directory); nothing staged" >&2
@@ -651,14 +758,32 @@ session_has_changes() {
   if [[ -n "$ROOT_GIT_DIR" ]]; then
     # The work tree holds the final content, committed or not.
     stage_worktree "$1" "$2" || return 2
-    root_git "$1" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$2" -- . "${EXCLUDED_PATHSPEC[@]}" || rc=$?
+    local diff_output
+    diff_output="$(mktemp "$(state_home)/has-changes.XXXXXX")" || return 2
+    delivery_cached_diff "$1" "$2" "$diff_output" --no-ext-diff --ignore-submodules=all --cached || { rm -f "$diff_output"; return 2; }
+    [[ -s "$diff_output" ]] && rc=1
+    rm -f "$diff_output"
     case "$rc" in 0) return 1 ;; 1) return 0 ;; *) return 2 ;; esac
   fi
   if [[ -n "${2:-}" ]]; then
     head="$(session_git -C "$1" rev-parse HEAD)" || return 2
     [[ "$head" == "$2" ]] || return 0
   fi
-  out="$(session_git -C "$1" status --porcelain --ignore-submodules=all --untracked-files=all -- . "${EXCLUDED_PATHSPEC[@]}")" || return 2
+  local list status_raw status_filtered
+  list="$(mktemp "$(state_home)/status-paths.XXXXXX")" || return 2
+  delivery_exclusions_file "$list"
+  if delivery_uses_argv "$list"; then
+    delivery_read_pathspecs "$list" exclude || { rm -f "$list"; return 2; }
+    out="$(session_git -C "$1" status --porcelain --ignore-submodules=all --untracked-files=all -- . "${DELIVERY_PATHSPECS[@]}")" || { rm -f "$list"; return 2; }
+  else
+    status_raw="$(mktemp "$(state_home)/status-raw.XXXXXX")" || { rm -f "$list"; return 2; }
+    status_filtered="$(mktemp "$(state_home)/status-filtered.XXXXXX")" || { rm -f "$list" "$status_raw"; return 2; }
+    session_git -C "$1" status --porcelain=v1 -z --ignore-submodules=all --untracked-files=all --no-renames > "$status_raw" \
+      && delivery_filter_statuses "$status_raw" "$list" > "$status_filtered" || { rm -f "$list" "$status_raw" "$status_filtered"; return 2; }
+    [[ -s "$status_filtered" ]] && out=changed || out=""
+    rm -f "$status_raw" "$status_filtered"
+  fi
+  rm -f "$list"
   [[ -n "$out" ]] || return 1
 }
 exit_session() {
@@ -729,7 +854,7 @@ list() {
 }
 write_index_manifest() {
   local root="$1" base="$2" output="$3" status path mode oid stage path2 entry
-  root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$output.paths" || return 1
+  delivery_cached_diff "$root" "$base" "$output.paths" --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z || return 1
   : > "$output"
   while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     if [[ "$status" == D* ]]; then printf 'D\0-\0-\0%s\0' "$path" >> "$output"; continue; fi
@@ -754,14 +879,34 @@ submit() {
     # Interactive: committed work is in the index already, so staged excluded
     # paths are only unstaged back to HEAD; committed ones refuse instead of
     # being silently dropped. A headless index is reset to the base there.
-    local touched aliases
-    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${EXCLUDED_ICASE[@]}")" \
-      && aliases="$(excluded_aliases "$root" "$base" | tr '\0' '\n')" \
-      || { echo 'harness-session: refused: could not check the submission for excluded paths' >&2; return 2; }
+    local touched aliases list changed matching
+    list="$(mktemp "$(state_home)/touched-paths.XXXXXX")" || return 2
+    delivery_exclusions_file "$list"
+    if delivery_uses_argv "$list"; then
+      delivery_read_pathspecs "$list" reset || { rm -f "$list"; return 2; }
+      touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${DELIVERY_PATHSPECS[@]}")"
+    else
+      changed="$(mktemp "$(state_home)/touched-changed.XXXXXX")" || { rm -f "$list"; return 2; }
+      matching="$(mktemp "$(state_home)/touched-matching.XXXXXX")" || { rm -f "$list" "$changed"; return 2; }
+      session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only -z "$base" > "$changed" \
+        && delivery_matching_paths "$changed" "$list" > "$matching" \
+        || { rm -f "$list" "$changed" "$matching"; echo 'harness-session: refused: could not check the submission for excluded paths' >&2; return 2; }
+      touched="$(tr '\0' '\n' < "$matching")"
+      rm -f "$changed" "$matching"
+    fi
+    aliases="$(excluded_aliases "$root" "$base" | tr '\0' '\n')" \
+      || { rm -f "$list"; echo 'harness-session: refused: could not check the submission for excluded paths' >&2; return 2; }
+    rm -f "$list"
     touched="$touched${aliases:+$'\n'$aliases}"
     [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
   fi
-  root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"
+  local unfiltered
+  unfiltered="$(mktemp "$(state_home)/submission-paths.XXXXXX")" || return 2
+  root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only -z "$base" > "$unfiltered" || { rm -f "$unfiltered"; return 2; }
+  if overlay_path_in_submission "$unfiltered"; then rm -f "$unfiltered"; return 7
+  elif [[ $? != 1 ]]; then rm -f "$unfiltered"; return 2; fi
+  rm -f "$unfiltered"
+  delivery_cached_diff "$root" "$base" "$dir/submission.patch" --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary || return 2
   [[ -s "$dir/submission.patch" ]] || { echo 'empty submission' >&2; return 2; }
   write_index_manifest "$root" "$base" "$dir/.manifest"
   mv -f "$dir/.manifest" "$dir/manifest"
@@ -1049,6 +1194,7 @@ write_index_pathset() {
 integrate_unlocked() {
   local id="$1" dir source remote attempt candidate current delivered readback kind mode hash path actual_mode actual_type actual_oid actual_path entry
   dir="$(session_dir "$id")"; source="$(<"$dir/source-root")"
+  use_session_git "$id" || { transition "$id" INTEGRATING "$(field "$dir/journal" identity)"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
   remote="$(git -C "$source" remote get-url origin)"
   [[ "$remote" == "$(<"$dir/remote-url")" ]] || { transition "$id" INTEGRATING "$(field "$dir/journal" identity)"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
   transition "$id" INTEGRATING "$(field "$dir/journal" identity)"
@@ -1059,6 +1205,13 @@ integrate_unlocked() {
     git -C "$candidate" checkout -q main
     current="$(git -C "$candidate" rev-parse HEAD)"
     if ! git -C "$candidate" apply --3way --index "$dir/submission.patch"; then rm -rf "$candidate"; transition "$id" CONFLICT; return 3; fi
+    git -C "$candidate" diff --cached --name-only -z "$current" > "$dir/.candidate-unfiltered"
+    if overlay_path_in_submission "$dir/.candidate-unfiltered"; then
+      rm -f "$dir/.candidate-unfiltered"; rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3
+    elif [[ $? != 1 ]]; then
+      rm -f "$dir/.candidate-unfiltered"; rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3
+    fi
+    rm -f "$dir/.candidate-unfiltered"
     write_manifest_pathset "$dir/manifest" "$dir/.submitted-pathset"
     write_index_pathset "$candidate" "$current" "$dir/.candidate-pathset"
     cmp -s "$dir/.submitted-pathset" "$dir/.candidate-pathset" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
@@ -1141,6 +1294,7 @@ close_session() {
 write_discard_patch() {
   local id="$1" dir="$2" root base tmp patch index rc=0
   root="$(<"$dir/session-root")" && base="$(<"$dir/base-sha")" || return 1
+  OVERLAY_PATHS_FILE="$dir/overlay-paths"
   [[ -d "$root" && ! -L "$root" ]] || return 1
   ROOT_GIT_DIR=""
   if [[ -e "$dir/headless" ]]; then
@@ -1163,8 +1317,8 @@ write_discard_patch() {
   # Fixed output format: no user color, prefix or external diff setting
   # changes the patch.
   { cp "$index" "$GIT_INDEX_FILE" && root_git "$root" add -A -- . \
-      && root_git "$root" diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ \
-        --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$patch"
+      && delivery_cached_diff "$root" "$base" "$patch" --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ \
+        --ignore-submodules=all --cached --binary
   } || rc=1
   unset GIT_INDEX_FILE
   rm -rf "$tmp"
