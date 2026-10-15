@@ -55,6 +55,10 @@ printf '==> test_profile_resolver.py (python3)\n'
 python3 -m unittest discover -s "$ROOT/test" -p 'test_profile_resolver.py'
 passed=$((passed + 1))
 
+printf '==> test_harness_overlay_paths.py (python3)\n'
+python3 "$ROOT/test/test_harness_overlay_paths.py"
+passed=$((passed + 1))
+
 source "$ROOT/bin/harness-common.sh"
 PYTHON_BIN="$(harness_python3_resolve)"
 printf '==> test_mcp_paths.py (%s)\n' "$PYTHON_BIN"
