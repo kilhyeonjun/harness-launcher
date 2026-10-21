@@ -188,6 +188,9 @@ with several possible histories needs an exact UUID in a noninteractive shell.
 Native data is archived separately from disposable roots, and GC retains a root
 until a characterized Native binary verifies the restored full history. See
 [Durable native Codex history](docs/codex-history.md) for limits and recovery.
+Unaccounted terminal work remains held unless an operator explicitly preserves
+its exact inventory, including independent staged and worktree contents, with
+verified recovery outside the disposable root. GC never creates that approval.
 
 Release-owned entries can verify an explicit Claude fork without inheriting the
 parent grant or reopening a completed owner; see

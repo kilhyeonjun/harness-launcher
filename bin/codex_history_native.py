@@ -13,7 +13,7 @@ import tempfile
 import time
 
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
-CHARACTERIZED_VERSIONS = {b"0.161.0", b"0.162.1"}
+CHARACTERIZED_VERSIONS = {b"0.161.0", b"0.162.1", b"0.163.0"}
 
 
 class NativeVerificationError(Exception):
@@ -31,11 +31,11 @@ def digest(value):
 def expected_history(home):
     """Read the preserved projection before Native can migrate derived copies."""
     home = Path(home)
-    headers = {}; content = {}; parents = {}; owners = set(); primary_paths={}
+    headers = {}; content = {}; parents = {}; owners = set(); primary_paths={}; embedded=[]
     for directory in ("sessions", "archived_sessions"):
         for path in sorted((home / directory).rglob("*.jsonl")):
             if path.is_symlink(): fail("unsafe Native rollout")
-            thread = None
+            thread = None; primary_seen = False
             # Segments without a header belong to the UUID encoded in their name.
             matches = re.findall(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", path.name)
             if matches: thread = matches[-1].lower()
@@ -45,8 +45,17 @@ def expected_history(home):
                     if not line.strip(): continue
                     row = json.loads(line)
                     if row.get("type") == "session_meta":
-                        meta = row.get("payload", {}); thread = str(meta.get("id", "")).lower()
-                        if not UUID.fullmatch(thread): fail("invalid Native thread metadata")
+                        meta = row.get("payload", {}); metadata_thread = str(meta.get("id", "")).lower()
+                        if not UUID.fullmatch(metadata_thread): fail("invalid Native thread metadata")
+                        if primary_seen:
+                            # 0.163 fork copies include their parent's metadata
+                            # in the raw history. Native keeps the file's first
+                            # header as owner; every embedded header must also
+                            # have its identical standalone original preserved.
+                            ordinal=row.get('ordinal')
+                            if type(ordinal) is not int or ordinal<1:fail('unsupported embedded Native metadata')
+                            embedded.append(meta);continue
+                        primary_seen=True;thread=metadata_thread
                         if filename_thread and filename_thread != thread: fail("Native filename and metadata disagree")
                         previous = headers.get(thread)
                         if previous and previous != meta: fail("conflicting Native thread metadata")
@@ -58,7 +67,34 @@ def expected_history(home):
                     if row.get('type') != 'session_meta':
                         if not thread: fail('Native rollout has no attributable UUID')
                         owners.add(thread)
-    if not headers: fail("Native history has no readable thread metadata")
+    if not headers:
+        # A Native process can exit before its first conversation. Only an
+        # actually empty known catalog is admissible; lost rollouts are not.
+        if any(path.is_file() for directory in ('sessions','archived_sessions')
+               for path in (home/directory).rglob('*.jsonl')):
+            fail("Native history has no readable thread metadata")
+        state=home/'state_5.sqlite'
+        if not state.is_file() or state.is_symlink():fail('empty Native catalog is unverified')
+        try:
+            for path,tables in ((state,('threads',)),(home/'thread_history_1.sqlite',('thread_turns','thread_items'))):
+                if not path.exists():continue
+                if path.is_symlink():fail('unsafe empty Native catalog')
+                connection=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)
+                try:
+                    known={row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    extra=('thread_history_projection_state','rollout_migration_skipped_rollouts')
+                    for table in (*tables,*(name for name in extra if name in known)):
+                        if connection.execute('SELECT 1 FROM '+table+' LIMIT 1').fetchone():
+                            fail('Native catalog has no preserved rollouts')
+                finally:connection.close()
+            for name in ('history.jsonl','session_index.jsonl'):
+                if (home/name).exists() and (home/name).stat().st_size:
+                    fail('Native history list has no preserved rollouts')
+        except sqlite3.Error as error:
+            raise NativeVerificationError('empty Native catalog schema is unsupported') from error
+        return {}
+    if any(headers.get(str(meta.get('id','')).lower())!=meta for meta in embedded):
+        fail('embedded Native metadata has no identical preserved primary')
     if not owners <= set(headers): fail('Native rollout segment has no preserved thread metadata')
     if any(parent not in headers for parent in parents.values()): fail("Native parent history is missing")
     for thread in parents:
@@ -278,6 +314,11 @@ def verify_native(restored_home, manifest, codex_bin):
         for path in sorted((Path(restored_home)/directory).rglob('*.jsonl')):
             files.append((path,hashlib.sha256(path.read_bytes()).hexdigest()))
     with NativeRpc(executable, restored_home, denied) as rpc:
+        if not expected:
+            for archived in (False,True):
+                result=rpc.call('thread/list',{'limit':100,'archived':archived})
+                if result.get('data')!=[] or result.get('nextCursor'):
+                    fail('restored Native catalog is not empty')
         for path,checksum in files:
             result=rpc.call('fs/readFile',{'path':str(path)})
             try: contents=base64.b64decode(result['dataBase64'],validate=True)
@@ -298,5 +339,5 @@ def verify_native(restored_home, manifest, codex_bin):
     if identity.get('executable') and binary_identity(codex_bin)!=identity:
         fail('Native executable changed during verification')
     return {"schema_version": 1, "native": identity, "threads": receipts,
-            'raw_rollout_count':len(files),
+            'raw_rollout_count':len(files), 'empty_catalog_verified':not bool(expected),
             "model_requests": 0, "network": "sandbox-denied"}

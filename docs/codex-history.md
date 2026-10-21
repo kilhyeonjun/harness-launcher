@@ -56,9 +56,13 @@ rule, service or daemon.
   checks the saved hashes and a fresh derived restore. Original source paths
   must be inaccessible during the native full-history read. Only derived
   databases may relocate schema-known home paths; originals remain untouched.
-  Full-retirement proof currently admits characterized Native 0.161.0/0.162.1.
-  Native 0.163.0 remains held: successful ordinary raw-only resume QA alone
-  does not characterize every preserved projection or parent format.
+  Full-retirement proof admits characterized Native 0.161.0/0.162.1/0.163.0.
+  Native 0.163.0 is checked with complete preserved projections, including
+  parent cuts and copied parent metadata. Embedded parent headers require their
+  identical standalone original to remain preserved; the selected raw-only restore restriction above remains intact.
+  A home with no rollouts must have an empty known SQLite thread catalog and
+  projection, no nonempty history lists, and an empty active/archived Native
+  catalog. Missing rollouts for a nonempty catalog still block retirement.
 - `catalog --source-root ROOT --state-home STATE [--legacy-state-home STATE] [--native-id UUID]`
   reports native UUID, source/home/isolation, status, time and origin pin from
   canonical, live isolated and validated archived data. No conversation body,
@@ -149,10 +153,52 @@ profile boundaries, authority exclusion, failure recovery, offline selection,
 and real native history reads without a model prompt. Fixture verification is
 separate from operational host migration and authenticated model turns.
 
-The deletion verifier characterizes Native **0.161.0** and **0.162.1**. Other
+The deletion verifier characterizes Native **0.161.0**, **0.162.1** and **0.163.0**. Other
 versions keep roots until their history protocol is verified. The proof compares
 every original rollout byte and all original projection items; it does not
 reconstruct projection items already missing from the original database or
 recover data removed before an archive existed. Source, archive and restoration
 are host-local; installing the launcher does not synchronize conversations
 between machines. Existing auth and hook approvals come from normal preparation.
+
+## Explicit terminal work preservation
+
+GC still retains unaccounted work by default. An operator can explicitly preserve
+one reviewed terminal owner using `bin/harness_session_work_recovery.py`:
+
+1. Run `inventory --state STATE --owner UUID` and review its exact inventory hash.
+2. Run `preserve --state STATE --owner UUID --expected SHA256`. The existing
+   runtime lease must be free. The approved inventory must still match.
+3. Run ordinary owner-filtered GC. It rechecks the immutable custody record
+   against the current root and again after Native retirement staging.
+
+This archive preserves complete nonexcluded work files, symlink targets, empty
+directories, the original Git index and every staged blob. Distinct staged and
+unstaged contents survive independently, including deletion states and ignored
+files. It does not deliver changes or rewrite the original index or lifecycle.
+Generated authority/config exclusions retain the existing work-proof boundary;
+Native history uses its independent archive and verifier.
+
+Private content-addressed objects and receipts live in the owner's
+`work-recovery` record. Publication requires complete readback, file/directory
+fsync and a fresh independent index/worktree restore. A durable pending marker
+keeps interrupted publication held until the final parent entry is synced.
+A crash after publication can conservatively retain that marker and hold GC.
+Owner, source, root
+incarnation, base, terminal lifecycle, delivery metadata and every current byte
+are bound to the receipt. Later work, corrupted archives or replaced identities
+remain held. Headless or unmerged indexes and unsupported object formats refuse
+preservation. GC never creates these archives or automatically approves dirty
+sessions. Archives have no expiry.
+
+To recover after retirement, run `restore --archive ARCHIVE --destination NEW`.
+The destination must be new. It receives the original worktree and a standalone
+Git index/blob store, preserving `git show :path` separately from worktree bytes.
+The canonical base remains identified by the manifest; no branch is delivered.
+
+For real offline Native characterization, set `HARNESS_TEST_REAL_CODEX_BIN` to
+the native backend and run `test/test-codex-history-native.sh`. Without that
+explicit binary, real-backend tests report skipped; fixture transport tests
+still run. The characterization covers 101 turns, full pagination, parent cuts,
+archived segments, committed SQLite WAL, original path disappearance and empty
+catalogs, with no model turn or network access.

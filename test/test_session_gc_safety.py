@@ -118,4 +118,33 @@ class GCSafetyTests(unittest.TestCase):
         self.assertIn('reason=stale_without_lease',(record/'exit-reason').read_text())
 
 
+    def test_targeted_gc_retires_only_exact_preserved_work_and_it_remains_recoverable(self):
+        owner,root=self.closed();other,other_root=self.closed()
+        (root/'tracked').write_bytes(b'staged\x00')
+        subprocess.run(['git','-C',str(root),'add','tracked'],check=True)
+        (root/'tracked').write_bytes(b'unstaged\x01');(root/'unique').write_bytes(b'\x00binary')
+        helper=ROOT/'bin/harness_session_work_recovery.py'
+        argv=[sys.executable,'-I','-B',str(helper)]
+        flags=['--state',str(self.state),'--owner',owner]
+        observed=json.loads(subprocess.check_output([*argv,'inventory',*flags]))
+        subprocess.run([*argv,'preserve',*flags,'--expected',observed['inventory_sha256']],check=True,capture_output=True)
+        self.engine('gc','--owner',owner,'--source-root',str(self.source))
+        self.assertFalse(root.exists());self.assertTrue(other_root.exists())
+        restored=self.base/'recovered'
+        subprocess.run([*argv,'restore','--archive',str(self.state/'sessions'/owner/'work-recovery'),
+                        '--destination',str(restored)],check=True,capture_output=True)
+        self.assertEqual((restored/'tracked').read_bytes(),b'unstaged\x01')
+        self.assertEqual(subprocess.check_output(['git','-C',str(restored),'show',':tracked']),b'staged\x00')
+        self.assertEqual((restored/'unique').read_bytes(),b'\x00binary')
+
+    def test_targeted_gc_holds_new_work_after_explicit_preservation(self):
+        owner,root=self.closed();(root/'tracked').write_text('approved')
+        helper=ROOT/'bin/harness_session_work_recovery.py'
+        argv=[sys.executable,'-I','-B',str(helper)];flags=['--state',str(self.state),'--owner',owner]
+        observed=json.loads(subprocess.check_output([*argv,'inventory',*flags]))
+        subprocess.run([*argv,'preserve',*flags,'--expected',observed['inventory_sha256']],check=True,capture_output=True)
+        (root/'later').write_text('unapproved later bytes')
+        self.engine('gc','--owner',owner,'--source-root',str(self.source))
+        self.assertEqual((root/'later').read_text(),'unapproved later bytes')
+
 if __name__=='__main__':unittest.main()

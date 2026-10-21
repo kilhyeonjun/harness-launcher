@@ -2,7 +2,17 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — Python cache preservation
+## Unreleased — verified terminal cleanup
+
+- Characterize Native 0.163.0 full history retirement with real offline archive
+  and restore tests, including pagination, parents, segments and SQLite WAL.
+  Verify known empty catalogs explicitly; missing history still retains roots.
+- Add explicit, exact-inventory terminal work preservation. Keep original index
+  blobs and worktree bytes independently recoverable before owner-filtered GC;
+  later changes and failed preservation remain protected. No automatic dirty
+  session cleanup or archive expiry is introduced.
+
+## 0.71.1 — 2026-10-21
 
 - Allow session GC to account for untracked CPython caches after checking the
   sibling Git source and cache fingerprint. Exact regeneration proves derived

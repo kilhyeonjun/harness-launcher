@@ -273,6 +273,13 @@ def prove(state,owner,retained_root=None,preserve_python_caches=False):
     elif status=='DISCARDED':
         expected=discarded_tree(source,base,metadata(record/'discarded.patch'))
     elif status!='CLOSED':raise WorkError('nonterminal work is retained')
+    # Only explicit owner/inventory-bound operator preservation can account for
+    # later work. GC never creates this archive or broadens its approved bytes.
+    if os.path.lexists(record/'work-recovery'):
+        from harness_session_work_recovery import verify
+        recovery=verify(state,owner,root)
+        return {'status':'proven','session_id':owner,'lifecycle':status,
+                'work_recovery':recovery,'python_cache_proofs':[]}
     indexed=index_entries(source,root/'.git/index')
     if status=='DISCARDED':
         if any(indexed.get(path) not in (base_tree.get(path),expected.get(path))

@@ -679,6 +679,10 @@ homes are unreadable to that probe. All raw rollout bytes and paginated items
 must match; unknown artifacts, live writers or failed verification retain the
 root. Old Native `.retired-*` tombs stay recoverable. Archives and completed
 journals are outside the workspace GC target and are never automatically pruned.
+Explicit operator-reviewed terminal work custody can separately preserve an
+exact current index and worktree inventory before GC. The owner-bound immutable
+archive must pass independent recovery, readback and durability checks; later
+changes remain held. GC never creates the work-preservation approval.
 See [Durable native Codex history](codex-history.md).
 
 `harness-session report --json` observes retention metadata without invoking GC,
