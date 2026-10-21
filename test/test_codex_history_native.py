@@ -362,6 +362,7 @@ class RealNativeCharacterizationTests(unittest.TestCase):
             db.execute('INSERT INTO threads ('+','.join(record)+') VALUES ('+','.join('?' for _ in record)+')',tuple(record.values()))
             db.execute("UPDATE threads SET source=?,thread_source='subagent',agent_path='/root/fixture',agent_nickname='Fixture',agent_role='default' WHERE id=?",(json.dumps(source),ID))
             db.execute("INSERT INTO thread_spawn_edges VALUES (?,?,'open')",(parent,ID))
+        db.close()
         with sqlite3.connect(self.home/'thread_history_1.sqlite') as db:
             db.row_factory=sqlite3.Row
             for table in ['thread_turns','thread_items','thread_history_projection_state']:
@@ -371,6 +372,7 @@ class RealNativeCharacterizationTests(unittest.TestCase):
                     db.execute('INSERT INTO '+table+' ('+','.join(record)+') VALUES ('+','.join('?' for _ in record)+')',tuple(record.values()))
             db.execute('UPDATE thread_history_projection_state SET next_rollout_byte_offset=? WHERE thread_id=?',
                        (self.rollout.stat().st_size,ID))
+        db.close()
         with native.NativeRpc(self.binary,self.home,[]) as rpc:
             with self.assertRaises(native.NativeVerificationError):
                 rpc.call('thread/resume',{'threadId':ID,'cwd':str(self.home),'excludeTurns':True})

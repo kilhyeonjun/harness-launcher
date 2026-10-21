@@ -691,6 +691,11 @@ the same complete paginated comparison. Large raw reads have file-size-derived
 budgets and a 128 MiB file ceiling; framing is linear and ordinary RPC limits stay
 unchanged.
 
+Existing transcript archives can tolerate only characterized `state_5.sqlite-shm`
+counter and dependent-checksum changes after validating both headers against the
+unchanged DB/WAL. All other bytes and file identities remain strict, prior archive
+contents stay immutable, and complete Native/work proofs still precede retirement.
+
 Explicit operator-reviewed terminal work custody can separately preserve an
 exact current index and worktree inventory before GC. The owner-bound immutable
 archive must pass independent recovery, readback and durability checks; later

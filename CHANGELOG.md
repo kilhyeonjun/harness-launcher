@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.73.2 — 2026-10-22
+
+- Reuse an immutable transcript archive after SQLite rebuilds only characterized
+  WAL-index counters. Require unchanged DB, WAL, raw history and file inventory;
+  validate both SHM headers and checksums against that WAL, and retain roots for
+  every other byte difference. Existing archive contents remain unchanged and
+  complete Native/work verification still precedes retirement.
+
 ## 0.73.1 — 2026-10-22
 
 - Preserve symlink modes during independent terminal-work restoration even with
