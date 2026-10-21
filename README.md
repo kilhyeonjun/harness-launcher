@@ -229,6 +229,14 @@ an `ABANDONED` or `CONFLICT` session whose work will not be delivered: it keeps
 the work as `discarded.patch` in the session record, then marks it terminal
 `DISCARDED`.
 
+An operator can explicitly enable the [durable integration queue](docs/session-integration-queue.md)
+after enrolling all affected old and profile pools. Then `close --enqueue <uuid>`
+returns a persisted job identifier without waiting for tests, and `wait <job-id>`
+observes verified completion. Default `close` remains synchronous through the
+same queue; acceptance is never reported as delivery. Queue workers serialize
+the same destination and use a separate bounded host execution budget.
+No ordinary launch or close installs or starts the optional service.
+
 Only one launcher may own a UUID at a time. A kernel lease covers the complete
 runtime and is not inherited by Claude, Codex, heartbeat, or title-broker child
 processes. `CLOSED` workspaces remain resumable for 24 hours by default;
@@ -442,6 +450,11 @@ harness-headless <profile> --agent codex --model gpt-6.1-sol --effort medium \
   [--max-model-requests 400] --prompt-file task.md --result-file result.json \
   --lock-file run.lock --budget-usd 5 --timeout-min 30
 ```
+
+Codex preflight loads its configuration under the same sandbox before any model
+request. The fixed macOS system requirements file is readable only when it and
+all parent directories are root-owned and not writable by other users; its
+siblings and writes remain denied. Missing system requirements need no grant.
 
 `--target <name>` (Codex only) runs the same Codex agent on a registered personal code repository instead of the harness and delivers a successful change as a draft pull request on a new `loop/<task>-<approval8>` branch. The owner registers each repository once from a terminal; the caller passes the sha256 of that record, so a changed registry entry is refused until it is registered again:
 
