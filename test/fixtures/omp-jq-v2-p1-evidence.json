@@ -32,12 +32,12 @@
     "system_jq": null
   },
   "provenance": {
-    "head": "449e1f2776a3555f23ef41cf5f375178a494f5d5",
-    "job": 118499176581,
-    "line": 243,
-    "line_sha256": "8bb1a4784ced6f04655ee53203db99fbc13bb8f0ea418681f249c1580a6c8fc6",
-    "source_receipt_sha256": "e2109915288cf48d6e8050546714ce5e3c2c31c678155729e275a21e4bcf0b72",
-    "whole_log_sha256": "57682781391bbc85ab2c11032f0f9cac5fd17a4484a78fc5d1d328de41fa3f81"
+    "head": "6b23344f88c7cd4cdc948f618997c9ffed73c477",
+    "job": 119376390928,
+    "line": 208,
+    "line_sha256": "cb3990fe72f590820a4126a48f153d772d566854262c1e0e9ee29ebdd9fa995c",
+    "source_receipt_sha256": "91a8a2120151be972ae7fc8134e56c73f2544c48050492d2bfb17b69faced4d2",
+    "whole_log_sha256": "f50a2b0bdeedebb349a71fc1013f70d244f8ed9e57dbbaa9dcc48a241fe69fa7"
   },
   "schema": "w07.jq-fallback-evidence/v2",
   "source_pins": [
@@ -48,40 +48,40 @@
       "sha256": "f2aaf3d538e4a0b3739326f809457d8213502dd8dec035528ce9e3bb84cc4582"
     },
     {
-      "bytes": 34730,
+      "bytes": 43276,
       "mode": "0644",
       "path": "test/test-omp-continuation.sh",
-      "sha256": "6ebbf88073e714ec4896fe76199924dbeccf76cd0e6d9ced82c8bf8772f60a15"
+      "sha256": "de6b27356de850ea90397b44abcb494940db99450d4c994c384d6df28b026e8f"
     },
     {
-      "bytes": 6736,
+      "bytes": 6806,
       "mode": "0644",
       "path": "test/omp-fixture-source.py",
-      "sha256": "09a5f838c5b5e412509fcd89b82507955f21bda437844556392b12ccc12a7bc2"
+      "sha256": "4b3bd99cdede4f9d437aeee4268791653b9c92e34b1d9b0f6f1a57208ddfc146"
     },
     {
-      "bytes": 2212,
+      "bytes": 2584,
       "mode": "0644",
       "path": "test/omp-fixture-policy.json",
-      "sha256": "7669649f4d2908322cfa4ad794a8cb2dca75f4cf85a8d61ec5c9796c8cb17349"
+      "sha256": "02dd2f7dcccb190a5620cea7f739633c9b1ba3b2a6bf71de14137f7b3ae4d812"
     },
     {
-      "bytes": 45253,
+      "bytes": 56760,
       "mode": "0644",
       "path": "bin/harness_omp_projection.py",
-      "sha256": "68e0b633c8864a9c4154e9ee68182a80d2e8023f62fc9b86b242d1974211a899"
+      "sha256": "108a625c153b450335bc926dd7f6da4639778a365ae38bc8cb6e0027959c5dbe"
     },
     {
-      "bytes": 77169,
+      "bytes": 82613,
       "mode": "0644",
       "path": "test/fixtures/w07-source/core/scripts/harness_compile.py",
-      "sha256": "5373059628cf3cd4fd667a1245d3b24e2f65602fa7b053f7051ac2fa743cd50c"
+      "sha256": "37d9b48f6b6ec4758305f483832161896b78a17f50ca949bdd40d82e7ae1c518"
     },
     {
-      "bytes": 26793,
+      "bytes": 28155,
       "mode": "0644",
       "path": "test/fixtures/w07-source/core/scripts/omp_required_extension.ts",
-      "sha256": "6d80c1e53f77d5f020da9e71ba1758b632cf4dddc6bbb3366bfc3114c6c27e19"
+      "sha256": "fb0f8a87140082a03c064991e0cafdc9c7c4c0b48cc9447c9675f2cc18ff475c"
     },
     {
       "bytes": 3183,

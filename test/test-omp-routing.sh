@@ -44,6 +44,37 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     finally:
         if previous_home is None:os.environ.pop('HOME',None)
         else:os.environ['HOME']=previous_home
+    # Public entry verifies a complete current closure before legacy selection.
+    # Keep the original never-enrolled adapter cases inside a synthetic runtime.
+    import shutil
+    runtime = home / '.local/state/kilhyeonjun-harness/launcher-runtimes'
+    runtime.mkdir(parents=True, mode=0o700)
+    snapshot = runtime / ('a' * 40)
+    (snapshot / 'bin').mkdir(parents=True)
+    inventory = {}
+    for source in (repo / 'bin').iterdir():
+        if source.is_file() and not source.is_symlink():
+            destination = snapshot / 'bin' / source.name
+            shutil.copyfile(source, destination)
+            mode = 0o500 if source.stat().st_mode & 0o111 else 0o400
+            destination.chmod(mode)
+            inventory['bin/' + source.name] = {
+                'mode': mode,
+                'sha256': hashlib.sha256(destination.read_bytes()).hexdigest(),
+            }
+    manifest = snapshot / 'manifest.json'
+    manifest.write_text(json.dumps({
+        'version': '0.66.0', 'revision': snapshot.name, 'files': inventory,
+    }))
+    manifest.chmod(0o400)
+    for directory, _, _ in os.walk(snapshot):
+        Path(directory).chmod(0o500)
+    current = runtime / 'current.json'
+    current.write_text(json.dumps({
+        'version': '0.66.0', 'revision': snapshot.name, 'path': str(snapshot),
+        'manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
+    }))
+    current.chmod(0o600)
     expected_env={'HOME':str(ns/'home'),'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','TMPDIR':str(ns/'tmp'),'XDG_CACHE_HOME':str(ns/'cache'),'XDG_CONFIG_HOME':str(ns/'config'),'XDG_STATE_HOME':str(ns/'state'),'XDG_DATA_HOME':str(ns/'data'),'PI_CODING_AGENT_DIR':str(ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(ns/'history'),'PI_NATIVES_DIR':str(ns/'native-cache'),'TERM':'xterm-256color'}
     # Calibrate only the fake interpreter startup, not the OMP contract. macOS
     # adds this nonsecret field even to a directly launched empty-env Python.
@@ -192,4 +223,8 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     lock.write_text('');lock.chmod(0o644);run(['omp',*management[2]],expected=2,no_allocate=True);assert lock.exists();lock.unlink()
     print('SAVED_FAKE_PROOF='+json.dumps({'schema':'omp-routing-fake-v1','startup_baseline':fake_env,'cases':[{**x,'outgoing':[b.decode() for b in x['outgoing']] if x['outgoing'] is not None else None} for x in observations]},separators=(',',':')))
     print('PASS:',passed,'OMP real-entry/dispatcher argv/env/cwd/exit and fail-closed cases; native fake only')
+    for directory, _, files in os.walk(snapshot):
+        Path(directory).chmod(0o700)
+        for name in files:
+            (Path(directory) / name).chmod(0o600)
 PYTEST

@@ -84,6 +84,25 @@ class ProjectionTests(unittest.TestCase):
         put(self.state,state)
         index=json.loads(self.index.read_bytes()); index['enrolled_profiles']['ex']['payload_row_sha256']=hashlib.sha256(encoded(state['profiles']['ex'])).hexdigest();put(self.index,index)
 
+    def test_MM4P_strict_modified_release_pair_preserves_old_and_rejects_bad_fields(self):
+        old = dict(version='18.11.3-kh.w07.1',source_revision='1'*40,
+            contract_id='w07.required-resolver-consumer.v1',upstream_base_version='18.11.3',
+            upstream_base_revision='96894a6147d8cc64b7e00ad3a7d7178fd93b9531',
+            source_patch_sha256='2'*64,build_provenance_sha256='3'*64)
+        self.m.check_binary_release(old)
+        legal = dict(old,version='18.11.3-kh.w07.mm.1')
+        self.m.check_binary_release(legal)
+        binding = self.m.binary_binding(str(self.binary),legal)
+        self.assertEqual(binding['sha256'],digest(self.binary))
+        invalid = [dict(legal,version='18.11.3'),dict(legal,extra=True),
+                   dict(legal,upstream_base_version='18.11.2'),
+                   dict(legal,upstream_base_revision='0'*40),dict(legal,source_revision='bad'),
+                   dict(legal,source_patch_sha256='bad'),dict(legal,build_provenance_sha256=None)]
+        for release in invalid:
+            with self.subTest(release=release):
+                self.rejected(lambda:self.m.check_binary_release(release))
+        self.assertFalse(self.calls.exists())
+
     def test_O1_never_enrolled_does_not_open_payload_and_typed_bootstrap_works(self):
         self.state.write_text('unread malformed payload');self.state.chmod(0o600)
         with patch.object(self.m,'read_file',wraps=self.m.read_file) as read:

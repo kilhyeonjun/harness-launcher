@@ -1310,15 +1310,33 @@ _harness_launcher_omp_projection_select() {
 
 # Private NUL framing preserves literal argv; this is structural preparation,
 # never native inventory or readiness proof. Keep current and both leases outside.
+_harness_launcher_omp_model_mode() {
+  local python framed
+  local -a fields
+  python="$(harness_python3_resolve)" || return 2
+  framed="$("$python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
+    model-mode-request "${config_root:A}" "$_HARNESS_LAUNCHER_BIN/aliases.zsh" "$@")" || return 2
+  fields=("${(@0)framed}")
+  [[ "${fields[1]-}" == MODEL_MODE && "${fields[-2]-}" == END && "${fields[-1]-}" == '' ]] || return 2
+  omp_model_mode="$fields[2]"; omp_model_recipe="$fields[3]"
+  fields[1,3]=(); fields[-1]=(); fields[-1]=()
+  omp_native_args=("${fields[@]}")
+}
+
 _harness_launcher_omp_required_argv() {
   local workspace="$1" python
   shift
   python="$(harness_python3_resolve)" || return 2
   local -a fields
   local framed
+  local -a mode_prepare=(prepare-required) mode_values=()
+  if [[ "${omp_model_mode:--}" != - ]]; then
+    mode_prepare=(prepare-required-mode)
+    mode_values=("$omp_model_mode" "$omp_model_recipe")
+  fi
   framed="$("$python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
-    prepare-required "${config_root:A}" "$_HARNESS_LAUNCHER_BIN/aliases.zsh" \
-    "$workspace" "$HARNESS_OMP_BIN" "$HARNESS_OMP_ROOT" "$@")" || return 2
+    "${mode_prepare[@]}" "${config_root:A}" "$_HARNESS_LAUNCHER_BIN/aliases.zsh" \
+    "$workspace" "$HARNESS_OMP_BIN" "$HARNESS_OMP_ROOT" "${mode_values[@]}" "$@")" || return 2
   fields=("${(@0)framed}")
   # zsh command substitution retains NULs and strips only trailing newlines.
   [[ "${fields[1]-}" == REQUIRED_ARGV && "${fields[-2]-}" == END && "${fields[-1]-}" == '' ]] || return 2
@@ -1505,6 +1523,15 @@ PYREQUEST
       echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
     }
     _harness_launcher_omp_validate || return 2
+    if [[ "$continuation_mode" == --session-resume && "${omp_model_mode:--}" != - ]]; then
+      selected="$(_harness_launcher_omp_continuation_metadata MODE_PEEK)" || return 2
+      fields=("${(@f)selected}")
+      [[ ${#fields} -eq 8 && "$fields[6]" != - ]] || return 2
+      _harness_launcher_omp_native "$fields[4]" \
+        --inspect-session-model-mode "$fields[6]" --json |
+        "$continuation_python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
+        validate-model-mode-peek "$omp_model_mode" "$omp_model_recipe" || return 2
+    fi
     local operation=NEW_PREPARE
     [[ "$continuation_mode" == --session-resume ]] && operation=RESUME_ADMIT
     selected="$(_harness_launcher_omp_continuation_metadata "$operation")" || return 2
@@ -1646,10 +1673,14 @@ _harness_launcher_run() {
   # Keep the OMP discriminator through workspace normalization. Public native
   # management returns before session/history preparation, even with controls.
   local omp_selected=false omp_required_selected=false
+  local omp_model_mode=- omp_model_recipe=-
   if [[ "${@[selector_i]-}" == omp ]]; then
     omp_selected=true
     local -a omp_native_args=()
     (( $# <= selector_i )) || omp_native_args=("${@[selector_i+1,-1]}")
+    _harness_launcher_omp_model_mode "${omp_native_args[@]}" || return 2
+    local -a omp_prefix=("${@[1,selector_i]}")
+    set -- "${omp_prefix[@]}" "${omp_native_args[@]}"
     if [[ "${omp_native_args[1]-}" == (--session-new|--session-resume) ]]; then
       # Entry alone supplies this exact internal transport after origin/store
       # verification. Raw public outer controls are refused by Entry pre-begin.
@@ -2954,7 +2985,9 @@ _harness_launcher_complete() {
   esac
   if [[ "${words[omp_i]-}" == omp ]]; then
     if (( CURRENT == omp_i + 1 )); then
-      compadd -- --version --help login models
+      compadd -- --version --help login models --model-mode --model-mode-check
+    elif [[ "${words[CURRENT-1]-}" == (--model-mode|--model-mode-check) ]]; then
+      compadd -- gpt-only opus-only hybrid-gpt-lead hybrid-opus-lead
     elif [[ "${words[omp_i+1]-}" == login ]] && (( CURRENT == omp_i + 2 )); then
       compadd -- anthropic openai-codex
     elif [[ "${words[omp_i+1]-}" == models ]]; then

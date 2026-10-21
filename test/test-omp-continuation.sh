@@ -13,6 +13,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO = Path(sys.argv.pop(1))
+NATIVE_SOURCE = NATIVE_BUN = None
+if '--native-source' in sys.argv:
+    i = sys.argv.index('--native-source'); NATIVE_SOURCE = Path(sys.argv.pop(i+1)); sys.argv.pop(i)
+if '--native-bun' in sys.argv:
+    i = sys.argv.index('--native-bun'); NATIVE_BUN = Path(sys.argv.pop(i+1)); sys.argv.pop(i)
 def digest(p): return hashlib.sha256(p.read_bytes()).hexdigest()
 def encoded(v): return json.dumps(v, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
 def put(p, v, mode=0o600): p.write_bytes(encoded(v)); p.chmod(mode)
@@ -178,6 +183,42 @@ class ContinuationTests(unittest.TestCase):
         path.write_bytes(b'private title not retained\n'+encoded(header)+b'\nBODY_MUST_NOT_BE_READ\n');path.chmod(0o600)
         return path
 
+
+    def test_MM4_readonly_peek_selection_preserves_ready_record_and_native_bytes(self):
+        self.kernel();self.op('NEW_PREPARE');native=self.native_file();self.op('FINALIZE',0)
+        before=(self.record.read_bytes(),native.read_bytes(),self.record.stat().st_mtime_ns)
+        selected=self.op('MODE_PEEK')
+        self.assertEqual(selected['status'],'READY')
+        self.assertEqual(selected['native_path'],str(native))
+        self.assertEqual(before,(self.record.read_bytes(),native.read_bytes(),self.record.stat().st_mtime_ns))
+        self.assertFalse(self.calls.exists())
+
+    def test_MM4_peek_binding_mismatch_unknown_legacy_invalid_stop_without_mutation(self):
+        self.kernel();self.op('NEW_PREPARE');native=self.native_file();self.op('FINALIZE',0)
+        mode='gpt-only';recipe='b'*64
+        good={'schema':'omp.session-model-mode.peek.v1','status':'bound',
+              'binding':{'mode_id':mode,'recipe_sha256':recipe},'snapshot_sha256':digest(native)}
+        before=(self.record.read_bytes(),native.read_bytes())
+        self.projection.validate_model_mode_peek(encoded(good),mode,recipe)
+        for bad in ({**good,'status':'legacy','binding':None},
+                    {**good,'status':'invalid','binding':None},
+                    {**good,'binding':{'mode_id':'opus-only','recipe_sha256':recipe}},
+                    {**good,'binding':{'mode_id':mode,'recipe_sha256':'c'*64}},
+                    {**good,'snapshot_sha256':None},{**good,'extra':True}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(self.projection.ProjectionError):
+                    self.projection.validate_model_mode_peek(encoded(bad),mode,recipe)
+                self.assertEqual(before,(self.record.read_bytes(),native.read_bytes()))
+                self.assertFalse(self.calls.exists())
+
+    def test_MM4_mode_flags_in_continuation_are_lexical_and_duplicate_rejected(self):
+        m=self.continuation()
+        parsed=m.request(['omp','--model-mode','gpt-only','--session-new','--','--model-mode opus-only'])
+        self.assertEqual(parsed['mode'],'NEW')
+        self.assertEqual(parsed['prompt'],['--model-mode opus-only'])
+        with self.assertRaises(m.ContinuationError):
+            m.request(['omp','--model-mode=gpt-only','--model-mode','opus-only','--session-new','--'])
+
     def test_C03_C04_exact_lexical_wrapper_grammar(self):
         m=self.continuation(); prompt='--resume claude "quoted"\nsecond line'
         parsed=m.request(['omp','--session-new','--model','literal-model','--',prompt])
@@ -327,7 +368,7 @@ _harness_launcher_run "$@"
         self.assertEqual(done.returncode,expected,done.stderr.decode())
         return done
 
-    def public_fixture(self, native_exit=0):
+    def public_fixture(self, native_exit=0, native_body=None, mode_release=False):
         self.tools=self.base/'tools';self.tools.mkdir();self.events=self.base/'events'
         # Match the real bridge's system-first resolution, then admit only the
         # selected real jq's physical directory from the normal test runner.
@@ -371,12 +412,14 @@ raise SystemExit(EXIT_CODE)
 '''.replace('LOCK_WORKSPACE',repr(str(self.snapshot.parent/'session-state/sessions/12345678-1234-4234-8234-123456789ABC/runtime.lock')))
    .replace('LOCK_NAMESPACE',repr(str(self.ns/'.launcher.lock'))).replace('CALLS',repr(str(self.calls))).replace('EXIT_CODE',str(native_exit)))
         self.binary.chmod(0o555)
+        if native_body is not None:
+            self.binary.chmod(0o755); self.binary.write_text(native_body); self.binary.chmod(0o555)
         marker=json.loads((self.ns/'.owner.json').read_bytes());marker['asset_sha256']=digest(self.binary)
         put(self.ns/'.owner.json',marker)
         # Mandatory paired W07 cascade: this normal alias fixture now needs a
         # source-equal structural kernel and an explicitly fake amended release.
         kernel=Path(os.environ['HARNESS_TEST_OMP_SOURCE'])
-        self.release={'version':'18.11.3-kh.w07.1','source_revision':'1'*40,
+        self.release={'version':'18.11.3-kh.w07.mm.1' if mode_release else '18.11.3-kh.w07.1','source_revision':'1'*40,
             'contract_id':'w07.required-resolver-consumer.v1','upstream_base_version':'18.11.3',
             'upstream_base_revision':'96894a6147d8cc64b7e00ad3a7d7178fd93b9531',
             'source_patch_sha256':'2'*64,'build_provenance_sha256':'3'*64}
@@ -398,6 +441,91 @@ raise SystemExit(EXIT_CODE)
         (self.profile/'.claude/rules').mkdir()
         self.kernel()
         (self.snapshot/'bin').chmod(0o500);self.snapshot.chmod(0o500)
+
+    def actual_mode_fixture(self, mode):
+        native = NATIVE_SOURCE/'packages/coding-agent'
+        self.assertTrue((native/'src/session/session-model-mode.ts').is_file())
+        driver = self.base/'actual-mm3.ts'
+        driver.write_text('''
+import { parseArgs } from NATIVE_ARGS;
+import { createSessionManager, runRootCommand } from NATIVE_MAIN;
+import { bindModelMode } from NATIVE_MODE;
+import { Settings } from NATIVE_SETTINGS;
+import { serializeTitleSlot } from NATIVE_TITLE;
+import { journal } from NATIVE_FIXTURE;
+import * as path from 'node:path';
+const args = process.argv.slice(2);
+let provider = 0;
+globalThis.fetch = async () => { provider++; throw new Error('UNEXPECTED_PROVIDER_TRANSPORT'); };
+try {
+    if (args[0] === '--fixture-journal') {
+        const binding = JSON.parse(await Bun.file(args[2]).text());
+        await Bun.write(args[1], serializeTitleSlot({ title: 'owned', updatedAt: '2026-10-21T00:00:00Z' }) +
+            journal(process.cwd(), { mode_id: binding.selected_mode, recipe_sha256: binding.recipe_sha256 }));
+    } else if (args[0] === '--inspect-session-model-mode') {
+        await runRootCommand(parseArgs(args), args);
+    } else {
+        const standalone = args[0] === '--fixture-admit';
+        const bundle = standalone ? undefined : args.find(arg => arg.startsWith('--harness-required-bundle='));
+        if (!standalone && !bundle) throw new Error('MISSING_REAL_REQUIRED_BUNDLE');
+        const file = standalone ? args[2] : path.join(path.dirname(bundle!.split('=', 2)[1]), 'model-mode.json');
+        const artifact = JSON.parse(await Bun.file(file).text());
+        const actual = standalone ? ['--resume', args[1]] : args;
+        const manager = await createSessionManager(parseArgs(actual), process.cwd(), bindModelMode(Settings.isolated(), artifact));
+        if (!manager) throw new Error('MISSING_ACTUAL_MANAGER');
+        await manager.close();
+        if (standalone) console.log('MM3_STANDALONE_MATCHING_HEALTHY');
+    }
+    if (provider !== 0) throw new Error('PROVIDER_TRANSPORT_NONZERO');
+} catch (error) { console.error(String(error)); process.exitCode = 2; }
+'''.replace('NATIVE_ARGS',json.dumps(str(native/'src/cli/args.ts')))
+   .replace('NATIVE_MAIN',json.dumps(str(native/'src/main.ts')))
+   .replace('NATIVE_MODE',json.dumps(str(native/'src/config/model-mode.ts')))
+   .replace('NATIVE_SETTINGS',json.dumps(str(native/'src/config/settings.ts')))
+   .replace('NATIVE_TITLE',json.dumps(str(native/'src/session/session-title-slot.ts')))
+   .replace('NATIVE_FIXTURE',json.dumps(str(native/'test/helpers/model-mode-resume-fixture.ts'))))
+        body = '#!'+sys.executable+' -I\nimport os,sys\nos.execv('+repr(str(NATIVE_BUN))+','+repr([str(NATIVE_BUN),str(driver)])+'+sys.argv[1:])\n'
+        self.public_fixture(native_body=body, mode_release=True)
+        kernel = Path(os.environ['HARNESS_TEST_OMP_SOURCE'])
+        for name in ('core/omp/model_modes.py','.claude/source/omp-model-modes.json'):
+            dest = self.profile/name; dest.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(kernel/name,dest); dest.chmod(0o600)
+        helper = self.profile/'core/omp/model_modes.py'
+        spec=importlib.util.spec_from_file_location('actual_canonical_modes',helper)
+        module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        raw=(self.profile/'.claude/source/omp-model-modes.json').read_bytes()
+        artifact=module.expand_model_mode(module.parse_model_modes(raw.decode()),mode,hashlib.sha256(raw).hexdigest())
+        self.mode_artifact=self.base/'explicit-mode.json';put(self.mode_artifact,artifact)
+        self.op('NEW_PREPARE')
+        self.saved=self.sessions/'fixture_019ea530-0000-7000-0000-000000000001.jsonl'
+        def original(args):
+            return subprocess.run([str(NATIVE_BUN),str(driver),*args],cwd=self.work,
+                capture_output=True,text=True,timeout=30)
+        made=original(['--fixture-journal',str(self.saved),str(self.mode_artifact)])
+        self.assertEqual(made.returncode,0,made.stderr);self.saved.chmod(0o600)
+        before=self.saved.read_bytes()
+        peek=original(['--inspect-session-model-mode',str(self.saved),'--json'])
+        self.assertEqual(peek.returncode,0,peek.stderr)
+        value=json.loads(peek.stdout)
+        self.assertEqual(set(value),{'schema','status','binding','snapshot_sha256'})
+        self.assertEqual(value['binding'],{'mode_id':mode,'recipe_sha256':artifact['recipe_sha256']})
+        self.assertEqual(value['snapshot_sha256'],digest(self.saved))
+        healthy=original(['--fixture-admit',str(self.saved),str(self.mode_artifact)])
+        self.assertEqual(healthy.returncode,0,healthy.stderr)
+        self.assertIn('MM3_STANDALONE_MATCHING_HEALTHY',healthy.stdout)
+        self.assertEqual(self.saved.read_bytes(),before)
+        self.op('FINALIZE',0)
+
+    @unittest.skipUnless(NATIVE_SOURCE and NATIVE_BUN,'explicit accepted MM3 source/Bun integration input required')
+    def test_MM4_actual_cold_resume_refuses_before_ledger_transition(self):
+        self.actual_mode_fixture('gpt-only')
+        before=(self.record.read_bytes(),self.saved.read_bytes())
+        done=self.public_shell(['--session-resume',self.h,'--print','--','owned'],2)
+        self.assertTrue('OMP_MODEL_MODE_CONFLICT' in done.stderr.decode() or
+                        'OMP_MODEL_MODE_RESUME_EXPLICIT' in done.stderr.decode(),done.stderr.decode())
+        self.assertEqual((self.record.read_bytes(),self.saved.read_bytes()),before,
+                         'MM4_COLD_RESUME_LEDGER_EFFECT_BEFORE_SAVED_MODE_REFUSAL')
+        self.public_shell(['--model-mode','gpt-only','--session-resume',self.h,'--print','--','owned'],0)
 
     def test_C01_C03_C27_public_alias_layer_fake_only(self):
         self.public_fixture()

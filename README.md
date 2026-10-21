@@ -262,6 +262,13 @@ model/settings injection. Outer `--cwd` and workspace controls precede the
 selector; `harness-auto claude --cwd DIR --isolated-session UUID ...` preserves
 those controls. Explicit Claude cannot select a different runtime prefix.
 
+Public OMP entries start through the trusted installed bootstrap, which verifies
+and executes the owner-managed current launcher's actual immutable snapshot.
+The selected operational release can remain older than the installed package.
+Profile, host, projection and native ownership checks run in that closure;
+metadata help does not establish model, required-policy, approval or restore
+acceptance.
+
 The explicit `ex omp` route starts a fresh Oh My Pi session using a separately
 prepared native home and a SHA-256-pinned executable. Configure
 `HARNESS_OMP_BIN`, `HARNESS_OMP_SHA256`, and `HARNESS_OMP_ROOT` in the trusted
@@ -757,8 +764,8 @@ cd harness-launcher
 ./test/run-all.sh
 ```
 
-The no-argument full runner retains the original 124 suite invocations in order
-and appends one partition regression (125 total). CI runs its four fixed groups
+The no-argument full runner retains the existing 143 suite invocations in order
+and adds the public-dispatch wrapper (144 total). CI runs its four fixed groups
 on separate `macos-15` jobs, each still limited to 20 minutes and retaining the
 same preparation, jq, syntax and documentation checks. The required `test`
 aggregate fails unless all four jobs succeed with complete, nonoverlapping
@@ -892,3 +899,15 @@ Original guards, source admission, owned permissions, syntax/docs/full suites
 and the 20-minute CI job budget remain unchanged. Historical fallback evidence
 is not current fallback or whole-CI success; new actual CI remains required
 before the normal merge/release/install decision.
+
+OMP model modes are launcher controls: `ex omp --model-mode <id>` selects
+`gpt-only`, `opus-only`, `hybrid-gpt-lead`, or `hybrid-opus-lead`; a fresh mode
+source defaults to its canonical `hybrid-opus-lead` recipe. Tokens after `--`
+remain data. Direct model/provider/effort overrides conflict with a mode.
+`ex omp --model-mode-check <id>` prints desired model/effort, empty fallback,
+unresolved model/effort and availability `UNKNOWN`, without auth or model APIs.
+Check is metadata and grants no native capability or workspace/session authority.
+Mode execution requires the distinct modified native release and its actual
+source/patch/build/binary custody; stock 18.11.3 and the old w07 release stop.
+Resume requires an explicit matching mode and current canonical recipe hash;
+legacy/mismatch/invalid saved bindings stop before ledger/history/outbox changes.

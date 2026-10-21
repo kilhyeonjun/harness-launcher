@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+OMP_MODE_SOURCE = ".claude/source/omp-model-modes.json"
+
 
 class HarnessCompileError(Exception):
     pass
@@ -195,6 +197,30 @@ class SourceReader:
             os.close(self._fds.pop())
 
 
+_OMP_MODE_HELPER: tuple[str, dict[str, Any]] | None = None
+
+
+def omp_model_mode_helper() -> tuple[str, dict[str, Any]]:
+    """Execute captured owned bytes once; never infer loaded identity from a path."""
+    global _OMP_MODE_HELPER
+    if _OMP_MODE_HELPER is None:
+        root = Path(__file__).resolve().parents[2]
+        reader = SourceReader(root)
+        try:
+            relative = "core/omp/model_modes.py"
+            reader.capture_file(relative)
+            raw = reader.files[relative][0]
+            verify_broker_source(reader)
+            namespace = {"__name__": "harness_omp_model_modes",
+                         "__file__": str(root / relative)}
+            exec(compile(raw, namespace["__file__"], "exec"), namespace)
+            verify_broker_source(reader)
+            _OMP_MODE_HELPER = (hashlib.sha256(raw).hexdigest(), namespace)
+        finally:
+            reader.close()
+    return _OMP_MODE_HELPER
+
+
 CODEX_KOREAN_RESPONSE_LANGUAGE_BLOCK = """<!-- BEGIN HARNESS-CODEX-RESPONSE-LANGUAGE -->
 ## Codex Response Language
 
@@ -325,6 +351,17 @@ def load_source(root: Path, source_reader: SourceReader | None = None) -> dict[s
     merged.update(commands)
     merged.update(skills)
     merged.update(claude_md)
+    reader = source_reader or SourceReader(root)
+    try:
+        if reader.capture_file(OMP_MODE_SOURCE, required=False):
+            raw = reader.read_text(root / OMP_MODE_SOURCE)
+            merged["omp_model_modes"] = omp_model_mode_helper()[1]["parse_model_modes"](raw)
+            merged["omp_model_modes_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+    except ValueError as exc:
+        raise HarnessCompileError(str(exc)) from exc
+    finally:
+        if source_reader is None:
+            reader.close()
     return merged
 
 
@@ -355,9 +392,13 @@ def parse_settings_yaml(path: Path, source_reader: SourceReader | None = None) -
         indent = len(raw) - len(raw.lstrip(" "))
 
         if indent == 0:
-            if stripped not in {"settings:", "hooks:"}:
+            if stripped not in {"settings:", "hooks:", "omp_settings:"}:
                 raise HarnessCompileError(f"{path}:{line_number} unsupported top-level key")
             section = stripped[:-1]
+            if section == "omp_settings":
+                if "omp_settings" in data:
+                    raise HarnessCompileError(f"{path}:{line_number} duplicate omp_settings section")
+                data["omp_settings"] = {}
             subsection = None
             permission_list = None
             current_entry = None
@@ -448,6 +489,18 @@ def parse_settings_yaml(path: Path, source_reader: SourceReader | None = None) -
                 current_entry[key.strip()] = parse_scalar(value)
                 continue
 
+        if section == "omp_settings":
+            if indent != 2:
+                raise HarnessCompileError(f"{path}:{line_number} unsupported omp_settings indentation")
+            if ":" not in stripped:
+                raise HarnessCompileError(f"{path}:{line_number} malformed omp_settings line")
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            if key in data["omp_settings"]:
+                raise HarnessCompileError(f"{path}:{line_number} duplicate omp_settings key: {key}")
+            data["omp_settings"][key] = parse_scalar(value)
+            continue
+
         raise HarnessCompileError(f"{path}:{line_number} unsupported settings indentation")
 
     return data
@@ -525,6 +578,16 @@ def check_source(root: Path, source_reader: SourceReader | None = None) -> None:
         if source_reader is None:
             check_settings_permissions_migrated(
                 read_existing_settings(root / ".claude/settings.json"), settings)
+
+    if "omp_settings" in data:
+        omp_settings = data["omp_settings"]
+        if not omp_settings:
+            raise HarnessCompileError("omp_settings must declare at least one setting")
+        for key, value in omp_settings.items():
+            if key not in OMP_PROJECT_SETTINGS_ALLOWLIST:
+                raise HarnessCompileError(f"unsupported omp_settings key: {key}")
+            if type(value) is not OMP_PROJECT_SETTINGS_ALLOWLIST[key]:
+                raise HarnessCompileError(f"omp_settings.{key} must be boolean")
 
     if "hooks" in data:
         hooks = data["hooks"]
@@ -632,6 +695,28 @@ def render_runtime_contract(data: dict[str, Any]) -> str:
     lines.append("  </completion_gate>")
     lines.append("</runtime_contract>")
     return "\n".join(lines) + "\n"
+
+
+OMP_PROJECT_SETTINGS_ALLOWLIST = {"dev.autoqa": bool}
+OMP_PROJECT_SETTINGS_PATH = ".omp/config.yml"
+OMP_PROJECT_SETTINGS_HEADER = (
+    "# Generated by harness_compile.py from .claude/source/settings.yaml omp_settings; do not edit manually.\n"
+)
+
+
+def render_omp_project_settings(data: dict[str, Any]) -> str | None:
+    """Render OMP's <cwd>/.omp/config.yml project layer; OMP reads nested keys, not dotted ones."""
+    if "omp_settings" not in data:
+        return None
+    groups: dict[str, list[tuple[str, Any]]] = {}
+    for key in sorted(data["omp_settings"]):
+        group, _, leaf = key.partition(".")
+        groups.setdefault(group, []).append((leaf, data["omp_settings"][key]))
+    lines = [OMP_PROJECT_SETTINGS_HEADER]
+    for group, leaves in groups.items():
+        lines.append(f"{group}:\n")
+        lines.extend(f"  {leaf}: {'true' if value else 'false'}\n" for leaf, value in leaves)
+    return "".join(lines)
 
 
 def write_if_changed(path: Path, content: str) -> None:
@@ -1109,6 +1194,12 @@ def write_surfaces(root: Path) -> None:
             settings_path,
             render_settings(data, read_existing_settings(settings_path)),
         )
+    omp_settings = render_omp_project_settings(data)
+    if omp_settings is not None:
+        omp_dir = root / ".omp"
+        if omp_dir.is_symlink() or (omp_dir.exists() and not omp_dir.is_dir()):
+            raise HarnessCompileError(".omp must not be a symlink or non-directory")
+        write_if_changed(root / OMP_PROJECT_SETTINGS_PATH, omp_settings)
     for relative_path, content in iter_catalog_indexes(data):
         write_if_changed(root / relative_path, content)
     # The project root already contributes CLAUDE.md/AGENTS.md with the runtime
@@ -1120,6 +1211,7 @@ def write_surfaces(root: Path) -> None:
 OMP_ADAPTER_VERSION = "w07-required-v2"
 OMP_REQUIRED_CONTRACT = "w07.required-resolver-consumer.v1"
 OMP_NATIVE_VERSION = "18.11.3-kh.w07.1"
+OMP_MODE_NATIVE_VERSION = "18.11.3-kh.w07.mm.1"
 OMP_BASE_REVISION = "96894a6147d8cc64b7e00ad3a7d7178fd93b9531"
 
 
@@ -1130,7 +1222,7 @@ def validate_omp_native_release(release: dict[str, Any]) -> None:
             release["contract_id"] != OMP_REQUIRED_CONTRACT or
             release["upstream_base_version"] != "18.11.3" or
             release["upstream_base_revision"] != OMP_BASE_REVISION or
-            release["version"] != OMP_NATIVE_VERSION or
+            release["version"] not in {OMP_NATIVE_VERSION, OMP_MODE_NATIVE_VERSION} or
             not re.fullmatch(r"[0-9a-f]{40}", str(release["source_revision"])) or
             any(not re.fullmatch(r"[0-9a-f]{64}", str(release[k])) for k in
                 ("source_patch_sha256", "build_provenance_sha256", "binary_sha256"))):
@@ -1334,6 +1426,29 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
         hook["rewrite"] = dict(canonical_entry_id=ident, tool="bash", script=script, sha256=canonical[script],
                                timeout_ms=hook["timeout_ms"])
     selection["bridge_rewrites"] = [rewrite_map[i]["rewrite"] for i in selection["bridge_rewrites"]]
+    mode_ids = [item.removeprefix("model-mode:") for item in selection["bundle_ids"]
+                if item.startswith("model-mode:")]
+    if len(mode_ids) > 1:
+        raise HarnessCompileError("OMP multiple model mode selections")
+    if "omp_model_modes" in data:
+        raw = read(OMP_MODE_SOURCE)
+        read("core/omp/model_modes.py")
+        helper_sha256, helper = omp_model_mode_helper()
+        if canonical["core/omp/model_modes.py"] != helper_sha256:
+            raise HarnessCompileError("OMP executed helper binding mismatch")
+        if omp_digest(raw.encode()) != data["omp_model_modes_sha256"]:
+            raise HarnessCompileError("OMP model mode source changed after load")
+        try:
+            spec = helper["parse_model_modes"](raw)
+            artifact = helper["expand_model_mode"](
+                spec, mode_ids[0] if mode_ids else spec["default"],
+                data["omp_model_modes_sha256"],
+            )
+        except ValueError as exc:
+            raise HarnessCompileError(str(exc)) from exc
+        files["model-mode.json"] = omp_json(artifact) + "\n"
+    elif mode_ids:
+        raise HarnessCompileError("OMP model mode source missing")
     manifest = dict(selection, source_root=str(root), adapter_version=OMP_ADAPTER_VERSION,
                     canonical_inputs=[dict(path=p, sha256=h) for p, h in sorted(canonical.items())],
                     hook_map=hooks, selected_skills=skills, selected_extensions=extensions,

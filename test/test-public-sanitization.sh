@@ -12,7 +12,10 @@ files = subprocess.check_output(['git', '-C', str(root), 'ls-files', '--cached',
 aliases = ['k' + 'h', 'g' + 'p', 'g' + 'd']
 private_names = ['쥬' + '비스', '넥' + '슨', '한화' + '생명']
 public_release_pattern = re.compile(
-    r'(?<![\w.-])' + re.escape('18.11.3-kh.w07.1') + r'(?![\w.-])')
+    r'(?<![\w.-])(?:' +
+    '|'.join(re.escape(value) for value in
+             ('18.11.3-kh.w07.1', '18.11.3-kh.w07.mm.1')) +
+    r')(?![\w.-])')
 findings = []
 for relative in filter(None, files):
     path = root / relative

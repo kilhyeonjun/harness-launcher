@@ -25,6 +25,12 @@
       "sha256": "95c543036009c3cac69a26a5b3f921b5673b6aef5a2cf28642b94a48689e4c6f"
     },
     {
+      "bytes": 1401,
+      "mode": "0644",
+      "path": ".claude/source/omp-model-modes.json",
+      "sha256": "bf0247b14e1b7828ca0dbb559aa2ca2ca747c2872e8fe41ba0127f73a8aae4c4"
+    },
+    {
       "bytes": 217,
       "mode": "0644",
       "path": ".claude/source/runtime-contract.yaml",
@@ -55,16 +61,22 @@
       "sha256": "8a75eeed2be986e4c87ec400aad69544f5ef942f40d1ab7ac360e6c855e01275"
     },
     {
-      "bytes": 77169,
+      "bytes": 3867,
       "mode": "0644",
-      "path": "core/scripts/harness_compile.py",
-      "sha256": "5373059628cf3cd4fd667a1245d3b24e2f65602fa7b053f7051ac2fa743cd50c"
+      "path": "core/omp/model_modes.py",
+      "sha256": "27d5cd1d4c2dc73cf5cb0e41cee12a2260503d405986c46b0fc1554bbd597227"
     },
     {
-      "bytes": 26793,
+      "bytes": 82613,
+      "mode": "0644",
+      "path": "core/scripts/harness_compile.py",
+      "sha256": "37d9b48f6b6ec4758305f483832161896b78a17f50ca949bdd40d82e7ae1c518"
+    },
+    {
+      "bytes": 28155,
       "mode": "0644",
       "path": "core/scripts/omp_required_extension.ts",
-      "sha256": "6d80c1e53f77d5f020da9e71ba1758b632cf4dddc6bbb3366bfc3114c6c27e19"
+      "sha256": "fb0f8a87140082a03c064991e0cafdc9c7c4c0b48cc9447c9675f2cc18ff475c"
     }
   ],
   "origin": "w07-portable-synthetic-fixture",
