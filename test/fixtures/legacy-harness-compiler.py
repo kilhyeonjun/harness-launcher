@@ -5,6 +5,10 @@ from pathlib import Path
 import sys
 
 
+if sys.argv[1:] == ["--help"]:
+    print("--write-codex")
+    raise SystemExit(0)
+
 if len(sys.argv) != 3:
     raise SystemExit(2)
 

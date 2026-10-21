@@ -427,6 +427,25 @@ compiled_agents=0
 if [[ -f "$compiler" && -f "$HARNESS_DIR/.claude/source/runtime-contract.yaml" ]]; then
   compiler_root="$HARNESS_DIR"
   if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+    # Capability discovery does not validate source; an advertised renderer's
+    # actual validation failure must never retry through the legacy facade.
+    if ! compiler_help="$(python3 "$compiler" --help)"; then
+      echo "ERROR: harness compiler capability query failed" >&2
+      exit 23
+    fi
+    if [[ "$compiler_help" == *"--broker-render-codex-project"* ]]; then
+      compiler_output="$(mktemp -d "$CODEX_PREPARE_STAGE/.compiler-output.XXXXXX")"
+      if ! python3 "$compiler" --broker-render-codex-project \
+          --input-root "$HARNESS_DIR" --output-root "$compiler_output" >/dev/null; then
+        echo "ERROR: harness compiler failed while preparing Codex candidate" >&2
+        exit 23
+      fi
+      mv -f "$compiler_output/AGENTS.md" "$agents_md"
+      rmdir "$compiler_output"
+      compiled_agents=1
+    fi
+  fi
+  if [[ "$SURFACE_ENABLED" -eq 1 && "$compiled_agents" -eq 0 ]]; then
     compiler_root="$CODEX_PREPARE_STAGE/.compiler-root"
     python3 - "$HARNESS_DIR" "$compiler_root" "$CODEX_HOME" <<'PY'
 import os
@@ -443,7 +462,9 @@ for entry in source.iterdir():
 (facade / ".harness" / "codex").symlink_to(output, target_is_directory=True)
 PY
   fi
-  if python3 "$compiler" --write-codex-project "$compiler_root" >/dev/null 2>&1; then
+  if [[ "$compiled_agents" -eq 1 ]]; then
+    : # Separated render already produced the candidate AGENTS.md.
+  elif python3 "$compiler" --write-codex-project "$compiler_root" >/dev/null 2>&1; then
     compiled_agents=1
   elif python3 "$compiler" --write-codex "$compiler_root" >/dev/null; then
     compiled_agents=1
