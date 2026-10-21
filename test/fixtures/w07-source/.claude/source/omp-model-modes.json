@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "default": "hybrid-opus-lead",
+  "modeled_selectors": {
+    "G": "openai-codex/gpt-6.1-sol",
+    "O": "anthropic/claude-opus-5-5"
+  },
+  "workloads": {
+    "default": [
+      "leader",
+      "high"
+    ],
+    "plan": [
+      "leader",
+      "high"
+    ],
+    "slow": [
+      "leader",
+      "high"
+    ],
+    "task": [
+      "worker",
+      "medium"
+    ],
+    "smol": [
+      "worker",
+      "low"
+    ],
+    "tiny": [
+      "helper",
+      "low"
+    ],
+    "memory": [
+      "helper",
+      "medium"
+    ],
+    "commit": [
+      "helper",
+      "low"
+    ],
+    "vision": [
+      "helper",
+      "medium"
+    ],
+    "judge": [
+      "helper",
+      "medium"
+    ],
+    "advisor": [
+      "reviewer",
+      "high"
+    ]
+  },
+  "modes": {
+    "gpt-only": {
+      "leader": "G",
+      "worker": "G",
+      "helper": "G",
+      "reviewer": "G"
+    },
+    "opus-only": {
+      "leader": "O",
+      "worker": "O",
+      "helper": "O",
+      "reviewer": "O"
+    },
+    "hybrid-gpt-lead": {
+      "leader": "G",
+      "worker": "G",
+      "helper": "G",
+      "reviewer": "O"
+    },
+    "hybrid-opus-lead": {
+      "leader": "O",
+      "worker": "G",
+      "helper": "G",
+      "reviewer": "O"
+    }
+  },
+  "named_agent_roles": {
+    "game-designer": "reviewer",
+    "game-qa": "reviewer",
+    "harness-reviewer": "reviewer",
+    "implementer": "worker",
+    "reviewer": "reviewer"
+  }
+}

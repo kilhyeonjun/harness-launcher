@@ -881,3 +881,5 @@ Original guards, source admission, owned permissions, syntax/docs/full suites
 and the 20-minute CI job budget remain unchanged. Historical fallback evidence
 is not current fallback or whole-CI success; new actual CI remains required
 before the normal merge/release/install decision.
+
+MM4-P prepares canonical model artifacts and the distinct strict modified native release only; public mode controls and real source/patch/build/binary custody remain pending.

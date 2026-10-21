@@ -1593,3 +1593,5 @@ a 20-minute limit and does not rerun the regression suites.
 This changes scheduling, not test scope or acceptance. Parallel completion time
 and a new whole-CI PASS require actual same-source job results; source or fake
 proof alone does not establish either, or native/provider behavior.
+
+MM4-P preserves the exact8 compiler/extension descriptor and launcher7+binary-hash pairing while admitting old w07.1 and desired w07.mm.1. Public mode/default/check/resume/early routing is deferred until accepted P and actual MM3 peek; synthetic fixtures do not certify native capability.

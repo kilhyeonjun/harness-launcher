@@ -5,6 +5,7 @@ admission until after a child/import must break these tests. Native drivers and
 assertions in the two existing suites remain unchanged.
 """
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -84,6 +85,46 @@ class FixtureAdmission(FixtureCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, str(self.root) + '\n')
 
+    def test_MM4P_admitted_actual_MM1_producer_binds_recipe_helper_and_artifact(self):
+        admitted = self.helper()
+        self.assertEqual(admitted.returncode, 0, admitted.stderr)
+        path = self.root / 'core/scripts/harness_compile.py'
+        spec = importlib.util.spec_from_file_location('mm4p_fixture_compiler', path)
+        compiler = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(compiler)
+        selection = dict(schema=1, profile='fixture', runtime='omp', runtime_version='18.11.3',
+            source_or_release_binding='synthetic-fixture', repo_workspace_identity='synthetic-workspace',
+            bundle_ids=['policy','model-mode:hybrid-opus-lead'], approved_overrides_sha256='0'*64,
+            hooks=[],skills=[],extensions=[],bridge_rewrites=[])
+        name, files = compiler.render_omp_bundle(self.root, compiler.load_source(self.root), selection)
+        manifest = json.loads(files['selection.json'])
+        artifact = json.loads(files['model-mode.json'])
+        self.assertEqual(artifact['selected_mode'], 'hybrid-opus-lead')
+        self.assertEqual(artifact['roles']['default']['model'], 'anthropic/claude-opus-5-5')
+        self.assertEqual(artifact['roles']['task']['model'], 'openai-codex/gpt-6.1-sol')
+        recipe = hashlib.sha256((self.root/'.claude/source/omp-model-modes.json').read_bytes()).hexdigest()
+        self.assertEqual(artifact['recipe_sha256'], recipe)
+        closure = {row['path']:row['sha256'] for row in manifest['canonical_inputs']}
+        for relative in ('.claude/source/omp-model-modes.json','core/omp/model_modes.py',
+                         'core/scripts/harness_compile.py','core/scripts/omp_required_extension.ts'):
+            self.assertEqual(closure[relative],hashlib.sha256((self.root/relative).read_bytes()).hexdigest())
+        assets = {row['relative_path']:row['sha256'] for row in manifest['artifacts']}
+        self.assertEqual(assets['model-mode.json'],hashlib.sha256(files['model-mode.json'].encode()).hexdigest())
+        self.assertTrue(name.endswith(manifest['effective_selection_sha256']))
+        self.assertFalse((self.base/'payload-imported').exists())
+
+
+    def test_MM4P_resealed_policy_and_payload_remain_untrusted(self):
+        payload = self.root / 'core/scripts/harness_compile.py'
+        payload.write_bytes(payload.read_bytes() + b'\n# UNTRUSTED_RESEALED_PAYLOAD\n')
+        policy = json.loads((self.test/'omp-fixture-policy.json').read_text())
+        row = next(r for r in policy['files'] if r['path']=='core/scripts/harness_compile.py')
+        row.update(bytes=payload.stat().st_size,sha256=hashlib.sha256(payload.read_bytes()).hexdigest())
+        raw = json.dumps(policy,indent=2,sort_keys=True)+'\n'
+        (self.test/'omp-fixture-policy.json').write_text(raw)
+        (self.root/'manifest.json').write_text(raw)
+        self.refused()
+
     def test_explicit_equal_paired_source_is_admitted(self):
         paired = self.base / 'paired with spaces'
         shutil.copytree(self.root, paired)
@@ -161,6 +202,10 @@ class FixtureAdmission(FixtureCase):
 
     def test_hardlink_refused(self):
         os.link(self.root / '.claude/source/budgets.yaml', self.base / 'hardlink')
+        self.refused()
+
+    def test_system_python_exception_keeps_extension_payload_singlelink(self):
+        os.link(self.root / 'core/scripts/omp_required_extension.ts', self.base / 'policy-hardlink')
         self.refused()
 
     def test_writable_file_refused(self):

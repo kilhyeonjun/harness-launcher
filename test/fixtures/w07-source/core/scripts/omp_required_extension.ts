@@ -47,6 +47,7 @@ export function admitComposition(extensions: RecordValue[]) {
     /^[a-f0-9]{64}$/.test(e.closure_sha256) && !!e.canonical_source_evidence, 'UNSUPPORTED_INPUT_WRITER');
 }
 function semantic(tool: string, raw: RecordValue): { name: string; input: RecordValue } {
+  if (tool === 'task') return { name: 'task', input: { ...raw } };
   if (tool === 'bash') {
     requireValue(typeof raw.command === 'string', 'BASH_INPUT');
     requireValue(Object.keys(raw).every(k => ['command', 'timeout', 'path', 'paths'].includes(k)), 'UNSUPPORTED_BASH_SHAPE');
@@ -79,7 +80,7 @@ function nativeRelease(release: RecordValue, version: string) {
     'source_revision', 'source_patch_sha256', 'build_provenance_sha256', 'binary_sha256'];
   requireValue(object(release) && Object.keys(release).length === fields.length && fields.every(k => k in release) &&
     release.contract_id === 'w07.required-resolver-consumer.v1' && release.version === version &&
-    version === '18.11.3-kh.w07.1' && release.upstream_base_version === '18.11.3' &&
+    ['18.11.3-kh.w07.1', '18.11.3-kh.w07.mm.1'].includes(version) && release.upstream_base_version === '18.11.3' &&
     release.upstream_base_revision === '96894a6147d8cc64b7e00ad3a7d7178fd93b9531' &&
     /^[a-f0-9]{40}$/.test(release.source_revision) &&
     ['source_patch_sha256', 'build_provenance_sha256', 'binary_sha256'].every(k =>
@@ -195,7 +196,7 @@ export function registerRequired(api: API, services: Services) {
       requireValue(manifest.runtime === 'omp' &&
         ((manifest.schema === 1 && manifest.runtime_version === '18.11.3' && !manifest.contract_id && !manifest.native_release) ||
          (manifest.schema === 2 && manifest.contract_id === 'w07.required-resolver-consumer.v1' &&
-          manifest.runtime_version === '18.11.3-kh.w07.1' &&
+          ['18.11.3-kh.w07.1', '18.11.3-kh.w07.mm.1'].includes(manifest.runtime_version) &&
           manifest.native_release?.contract_id === manifest.contract_id &&
           manifest.native_release?.version === manifest.runtime_version &&
           /^[a-f0-9]{64}$/.test(manifest.manifest_sha256))), 'SCHEMA');
@@ -236,8 +237,11 @@ export function registerRequired(api: API, services: Services) {
   api.on('before_agent_start', async (event, ctx) => {
     try {
       requireValue(ready, 'NOT_READY'); await current(ctx);
+      if (pendingPrompt === undefined) requireValue(promptContext.length === 0, 'UNSUPPORTED_CONTEXT_REQUEST');
       if (pendingPrompt === undefined && !startupContext.length) return {};
-      requireValue(event.prompt === pendingPrompt && Array.isArray(event.systemPrompt) &&
+      requireValue(typeof event.prompt === 'string' &&
+        (pendingPrompt === undefined || event.prompt === pendingPrompt) &&
+        Array.isArray(event.systemPrompt) &&
         event.systemPrompt.every((v: unknown) => typeof v === 'string'), 'UNSUPPORTED_CONTEXT_REQUEST');
       // Pinned native BeforeAgentStartEventResult.systemPrompt is per-request
       // policy, unlike a CustomMessagePayload which would persist raw context.
@@ -317,6 +321,26 @@ function ownedRead(path: string) {
   const s = lstatSync(path); requireValue(s.isFile() && s.nlink === 1, 'FILE');
   return readFileSync(path);
 }
+function dependencyRead(dependency: RecordValue) {
+  const exactPython = dependency.name === 'python3' && dependency.path === '/usr/bin/python3' &&
+    lstatSync(dependency.path).nlink >= 2;
+  const path = exactPython ? dependency.path : realpathSync(dependency.path);
+  const file = lstatSync(path);
+  if (dependency.name !== 'python3' || dependency.path !== '/usr/bin/python3' || file.nlink === 1)
+    return ownedRead(path);
+  requireValue(
+    path === dependency.path && file.isFile() && file.nlink >= 2 && (file.mode & 0o111) !== 0,
+    'SYSTEM_PYTHON_EXEC',
+  );
+  for (let node = path; ; node = dirname(node)) {
+    const s = lstatSync(node);
+    requireValue(!s.isSymbolicLink() && s.uid === 0 && !(s.mode & 0o022), 'SYSTEM_PYTHON_OWNER');
+    if (dirname(node) === node) break;
+  }
+  accessSync(path, constants.X_OK);
+  return readFileSync(path);
+}
+
 async function runScript(path: string, args: string[], input: string, signal: AbortSignal, cwd: string, home?: string, hookPath?: string, hookPython?: string) {
   return await new Promise<{ code: number; stdout: string }>((accept, reject) => {
     // No settings.env/global authority copy and no inherited Claude/Codex identity.
@@ -349,11 +373,13 @@ export default function requiredExtension(api: API) {
       dependencies.filter((d: any) => d.name === name).length === 1), 'HOOK_DEPENDENCIES_MISSING');
     requireValue(dependencies.find((d: any) => d.name === 'bash').path === '/bin/bash', 'ACTUAL_BASH');
     for (const d of dependencies) {
-      requireValue(isAbsolute(d.path) && digest(ownedRead(realpathSync(d.path))) === d.sha256, 'HOOK_DEPENDENCY_CHANGED');
+      requireValue(isAbsolute(d.path) && digest(dependencyRead(d)) === d.sha256, 'HOOK_DEPENDENCY_CHANGED');
+      const exactPython = d.name === 'python3' && d.path === '/usr/bin/python3' && lstatSync(d.path).nlink >= 2;
       const first = hookPath.split(':').map(dir => resolve(dir, d.name)).find(p => {
-        try { accessSync(p, constants.X_OK); return lstatSync(realpathSync(p)).isFile(); } catch { return false; }
+        try { accessSync(p, constants.X_OK); return lstatSync(exactPython && p === d.path ? p : realpathSync(p)).isFile(); } catch { return false; }
       });
-      requireValue(first && realpathSync(first) === realpathSync(d.path), 'HOOK_PATH_SHADOW');
+      requireValue(first && (exactPython ? first === d.path : realpathSync(first) === realpathSync(d.path)),
+        'HOOK_PATH_SHADOW');
     }
     if (m.hook_map.some((h: any) => ['core/hooks/pre-bash-curl-block.sh', 'core/hooks/pre-edit-config-protection.sh'].includes(h.script)))
       requireValue(m.canonical_inputs.some((a: any) => a.path === 'core/bin/harness-python'), 'HELPER_UNSEALED');

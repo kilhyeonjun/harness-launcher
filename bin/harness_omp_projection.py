@@ -363,12 +363,13 @@ def launcher_binding(consumer, companions=()):
 
 REQUIRED_CONTRACT = 'w07.required-resolver-consumer.v1'
 REQUIRED_VERSION = '18.11.3-kh.w07.1'
+MODEL_MODE_VERSION = '18.11.3-kh.w07.mm.1'
 BASE_REVISION = '96894a6147d8cc64b7e00ad3a7d7178fd93b9531'
 
 
 def check_binary_release(release):
     require(type(release) is dict)
-    if release.get('version') == REQUIRED_VERSION:
+    if release.get('version') in (REQUIRED_VERSION, MODEL_MODE_VERSION):
         keys(release, 'version source_revision contract_id upstream_base_version upstream_base_revision source_patch_sha256 build_provenance_sha256')
         require(release['contract_id'] == REQUIRED_CONTRACT and release['upstream_base_version'] == '18.11.3' and
                 release['upstream_base_revision'] == BASE_REVISION, BINDING)
@@ -608,7 +609,7 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
     current = select_continuation_source(str(source), str(registry_dir()), str(source), consumer)
     require(current['binary_path'] == binary and current['namespace_path'] == namespace, BINDING)
     release = dict(current['binary_release'], binary_sha256=current['binary_sha256'])
-    require(release.get('version') == REQUIRED_VERSION and release.get('contract_id') == REQUIRED_CONTRACT,
+    require(release.get('version') in (REQUIRED_VERSION, MODEL_MODE_VERSION) and release.get('contract_id') == REQUIRED_CONTRACT,
             'OMP_REQUIRED_NATIVE_RELEASE')
     compiler_path = source/'core/scripts/harness_compile.py'
     compiler_raw, _ = read_file(compiler_path, None, 262144)
