@@ -89,6 +89,11 @@ jobs:
         # v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
+      # Fixed historical objects for the public-dispatch regression only.
+      - name: Fetch pinned public-dispatch test baseline
+        shell: bash
+        run: git fetch --no-tags --depth=1 origin 5faf9b91411faeb33f48beb0ab8b69a8575a0813
+
       - name: Install runtime dependencies
         run: |
           brew install bash python@3.13 jq

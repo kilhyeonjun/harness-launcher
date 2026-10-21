@@ -854,10 +854,69 @@ class Publisher:
         except (OSError, ValueError, TypeError, KeyError): raise ProjectionError() from None
 
 
+def dispatch_source():
+    """Read-only public-entry bootstrap; return the actual sealed execution root.
+
+    This is not a consumer override. The caller must exec that root's entry,
+    which repeats the unchanged profile/host/join/native binding checks.
+    """
+    runtime = physical(Path.home()) / '.local/state/kilhyeonjun-harness/launcher-runtimes'
+    directory(runtime, 0o700)
+    current_raw, current_stamp = read_file(runtime / 'current.json')
+    current = decode(current_raw)
+    keys(current, 'version revision path manifest_sha256')
+    require(type(current['revision']) is str and re.fullmatch('[0-9a-f]{40}', current['revision']), BINDING)
+    snapshot = physical(current['path'])
+    require(snapshot == runtime / current['revision'], BINDING)
+    directory(snapshot, 0o500)
+    manifest_raw, _ = read_file(snapshot / 'manifest.json', 0o400, 131072)
+    require(digest(manifest_raw) == current['manifest_sha256'], BINDING)
+    try:
+        manifest = json.loads(manifest_raw.decode('utf-8'), object_pairs_hook=pairs)
+    except (ValueError, UnicodeError, RecursionError):
+        raise ProjectionError(BINDING) from None
+    keys(manifest, 'version revision files')
+    files = manifest['files']
+    required = {'bin/harness-exec', 'bin/aliases.zsh', 'bin/harness-common.sh',
+                'bin/harness_omp_projection.py'}
+    require(type(files) is dict and required <= files.keys() and len(files) <= 512, BINDING)
+    total = len(manifest_raw)
+    for name, item in files.items():
+        require(type(name) is str and not name.startswith('/') and name != 'manifest.json' and
+                all(part not in ('', '.', '..') for part in name.split('/')), BINDING)
+        keys(item, 'mode sha256'); integer(item['mode']); sha(item['sha256'])
+        require(item['mode'] in (0o400, 0o500), BINDING)
+        total += (snapshot / name).lstat().st_size
+        require(total <= 32 * 1024 * 1024, BINDING)
+    require(files['bin/harness-exec']['mode'] == 0o500, BINDING)
+    # Reuse the existing current/manifest/physical/file hashing contract.
+    binding = launcher_binding(str(snapshot / 'bin/aliases.zsh'), tuple(files))
+    require(binding['current_sha256'] == digest(current_raw), BINDING)
+    # Reject unlisted files and symlink directories rather than executing a
+    # partly verified package. The snapshot remains sealed, owner-only.
+    seen, directories = set(), 0
+    for root, children, names in os.walk(snapshot, followlinks=False):
+        directory(root, 0o500); directories += 1
+        require(directories <= 1024, BINDING)
+        for child in children:
+            directory(Path(root) / child, 0o500)
+        for name in names:
+            relative = (Path(root) / name).relative_to(snapshot).as_posix()
+            require(relative in files or relative == 'manifest.json', BINDING)
+            seen.add(relative)
+    require(seen == set(files) | {'manifest.json'}, BINDING)
+    final_raw, final_stamp = read_file(runtime / 'current.json')
+    require(final_raw == current_raw and final_stamp == current_stamp, BINDING)
+    return str(snapshot / 'bin')
+
+
 def main(argv):
     # Projection/current verbs are readonly. Normal prepare may only ask the
     # canonical compiler to emit bundles; publication still uses Publisher.
     try:
+        if len(argv) == 2 and argv[1] == 'dispatch-source':
+            print(dispatch_source())
+            return 0
         if len(argv) == 8 and argv[1] == 'validate-required-prepared':
             value = validate_required_prepared(*argv[2:])
             sys.stdout.buffer.write(canonical(value) + b'\n')

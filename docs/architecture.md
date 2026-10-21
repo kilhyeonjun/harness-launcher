@@ -112,6 +112,22 @@ This order matters on macOS because an app-bundled CLI or a version-manager shim
 
 ## OMP entry and prepared namespace
 
+Before sourcing aliases, an exact OMP discriminator invokes the installed
+fixed sibling helper's read-only `dispatch-source`. It verifies owner-only,
+non-symlink current selection, revision/path, manifest digest and the complete
+sealed inventory, then returns the actual execution directory. The entry execs
+`/bin/zsh <snapshot>/bin/harness-exec` with the same harness root, cwd, argv and
+environment; an entry already in that snapshot proceeds without another exec.
+This replaces OMP execution through installed Cellar/opt aliases. Dispatch does
+not republish profile, projection, auth, namespace, binary, lease or trust data.
+
+Invalid or drifted selection stops before native execution, with no consumer
+override, raw binary or package fallback. The normally reviewed installed
+bootstrap is part of the trusted package boundary; its own manifest does not
+authenticate its origin. Existing owner-managed `current.json` remains the
+selection anchor, so a new package need not change current or re-enroll.
+Full OMP policy, approval, continuation and restore acceptance remain separate.
+
 OMP is an explicit selector after the optional leading `--cwd <dir>` and one
 workspace control (`--isolated`, `--no-isolated`, or `--isolated-session <uuid>`).
 The dispatcher consumes it once: `ex omp omp -- text` passes `omp -- text` to
@@ -1538,7 +1554,7 @@ Root still requires normal actual CI before merge/release/install.
 `./test/run-all.sh` without arguments still executes the full suite in its
 original order, with declared interpreters, source admission, environment,
 conditional skips and first-error status preserved. The initial partition keeps
-all 124 existing suite invocations and appends `test_run_all_partition.py` (125
+all 141 existing suite invocations and adds the public-dispatch wrapper (142
 total). The four preservation suites count toward coverage even though the old
 summary did not increment its passed counter for them.
 

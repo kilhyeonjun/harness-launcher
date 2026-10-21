@@ -312,7 +312,11 @@ class Workflow(unittest.TestCase):
         names=["Check out repository","Install runtime dependencies","Prepare owned CI Homebrew directory modes","Verify source-bound jq proof and current host branch","Check shell syntax","Lint public documentation","Run regression suite"]
         for group in GROUPS:
             job=jobs["regression-"+group]
-            self.assertEqual(re.findall(r"- name: (.+)",job),names)
+            expected_names = names[:]
+            if group == "shell":
+                expected_names.insert(1, "Fetch pinned public-dispatch test baseline")
+                self.assertIn("git fetch --no-tags --depth=1 origin 5faf9b91411faeb33f48beb0ab8b69a8575a0813", job)
+            self.assertEqual(re.findall(r"- name: (.+)", job), expected_names)
             self.assertIn("runs-on: macos-15",job);self.assertIn("timeout-minutes: 20",job)
             self.assertIn("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",job)
             self.assertIn("--ci-group "+group+" --ci-result",job)

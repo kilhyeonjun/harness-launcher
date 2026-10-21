@@ -249,6 +249,13 @@ model/settings injection. Outer `--cwd` and workspace controls precede the
 selector; `harness-auto claude --cwd DIR --isolated-session UUID ...` preserves
 those controls. Explicit Claude cannot select a different runtime prefix.
 
+Public OMP entries start through the trusted installed bootstrap, which verifies
+and executes the owner-managed current launcher's actual immutable snapshot.
+The selected operational release can remain older than the installed package.
+Profile, host, projection and native ownership checks run in that closure;
+metadata help does not establish model, required-policy, approval or restore
+acceptance.
+
 The explicit `ex omp` route starts a fresh Oh My Pi session using a separately
 prepared native home and a SHA-256-pinned executable. Configure
 `HARNESS_OMP_BIN`, `HARNESS_OMP_SHA256`, and `HARNESS_OMP_ROOT` in the trusted
@@ -739,8 +746,8 @@ cd harness-launcher
 ./test/run-all.sh
 ```
 
-The no-argument full runner retains the original 124 suite invocations in order
-and appends one partition regression (125 total). CI runs its four fixed groups
+The no-argument full runner retains the existing 141 suite invocations in order
+and adds the public-dispatch wrapper (142 total). CI runs its four fixed groups
 on separate `macos-15` jobs, each still limited to 20 minutes and retaining the
 same preparation, jq, syntax and documentation checks. The required `test`
 aggregate fails unless all four jobs succeed with complete, nonoverlapping
