@@ -38,13 +38,13 @@ class PublicOmpDispatch(unittest.TestCase):
         (opt / 'harness-launcher').symlink_to(self.package.parents[1], target_is_directory=True)
         self.registry = self.home / '.config/harness-launcher/profiles'
         self.registry.mkdir(parents=True, mode=0o700)
-        self.harness = self.home / 'synthetic kh'
+        self.harness = self.home / 'synthetic ex'
         (self.harness / 'config').mkdir(parents=True)
         (self.harness / 'config/launcher.env').write_text(
-            'HARNESS_NAME="synthetic kh"\nHARNESS_PREFIX="kh"\n'
+            'HARNESS_NAME="synthetic ex"\nHARNESS_PREFIX="ex"\n'
             'HARNESS_SESSION_ISOLATION_DEFAULT="0"\n')
-        self.write(self.registry / 'kh', str(self.harness).encode() + b'\n')
-        self.public = self.home / '.local/bin/kh'
+        self.write(self.registry / 'ex', str(self.harness).encode() + b'\n')
+        self.public = self.home / '.local/bin/ex'
         self.public.parent.mkdir(parents=True)
         self.public.symlink_to(self.package / 'harness-profile')
         self.runtime = self.home / '.local/state/kilhyeonjun-harness/launcher-runtimes'
@@ -63,7 +63,7 @@ class PublicOmpDispatch(unittest.TestCase):
                 self.assertFalse(p.is_symlink())
                 self.assertEqual(manifest['files'][name]['sha256'], self.sha(p))
                 shutil.copy2(p, self.old_package / p.name)
-        self.old_public = self.home / 'old-public/kh'
+        self.old_public = self.home / 'old-public/ex'
         self.old_public.parent.mkdir()
         self.old_public.symlink_to(self.old_package / 'harness-profile')
         self.snapshot = self.runtime / OLD_REVISION
@@ -125,10 +125,10 @@ class PublicOmpDispatch(unittest.TestCase):
         with mock.patch.object(self.module.Path, 'home', return_value=self.home):
             publisher = self.module.Publisher()
             publisher.prepare(provenance)
-            row = self.module.capture_row('kh', str(self.harness),
+            row = self.module.capture_row('ex', str(self.harness),
                 str(self.snapshot / 'bin/aliases.zsh'), str(self.binary), str(self.namespace),
                 '2099-01-01T00:00:00Z', {'version': '18.11.3', 'source_revision': 'b' * 40}, provenance)
-            publisher.publish('kh', row, publisher.token())
+            publisher.publish('ex', row, publisher.token())
         self.config_root = self.home / '.config/harness-launcher/omp-projection-v1'
         self.before = {n: (self.config_root / n).read_bytes() for n in ('enrollment.json', 'state.json')}
         self.current_before = (self.runtime / 'current.json').read_bytes()
@@ -252,7 +252,7 @@ class PublicOmpDispatch(unittest.TestCase):
         config = external / 'harness/config'
         config.mkdir(parents=True)
         marker = external / 'REACHED'
-        self.write(registry / 'kh', str(config.parent).encode() + b'\n')
+        self.write(registry / 'ex', str(config.parent).encode() + b'\n')
         self.write(config / 'launcher.env', f'touch {str(marker)!r}\nreturn 97\n'.encode())
         poison = {
             'HARNESS_PROFILE_HOME': str(registry.parent),

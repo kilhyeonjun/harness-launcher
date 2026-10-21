@@ -138,6 +138,26 @@ class PublicSanitizationTests(unittest.TestCase):
                                 else 'private profile alias')
                     self.assertIn('fixture.txt: ' + category + '\n', output)
 
+    def test_mode_release_has_only_exact_public_token_exemption(self):
+        mode = '18.11.3-kh.w07.mm.1'
+        cases = [(mode, 0), ('VERSION = "' + mode + '"', 0),
+                 (RELEASE + ' ' + mode, 0)]
+        for alias in self.policy['aliases']:
+            cases.extend([(alias + ' ' + mode, 1), (mode + ' ' + alias, 1),
+                          (mode + ',' + alias, 1)])
+        for text in ('x' + mode, mode + 'x', '_' + mode, mode + '_',
+                     mode + '.extra', mode + '-private', mode + '0',
+                     mode.replace('18.11.3', '18.11.4'), mode.upper(),
+                     mode.replace(self.policy['aliases'][0], self.policy['aliases'][1]),
+                     '字' + mode, mode + '字'):
+            cases.append((text, 1))
+        for name in self.policy['private_names']:
+            cases.append((mode + ' ' + name, 1))
+        for text, expected in cases:
+            with self.subTest(text=text):
+                status, _ = self.scan_files({'fixture.txt': text})
+                self.assertEqual(status, expected)
+
     def test_scanner_and_unit_source_are_included(self):
         here = Path(__file__).parent
         status, output = self.scan_files({
