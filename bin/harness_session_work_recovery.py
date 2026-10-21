@@ -210,7 +210,11 @@ def restore_content(archive, manifest, destination):
         if work.excluded(relative):fail('excluded recovery file')
         path=destination/relative;path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
         raw=read_file(Path(archive)/'objects'/entry['sha256'],True)
-        if entry['kind']=='symlink':path.symlink_to(os.fsdecode(raw))
+        if entry['kind']=='symlink':
+            path.symlink_to(os.fsdecode(raw))
+            try:os.chmod(path,entry['mode'],follow_symlinks=False)
+            except (NotImplementedError,OSError) as error:
+                raise work.WorkError('symlink recovery mode cannot be restored') from error
         elif entry['kind']=='file':put(path,raw);path.chmod(entry['mode'])
         else:fail('unsupported recovery kind')
     algorithm='sha1' if len(manifest['binding']['base'])==40 else 'sha256'

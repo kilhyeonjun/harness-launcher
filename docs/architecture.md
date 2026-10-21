@@ -686,11 +686,17 @@ thread/turn/item/path receipt, matching same-turn inline bytes and a private
 manifest-bound attachment. Offline Native reads the retained image bytes as well
 as complete raw history and unchanged wire items. Characterized historical
 read/change paths are metadata; other path guards remain enforced.
+Characterized Native 0.163 child-resume refusal uses a metadata-only read before
+the same complete paginated comparison. Large raw reads have file-size-derived
+budgets and a 128 MiB file ceiling; framing is linear and ordinary RPC limits stay
+unchanged.
 
 Explicit operator-reviewed terminal work custody can separately preserve an
 exact current index and worktree inventory before GC. The owner-bound immutable
 archive must pass independent recovery, readback and durability checks; later
 changes remain held. GC never creates the work-preservation approval.
+Independent restoration also restores symlink modes without following targets;
+unsupported modes remain held.
 See [Durable native Codex history](codex-history.md).
 
 `harness-session report --json` observes retention metadata without invoking GC,

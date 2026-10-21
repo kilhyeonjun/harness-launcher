@@ -176,6 +176,14 @@ recover data removed before an archive existed. Source, archive and restoration
 are host-local; installing the launcher does not synchronize conversations
 between machines. Existing auth and hook approvals come from normal preparation.
 
+Native 0.163 multi-agent v2 children can reject direct resume while unloaded.
+Only that characterized refusal permits a metadata-only `thread/read`; the same
+requested ID and every paginated turn/item must still match. Raw file reads use
+linear response framing and a budget derived from the archived file's base64
+size plus 4096 bytes, with a 128 MiB raw-file ceiling. Other RPCs retain their
+64 MiB response limit and all calls retain the existing deadline and offline
+restrictions. Oversized or mismatching history keeps the original root.
+
 ## Explicit terminal work preservation
 
 GC still retains unaccounted work by default. An operator can explicitly preserve
@@ -193,6 +201,8 @@ unstaged contents survive independently, including deletion states and ignored
 files. It does not deliver changes or rewrite the original index or lifecycle.
 Generated authority/config exclusions retain the existing work-proof boundary;
 Native history uses its independent archive and verifier.
+Symlink modes are restored without following their targets, including under a
+private umask. Unsupported mode restoration retains the original root.
 
 Private content-addressed objects and receipts live in the owner's
 `work-recovery` record. Publication requires complete readback, file/directory

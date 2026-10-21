@@ -15,6 +15,11 @@ import time
 
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 CHARACTERIZED_VERSIONS = {b"0.161.0", b"0.162.1", b"0.163.0"}
+RPC_RESPONSE_LIMIT = 64 * 1024 * 1024
+RAW_FILE_LIMIT = 128 * 1024 * 1024
+MAX_FILE_RESPONSE = 4 * ((RAW_FILE_LIMIT + 2) // 3) + 4096
+SUBAGENT_READ_ERROR = {'code': -32600, 'message':
+    'cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it'}
 
 
 class NativeVerificationError(Exception):
@@ -342,10 +347,17 @@ def binary_identity(binary):
             'executable':str(path),'wrapper':str(wrapper),'wrapper_sha256':file_digest(wrapper)}
 
 
+def file_response_limit(path):
+    size=Path(path).stat().st_size
+    if size < 0 or size > RAW_FILE_LIMIT:fail('Native raw file exceeds verification limit')
+    return 4 * ((size + 2) // 3) + 4096
+
+
 class NativeRpc:
     def __init__(self, binary, home, denied):
         self.binary = binary; self.home = Path(home); self.denied = denied
-        self.buffer = b""; self.sequence = 0; self.process = None
+        self.buffer = bytearray(); self.sequence = 0; self.process = None
+        self.last_error = None
 
     def __enter__(self):
         self.process = subprocess.Popen(sandbox_command(self.binary, ["app-server", "--listen", "stdio://"], self.denied,home=self.home),
@@ -371,19 +383,29 @@ class NativeRpc:
         self.process.stdin.write(json.dumps(value, separators=(",", ":")).encode() + b"\n")
         self.process.stdin.flush()
 
-    def call(self, method, params):
+    def call(self, method, params, *, response_limit=RPC_RESPONSE_LIMIT):
+        if (type(response_limit) is not int or response_limit <= 0 or response_limit > MAX_FILE_RESPONSE
+                or (response_limit != RPC_RESPONSE_LIMIT and method != 'fs/readFile')):
+            fail('invalid Native response limit')
+        self.last_error = None
         self.sequence += 1; request = self.sequence
         self.send({"id": request, "method": method, "params": params})
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            while b"\n" not in self.buffer:
+            newline = self.buffer.find(b'\n')
+            scanned = len(self.buffer)
+            while newline < 0:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not self.selector.select(remaining): fail("Native history RPC timed out")
                 chunk = os.read(self.process.stdout.fileno(), 65536)
                 if not chunk: fail("Native history RPC closed unexpectedly")
-                self.buffer += chunk
-                if len(self.buffer) > 64 * 1024 * 1024: fail("Native history RPC exceeded response limit")
-            line, self.buffer = self.buffer.split(b"\n", 1)
+                self.buffer.extend(chunk)
+                newline = self.buffer.find(b'\n', scanned)
+                scanned = len(self.buffer)
+                if (newline if newline >= 0 else len(self.buffer)) > response_limit:
+                    fail("Native history RPC exceeded response limit")
+            if newline > response_limit:fail("Native history RPC exceeded response limit")
+            line = bytes(self.buffer[:newline]); del self.buffer[:newline+1]
             try: response = json.loads(line)
             except json.JSONDecodeError: fail("Native history RPC returned invalid JSON")
             if "method" in response and "id" in response:
@@ -474,13 +496,20 @@ def verify_native(restored_home, manifest, codex_bin):
                 if result.get('data')!=[] or result.get('nextCursor'):
                     fail('restored Native catalog is not empty')
         for path,checksum in [*files,*image_files]:
-            result=rpc.call('fs/readFile',{'path':str(path)})
+            limit=file_response_limit(path)
+            if limit > RPC_RESPONSE_LIMIT:
+                result=rpc.call('fs/readFile',{'path':str(path)},response_limit=limit)
+            else:result=rpc.call('fs/readFile',{'path':str(path)})
             try: contents=base64.b64decode(result['dataBase64'],validate=True)
             except (KeyError,ValueError,TypeError): fail('Native raw history read is invalid')
             if hashlib.sha256(contents).hexdigest()!=checksum: fail('Native raw history differs from restored archive')
         for thread, projection in expected.items():
-            result = rpc.call("thread/resume", {"threadId": thread, "cwd": str(restored_home),
-                              "excludeTurns": True, "sandbox": "read-only", "approvalPolicy": "untrusted"})
+            try:
+                result = rpc.call("thread/resume", {"threadId": thread, "cwd": str(restored_home),
+                                  "excludeTurns": True, "sandbox": "read-only", "approvalPolicy": "untrusted"})
+            except NativeVerificationError:
+                if identity['version'] != '0.163.0' or getattr(rpc,'last_error',None) != SUBAGENT_READ_ERROR:raise
+                result=rpc.call('thread/read',{'threadId':thread,'includeTurns':False})
             if result.get("thread", {}).get("id") != thread: fail("Native resumed a different thread")
             turns = pages(rpc, "thread/turns/list", thread)
             items = pages(rpc, "thread/items/list", thread)
