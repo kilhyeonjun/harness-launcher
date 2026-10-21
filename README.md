@@ -764,8 +764,8 @@ cd harness-launcher
 ./test/run-all.sh
 ```
 
-The no-argument full runner retains the existing 141 suite invocations in order
-and adds the public-dispatch wrapper (142 total). CI runs its four fixed groups
+The no-argument full runner retains the existing 143 suite invocations in order
+and adds the public-dispatch wrapper (144 total). CI runs its four fixed groups
 on separate `macos-15` jobs, each still limited to 20 minutes and retaining the
 same preparation, jq, syntax and documentation checks. The required `test`
 aggregate fails unless all four jobs succeed with complete, nonoverlapping
@@ -899,7 +899,6 @@ Original guards, source admission, owned permissions, syntax/docs/full suites
 and the 20-minute CI job budget remain unchanged. Historical fallback evidence
 is not current fallback or whole-CI success; new actual CI remains required
 before the normal merge/release/install decision.
-
 
 OMP model modes are launcher controls: `kh omp --model-mode <id>` selects
 `gpt-only`, `opus-only`, `hybrid-gpt-lead`, or `hybrid-opus-lead`; a fresh mode

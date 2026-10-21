@@ -1538,12 +1538,13 @@ and native calls 0. A system host still strictly returns
 
 CI's `test/omp-jq-ci-proof.py` checks a frozen, public-safe P1 evidence
 capsule at `test/fixtures/omp-jq-v2-p1-evidence.json` and nine whole source pins.
-Job 118499176581 at `449e1f2776a3555f23ef41cf5f375178a494f5d5` actually
+Job 119376390928 at `6b23344f88c7cd4cdc948f618997c9ffed73c477` actually
 proved non-system selection/manifest/query/native0 on `macos-14`, with ordinary
 and strict calls to the unchanged inspector and identical source pins before
 and after both calls. This satisfies the historical actual-evidence condition
-for this exact source closure. The earlier actual093 capsule remains unchanged
-as evidence for its original sources; it cannot prove the changed P1 sources.
+for this exact source closure. The earlier P1 and actual093 capsules remain
+in Git history as evidence for their original sources; they cannot prove this
+changed source closure.
 
 The v2 capsule pins actual job/head, whole-log and observation-line digests.
 Its `source_receipt_sha256` hashes UTF-8 JSON of `{head, source_pins}` with sorted
@@ -1584,8 +1585,8 @@ Root still requires normal actual CI before merge/release/install.
 
 `./test/run-all.sh` without arguments still executes the full suite in its
 original order, with declared interpreters, source admission, environment,
-conditional skips and first-error status preserved. The initial partition keeps
-all 141 existing suite invocations and adds the public-dispatch wrapper (142
+conditional skips and first-error status preserved. The current partition keeps
+all 143 existing suite invocations and adds the public-dispatch wrapper (144
 total). The four preservation suites count toward coverage even though the old
 summary did not increment its passed counter for them.
 
@@ -1625,7 +1626,6 @@ This changes scheduling, not test scope or acceptance. Parallel completion time
 and a new whole-CI PASS require actual same-source job results; source or fake
 proof alone does not establish either, or native/provider behavior.
 
-
 The model-mode parser consumes only launcher flags before `--`, then passes
 literal argv through the existing required resolver. Recipes come from the
 canonical MM1 JSON/helper; launcher code does not duplicate the model router.
@@ -1644,7 +1644,7 @@ Unreadable output uses null snapshot SHA and nonzero status. Every non-bound,
 nonzero, malformed or mismatching result stops without ledger/native mutation.
 Peek is a UX guard; native SDK/CLI rechecks the actual adopted snapshot before
 history/outbox/transition effects. No other sealed artifact is reconstructed.
-All four CI jobs and aggregate, all 142 scheduled invocations, DevMap/APFS,
+All four CI jobs and aggregate, all 144 scheduled invocations, DevMap/APFS,
 required locator/resources and native capability services remain in force.
 Final projection freeze including MM4 precedes one genuine jq evidence renewal;
 SOURCE_CHANGED remains HOLD until actual hosted capture and final complete CI.
