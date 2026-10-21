@@ -2,6 +2,17 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.73.1 — 2026-10-22
+
+- Preserve symlink modes during independent terminal-work restoration even with
+  a private umask; unsupported mode restoration still holds the original root.
+- Verify archived Native 0.163 multi-agent v2 children through the characterized
+  read-only query when direct resume is refused, retaining full raw and paginated
+  history comparisons. Other RPC errors remain blocking.
+- Read large raw history responses with linear framing and exact file-size-based
+  budgets, up to 128 MiB per raw file. Ordinary RPC limits and offline boundaries
+  remain unchanged.
+
 ## 0.73.0 — 2026-10-21
 
 - Characterize Native 0.163.0 full history retirement with real offline archive

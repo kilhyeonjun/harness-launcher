@@ -271,6 +271,19 @@ class WorkRecoveryTests(unittest.TestCase):
         observed=self.recovery('inventory')
         return self.recovery('preserve','--expected',observed['inventory_sha256'])
 
+    @unittest.skipUnless(hasattr(os, 'lchmod'), 'requires symlink mode support')
+    def test_private_umask_restores_symlink_mode_and_original_target(self):
+        link=self.root/'link';link.symlink_to('tracked');os.lchmod(link,0o755)
+        observed=self.recovery('inventory')
+        result=subprocess.run([sys.executable,'-I','-B',str(ROOT/'bin/harness_session_work_recovery.py'),
+            'preserve','--state',str(self.state),'--owner',ID,'--expected',observed['inventory_sha256']],
+            capture_output=True,text=True,timeout=30,umask=0o077)
+        self.assertEqual(result.returncode,0,result.stderr)
+        destination=self.base/'restored-private'
+        self.recovery('restore','--archive',str(self.record/'work-recovery'),'--destination',str(destination))
+        self.assertEqual(os.readlink(destination/'link'),'tracked')
+        self.assertEqual((destination/'link').lstat().st_mode & 0o777,0o755)
+
     def test_exact_approved_snapshot_recovers_distinct_index_and_work_after_root_is_gone(self):
         (self.root/'tracked').write_bytes(b'staged bytes\x00')
         self.git(self.root,'add','tracked')

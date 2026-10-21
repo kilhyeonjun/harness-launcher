@@ -108,6 +108,38 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual([method for method,_ in calls if method!='fs/readFile'][0], "thread/resume")
         self.assertTrue(any(p.get("cursor") == "second" for _, p in calls))
 
+    def test_only_characterized_subagent_refusal_uses_read_and_full_pages(self):
+        calls=[]
+        error={'code':-32600,'message':'cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it'}
+        version='0.163.0';read_id=ID;wire=ITEM
+        class Rpc:
+            def __init__(self,*args):self.last_error=None
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def call(self,method,params):
+                calls.append(method)
+                if method=='fs/readFile':return {'dataBase64':base64.b64encode(Path(params['path']).read_bytes()).decode()}
+                if method=='thread/resume':
+                    self.last_error=error
+                    raise native.NativeVerificationError('Native rejected the full-history probe')
+                if method=='thread/read':return {'thread':{'id':read_id}}
+                if method=='thread/turns/list':return {'data':[{'id':'turn'}]}
+                return {'data':[{'turnId':'turn','item':wire}]}
+        with patch.object(native,'NativeRpc',Rpc),patch.object(native,'binary_identity',return_value={'version':'0.163.0'}):
+            proof=native.verify_native(self.home,{},'/fixture/codex')
+        self.assertEqual(proof['threads'][0]['item_count'],1)
+        self.assertEqual(calls[-4:],['thread/resume','thread/read','thread/turns/list','thread/items/list'])
+        for case in ['unknown_error','old_version','wrong_thread','changed_wire']:
+            with self.subTest(case=case):
+                original=error;version='0.163.0';read_id=ID;wire=ITEM
+                if case=='unknown_error':error={'code':-32600,'message':'uncharacterized failure'}
+                elif case=='old_version':version='0.162.1'
+                elif case=='wrong_thread':read_id='ffffffff-1111-4222-8333-444444444444'
+                else:wire={**ITEM,'id':'changed'}
+                with patch.object(native,'NativeRpc',Rpc),patch.object(native,'binary_identity',return_value={'version':version}):
+                    with self.assertRaises(native.NativeVerificationError):native.verify_native(self.home,{},'/fixture/codex')
+                error=original
+
     def test_parent_reference_must_be_inside_archive(self):
         path = next((self.home / "sessions").iterdir())
         rows = path.read_text().splitlines(); meta = json.loads(rows[0])
@@ -185,6 +217,37 @@ class ProjectionTests(unittest.TestCase):
         (self.home/'sessions'/('rollout-'+child+'.jsonl')).write_text(json.dumps(primary)+'\n'+json.dumps(parent)+'\n')
         with self.assertRaisesRegex(native.NativeVerificationError,'identical preserved primary'):
             native.expected_history(self.home)
+
+
+class RpcTransportTests(unittest.TestCase):
+    def test_response_budget_and_split_frame_preserve_following_message(self):
+        import io
+        from types import SimpleNamespace
+        rpc=native.NativeRpc('/fixture',Path('/tmp'),[])
+        rpc.process=SimpleNamespace(stdin=io.BytesIO(),stdout=SimpleNamespace(fileno=lambda:0))
+        rpc.selector=SimpleNamespace(select=lambda timeout:[True])
+        payload=json.dumps({'id':1,'result':{'dataBase64':'x'*1000}}).encode()+b'\n'+b'{"id":2,"result":{"ok":true}}\n'
+        chunks=iter([payload[:500],payload[500:]])
+        with patch.object(native.os,'read',side_effect=lambda *args:next(chunks)):
+            self.assertEqual(len(rpc.call('fs/readFile',{'path':'/fixture'},response_limit=2048)['dataBase64']),1000)
+            self.assertTrue(rpc.call('thread/read',{'threadId':ID})['ok'])
+
+    def test_per_request_budget_rejects_oversized_response(self):
+        import io
+        from types import SimpleNamespace
+        rpc=native.NativeRpc('/fixture',Path('/tmp'),[])
+        rpc.process=SimpleNamespace(stdin=io.BytesIO(),stdout=SimpleNamespace(fileno=lambda:0))
+        rpc.selector=SimpleNamespace(select=lambda timeout:[True])
+        with patch.object(native.os,'read',return_value=b'x'*1024):
+            with self.assertRaisesRegex(native.NativeVerificationError,'response limit'):
+                rpc.call('fs/readFile',{'path':'/fixture'},response_limit=128)
+
+    def test_file_budget_uses_exact_encoded_size_and_rejects_unbounded_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'raw';path.write_bytes(b'sentinel')
+            self.assertEqual(native.file_response_limit(path),4096+12)
+            with patch.object(Path,'stat',return_value=type('Info',(),{'st_size':129*1024*1024})()):
+                with self.assertRaises(native.NativeVerificationError):native.file_response_limit(path)
 
 
 class RealNativeCharacterizationTests(unittest.TestCase):
@@ -270,6 +333,58 @@ class RealNativeCharacterizationTests(unittest.TestCase):
         proof=self.restored()
         self.assertEqual(proof['threads'][0]['turn_count'],101)
         self.assertEqual(proof['threads'][0]['item_count'],101)
+
+    def test_real_0163_unloaded_subagent_read_preserves_full_history(self):
+        self.make_history()
+        (self.home/'config.toml').write_text('[features]\nmulti_agent = true\n')
+        source={'subagent':{'thread_spawn':{
+            'parent_thread_id':'ffffffff-1111-4222-8333-444444444444','depth':1,
+            'agent_path':'/root/fixture','agent_nickname':'Fixture','agent_role':'default'}}}
+        rows=[json.loads(row) for row in self.rollout.read_text().splitlines()]
+        rows[0]['payload']['source']=source
+        rows[0]['payload'].update(multi_agent_version='v2',thread_source='subagent',
+            parent_thread_id=source['subagent']['thread_spawn']['parent_thread_id'],
+            agent_path='/root/fixture',agent_nickname='Fixture',agent_role='default')
+        self.rollout.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+        parent=source['subagent']['thread_spawn']['parent_thread_id']
+        parent_rows=json.loads(json.dumps(rows));parent_rows[0]['payload']['id']=parent
+        parent_rows[0]['payload']['source']='cli'
+        for key in ['multi_agent_version','thread_source','parent_thread_id','agent_path','agent_nickname','agent_role']:
+            parent_rows[0]['payload'].pop(key,None)
+        for row in parent_rows:
+            if 'thread_id' in row.get('payload',{}):row['payload']['thread_id']=parent
+        parent_path=self.rollout.parent/('rollout-2026-10-01T00-00-00-'+parent+'.jsonl')
+        parent_path.write_text(''.join(json.dumps(row)+'\n' for row in parent_rows))
+        with sqlite3.connect(self.home/'state_5.sqlite') as db:
+            db.row_factory=sqlite3.Row
+            record=dict(db.execute('SELECT * FROM threads WHERE id=?',(ID,)).fetchone())
+            record.update(id=parent,rollout_path=str(parent_path))
+            db.execute('INSERT INTO threads ('+','.join(record)+') VALUES ('+','.join('?' for _ in record)+')',tuple(record.values()))
+            db.execute("UPDATE threads SET source=?,thread_source='subagent',agent_path='/root/fixture',agent_nickname='Fixture',agent_role='default' WHERE id=?",(json.dumps(source),ID))
+            db.execute("INSERT INTO thread_spawn_edges VALUES (?,?,'open')",(parent,ID))
+        with sqlite3.connect(self.home/'thread_history_1.sqlite') as db:
+            db.row_factory=sqlite3.Row
+            for table in ['thread_turns','thread_items','thread_history_projection_state']:
+                for original in db.execute('SELECT * FROM '+table+' WHERE thread_id=?',(ID,)).fetchall():
+                    record=dict(original);record['thread_id']=parent
+                    if 'next_rollout_byte_offset' in record:record['next_rollout_byte_offset']=parent_path.stat().st_size
+                    db.execute('INSERT INTO '+table+' ('+','.join(record)+') VALUES ('+','.join('?' for _ in record)+')',tuple(record.values()))
+            db.execute('UPDATE thread_history_projection_state SET next_rollout_byte_offset=? WHERE thread_id=?',
+                       (self.rollout.stat().st_size,ID))
+        with native.NativeRpc(self.binary,self.home,[]) as rpc:
+            with self.assertRaises(native.NativeVerificationError):
+                rpc.call('thread/resume',{'threadId':ID,'cwd':str(self.home),'excludeTurns':True})
+            self.assertEqual(rpc.last_error,native.SUBAGENT_READ_ERROR)
+        proof=self.restored()
+        self.assertEqual(proof['threads'][0]['item_count'],1)
+        self.assertEqual(len(proof['threads']),2)
+
+    def test_real_raw_read_larger_than_default_response_budget(self):
+        path=self.home/'large-raw.jsonl';path.write_bytes(b'x'*(49*1024*1024))
+        with native.NativeRpc(self.binary,self.home,[]) as rpc:
+            result=rpc.call('fs/readFile',{'path':str(path)},response_limit=native.file_response_limit(path))
+        raw=base64.b64decode(result['dataBase64'],validate=True)
+        self.assertEqual(native.hashlib.sha256(raw).hexdigest(),native.file_digest(path))
 
     def image_history(self, inline_type='input_image'):
         # A code-mode image item has a different id from the outer tool call.
