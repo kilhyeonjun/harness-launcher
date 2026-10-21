@@ -249,4 +249,125 @@ class WorkProofTests(unittest.TestCase):
                 self.proof(2)
 
 
+
+class WorkRecoveryTests(unittest.TestCase):
+    setUp=WorkProofTests.setUp
+    git=WorkProofTests.git
+    proof=WorkProofTests.proof
+
+    def setUp(self):
+        WorkProofTests.setUp(self)
+        (self.record/'runtime.lock').touch(mode=0o600)
+        (self.record/'lease-v1').write_text('1\n')
+
+    def recovery(self,command,*extra,expected=0):
+        args=[sys.executable,'-I','-B',str(ROOT/'bin/harness_session_work_recovery.py'),command,*extra]
+        if command!='restore':args+=['--state',str(self.state),'--owner',ID]
+        done=subprocess.run(args,capture_output=True,text=True,timeout=30)
+        self.assertEqual(done.returncode,expected,done.stdout+done.stderr)
+        return json.loads(done.stdout) if done.stdout else None
+
+    def preserve(self):
+        observed=self.recovery('inventory')
+        return self.recovery('preserve','--expected',observed['inventory_sha256'])
+
+    def test_exact_approved_snapshot_recovers_distinct_index_and_work_after_root_is_gone(self):
+        (self.root/'tracked').write_bytes(b'staged bytes\x00')
+        self.git(self.root,'add','tracked')
+        (self.root/'tracked').write_bytes(b'worktree bytes\x01')
+        (self.root/'binary').write_bytes(b'\x00untracked\xff')
+        (self.root/'link').symlink_to('tracked')
+        (self.root/'pkg/module.py').unlink()
+        self.proof(2)
+        before=(self.root/'.git/index').read_bytes()
+        self.preserve();result=self.proof(0)
+        self.assertEqual(result['work_recovery']['kind'],'preserved_work_and_index')
+        self.assertEqual((self.root/'.git/index').read_bytes(),before)
+        shutil.rmtree(self.root)
+        restored=self.base/'restored'
+        self.recovery('restore','--archive',str(self.record/'work-recovery'),'--destination',str(restored))
+        self.assertEqual((restored/'tracked').read_bytes(),b'worktree bytes\x01')
+        self.assertEqual(subprocess.check_output(['git','-C',str(restored),'show',':tracked']),b'staged bytes\x00')
+        self.assertEqual((restored/'binary').read_bytes(),b'\x00untracked\xff')
+        self.assertEqual(os.readlink(restored/'link'),'tracked')
+        self.assertFalse((restored/'pkg/module.py').exists())
+
+    def test_existing_snapshot_does_not_authorize_later_work_or_metadata_or_index(self):
+        (self.root/'tracked').write_text('approved work\n');self.preserve();self.proof(0)
+        (self.root/'later').write_text('new work');self.proof(2);(self.root/'later').unlink()
+        self.git(self.root,'add','tracked');self.proof(2)
+
+    def test_stale_explicit_inventory_is_refused_without_archive(self):
+        observed=self.recovery('inventory')
+        (self.root/'later').write_text('new work')
+        self.recovery('preserve','--expected',observed['inventory_sha256'],expected=2)
+        self.assertFalse((self.record/'work-recovery').exists())
+
+    def test_snapshot_is_revalidated_after_stock_gc_renames_root(self):
+        (self.root/'tracked').write_text('approved');self.preserve()
+        tomb=self.root.with_name('.archiving-'+ID+'-123');self.root.rename(tomb)
+        done=subprocess.run([sys.executable,'-I','-B',str(ROOT/'bin/harness_session_work_proof.py'),
+            '--state',str(self.state),'--owner',ID,'--retained-root',str(tomb)],capture_output=True,text=True)
+        self.assertEqual(done.returncode,0,done.stdout+done.stderr)
+        (tomb/'tracked').write_text('after snapshot')
+        done=subprocess.run([sys.executable,'-I','-B',str(ROOT/'bin/harness_session_work_proof.py'),
+            '--state',str(self.state),'--owner',ID,'--retained-root',str(tomb)],capture_output=True,text=True)
+        self.assertEqual(done.returncode,2)
+
+    def test_unsafe_or_corrupt_archive_and_cross_owner_binding_never_prove(self):
+        (self.root/'tracked').write_text('approved');self.preserve();self.proof(0)
+        archive=self.record/'work-recovery'
+        data=next((archive/'objects').iterdir());raw=data.read_bytes();data.write_bytes(b'corrupt')
+        self.proof(2);data.write_bytes(raw);self.proof(0)
+        manifest=archive/'manifest.json';raw=manifest.read_bytes();v=json.loads(raw);v['binding']['owner']='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        manifest.write_text(json.dumps(v));self.proof(2);manifest.write_bytes(raw)
+        manifest.chmod(0o644);self.proof(2)
+
+    def test_active_runtime_lease_prevents_preservation(self):
+        import fcntl
+        observed=self.recovery('inventory')
+        with (self.record/'runtime.lock').open('r+b') as lock:
+            fcntl.lockf(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            self.recovery('preserve','--expected',observed['inventory_sha256'],expected=2)
+        self.assertFalse((self.record/'work-recovery').exists())
+
+    def test_preservation_failure_cannot_publish_proof(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('recovery_fixture',ROOT/'bin/harness_session_work_recovery.py')
+        recovery=importlib.util.module_from_spec(spec);spec.loader.exec_module(recovery)
+        observed=recovery.inventory(self.state,ID)
+        with mock.patch.object(os,'fsync',side_effect=OSError('fixture disk failure')):
+            with self.assertRaises((OSError,ValueError)):
+                recovery.preserve(self.state,ID,observed['inventory_sha256'])
+        self.assertFalse((self.record/'work-recovery').exists());self.assertTrue(self.root.exists())
+
+    def test_directory_only_inventory_obeys_node_limit(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('recovery_fixture',ROOT/'bin/harness_session_work_recovery.py')
+        recovery=importlib.util.module_from_spec(spec);spec.loader.exec_module(recovery)
+        for i in range(5):(self.root/('empty-'+str(i))).mkdir()
+        with mock.patch.object(recovery,'NODE_LIMIT',4,create=True):
+            with self.assertRaises(ValueError):recovery.work_inventory(self.root)
+
+    def test_failed_publication_and_failed_rollback_cannot_authorize_later_gc(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('recovery_fixture',ROOT/'bin/harness_session_work_recovery.py')
+        recovery=importlib.util.module_from_spec(spec);spec.loader.exec_module(recovery)
+        (self.root/'tracked').write_text('approved work')
+        observed=recovery.inventory(self.state,ID);archive=self.record/'work-recovery'
+        real_fsync=os.fsync;real_rename=Path.rename;record_inode=self.record.stat().st_ino
+        def failed_parent_sync(fd):
+            if archive.exists() and os.fstat(fd).st_ino==record_inode:
+                raise OSError('fixture publication directory fsync failure')
+            return real_fsync(fd)
+        def failed_rollback(path,destination):
+            if path==archive:raise OSError('fixture rollback rename unavailable')
+            return real_rename(path,destination)
+        with mock.patch.object(os,'fsync',side_effect=failed_parent_sync), \
+                mock.patch.object(Path,'rename',failed_rollback):
+            with self.assertRaises((OSError,ValueError)):
+                recovery.preserve(self.state,ID,observed['inventory_sha256'])
+        self.assertTrue(self.root.is_dir())
+        self.proof(2)
+
 if __name__=='__main__':unittest.main()
