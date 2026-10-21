@@ -49,6 +49,14 @@ if [[ "${@[local_omp_selector]-}" == omp ]]; then
   omp_bootstrap_python="$(harness_python3_resolve)" || exit $?
   omp_dispatch_bin="$("$omp_bootstrap_python" -I -S -B \
     "$SCRIPT_DIR/harness_omp_projection.py" dispatch-source)" || exit $?
+  "$omp_bootstrap_python" -I -S -B "$SCRIPT_DIR/harness_omp_projection.py" \
+    model-mode-early "$HARNESS_DIR" "$omp_dispatch_bin" "${@[local_omp_selector+1,-1]}"
+  omp_mode_rc=$?
+  case "$omp_mode_rc" in
+    0) ;;
+    10) exit 0 ;;
+    *) exit "$omp_mode_rc" ;;
+  esac
   if [[ "$SCRIPT_DIR" != "$omp_dispatch_bin" ]]; then
     exec /bin/zsh "$omp_dispatch_bin/harness-exec" "$HARNESS_DIR" "$@"
   fi

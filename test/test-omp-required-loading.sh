@@ -69,11 +69,11 @@ assert 'CANONICAL_REQUIRED_MARKER' in Path(policy).read_text()
 assert '--extension='+str(bundle/'required-extension.ts') in args
 assert '--no-extensions' in args
 assert args.count('--harness-required-bundle='+str(bundle/'selection.json'))==1
-assert m['schema']==2 and m['runtime_version']=='18.11.3-kh.w07.1'
+assert m['schema']==2 and m['runtime_version'] in ('18.11.3-kh.w07.1','18.11.3-kh.w07.mm.1')
 skills=[{'name':s['name'],'sha256':hashlib.sha256((bundle/s['path']).read_bytes()).hexdigest()} for s in m['selected_skills']]
 assert [s['name'] for s in skills]==['fixture-required']
 assert 'CANONICAL_SKILL_MARKER' in (bundle/'skills/fixture-required/SKILL.md').read_text()
-Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':hashlib.sha256(Path(policy).read_bytes()).hexdigest(),'skills':skills,'selection':m['effective_selection_sha256'],'inventory_admitted':False,'ready':False,'proof':'structural-fake-only'}))
+Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':hashlib.sha256(Path(policy).read_bytes()).hexdigest(),'skills':skills,'selection':m['effective_selection_sha256'],'inventory_admitted':False,'ready':False,'proof':'structural-fake-only','argv':args,'mode':json.loads((bundle/'model-mode.json').read_text()) if (bundle/'model-mode.json').exists() else None}))
 ''', 0o555)
         put(self.ns/'.owner.json', {'schema':'p0-normal-omp-owner-v1','prefix':str(self.ns),
             'binary':str(self.binary),'asset_sha256':sha(self.binary),'identity':{'owner':'fixture'}})
@@ -81,12 +81,17 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
                   'HARNESS_OMP_BIN':str(self.binary),'HARNESS_OMP_ROOT':str(self.ns),'HARNESS_OMP_SHA256':sha(self.binary)}
         put(self.profile/'config/launcher.env', '\n'.join(k+'='+shlex.quote(v) for k,v in config.items())+'\n')
         runtime = self.home/'.local/state/kilhyeonjun-harness/launcher-runtimes'
+        runtime.mkdir(parents=True, mode=0o700)
+        runtime.chmod(0o700)
         self.snapshot = runtime/('a'*40)
         for src in (REPO/'bin').iterdir():
             if src.is_file(): put(self.snapshot/'bin'/src.name, src.read_text(), 0o500 if src.stat().st_mode&0o111 else 0o400)
         files = {str(p.relative_to(self.snapshot)):{'mode':p.stat().st_mode&0o777,'sha256':sha(p)} for p in (self.snapshot/'bin').iterdir()}
         put(self.snapshot/'manifest.json', {'version':'0.64.0','revision':'a'*40,'files':files}, 0o400)
         put(runtime/'current.json', {'version':'0.64.0','revision':'a'*40,'path':str(self.snapshot),'manifest_sha256':sha(self.snapshot/'manifest.json')})
+        self.snapshot.chmod(0o500)
+        (self.snapshot/'bin').chmod(0o500)
+        self.addCleanup(self.unseal_snapshot)
         spec = importlib.util.spec_from_file_location('projection', self.snapshot/'bin/harness_omp_projection.py')
         self.p = importlib.util.module_from_spec(spec); spec.loader.exec_module(self.p)
         self.assertTrue(callable(getattr(self.p,'prepare_required',None)), 'missing normal structural prepare')
@@ -112,6 +117,121 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         # Readonly in-process and CLI checks must use the entry child's PATH.
         environment = patch.dict(os.environ, {'PATH': preparation_path})
         environment.start(); self.addCleanup(environment.stop)
+
+
+    def install_mode_source(self, capable=False):
+        for name in ('core/omp/model_modes.py','.claude/source/omp-model-modes.json'):
+            put(self.profile/name,(Path(KERNEL)/name).read_text())
+        if capable:
+            release=dict(self.row['binary']['release'],version='18.11.3-kh.w07.mm.1')
+            row=self.p.capture_row('ex',str(self.profile),str(self.snapshot/'bin/aliases.zsh'),
+                str(self.binary),str(self.ns),'2099-01-01T00:00:00Z',release,self.row['provenance'])
+            self.publisher.publish('ex',row,self.publisher.token())
+
+    def public_exec(self,args):
+        return subprocess.run(['/bin/zsh',str(self.snapshot/'bin/harness-exec'),str(self.profile),'omp',*args],
+            cwd=self.profile,env=self.env,input='',text=True,capture_output=True,timeout=30)
+
+    def file_state(self):
+        return {str(p):(sha(p),p.stat().st_mode,p.stat().st_mtime_ns)
+                for p in self.root.rglob('*') if p.is_file()}
+
+    def unseal_snapshot(self):
+        self.snapshot.chmod(0o700)
+        (self.snapshot/'bin').chmod(0o700)
+
+    def test_MM4_same_public_sealed_healthy_check_reports_desired_without_native(self):
+        # Structural public-entry control only, not the MM3-dependent resume own RED.
+        healthy = self.public_exec([])
+        self.assertEqual(healthy.returncode, 0, healthy.stderr)
+        self.assertEqual(json.loads(self.capture.read_text())['proof'],'structural-fake-only')
+        self.install_mode_source()
+        self.capture.unlink()
+        before=self.file_state()
+        result=self.public_exec(['--model-mode-check','gpt-only'])
+        self.assertEqual(result.returncode,0,result.stderr)
+        value=json.loads(result.stdout)
+        self.assertEqual(value['mode_id'],'gpt-only')
+        self.assertEqual(value['roles']['default']['desired'],
+                         {'model':'openai-codex/gpt-6.1-sol','effort':'high'})
+        self.assertEqual(value['roles']['default']['resolved'],{'model':None,'effort':None})
+        self.assertEqual(value['native_support'],'UNSUPPORTED_NATIVE')
+        self.assertEqual(value['auth'],'NOT_PROBED')
+        self.assertFalse(value['runtime_verified'])
+        self.assertFalse(self.capture.exists())
+        self.assertEqual(before,self.file_state())
+
+    def test_MM4_four_modes_and_fresh_default_bind_canonical_artifact(self):
+        self.install_mode_source(capable=True)
+        for mode in (None,'gpt-only','opus-only','hybrid-gpt-lead','hybrid-opus-lead'):
+            with self.subTest(mode=mode):
+                args=[] if mode is None else ['--model-mode',mode]
+                self.run_entry(args)
+                loaded=json.loads(self.capture.read_text())
+                actual=loaded['mode']
+                wanted,_,_=self.p.model_mode_request(str(self.profile),args)
+                self.assertEqual(actual,wanted)
+                self.assertEqual(actual['selected_mode'],mode or 'hybrid-opus-lead')
+                self.assertFalse(any(a.startswith('--model-mode') for a in loaded['argv']))
+                bundle=self.profile/'.harness/omp'/loaded['selection']
+                prepared=self.p.validate_required_prepared(str(self.profile),
+                    str(self.snapshot/'bin/aliases.zsh'),str(self.ns/'cwd'),str(self.binary),
+                    str(self.ns),str(bundle/'selection.json'))
+                self.assertEqual(prepared['model_mode']['recipe_sha256'],actual['recipe_sha256'])
+                self.assertFalse(prepared['ready']);self.assertFalse(prepared['inventory_admitted'])
+                self.assertTrue(all(r['availability']=='UNKNOWN' for r in prepared['model_mode']['roles'].values()))
+                self.assertTrue(all(s['behavior']=='preserve-existing' for s in actual['capability_services']))
+
+    def test_MM4_literal_values_and_double_dash_are_not_controls(self):
+        self.install_mode_source()
+        prompt='--model-mode opus-only\n--model-mode-check gpt-only'
+        artifact,argv,check=self.p.model_mode_request(str(self.profile),['--tools','Read','--',prompt])
+        self.assertEqual(artifact['selected_mode'],'hybrid-opus-lead')
+        self.assertEqual(argv,['--tools','Read','--',prompt]);self.assertFalse(check)
+        _,argv,_=self.p.model_mode_request(str(self.profile),['--model-mode=gpt-only','--','--model-mode-check'])
+        self.assertEqual(argv,['--','--model-mode-check'])
+
+    def test_MM4_malformed_override_stock_and_stale_source_stop_without_effects(self):
+        self.install_mode_source()
+        before=self.file_state()
+        bad=(['--model-mode'],['--model-mode','foreign'],
+             ['--model-mode','gpt-only','--model-mode','opus-only'],
+             ['--model-mode-check','gpt-only','extra'],['--model-mode','gpt-only','--thinking','low'],
+             ['--model-mode','gpt-only','--model=foreign'],['--model-mode','gpt-only'])
+        for args in bad:
+            with self.subTest(args=args):
+                result=self.public_exec(args)
+                self.assertEqual(result.returncode,2,result.stderr)
+                self.assertFalse(self.capture.exists())
+                self.assertEqual(before,self.file_state())
+        self.install_mode_source(capable=True)
+        self.run_entry(['--model-mode','gpt-only'])
+        loaded=json.loads(self.capture.read_text())
+        bundle=self.profile/'.harness/omp'/loaded['selection']
+        source=self.profile/'.claude/source/omp-model-modes.json'
+        value=json.loads(source.read_text());value['default']='gpt-only'
+        source.write_text(json.dumps(value,indent=2)+'\n')
+        before=self.file_state()
+        with self.assertRaises(self.p.ProjectionError):
+            self.p.validate_required_prepared(str(self.profile),str(self.snapshot/'bin/aliases.zsh'),
+                str(self.ns/'cwd'),str(self.binary),str(self.ns),str(bundle/'selection.json'))
+        self.assertEqual(before,self.file_state())
+
+    def test_MM4_check_each_mode_no_auth_or_availability_probe(self):
+        self.install_mode_source()
+        for mode in ('gpt-only','opus-only','hybrid-gpt-lead','hybrid-opus-lead'):
+            with self.subTest(mode=mode):
+                before=self.file_state()
+                result=self.public_exec(['--model-mode-check',mode])
+                self.assertEqual(result.returncode,0,result.stderr)
+                value=json.loads(result.stdout)
+                self.assertEqual(value['mode_id'],mode)
+                self.assertTrue(all(r['availability']=='UNKNOWN' and r['fallback']==[]
+                                    for r in value['roles'].values()))
+                self.assertFalse(value['retry']['modelFallback'])
+                self.assertFalse(value['contextPromotion']['enabled'])
+                self.assertEqual(value['native_support'],'UNSUPPORTED_NATIVE')
+                self.assertEqual(before,self.file_state())
 
     def restore_home(self):
         if self.saved_home is None: os.environ.pop('HOME',None)

@@ -90,6 +90,31 @@ def request(args):
     if args[offset:offset+1] != ['omp']:
         return None
     tail = args[offset+1:]
+    cleaned = []
+    selected = None
+    i = 0
+    while i < len(tail):
+        item = tail[i]
+        if item == '--':
+            cleaned.extend(tail[i:])
+            break
+        flag, sep, literal = item.partition('=')
+        if flag == '--model-mode':
+            require(selected is None)
+            if not sep:
+                i += 1
+                require(i < len(tail))
+                literal = tail[i]
+            require(literal in ('gpt-only', 'opus-only', 'hybrid-gpt-lead', 'hybrid-opus-lead'))
+            selected = literal
+        else:
+            cleaned.append(item)
+            if item in OPTIONS:
+                i += 1
+                require(i < len(tail))
+                cleaned.append(tail[i])
+        i += 1
+    tail = cleaned
     # Flags/values are consumed once below; prompt contents remain opaque.
     if not tail or tail[0] not in ('--session-new', '--session-resume'):
         for item in tail:
@@ -425,7 +450,7 @@ def operate(value):
     try:
         keys(value, 'schema mode state_root source_root launcher_session_id consumer handle expected_sha256 lifecycle_nonce terminal_status')
         require(value['schema'] == 'omp-continuation-operation/v1')
-        mode = value['mode']; require(mode in ('RESOLVE', 'NEW_PREPARE', 'RESUME_ADMIT', 'FINALIZE'))
+        mode = value['mode']; require(mode in ('RESOLVE', 'NEW_PREPARE', 'RESUME_ADMIT', 'FINALIZE', 'MODE_PEEK'))
         path, raw, row, context = load_record(value['state_root'], value['source_root'], value['handle'], value['consumer'])
         require(row['kernel_origin']['launcher_session_id'] == value['launcher_session_id'])
         p.sha(value['expected_sha256']); nonce(value['lifecycle_nonce'])
@@ -434,6 +459,11 @@ def operate(value):
         sessions = Path(context['namespace_path'])/'launcher-continuations'/row['handle']/'sessions'
         cwd = Path(row['kernel_origin']['workspace_root'])
         if mode != 'FINALIZE': require(value['terminal_status'] is None)
+        if mode == 'MODE_PEEK':
+            require(row['status'] == 'READY', 'OMP_CONTINUATION_IN_FLIGHT_UNRESOLVED')
+            observed = inspect_native(sessions, cwd)
+            same_native(row['native_identity'], observed, context['namespace_path'])
+            return selection(row, raw, context)
         if mode == 'NEW_PREPARE':
             require(row['status'] == 'PENDING' and row['native_identity'] is None)
             container = sessions.parent.parent

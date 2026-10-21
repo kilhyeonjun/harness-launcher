@@ -220,6 +220,31 @@ class PublicOmpDispatch(unittest.TestCase):
         self.assert_snapshot_preserved()
         self.assert_preserved()
 
+    def test_MM4_installed_entry_rejects_exact_old_selected_closure_for_default_and_explicit_modes(self):
+        healthy = self.run_entry([str(self.public), 'omp', '--help'])
+        self.assertEqual((0, b'SYNTHETIC_OMP_HELP\n'), (healthy.returncode, healthy.stdout), healthy.stderr)
+        # Same admitted canonical recipe/helper bytes; neither native capability
+        # nor the MM3-dependent cold-resume own RED is claimed by this fixture.
+        fixture = ROOT/'test/fixtures/w07-source'
+        for name in ('.claude/source/omp-model-modes.json', 'core/omp/model_modes.py'):
+            target = self.harness/name
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self.write(target, (fixture/name).read_bytes())
+        for args in ([], ['--model-mode', 'gpt-only']):
+            result = self.run_entry([str(self.public), 'omp', *args])
+            self.assertEqual(2, result.returncode, result.stderr)
+            self.assertIn(b'OMP_MODEL_MODE_LAUNCHER_UNSUPPORTED', result.stderr)
+            self.assertEqual(1, len(self.calls()))
+            self.assert_preserved(); self.assert_snapshot_preserved()
+        check = self.run_entry([str(self.public), 'omp', '--model-mode-check', 'gpt-only'])
+        self.assertEqual(2, check.returncode, check.stderr)
+        self.assertEqual('UNSUPPORTED_LAUNCHER', json.loads(check.stdout)['native_support'])
+        self.assertEqual(1, len(self.calls()))
+        help_result = self.run_entry([str(self.public), 'omp', '--help'])
+        self.assertEqual((0, b'SYNTHETIC_OMP_HELP\n'), (help_result.returncode, help_result.stdout), help_result.stderr)
+        self.assertEqual(2, len(self.calls()))
+        self.assert_preserved(); self.assert_snapshot_preserved()
+
     def test_fixture_allowlist_ignores_controlled_external_overrides(self):
         external = self.home / 'controlled-external'
         registry = external / 'profile-home/profiles'

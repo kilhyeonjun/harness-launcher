@@ -882,4 +882,15 @@ and the 20-minute CI job budget remain unchanged. Historical fallback evidence
 is not current fallback or whole-CI success; new actual CI remains required
 before the normal merge/release/install decision.
 
-MM4-P prepares canonical model artifacts and the distinct strict modified native release only; public mode controls and real source/patch/build/binary custody remain pending.
+
+OMP model modes are launcher controls: `kh omp --model-mode <id>` selects
+`gpt-only`, `opus-only`, `hybrid-gpt-lead`, or `hybrid-opus-lead`; a fresh mode
+source defaults to its canonical `hybrid-opus-lead` recipe. Tokens after `--`
+remain data. Direct model/provider/effort overrides conflict with a mode.
+`kh omp --model-mode-check <id>` prints desired model/effort, empty fallback,
+unresolved model/effort and availability `UNKNOWN`, without auth or model APIs.
+Check is metadata and grants no native capability or workspace/session authority.
+Mode execution requires the distinct modified native release and its actual
+source/patch/build/binary custody; stock 18.11.3 and the old w07 release stop.
+Resume requires an explicit matching mode and current canonical recipe hash;
+legacy/mismatch/invalid saved bindings stop before ledger/history/outbox changes.

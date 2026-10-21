@@ -364,6 +364,7 @@ def launcher_binding(consumer, companions=()):
 REQUIRED_CONTRACT = 'w07.required-resolver-consumer.v1'
 REQUIRED_VERSION = '18.11.3-kh.w07.1'
 MODEL_MODE_VERSION = '18.11.3-kh.w07.mm.1'
+MODEL_MODE_PROTOCOL = 'omp.launcher-model-mode.v1'
 BASE_REVISION = '96894a6147d8cc64b7e00ad3a7d7178fd93b9531'
 
 
@@ -599,7 +600,126 @@ def required_dependencies():
     return result
 
 
-def required_preparation(source, consumer, workspace, binary, namespace, caller_argv, bundle_manifest=None):
+def model_mode_request(source, argv):
+    """Canonical desired recipe plus lexical launcher controls; no auth/API."""
+    source = physical(source)
+    argv = list(argv)
+    selected = None
+    check = False
+    output = []
+    values = set('--model --smol --slow --plan --provider --models --thinking '
+                 '--service-tier --tools --skills --max-time'.split())
+    conflicts = values - {'--service-tier', '--tools', '--skills', '--max-time'}
+    overrides = False
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == '--':
+            output.extend(argv[index:])
+            break
+        flag, equal, literal = item.partition('=')
+        if flag in ('--model-mode', '--model-mode-check'):
+            require(selected is None, 'OMP_MODEL_MODE_DUPLICATE')
+            if not equal:
+                index += 1
+                require(index < len(argv), 'OMP_MODEL_MODE_VALUE')
+                literal = argv[index]
+            require(bool(literal) and not literal.startswith('-'), 'OMP_MODEL_MODE_VALUE')
+            selected = literal
+            check = flag == '--model-mode-check'
+        else:
+            output.append(item)
+            overrides = overrides or flag in conflicts
+            if flag in values and not equal:
+                index += 1
+                require(index < len(argv), 'OMP_MODEL_MODE_VALUE')
+                output.append(argv[index])
+        index += 1
+    if check:
+        require(not output, 'OMP_MODEL_MODE_CHECK_ARGUMENTS')
+    spec_path = source / '.claude/source/omp-model-modes.json'
+    present = os.path.lexists(spec_path)
+    if selected is None and (not present or argv[:1] in
+                            (['--help'], ['--version'], ['login'], ['models'])):
+        return None, output, False
+    require(present, 'OMP_MODEL_MODE_SOURCE_MISSING')
+    resume = output[:1] == ['--session-resume']
+    require(not resume or selected is not None, 'OMP_MODEL_MODE_RESUME_EXPLICIT')
+    require(not overrides, 'OMP_MODEL_MODE_OVERRIDE')
+    helper_path = source / 'core/omp/model_modes.py'
+    helper_raw, _ = read_file(helper_path, None, 32768)
+    spec_raw, _ = read_file(spec_path, None, 32768)
+    namespace = {'__name__': '_canonical_model_mode', '__file__': str(helper_path)}
+    exec(compile(helper_raw, str(helper_path), 'exec'), namespace)
+    spec = namespace['parse_model_modes'](spec_raw.decode('utf-8'))
+    selected = selected or spec['default']
+    artifact = namespace['expand_model_mode'](spec, selected, digest(spec_raw))
+    require(read_file(helper_path, None, 32768)[0] == helper_raw and
+            read_file(spec_path, None, 32768)[0] == spec_raw, BINDING)
+    return artifact, output, check
+
+
+def model_mode_metadata(artifact, support='UNKNOWN'):
+    return {'schema': 'omp.launcher-model-mode-check.v1',
+            'mode_id': artifact['selected_mode'],
+            'recipe_sha256': artifact['recipe_sha256'],
+            'roles': {name: {'desired': {'model': row['model'], 'effort': row['thinking']},
+                             'resolved': {'model': None, 'effort': None},
+                             'fallback': row['fallback'], 'availability': 'UNKNOWN'}
+                      for name, row in artifact['roles'].items()},
+            'retry': artifact['retry'], 'contextPromotion': artifact['contextPromotion'],
+            'capability_services': artifact['capability_services'],
+            'native_support': support, 'auth': 'NOT_PROBED',
+            'runtime_verified': False, 'ready': False, 'inventory_admitted': False}
+
+
+def model_mode_admit(source, consumer, artifact):
+    current = select_continuation_source(source, str(registry_dir()), source, consumer)
+    require(current['binary_release']['version'] == MODEL_MODE_VERSION,
+            'OMP_MODEL_MODE_NATIVE_UNSUPPORTED')
+    return current
+
+
+def model_mode_early(source, target, argv):
+    artifact, _, check = model_mode_request(source, argv)
+    if artifact is None:
+        return 0
+    # The complete target closure was verified by dispatch_source. This marker
+    # rejects an old launcher only; native mode admission remains separate.
+    raw, _ = read_file(Path(target) / 'harness_omp_projection.py', None, 262144)
+    import ast
+    tree = ast.parse(raw)
+    supported = any(isinstance(node, ast.Assign) and
+                    any(isinstance(t, ast.Name) and t.id == 'MODEL_MODE_PROTOCOL'
+                        for t in node.targets) and
+                    isinstance(node.value, ast.Constant) and
+                    node.value.value == MODEL_MODE_PROTOCOL for node in tree.body)
+    if check:
+        support = 'UNSUPPORTED_LAUNCHER'
+        if supported:
+            current = select_continuation_source(source, str(registry_dir()), source,
+                                                 str(Path(target) / 'aliases.zsh'))
+            support = ('UNKNOWN' if current['binary_release']['version'] == MODEL_MODE_VERSION
+                       else 'UNSUPPORTED_NATIVE')
+        print(canonical(model_mode_metadata(artifact, support)).decode('utf-8'))
+        return 10 if supported else 2
+    require(supported, 'OMP_MODEL_MODE_LAUNCHER_UNSUPPORTED')
+    return 0
+
+
+def validate_model_mode_peek(raw, mode_id, recipe_sha256):
+    require(len(raw) <= 8192, 'OMP_MODEL_MODE_PEEK_INVALID')
+    value = decode(raw)
+    keys(value, 'schema status binding snapshot_sha256')
+    require(value['schema'] == 'omp.session-model-mode.peek.v1', 'OMP_MODEL_MODE_PEEK_INVALID')
+    require(value['status'] == 'bound', 'OMP_MODEL_MODE_SAVED_UNSUPPORTED')
+    sha(value['snapshot_sha256'])
+    keys(value['binding'], 'mode_id recipe_sha256')
+    require(value['binding'] == {'mode_id': mode_id, 'recipe_sha256': recipe_sha256},
+            'OMP_MODEL_MODE_SAVED_MISMATCH')
+
+
+def required_preparation(source, consumer, workspace, binary, namespace, caller_argv, bundle_manifest=None, model_mode=None, recipe_sha256=None):
     """Re-derive current canonical expectation, never an actual Skill inventory.
 
     bundle_manifest selects read-only check mode. No native/helper subprocess,
@@ -643,6 +763,19 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
                 'sha256':current['projection_helper_sha256'],'python':'/usr/bin/python3',
                 'home':str(Path.home()),'source':str(source),'registry':str(registry_dir()),
                 'consumer':consumer,'expected':expected})
+        if 'omp_model_modes' in data:
+            if bundle_manifest is not None:
+                saved = decode(read_file(bundle_manifest, None, 131072)[0])
+                modes = [s.split(':', 1)[1] for s in saved['bundle_ids'] if s.startswith('model-mode:')]
+                require(len(modes) == 1, BINDING)
+                model_mode = modes[0]
+            require(model_mode is not None, 'OMP_MODEL_MODE_SELECTION_REQUIRED')
+            artifact, _, _ = model_mode_request(source, ['--model-mode', model_mode])
+            require(recipe_sha256 is None or artifact['recipe_sha256'] == recipe_sha256, BINDING)
+            require(release['version'] == MODEL_MODE_VERSION, 'OMP_MODEL_MODE_NATIVE_UNSUPPORTED')
+            selection['bundle_ids'].append('model-mode:' + model_mode)
+        else:
+            require(model_mode is None, 'OMP_MODEL_MODE_SOURCE_MISSING')
         relative, files = compiler.render_omp_bundle(source, data, selection)
         manifest = json.loads(files['selection.json']); bundle = source/relative
         if bundle_manifest is not None:
@@ -653,6 +786,10 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
             compiler.validate_omp_caller_argv(manifest, caller_argv)
             require(compiler.write_omp_bundle(source, data, selection) == relative, BINDING)
         prepared, argv = compiler.prepare_omp_bundle(bundle, manifest, caller_argv)
+        if model_mode is not None:
+            actual_mode = json.loads(files['model-mode.json'])
+            require(actual_mode == artifact, BINDING)
+            prepared['model_mode'] = model_mode_metadata(actual_mode, 'BOUND_NOT_RUNTIME_TESTED')
         require(read_file(compiler_path, None, 262144)[0] == compiler_raw, BINDING)
         fresh_current = select_continuation_source(str(source), str(registry_dir()), str(source), consumer)
         require(all(fresh_current.get(k) == v for k,v in expected.items()), BINDING)
@@ -915,6 +1052,26 @@ def main(argv):
     # Projection/current verbs are readonly. Normal prepare may only ask the
     # canonical compiler to emit bundles; publication still uses Publisher.
     try:
+        if len(argv) >= 4 and argv[1] == 'model-mode-early':
+            return model_mode_early(argv[2], argv[3], argv[4:])
+        if len(argv) >= 4 and argv[1] == 'model-mode-request':
+            artifact, values, check = model_mode_request(argv[2], argv[4:])
+            require(not check, 'OMP_MODEL_MODE_CHECK_ARGUMENTS')
+            if artifact is not None:
+                model_mode_admit(argv[2], argv[3], artifact)
+            fields = ['MODEL_MODE', artifact['selected_mode'] if artifact else '-',
+                      artifact['recipe_sha256'] if artifact else '-', *values, 'END']
+            sys.stdout.buffer.write(b''.join(v.encode('utf-8') + b'\0' for v in fields))
+            return 0
+        if len(argv) == 4 and argv[1] == 'validate-model-mode-peek':
+            validate_model_mode_peek(sys.stdin.buffer.read(8193), argv[2], argv[3])
+            return 0
+        if len(argv) >= 9 and argv[1] == 'prepare-required-mode':
+            prepared, values = required_preparation(*argv[2:7], argv[9:],
+                model_mode=argv[7], recipe_sha256=argv[8])
+            sys.stdout.buffer.write(b'REQUIRED_ARGV\0' +
+                b''.join(v.encode('utf-8') + b'\0' for v in values) + b'END\0')
+            return 0
         if len(argv) == 2 and argv[1] == 'dispatch-source':
             print(dispatch_source())
             return 0

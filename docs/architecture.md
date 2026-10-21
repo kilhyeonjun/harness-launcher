@@ -1594,4 +1594,26 @@ This changes scheduling, not test scope or acceptance. Parallel completion time
 and a new whole-CI PASS require actual same-source job results; source or fake
 proof alone does not establish either, or native/provider behavior.
 
-MM4-P preserves the exact8 compiler/extension descriptor and launcher7+binary-hash pairing while admitting old w07.1 and desired w07.mm.1. Public mode/default/check/resume/early routing is deferred until accepted P and actual MM3 peek; synthetic fixtures do not certify native capability.
+
+The model-mode parser consumes only launcher flags before `--`, then passes
+literal argv through the existing required resolver. Recipes come from the
+canonical MM1 JSON/helper; launcher code does not duplicate the model router.
+Selection `bundle_ids` includes `model-mode:<id>`; compiler-owned `model-mode.json`
+and prepared metadata bind the selected ID, recipe SHA and canonical/artifact
+closures. Readonly validation rederives the saved selected ID, never fresh default.
+Entry classifies mode-check before begin, and installed exec rejects old current
+closures lacking the mode protocol instead of silently bypassing the default.
+The prospective native version is `18.11.3-kh.w07.mm.1`; its existing exact eight
+release fields remain strict. Actual source/patch/build/binary pins are pending.
+Before `RESUME_ADMIT`, readonly MODE_PEEK obtains the bound native path and calls
+`--inspect-session-model-mode <path> --json`. Exact output is schema
+`omp.session-model-mode.peek.v1`, status `bound|legacy|invalid`, binding
+`{mode_id,recipe_sha256}` only for bound, and actual-byte `snapshot_sha256`.
+Unreadable output uses null snapshot SHA and nonzero status. Every non-bound,
+nonzero, malformed or mismatching result stops without ledger/native mutation.
+Peek is a UX guard; native SDK/CLI rechecks the actual adopted snapshot before
+history/outbox/transition effects. No other sealed artifact is reconstructed.
+All four CI jobs and aggregate, all 142 scheduled invocations, DevMap/APFS,
+required locator/resources and native capability services remain in force.
+Final projection freeze including MM4 precedes one genuine jq evidence renewal;
+SOURCE_CHANGED remains HOLD until actual hosted capture and final complete CI.
