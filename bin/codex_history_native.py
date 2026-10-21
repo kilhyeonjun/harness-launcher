@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import selectors
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import time
@@ -26,6 +27,128 @@ def fail(message):
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def retiring_path(value, root):
+    return isinstance(value,str) and (value.removeprefix('file://')==str(root) or
+        value.removeprefix('file://').startswith(str(root)+'/'))
+
+
+def inline_images(home):
+    """Typed inline image bytes, attributed to the physical rollout and turn."""
+    result={}
+    def images(value):
+        if not isinstance(value,list):return
+        for block in value:
+            if not isinstance(block,dict) or block.get('type')!='input_image' or not set(block)<={'type','image_url','detail'}:continue
+            url=block.get('image_url','')
+            if isinstance(url,str) and re.fullmatch(r'data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+',url):
+                try:yield hashlib.sha256(base64.b64decode(url.split(',',1)[1],validate=True)).hexdigest()
+                except ValueError:fail('invalid inline image bytes')
+    for directory in ('sessions','archived_sessions'):
+        for path in sorted((Path(home)/directory).rglob('*.jsonl')):
+            thread=None;turn=None
+            with path.open() as stream:
+                for line in stream:
+                    if not line.strip():continue
+                    row=json.loads(line);payload=row.get('payload',{})
+                    if row.get('type')=='session_meta' and thread is None:thread=payload.get('id','').lower()
+                    if row.get('type')=='event_msg' and payload.get('type')=='task_started':turn=payload.get('turn_id')
+                    if row.get('type')=='event_msg' and payload.get('type') in ('task_complete','task_aborted','turn_aborted'):turn=None
+                    if thread and turn and row.get('type')=='response_item' and payload.get('type') in ('custom_tool_call_output','function_call_output'):
+                        result.setdefault((thread,turn),set()).update(images(payload.get('output')))
+    return result
+
+
+def history_ancestors(home):
+    # expected_history has already validated all primary headers and parent cuts.
+    parents={}
+    for directory in ('sessions','archived_sessions'):
+        for path in sorted((Path(home)/directory).rglob('*.jsonl')):
+            with path.open() as stream:
+                for line in stream:
+                    if not line.strip():continue
+                    row=json.loads(line)
+                    if row.get('type')=='session_meta':
+                        meta=row['payload'];parent=(meta.get('history_base') or {}).get('thread_id')
+                        if parent:parents[meta['id'].lower()]=parent.lower()
+                        break
+    result={}
+    for thread in parents:
+        seen=set();current=thread
+        while current in parents:
+            current=parents[current]
+            if current in seen:fail('cyclic image lineage')
+            seen.add(current)
+        result[thread]=seen
+    return result
+
+
+def image_references(home, root):
+    database=Path(home)/'thread_history_1.sqlite'
+    if not database.exists():return []
+    if database.is_symlink():fail('unsafe image projection')
+    connection=sqlite3.connect(database.as_uri()+'?mode=ro',uri=True)
+    try:
+        if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_items'").fetchone():return []
+        references=[]
+        for thread,turn,value in connection.execute('SELECT thread_id,turn_id,item_json FROM thread_items ORDER BY thread_id,turn_id,item_id'):
+            item=json.loads(value)
+            if item.get('type')=='imageView' and retiring_path(item.get('path'),root):
+                if set(item)!={'type','id','path'} or not isinstance(item['id'],str):fail('unsupported image item')
+                references.append({'thread_id':thread,'turn_id':turn,'item_id':item['id'],'original_path':item['path']})
+        return references
+    except sqlite3.Error as error:raise NativeVerificationError('unsupported image projection') from error
+    finally:connection.close()
+
+
+def read_work_image(root, value):
+    """Anchor all components to the retiring owner, rejecting links and races."""
+    relative=Path(value.removeprefix('file://')).relative_to(root)
+    if not relative.parts or any(part in ('.','..') for part in relative.parts):fail('unsafe work image path')
+    descriptors=[]
+    try:
+        fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW);descriptors.append(fd)
+        for part in relative.parts[:-1]:
+            fd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);descriptors.append(fd)
+        image=os.open(relative.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd);descriptors.append(image)
+        before=os.fstat(image)
+        if not stat.S_ISREG(before.st_mode) or before.st_size>32*1024*1024:fail('work image exceeds supported bounds')
+        chunks=[];size=0
+        while True:
+            chunk=os.read(image,1024*1024)
+            if not chunk:break
+            size+=len(chunk)
+            if size>32*1024*1024:fail('work image exceeds supported bounds')
+            chunks.append(chunk)
+        after=os.fstat(image)
+        if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns) or size!=before.st_size:
+            fail('work image changed during preservation')
+        return b''.join(chunks)
+    except (OSError,ValueError) as error:raise NativeVerificationError('unsafe work image') from error
+    finally:
+        for fd in reversed(descriptors):os.close(fd)
+
+
+def preserve_work_images(data, source):
+    root=Path(source).parent.parent
+    references=image_references(data,root)
+    if not references:return []
+    inline=inline_images(data);result=[]
+    for reference in references:
+        contents=read_work_image(root,reference['original_path']);checksum=hashlib.sha256(contents).hexdigest()
+        if checksum not in inline.get((reference['thread_id'],reference['turn_id']),set()):
+            fail('work image lacks same-turn inline bytes')
+        relative='attachments/work-image-'+checksum+'.png';path=Path(data)/relative
+        path.parent.mkdir(mode=0o700,exist_ok=True)
+        if path.exists():
+            if path.is_symlink() or path.read_bytes()!=contents:fail('conflicting work image attachment')
+        else:
+            fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,'wb') as stream:stream.write(contents);stream.flush();os.fsync(stream.fileno())
+        if path.read_bytes()!=contents:fail('work image readback differs')
+        result.append({**reference,'relative_image_path':relative,'bytes':len(contents),'sha256':checksum})
+    return result
 
 
 def expected_history(home):
@@ -293,19 +416,50 @@ def verify_native(restored_home, manifest, codex_bin):
     expected = expected_history(restored_home)
     identity = binary_identity(codex_bin)
     executable=identity.get('executable',str(Path(codex_bin).resolve()))
+    custody=manifest.get('work_image_custody',[]);image_files=[]
     if manifest.get('source'):
         original=Path(manifest['source']);ephemeral=str(original.parent.parent)
+        references=image_references(restored_home,ephemeral);inline=inline_images(restored_home)
+        ancestors=history_ancestors(restored_home)
+        if not isinstance(custody,list) or len(custody)!=len(references):fail('work image custody is incomplete')
+        for reference,entry in zip(references,custody):
+            keys={'thread_id','turn_id','item_id','original_path','relative_image_path','bytes','sha256'}
+            if not isinstance(entry,dict) or set(entry)!=keys or any(entry.get(key)!=value for key,value in reference.items()):fail('work image custody tuple differs')
+            checksum=entry['sha256']
+            if not isinstance(checksum,str) or not re.fullmatch('[0-9a-f]{64}',checksum):fail('invalid work image checksum')
+            relative='attachments/work-image-'+checksum+'.png'
+            if entry['relative_image_path']!=relative or checksum not in inline.get((entry['thread_id'],entry['turn_id']),set()):fail('work image lacks same-turn inline bytes')
+            path=Path(restored_home)/relative
+            if path.parent.is_symlink() or path.is_symlink() or not path.is_file():fail('restored work image is unavailable')
+            if path.stat().st_size!=entry['bytes'] or file_digest(path)!=checksum:fail('restored work image differs')
+            image_files.append((path,checksum))
         def check_paths(value):
             if isinstance(value,dict):
                 for key,item in value.items():
                     if key in ('path','image_path','file_path','local_path','artifact_path','image_url') and isinstance(item,str):
                         path=item.removeprefix('file://')
-                        if path==ephemeral or path.startswith(ephemeral+'/'):
+                        if retiring_path(path,ephemeral):
                             fail('Native attachment refers to the retiring workspace')
                     check_paths(item)
             elif isinstance(value,list):
                 for item in value:check_paths(item)
-        for projection in expected.values():check_paths(projection['items'])
+        for thread,projection in expected.items():
+            for row in projection['items']:
+                # Only characterized historical metadata fields are exempt.
+                item=json.loads(json.dumps(row['item']))
+                if item.get('type')=='commandExecution':
+                    for action in item.get('commandActions',[]):
+                        if isinstance(action,dict) and set(action)=={'type','command','name','path'} and action.get('type')=='read':action.pop('path',None)
+                elif item.get('type')=='fileChange':
+                    for change in item.get('changes',[]):
+                        if isinstance(change,dict) and set(change)=={'path','kind','diff'} and isinstance(change['kind'],dict):change.pop('path',None)
+                elif item.get('type')=='imageView':
+                    if any((entry['thread_id']==thread or entry['thread_id'] in ancestors.get(thread,set()))
+                           and entry['turn_id']==row['turnId'] and entry['item_id']==item.get('id')
+                           and entry['original_path']==item.get('path')
+                           and row in expected[entry['thread_id']]['items'] for entry in custody):item.pop('path',None)
+                check_paths(item)
+    elif custody:fail('work image custody has no owner')
     denied = [manifest[key] for key in ("source", "retained_source") if manifest.get(key)]
     receipts = []; files = []
     # Native itself reads every raw JSONL byte, including segments and parents.
@@ -319,7 +473,7 @@ def verify_native(restored_home, manifest, codex_bin):
                 result=rpc.call('thread/list',{'limit':100,'archived':archived})
                 if result.get('data')!=[] or result.get('nextCursor'):
                     fail('restored Native catalog is not empty')
-        for path,checksum in files:
+        for path,checksum in [*files,*image_files]:
             result=rpc.call('fs/readFile',{'path':str(path)})
             try: contents=base64.b64decode(result['dataBase64'],validate=True)
             except (KeyError,ValueError,TypeError): fail('Native raw history read is invalid')
@@ -339,5 +493,6 @@ def verify_native(restored_home, manifest, codex_bin):
     if identity.get('executable') and binary_identity(codex_bin)!=identity:
         fail('Native executable changed during verification')
     return {"schema_version": 1, "native": identity, "threads": receipts,
+            'work_image_count':len(custody),
             'raw_rollout_count':len(files), 'empty_catalog_verified':not bool(expected),
             "model_requests": 0, "network": "sandbox-denied"}

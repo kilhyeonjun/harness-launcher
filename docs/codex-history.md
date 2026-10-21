@@ -63,6 +63,21 @@ rule, service or daemon.
   A home with no rollouts must have an empty known SQLite thread catalog and
   projection, no nonempty history lists, and an empty active/archived Native
   catalog. Missing rollouts for a nonempty catalog still block retirement.
+  Historical `commandExecution.commandActions` read paths and `fileChange`
+  change paths remain unchanged metadata. A retiring-workspace `imageView`
+  requires exact thread/turn/item/path custody: bounded no-follow original
+  bytes must match a typed inline image in that physical thread and turn.
+  The snapshot retains a private content-addressed copy under `attachments/`
+  and binds its checksum and tuple into the manifest and archive inventory.
+  Offline Native must read both the full raw history and copied image bytes;
+  complete wire items remain unchanged. This proves byte preservation, without
+  claiming model interpretation or old-path UI navigation. Unknown paths,
+  missing inline bytes, changed tuples and corrupt copies still hold retirement.
+  Only direct typed tool-output blocks during an active turn qualify; nested
+  diagnostic metadata and output after turn completion do not. Valid parent-cut
+  projections reuse the physical parent's image custody without assigning a
+  new owner. Supported original references are absolute paths or empty-host
+  `file:///` URLs whose path is literal; other URI forms gain no exception.
 - `catalog --source-root ROOT --state-home STATE [--legacy-state-home STATE] [--native-id UUID]`
   reports native UUID, source/home/isolation, status, time and origin pin from
   canonical, live isolated and validated archived data. No conversation body,

@@ -7,6 +7,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - Characterize Native 0.163.0 full history retirement with real offline archive
   and restore tests, including pagination, parents, segments and SQLite WAL.
   Verify known empty catalogs explicitly; missing history still retains roots.
+- Preserve exact workspace image bytes as manifest-bound attachments after
+  matching typed inline data in the same physical thread and turn. Verify Native
+  image readback while keeping historical read/change paths and all wire items
+  unchanged. Unknown attachments and mismatches retain the root.
 - Add explicit, exact-inventory terminal work preservation. Keep original index
   blobs and worktree bytes independently recoverable before owner-filtered GC;
   later changes and failed preservation remain protected. No automatic dirty

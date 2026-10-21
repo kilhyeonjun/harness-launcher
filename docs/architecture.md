@@ -679,6 +679,12 @@ homes are unreadable to that probe. All raw rollout bytes and paginated items
 must match; unknown artifacts, live writers or failed verification retain the
 root. Old Native `.retired-*` tombs stay recoverable. Archives and completed
 journals are outside the workspace GC target and are never automatically pruned.
+Image references under a retiring owner additionally require an exact
+thread/turn/item/path receipt, matching same-turn inline bytes and a private
+manifest-bound attachment. Offline Native reads the retained image bytes as well
+as complete raw history and unchanged wire items. Characterized historical
+read/change paths are metadata; other path guards remain enforced.
+
 Explicit operator-reviewed terminal work custody can separately preserve an
 exact current index and worktree inventory before GC. The owner-bound immutable
 archive must pass independent recovery, readback and durability checks; later

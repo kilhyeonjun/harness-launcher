@@ -519,6 +519,8 @@ def snapshot(args):
         data = staging / "data"
         secure_dir(data)
         archive_children(source, children, data)
+        from codex_history_native import preserve_work_images
+        work_images=preserve_work_images(data,source)
         after = source_inventory(source, children)
         if after != before:
             refuse("source changed during snapshot")
@@ -531,6 +533,7 @@ def snapshot(args):
         base = {"schema_version": 1, "source": str(source), "source_root": str(root),
                 "isolation_id": args.isolation_id, "runtime_revision": revision,
                 "source_inventory": before, "archive_inventory": archive}
+        if work_images:base['work_image_custody']=work_images
         if imports is not None:base['native_import_provenance'] = imports
         if source == catalog.parent/'worktrees'/args.isolation_id/'.harness/codex':
             lineage=catalog.parent/'sessions'/args.isolation_id/'native-history-restore.json'
