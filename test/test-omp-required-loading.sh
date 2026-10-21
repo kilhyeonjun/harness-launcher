@@ -42,8 +42,6 @@ class RequiredLoading(unittest.TestCase):
         kernel = Path(KERNEL)
         for name in ('runtime-contract.yaml','budgets.yaml','agents.yaml','commands.yaml','skills.yaml','claude-md.yaml'):
             put(self.profile/'.claude/source'/name, (kernel/'.claude/source'/name).read_text())
-        runtime = self.profile/'.claude/source/runtime-contract.yaml'
-        put(runtime, '\n'.join(line for line in runtime.read_text().splitlines() if 'shared_contract_release:' not in line)+'\n')
         for kind in ('agents','commands'):
             put(self.profile/'.claude/source'/f'{kind}.yaml', f'{kind}:\n  source: .claude/{kind}\n  entries: []\n')
         put(self.profile/'.claude/source/skills.yaml', 'skills:\n  source: .claude/skills\n  entries:\n    - name: fixture-required\n      path: fixture-required/SKILL.md\n      description: Required fixture skill\n      omp_mode: required\n      omp_required: true\n')

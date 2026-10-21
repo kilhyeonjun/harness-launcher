@@ -12,7 +12,7 @@ import stat
 import subprocess
 import sys
 
-CAPSULE_SHA256 = '1cf5849d0d3a8bf526b27b7c3fbdc759c450a71f5c336d9e85d1c94b2d83a815'
+CAPSULE_SHA256 = 'ac3b5ff05faf3597e9a4409a4ee2f9c5b61c7dc003c1c96ef51f3a7e68f8faf0'
 SYSTEM_DIRS = ('/usr/bin', '/bin')
 HISTORICAL_KEYS = frozenset(('status', 'reason', 'selected', 'physical', 'physical_parent',
     'system_jq', 'manifest_jq_bindings', 'jq_real_query', 'native_calls',
@@ -119,12 +119,12 @@ def verify_evidence(root, raw, reader):
     require(set(capsule) == {'schema', 'provenance', 'observation', 'source_pins'}
             and capsule['schema'] == 'w07.jq-fallback-evidence/v2', 'EVIDENCE_SHAPE')
     require(capsule['provenance'] == {
-        'head': '6b23344f88c7cd4cdc948f618997c9ffed73c477',
-        'job': 119376390928,
-        'whole_log_sha256': 'f50a2b0bdeedebb349a71fc1013f70d244f8ed9e57dbbaa9dcc48a241fe69fa7',
+        'head': '5635c7cf7e82deb96830ab0818836d61b843bfaf',
+        'job': 119540576912,
+        'whole_log_sha256': 'ecad4d840d178ae10debb8954135927b2b3ac79d8f73db3972a256811f822437',
         'line': 208,
-        'line_sha256': 'cb3990fe72f590820a4126a48f153d772d566854262c1e0e9ee29ebdd9fa995c',
-        'source_receipt_sha256': '91a8a2120151be972ae7fc8134e56c73f2544c48050492d2bfb17b69faced4d2',
+        'line_sha256': 'ed31ec15771f2224b1fa364a203c5fd0c7bab7a58d3ebcbd18a9ece31726ba15',
+        'source_receipt_sha256': 'bc23db5227625bd32386993a3492c21c263d84853f09e3af33a3a0b9b4042fa9',
     }, 'EVIDENCE_PROVENANCE')
     require(validate_observation(capsule['observation'], historical=True) == 'NON_SYSTEM', 'HISTORICAL_BRANCH')
     pins = capsule['source_pins']

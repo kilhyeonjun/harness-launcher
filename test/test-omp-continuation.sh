@@ -427,8 +427,6 @@ raise SystemExit(EXIT_CODE)
             path=self.profile/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(body);path.chmod(0o600)
         for name in ('runtime-contract.yaml','budgets.yaml','claude-md.yaml'):
             body=(kernel/'.claude/source'/name).read_text()
-            if name=='runtime-contract.yaml':
-                body='\n'.join(line for line in body.splitlines() if 'shared_contract_release:' not in line)+'\n'
             source_file('.claude/source/'+name,body)
         for kind in ('agents','commands','skills'):
             source_file('.claude/source/'+kind+'.yaml',kind+':\n  source: .claude/'+kind+'\n')

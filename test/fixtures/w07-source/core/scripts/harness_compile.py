@@ -221,6 +221,30 @@ def omp_model_mode_helper() -> tuple[str, dict[str, Any]]:
     return _OMP_MODE_HELPER
 
 
+_SHARED_CONTRACT_HELPER: tuple[str, dict[str, Any]] | None = None
+
+
+def shared_contract_release_helper() -> tuple[str, dict[str, Any]]:
+    """Use the same captured-owned-byte protocol as the model-mode helper."""
+    global _SHARED_CONTRACT_HELPER
+    if _SHARED_CONTRACT_HELPER is None:
+        root = Path(__file__).resolve().parents[2]
+        reader = SourceReader(root)
+        try:
+            relative = "core/scripts/cross_harness_surface_diff.py"
+            reader.capture_file(relative)
+            raw = reader.files[relative][0]
+            verify_broker_source(reader)
+            namespace = {"__name__": "harness_shared_contract_release",
+                         "__file__": str(root / relative)}
+            exec(compile(raw, namespace["__file__"], "exec"), namespace)
+            verify_broker_source(reader)
+            _SHARED_CONTRACT_HELPER = (hashlib.sha256(raw).hexdigest(), namespace)
+        finally:
+            reader.close()
+    return _SHARED_CONTRACT_HELPER
+
+
 CODEX_KOREAN_RESPONSE_LANGUAGE_BLOCK = """<!-- BEGIN HARNESS-CODEX-RESPONSE-LANGUAGE -->
 ## Codex Response Language
 
@@ -522,8 +546,8 @@ def check_source(root: Path, source_reader: SourceReader | None = None) -> None:
     if release is not None or (source_reader.exists(registry_path) if source_reader else registry_path.exists()):
         if not isinstance(release, str) or not release:
             raise HarnessCompileError("shared_contract_release is required with a shared registry")
-        from cross_harness_surface_diff import check_contract_release
-        errors = check_contract_release(
+        _, helper = shared_contract_release_helper()
+        errors = helper["check_contract_release"](
             root, str(release),
             read_bytes=(lambda path: source_reader.files[source_reader._relative(path)][0]) if source_reader else None,
             exists=source_reader.exists if source_reader else None,
@@ -1337,6 +1361,12 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
     for path in sorted((root / ".claude/source").glob("*.yaml")):
         read(path.relative_to(root).as_posix())
     read("core/scripts/harness_compile.py")
+    if data.get("runtime_contract", {}).get("shared_contract_release") is not None:
+        helper_sha256, _ = shared_contract_release_helper()
+        read("core/config/shared-contracts.json")
+        read("core/scripts/cross_harness_surface_diff.py")
+        if canonical["core/scripts/cross_harness_surface_diff.py"] != helper_sha256:
+            raise HarnessCompileError("OMP executed shared helper binding mismatch")
     template = read("core/scripts/omp_required_extension.ts")
     rule_paths = [p.relative_to(root).as_posix() for p in iter_rule_files(root)]
     policy = render_claude(root, data) + "\n" + "\n".join(read(p) for p in rule_paths)
