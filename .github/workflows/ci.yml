@@ -17,6 +17,75 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  omp-evidence-capture:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install evidence dependencies
+        run: |
+          brew install bash python@3.13 jq
+          echo "$(brew --prefix python@3.13)/libexec/bin" >> "$GITHUB_PATH"
+      - name: Prepare owned hosted Homebrew directory modes
+        run: python3 -I -S -B test/omp-ci-owned-homebrew.py
+      - name: Capture actual non-system jq and unchanged source closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I -S -B - <<'PY_CAPTURE'
+          import hashlib
+          import importlib.util
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          root = Path.cwd().resolve()
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          assert head == os.environ["GITHUB_SHA"]
+          spec = importlib.util.spec_from_file_location("jq_capture", root / "test/omp-jq-ci-proof.py")
+          proof = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(proof)
+          raw = (root / "test/fixtures/omp-jq-v2-p1-evidence.json").read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == proof.CAPSULE_SHA256
+          capsule = proof.decode(raw)
+          def source_pins():
+              result = []
+              for pin in capsule["source_pins"]:
+                  body, mode = proof.read_source(root, pin["path"])
+                  result.append({
+                      "path": pin["path"], "bytes": len(body), "mode": mode,
+                      "sha256": hashlib.sha256(body).hexdigest(),
+                  })
+              return result
+          before = source_pins()
+          ordinary, normal_branch = proof.inspect(root, False, subprocess.run)
+          strict, strict_branch = proof.inspect(root, True, subprocess.run)
+          assert normal_branch == strict_branch == "NON_SYSTEM"
+          assert before == source_pins()
+          public = {key: ordinary[key] for key in proof.HISTORICAL_KEYS}
+          restricted = {key: strict[key] for key in proof.HISTORICAL_KEYS}
+          assert public == restricted
+          receipt = json.dumps({"head": head, "source_pins": before},
+                               sort_keys=True, separators=(",", ":")).encode()
+          print("JQ_SOURCE_RECEIPT=" + receipt.decode())
+          print("JQ_SOURCE_RECEIPT_SHA256=" + hashlib.sha256(receipt).hexdigest())
+          print("JQ_CAPTURE_ORDINARY=" + json.dumps(public, sort_keys=True))
+          print("JQ_CAPTURE_STRICT=" + json.dumps(restricted, sort_keys=True))
+          print("JQ_CAPTURE_STATUS=NON_SYSTEM_PASSED;native_calls=0")
+          (Path(os.environ["RUNNER_TEMP"]) / "omp-jq-evidence.json").write_text(
+              json.dumps({"head": head, "source_pins": before, "ordinary": public,
+                          "strict": restricted}, sort_keys=True, indent=2) + "\n")
+          PY_CAPTURE
+      - name: Retain actual public evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: omp-jq-evidence
+          path: ${{ runner.temp }}/omp-jq-evidence.json
+          if-no-files-found: error
+          retention-days: 7
+
   regression-headless:
     runs-on: macos-15
     timeout-minutes: 20

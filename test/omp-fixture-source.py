@@ -11,7 +11,7 @@ from pathlib import Path
 import stat
 import sys
 
-POLICY_SHA256 = '02dd2f7dcccb190a5620cea7f739633c9b1ba3b2a6bf71de14137f7b3ae4d812'
+POLICY_SHA256 = 'fe999320c71981fa068a770041106c6f876b1ad1305120bcbe3f68dd2d6b03a2'
 CODE = {
     'core/scripts/harness_compile.py', 'core/scripts/omp_required_extension.ts',
     'core/bin/harness-python', 'core/hooks/pre-bash-curl-block.sh',

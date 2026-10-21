@@ -67,10 +67,10 @@
       "sha256": "27d5cd1d4c2dc73cf5cb0e41cee12a2260503d405986c46b0fc1554bbd597227"
     },
     {
-      "bytes": 82613,
+      "bytes": 84022,
       "mode": "0644",
       "path": "core/scripts/harness_compile.py",
-      "sha256": "37d9b48f6b6ec4758305f483832161896b78a17f50ca949bdd40d82e7ae1c518"
+      "sha256": "2d7652d651617978a7f27c3d36c23e754fe85315306c400f7cf3fa35dbe1213a"
     },
     {
       "bytes": 28155,
