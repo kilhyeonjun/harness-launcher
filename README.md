@@ -186,8 +186,13 @@ or network call; `ex codex resume <native-uuid>` restores history into a fresh
 local workspace. Completed Git journals keep their original state. A request
 with several possible histories needs an exact UUID in a noninteractive shell.
 Native data is archived separately from disposable roots, and GC retains a root
-until a characterized Native binary verifies the restored full history. See
-[Durable native Codex history](docs/codex-history.md) for limits and recovery.
+until a characterized Native binary verifies the restored full history.
+Historical read/change paths are retained as metadata; workspace image references
+require verified inline bytes and an independently readable archived attachment.
+See [Durable native Codex history](docs/codex-history.md) for limits and recovery.
+Unaccounted terminal work remains held unless an operator explicitly preserves
+its exact inventory, including independent staged and worktree contents, with
+verified recovery outside the disposable root. GC never creates that approval.
 
 Release-owned entries can verify an explicit Claude fork without inheriting the
 parent grant or reopening a completed owner; see
@@ -223,6 +228,14 @@ reopens the same workspace for repair. `harness-session discard <uuid>` retires
 an `ABANDONED` or `CONFLICT` session whose work will not be delivered: it keeps
 the work as `discarded.patch` in the session record, then marks it terminal
 `DISCARDED`.
+
+An operator can explicitly enable the [durable integration queue](docs/session-integration-queue.md)
+after enrolling all affected old and profile pools. Then `close --enqueue <uuid>`
+returns a persisted job identifier without waiting for tests, and `wait <job-id>`
+observes verified completion. Default `close` remains synchronous through the
+same queue; acceptance is never reported as delivery. Queue workers serialize
+the same destination and use a separate bounded host execution budget.
+No ordinary launch or close installs or starts the optional service.
 
 Only one launcher may own a UUID at a time. A kernel lease covers the complete
 runtime and is not inherited by Claude, Codex, heartbeat, or title-broker child
@@ -444,6 +457,11 @@ harness-headless <profile> --agent codex --model gpt-6.1-sol --effort medium \
   [--max-model-requests 400] --prompt-file task.md --result-file result.json \
   --lock-file run.lock --budget-usd 5 --timeout-min 30
 ```
+
+Codex preflight loads its configuration under the same sandbox before any model
+request. The fixed macOS system requirements file is readable only when it and
+all parent directories are root-owned and not writable by other users; its
+siblings and writes remain denied. Missing system requirements need no grant.
 
 `--target <name>` (Codex only) runs the same Codex agent on a registered personal code repository instead of the harness and delivers a successful change as a draft pull request on a new `loop/<task>-<approval8>` branch. The owner registers each repository once from a terminal; the caller passes the sha256 of that record, so a changed registry entry is refused until it is registered again:
 

@@ -645,7 +645,9 @@ permanently terminal (`resume` and `recover` refuse them).
 
 `harness-session discard <uuid>` retires an `ABANDONED` or `CONFLICT` session
 whose work will not be delivered (for example, work another session already
-delivered). It runs under the global integration lock and takes the session's
+delivered). In an unenrolled pool it runs under the global integration lock;
+an explicitly [queue-enrolled pool](session-integration-queue.md) routes it
+through the coordinator's inherited broker/pool leases. Both take the session's
 runtime lease without waiting, as garbage collection does; a held lease
 refuses. Before any state change it writes `discarded.patch` into the record:
 the binary diff of the work tree against `base-sha`, staged through a
@@ -695,6 +697,27 @@ homes are unreadable to that probe. All raw rollout bytes and paginated items
 must match; unknown artifacts, live writers or failed verification retain the
 root. Old Native `.retired-*` tombs stay recoverable. Archives and completed
 journals are outside the workspace GC target and are never automatically pruned.
+Image references under a retiring owner additionally require an exact
+thread/turn/item/path receipt, matching same-turn inline bytes and a private
+manifest-bound attachment. Offline Native reads the retained image bytes as well
+as complete raw history and unchanged wire items. Characterized historical
+read/change paths are metadata; other path guards remain enforced.
+Characterized Native 0.163 child-resume refusal uses a metadata-only read before
+the same complete paginated comparison. Large raw reads have file-size-derived
+budgets and a 128 MiB file ceiling; framing is linear and ordinary RPC limits stay
+unchanged.
+
+Existing transcript archives can tolerate only characterized `state_5.sqlite-shm`
+counter and dependent-checksum changes after validating both headers against the
+unchanged DB/WAL. All other bytes and file identities remain strict, prior archive
+contents stay immutable, and complete Native/work proofs still precede retirement.
+
+Explicit operator-reviewed terminal work custody can separately preserve an
+exact current index and worktree inventory before GC. The owner-bound immutable
+archive must pass independent recovery, readback and durability checks; later
+changes remain held. GC never creates the work-preservation approval.
+Independent restoration also restores symlink modes without following targets;
+unsupported modes remain held.
 See [Durable native Codex history](codex-history.md).
 
 `harness-session report --json` observes retention metadata without invoking GC,
@@ -897,6 +920,13 @@ options behaves exactly as before.
       has open is never readable, writable or ioctl-able (Codex's own policy
       also allows ioctl on any slave; this one does not).
     - Read and exec of exactly the code-mode host beside the binary.
+    - Read-only data access to exactly `/private/etc/codex/requirements.toml`,
+      the canonical macOS system requirements path. Every component is checked
+      with `lstat`: directories and the single-link regular file must be
+      root-owned and not group/world writable. Symlinks, special files and
+      unexpected metadata errors refuse the run; normal absence adds no grant.
+      The policy is neither copied nor changed. Sibling files stay unreadable,
+      and explicit write/exec denies protect the policy even on a broad `PATH`.
     - Network: TCP to exactly `localhost:<forwarder port>`. Seatbelt only
       accepts `*` or `localhost` as a host, so loopback at that one port is
       the narrowest rule it can express; no other port, no `localhost:*`.
@@ -917,9 +947,10 @@ options behaves exactly as before.
     no Codex binary; a key file that fails the checks above; a forwarder that
     does not start; `GET /v1/models` through the forwarder not answering 200;
     `sandbox-exec -f <profile> <codex> --version` or
-    `codex-code-mode-host --help` under the profile failing; and the key file
+    `codex-code-mode-host --help` or `codex features list` under the profile
+    failing; and the key file
     being readable inside the sandbox (`/bin/cat` under the profile). The last
-    two run after the session clone exists, so that session is finished
+    checks run after the session clone exists, so that session is finished
     (`CLOSED`) on refusal.
   - *Signals.* `SIGTERM`, `SIGINT` and `SIGHUP` kill the process group and
     then every process left under the session root or temp directory (one
