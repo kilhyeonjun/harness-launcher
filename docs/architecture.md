@@ -743,6 +743,13 @@ submission to `SUBMITTED`. Clean close or normal exit records terminal `CLOSED`.
 
 Manifest-enabled homes also keep an atomic successful-input fingerprint plus a source-identity watch snapshot. The lean warm path validates watched file identities, semantic TOML policy, launcher-owned output hashes, product-plugin skill digests, explicit-only policies, skill/plugin directory topology, every managed skill link, and the normalized global-MCP definition digest before returning; it does not rescan plugin tests/docs/assets. Changing selected global definitions or allowlist membership therefore invalidates the warm path. Unexpected generated-home skill routes force a cold rebuild and reversible quarantine, and marker membership alone never proves ownership. Auth contents, sessions, hook trust state, and generated output mtimes remain runtime state and do not invalidate source generation. A cold rebuild leaves the live success stamp in place while it prepares a candidate transaction, then publishes the replacement success stamp last.
 
+Manifest-enabled preparation uses the compiler's advertised
+`--broker-render-codex-project` interface with the real source root and a new,
+empty private output directory. Its AGENTS.md enters the existing candidate and
+supplement publication flow. Compilers without that interface retain the legacy
+route; source-validation failures from an advertised renderer stop preparation
+and preserve the previous publication.
+
 ### Headless isolated runs
 
 `harness-headless <profile> --prompt-file F --result-file R --lock-file L --budget-usd N --timeout-min M [--settings-file S] [--model X] [--effort E] [--agent claude|codex] [--model-endpoint U --endpoint-key-file K [--max-model-requests Q]] [--target T --target-digest D --task-id I --approval-sha A]`
