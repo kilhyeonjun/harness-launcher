@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — Durable integration queue
+## 0.72.0 — 2026-10-21
 
 - Add an explicitly enabled durable integration queue with immutable submissions
   and pinned runtimes. Asynchronous acceptance and bounded client waiting are
@@ -15,7 +15,13 @@ Notable changes are recorded here. This project follows semantic versioning for 
   job phases, timing, logs and an explicitly installed, pinned LaunchAgent;
   ordinary launch/close commands never install or enable a background service.
 
-## Unreleased — Python cache preservation
+- Allow read-only access to the fixed, trusted macOS system Codex requirements
+  file in headless agent sandboxes, preserving administrator policy without
+  granting sibling-file access or writes. Refuse unsafe file metadata.
+- Bootstrap Codex configuration during sandbox preflight so configuration
+  failures are reported before model requests, even when `--version` succeeds.
+
+## 0.71.1 — 2026-10-21
 
 - Allow session GC to account for untracked CPython caches after checking the
   sibling Git source and cache fingerprint. Exact regeneration proves derived
