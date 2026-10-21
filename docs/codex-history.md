@@ -184,6 +184,15 @@ size plus 4096 bytes, with a 128 MiB raw-file ceiling. Other RPCs retain their
 64 MiB response limit and all calls retain the existing deadline and offline
 restrictions. Oversized or mismatching history keeps the original root.
 
+An existing transcript archive can remain valid after SQLite reconstructs its
+`state_5.sqlite-shm` WAL index. Reuse permits only `iChange`, its dependent header
+checksums and `nBackfillAttempted` to differ. Both duplicated headers, checksums,
+DB/WAL page size, salts and commit frame must validate. File sets and sizes,
+every other SHM byte, and all persistent DB/WAL/raw-history hashes must match.
+The prior archive, including its original SHM bytes, stays immutable. New archive
+publication still requires exact bytes; Native restoration and work proofs remain
+independent requirements. See the [SQLite WAL-index format](https://sqlite.org/walformat.html#the_wal_index_or_shm_file).
+
 ## Explicit terminal work preservation
 
 GC still retains unaccounted work by default. An operator can explicitly preserve

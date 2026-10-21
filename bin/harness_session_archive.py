@@ -451,7 +451,85 @@ def verify(*, archive, owner_id, source_root):
         raise ArchiveError('invalid archive proof') from exc
 
 
-def _assert_current_source(root,files,records,state,owner_id,source_root,imports,selection_proof):
+def _stable_region(path, size, offset, length):
+    fd,before=_open_regular(path)
+    with os.fdopen(fd,'rb') as stream:
+        if before.st_size!=size or size>MAX_FILE_BYTES or offset<0 or length<0 or offset+length>size:
+            raise ArchiveError('invalid SQLite proof range')
+        stream.seek(offset);raw=stream.read(length)
+        if len(raw)!=length or _stamp(os.fstat(stream.fileno()))!=_stamp(before):
+            raise ArchiveError('SQLite proof changed while reading')
+    if _stamp(_regular(path))!=_stamp(before):raise ArchiveError('SQLite proof path changed')
+    return raw
+
+
+def _sqlite_checksum(raw, order):
+    first=second=0
+    for offset in range(0,len(raw),8):
+        first=(first+int.from_bytes(raw[offset:offset+4],order)+second)&0xffffffff
+        second=(second+int.from_bytes(raw[offset+4:offset+8],order)+first)&0xffffffff
+    return first,second
+
+
+def _same_wal_index_history(root, archive, current, records):
+    """Admit only characterized volatile counters in an otherwise identical SHM.
+
+    SQLite WAL format: https://sqlite.org/walformat.html#the_wal_index_or_shm_file
+    Existing archive bytes stay immutable; this never applies to new publication.
+    """
+    shm_name='codex/state_5.sqlite-shm';db_name='codex/state_5.sqlite';wal_name=db_name+'-wal'
+    live={row['path']:row for row in current};saved={row['path']:row for row in records}
+    if set(live)!=set(saved) or not {shm_name,db_name,wal_name}<=set(live):return False
+    if any(live[name]!=saved[name] for name in live if name!=shm_name):return False
+    size=live[shm_name]['bytes']
+    if size!=saved[shm_name]['bytes'] or size<=0 or size%(32*1024) or size>4*1024*1024:return False
+    try:
+        before=_stable_region(archive/shm_name,size,0,size)
+        after=_stable_region(root/'.harness'/shm_name,size,0,size)
+        if (hashlib.sha256(before).hexdigest()!=saved[shm_name]['sha256']
+                or hashlib.sha256(after).hexdigest()!=live[shm_name]['sha256']):return False
+        masked=[]
+        for raw in (before,after):
+            value=bytearray(raw)
+            for start,end in ((8,12),(40,48),(56,60),(88,96),(128,132)):
+                value[start:end]=b'\0'*(end-start)
+            masked.append(value)
+        if masked[0]!=masked[1]:return False
+        db=_stable_region(root/'.harness'/db_name,live[db_name]['bytes'],0,32)
+        wal_path=root/'.harness'/wal_name;wal_size=live[wal_name]['bytes']
+        wal=_stable_region(wal_path,wal_size,0,32)
+        page=int.from_bytes(db[16:18],'big');page=65536 if page==1 else page
+        magic=int.from_bytes(wal[:4],'big')
+        if (db[:16]!=b'SQLite format 3\0' or db[18:20]!=b'\2\2'
+                or page<512 or page>65536 or page&(page-1)
+                or magic not in (0x377f0682,0x377f0683)
+                or int.from_bytes(wal[4:8],'big')!=3007000
+                or int.from_bytes(wal[8:12],'big')!=page):return False
+        wal_order='little' if magic==0x377f0682 else 'big'
+        if _sqlite_checksum(wal[:24],wal_order)!=tuple(int.from_bytes(wal[i:i+4],'big') for i in (24,28)):
+            return False
+        for raw in (before,after):
+            word=lambda offset:int.from_bytes(raw[offset:offset+4],sys.byteorder)
+            shm_page=int.from_bytes(raw[14:16],sys.byteorder);shm_page=65536 if shm_page==1 else shm_page
+            frame=word(16)
+            if (raw[:48]!=raw[48:96] or word(0)!=3007000 or raw[4:8]!=b'\0'*4
+                    or raw[12]!=1 or raw[13]!=(magic&1) or shm_page!=page
+                    or raw[32:40]!=wal[16:24] or frame<=0
+                    or word(96)>frame or word(128)>frame
+                    or 32+frame*(24+page)>wal_size
+                    or _sqlite_checksum(raw[:40],sys.byteorder)!=(word(40),word(44))):return False
+            commit=_stable_region(wal_path,wal_size,32+(frame-1)*(24+page),24)
+            if (commit[8:16]!=wal[16:24] or int.from_bytes(commit[4:8],'big')!=word(20)
+                    or word(20)<=0 or int.from_bytes(commit[:4],'big')<=0
+                    or tuple(int.from_bytes(commit[i:i+4],'big') for i in (16,20))!=(word(24),word(28))):return False
+        # Bind header reads back to the complete persistent files already compared.
+        for name in (db_name,wal_name):
+            if _hash_file(root/'.harness'/name)!=(live[name]['bytes'],live[name]['sha256']):return False
+        return True
+    except (ArchiveError,OSError,ValueError,OverflowError,IndexError):return False
+
+
+def _assert_current_source(root,files,records,state,owner_id,source_root,imports,selection_proof,archive=None):
     if _native_restore_proof(state,owner_id,source_root) != selection_proof:
         raise ArchiveError('native restore ownership changed during archive')
     if files!=_candidate_files(root):raise ArchiveError('archive source inventory changed')
@@ -460,7 +538,9 @@ def _assert_current_source(root,files,records,state,owner_id,source_root,imports
         size,digest=_hash_file(source);total+=size
         if total>MAX_TOTAL_BYTES:raise ArchiveError('archive byte limit exceeded')
         current.append({'path':str(source.relative_to(root/'.harness')),'bytes':size,'sha256':digest})
-    if current!=sorted(records,key=lambda item:item['path']) or files!=_candidate_files(root):
+    equal=current==sorted(records,key=lambda item:item['path'])
+    if not equal and archive is not None:equal=_same_wal_index_history(root,archive,current,records)
+    if not equal or files!=_candidate_files(root):
         raise ArchiveError('archive does not preserve current live history')
     if _restored_imports(state,owner_id,source_root)!=imports:
         raise ArchiveError('archive import proof no longer matches source')
@@ -485,7 +565,7 @@ def archive(*, root, state, owner_id, source_root):
         manifest=verify(archive=target,owner_id=owner_id,source_root=source_root)
         if manifest.get('native_restore_selection') != selected:
             raise ArchiveError('archive native restore ownership mismatch')
-        _assert_current_source(root,files,manifest['files'],state,owner_id,source_root,manifest.get('restored_native_imports',[]),selection_proof)
+        _assert_current_source(root,files,manifest['files'],state,owner_id,source_root,manifest.get('restored_native_imports',[]),selection_proof,target)
         return target
     with tempfile.TemporaryDirectory(prefix=f'.{owner_id}.', dir=archives) as temp:
         staging = Path(temp)
