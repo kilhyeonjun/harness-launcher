@@ -1387,11 +1387,28 @@ _harness_launcher_omp_native() (
   shift
   cd "$run_dir" || return 2
   umask 077
+  # Env contract v2 (decision 038): the 13 fixed fields, PI_AUTO_QA=0, then two
+  # optional groups that are forwarded whole or not at all, never synthesized.
+  local -a extra=(PI_AUTO_QA=0)
+  local sid="${HARNESS_SESSION_ID-}" src="${HARNESS_SOURCE_ROOT-}" sroot="${HARNESS_SESSION_ROOT-}" rdir="${HARNESS_RUN_DIR-}"
+  if [[ "$sid" =~ $_HARNESS_LAUNCHER_UUID_RE && "$src" == /* && "$sroot" == /* && "$rdir" == /* ]]; then
+    extra+=(HARNESS_SESSION_ID="$sid" HARNESS_SOURCE_ROOT="$src" HARNESS_SESSION_ROOT="$sroot" HARNESS_RUN_DIR="$rdir")
+  fi
+  if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
+    extra+=(HERDR_ENV=1 HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" HERDR_PANE_ID="$HERDR_PANE_ID")
+    # Only the continuation caller's own local sets the resume argv; an inherited
+    # value (including a caller's HERDR_RESUME_ARGV) never passes. It is always
+    # present with the triple, empty otherwise, so a workspace .env loaded by the
+    # native runtime cannot supply one.
+    local herdr_resume=""
+    [[ "${(t)_harness_omp_herdr_resume-}" == *local* ]] && herdr_resume="$_harness_omp_herdr_resume"
+    extra+=(HERDR_RESUME_ARGV="$herdr_resume")
+  fi
   /usr/bin/env -i HOME="$root/home" PATH=/usr/bin:/bin LANG=C LC_ALL=C \
     TMPDIR="$root/tmp" XDG_CACHE_HOME="$root/cache" XDG_CONFIG_HOME="$root/config" \
     XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
     PI_CODING_AGENT_DIR="$root/agent" PI_CODING_AGENT_SESSION_DIR="$root/history" \
-    PI_NATIVES_DIR="$root/native-cache" TERM=xterm-256color "$native_bin" "$@"
+    PI_NATIVES_DIR="$root/native-cache" TERM=xterm-256color "${extra[@]}" "$native_bin" "$@"
 )
 
 _harness_launcher_run_omp() (
@@ -1563,6 +1580,18 @@ PYREQUEST
       [[ "$value" == -- ]] && break
       native_options+=("$value")
     done
+    # herdr restores a pane with bare `omp --resume=<path>`, bypassing this
+    # launcher. Give the native OMP (and its herdr observer) the exact public
+    # command that resumes this same continuation H through the registered source.
+    local _harness_omp_herdr_resume=""
+    if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
+      _harness_omp_herdr_resume="$("$continuation_python" -I -S -B -c \
+        'import json,sys;print(json.dumps(sys.argv[1:],separators=(",",":")))' \
+        harness-exec "${config_root:A}" omp --session-resume "$continuation_h" --)" || {
+        _harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" 2 >/dev/null
+        return 2
+      }
+    fi
     if [[ "$continuation_mode" == --session-new ]]; then
       _harness_launcher_omp_native "$retained_c" "${native_options[@]}" --session-dir "$retained_s" -- "${native_prompt[@]}"
     else

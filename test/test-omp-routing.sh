@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
         'manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
     }))
     current.chmod(0o600)
-    expected_env={'HOME':str(ns/'home'),'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','TMPDIR':str(ns/'tmp'),'XDG_CACHE_HOME':str(ns/'cache'),'XDG_CONFIG_HOME':str(ns/'config'),'XDG_STATE_HOME':str(ns/'state'),'XDG_DATA_HOME':str(ns/'data'),'PI_CODING_AGENT_DIR':str(ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(ns/'history'),'PI_NATIVES_DIR':str(ns/'native-cache'),'TERM':'xterm-256color'}
+    expected_env={'HOME':str(ns/'home'),'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','TMPDIR':str(ns/'tmp'),'XDG_CACHE_HOME':str(ns/'cache'),'XDG_CONFIG_HOME':str(ns/'config'),'XDG_STATE_HOME':str(ns/'state'),'XDG_DATA_HOME':str(ns/'data'),'PI_CODING_AGENT_DIR':str(ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(ns/'history'),'PI_NATIVES_DIR':str(ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0'}
     # Calibrate only the fake interpreter startup, not the OMP contract. macOS
     # adds this nonsecret field even to a directly launched empty-env Python.
     baseline=subprocess.run([sys.executable,'-c','import os,json;print(json.dumps(dict(os.environ)))'],env=expected_env,text=True,capture_output=True,check=True)
@@ -88,13 +88,13 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
                 for base in (state,profile/'.harness',home/'.local/state') if base.exists()
                 for p in sorted([base,*base.rglob('*')])]
     def count():return len(calls.read_text().splitlines()) if calls.exists() else 0
-    def run(args,expected=0,entry=False,tail=None,cwd=None,no_allocate=False,stdin=b''):
+    def run(args,expected=0,entry=False,tail=None,cwd=None,no_allocate=False,stdin=b'',caller=None,extra=None):
         global passed
         capture.unlink(missing_ok=True);wire.unlink(missing_ok=True)
         before=count();before_allocation=allocation()
         if entry:command=['/bin/zsh',str(repo/'bin/harness-exec'),str(profile),*args]
         else:command=['/bin/zsh','-f','-c','source "$1/bin/aliases.zsh"; '+spy+'shift; _harness_launcher_run "$@"','test',str(repo),str(profile),*args]
-        result=subprocess.run(command,cwd=profile,env=env,input=stdin,capture_output=True,timeout=20)
+        result=subprocess.run(command,cwd=profile,env={**env,**(caller or {})},input=stdin,capture_output=True,timeout=20)
         assert result.returncode==expected,(args,result.returncode,expected,result.stderr.decode())
         assert count()-before==(0 if tail is None else 1),('native invocation count',args,result.stdout.decode()[-2000:],result.stderr.decode()[-2000:])
         if no_allocate:assert allocation()==before_allocation,('management allocated or changed launcher state',args)
@@ -104,14 +104,83 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
             assert capture.exists(),('native not called',args,result.stderr.decode())
             got=json.loads(capture.read_text());assert got['argv']==tail,(args,got)
             assert got['cwd']==str(cwd or ns/'cwd'),(args,got['cwd'])
-            assert got['env']==fake_env,(args,got['env'])
+            extra=dict(extra or {})
+            if 'HARNESS_SESSION_ID' in got['env']:
+                # Isolated sessions: the real runner supplies the whole valid tuple.
+                import re
+                tuple_keys=['HARNESS_SESSION_ID','HARNESS_SOURCE_ROOT','HARNESS_SESSION_ROOT','HARNESS_RUN_DIR']
+                assert re.fullmatch(r'[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}',got['env']['HARNESS_SESSION_ID']),got['env']
+                assert all(got['env'][k].startswith('/') for k in tuple_keys[1:]),got['env']
+                extra={**{k:got['env'][k] for k in tuple_keys},**extra}
+            assert got['env']=={**fake_env,**extra},(args,got['env'])
             if not entry:
                 outgoing=wire.read_bytes().split(b'\0')[:-1]
-                assert [x.decode() for x in outgoing]==['-i',*[k+'='+v for k,v in expected_env.items()],str(binary),*tail],(args,outgoing)
+                assert [x.decode() for x in outgoing]==['-i',*[k+'='+v for k,v in {**expected_env,**(extra or {})}.items()],str(binary),*tail],(args,outgoing)
         observations.append({'input':args,'exit':result.returncode,'entry':entry,'native':json.loads(capture.read_text()) if capture.exists() else None,'outgoing':wire.read_bytes().split(b'\0')[:-1] if wire.exists() else None})
         passed+=1
     # Break caught: OMP falls through into the Claude route rather than native.
     run(['omp','--version'],tail=['--version'])
+    # Env contract v2 (decision 038). Optional groups are forwarded whole or not
+    # at all; nothing else from the caller leaks. Every case sets or clears the
+    # HARNESS_*/HERDR_* variables explicitly, so a developer's own herdr
+    # environment cannot change the result.
+    uid='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    tuple_env={'HARNESS_SESSION_ID':uid,'HARNESS_SOURCE_ROOT':'/src','HARNESS_SESSION_ROOT':'/sess','HARNESS_RUN_DIR':'/run'}
+    herdr_env={'HERDR_ENV':'1','HERDR_SOCKET_PATH':'/tmp/herdr.sock','HERDR_PANE_ID':'p_1'}
+    leak={'HERDR_PANE_ID_X':'x','HARNESS_PREFIX':'leak','CODEX_THREAD_ID':'leak','PI_CODING_AGENT_DIR':'/leak','PI_AUTO_QA':'1'}
+    # Through the public dispatcher the runner discards the caller's own session
+    # tuple and the runtime filter drops a herdr pane without a live socket, so
+    # nothing optional (and nothing from `leak`) reaches the native.
+    for caller in [{},{**tuple_env,**herdr_env,**leak}]:
+        run(['omp','--version'],tail=['--version'],caller=caller,extra={})
+    # Direct call of the env builder: the tuple is what the outer runner set.
+    def native_env(setup):
+        capture.unlink(missing_ok=True)
+        script='source "$1/bin/aliases.zsh"; HARNESS_OMP_ROOT="$2" HARNESS_OMP_BIN="$3"; '+setup+'; _harness_launcher_omp_native "$2/cwd" --version'
+        done=subprocess.run(['/bin/zsh','-f','-c',script,'test',str(repo),str(ns),str(binary)],cwd=profile,env={**env,**leak},capture_output=True,timeout=20)
+        assert done.returncode==0,(setup,done.stderr.decode())
+        return json.loads(capture.read_text())['env']
+    def assign(values):return '; '.join(k+'='+shlex.quote(v) for k,v in values.items())
+    for values,extra in [
+        (tuple_env,tuple_env),
+        ({**tuple_env,**herdr_env},{**tuple_env,**herdr_env,'HERDR_RESUME_ARGV':''}),
+        ({**tuple_env,'HARNESS_SESSION_ID':'not-a-uuid'},{}),
+        ({k:v for k,v in tuple_env.items() if k!='HARNESS_RUN_DIR'},{}),
+        ({**tuple_env,'HARNESS_SOURCE_ROOT':'rel/path'},{}),
+        ({**tuple_env,'HARNESS_SESSION_ROOT':''},{}),
+        ({**tuple_env,'HARNESS_RUN_DIR':'run'},{}),
+        (herdr_env,{**herdr_env,'HERDR_RESUME_ARGV':''}),
+        ({**herdr_env,'HERDR_ENV':'0'},{}),
+        ({**herdr_env,'HERDR_SOCKET_PATH':'rel.sock'},{}),
+        ({**herdr_env,'HERDR_PANE_ID':''},{}),
+        ({k:v for k,v in herdr_env.items() if k!='HERDR_SOCKET_PATH'},{}),
+        ({**tuple_env,**{**herdr_env,'HERDR_ENV':'0'}},tuple_env),
+        ({**{**tuple_env,'HARNESS_SESSION_ID':'x'},**herdr_env},{**herdr_env,'HERDR_RESUME_ARGV':''}),
+    ]:
+        got=native_env(assign(values))
+        assert got=={**fake_env,**extra},(values,got)
+        passed+=1
+    # HERDR_RESUME_ARGV comes only from the continuation caller's own local.
+    # Breaks caught: forwarding a caller/exported value, or forwarding without the triple.
+    resume='["harness-exec","/h a\\"b","omp","--session-resume","'+'a'*32+'","--"]'
+    local_resume='f(){ local _harness_omp_herdr_resume='+shlex.quote(resume)+'; _harness_launcher_omp_native "$2/cwd" --version; }; '
+    herdr_out={**herdr_env,'HERDR_RESUME_ARGV':''}
+    for values,setup,extra in [
+        (herdr_env,'',herdr_out),
+        ({**herdr_env,'HERDR_RESUME_ARGV':'["evil"]'},'',herdr_out),
+        ({**herdr_env,'_harness_omp_herdr_resume':'["evil"]'},'export _harness_omp_herdr_resume; ',herdr_out),
+        ({**herdr_env,'_harness_omp_herdr_resume':'["evil"]'},'',herdr_out),
+        (herdr_env,local_resume,{**herdr_env,'HERDR_RESUME_ARGV':resume}),
+        ({**herdr_env,'HERDR_ENV':'0'},local_resume,{}),
+    ]:
+        capture.unlink(missing_ok=True)
+        call=setup+('f "$@"' if setup==local_resume else '_harness_launcher_omp_native "$2/cwd" --version')
+        script='source "$1/bin/aliases.zsh"; HARNESS_OMP_ROOT="$2" HARNESS_OMP_BIN="$3"; '+assign(values)+'; '+call
+        done=subprocess.run(['/bin/zsh','-f','-c',script,'test',str(repo),str(ns),str(binary)],cwd=profile,env={**env,**leak},capture_output=True,timeout=20)
+        assert done.returncode==0,(values,setup,done.stderr.decode())
+        got=json.loads(capture.read_text())['env']
+        assert got=={**fake_env,**extra},(values,setup,got)
+        passed+=1
     # Exact management tuples must bypass workspace/session preparation. These
     # expectations come from the public command contract, not its classifier.
     management=[['--version'],['--help'],['login','anthropic'],['login','openai-codex'],

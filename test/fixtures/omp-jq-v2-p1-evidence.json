@@ -32,12 +32,12 @@
     "system_jq": null
   },
   "provenance": {
-    "head": "5635c7cf7e82deb96830ab0818836d61b843bfaf",
-    "job": 119540576912,
-    "line": 208,
-    "line_sha256": "ed31ec15771f2224b1fa364a203c5fd0c7bab7a58d3ebcbd18a9ece31726ba15",
-    "source_receipt_sha256": "bc23db5227625bd32386993a3492c21c263d84853f09e3af33a3a0b9b4042fa9",
-    "whole_log_sha256": "ecad4d840d178ae10debb8954135927b2b3ac79d8f73db3972a256811f822437"
+    "head": "046767d995caa83a422bef184dc1dd1c9102dded",
+    "job": 119687848856,
+    "line": 206,
+    "line_sha256": "65ad7c1a0d1db47eb33d84a079191e683b2b4bd9bbda18b033cf79f8a2b9d102",
+    "source_receipt_sha256": "0ff9ee6572fda85b6e6013a7a8c95c2a1ce2e772ea1523589359ef1a7a2996d9",
+    "whole_log_sha256": "fdc42fa9fdffcff6dba2c4783e33133585e232a29b28045907adc319eb45b6cb"
   },
   "schema": "w07.jq-fallback-evidence/v2",
   "source_pins": [
@@ -48,10 +48,10 @@
       "sha256": "f2aaf3d538e4a0b3739326f809457d8213502dd8dec035528ce9e3bb84cc4582"
     },
     {
-      "bytes": 43116,
+      "bytes": 43214,
       "mode": "0644",
       "path": "test/test-omp-continuation.sh",
-      "sha256": "504098be33bfb96739b2e248db4a595e6d718c1dc0d3fb521907096cfd8e7c29"
+      "sha256": "39a4d4ede9807f702a1b9fa7410a98550258a7821b82f0e587f366b78bc4ca4b"
     },
     {
       "bytes": 6806,
