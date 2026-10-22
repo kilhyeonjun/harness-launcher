@@ -1092,6 +1092,45 @@ class OmpSessionTest(HerdrPluginTestCase):
         self.sync(other)
         self.assertEqual(self.h.renames(), [])
 
+    H = "0123456789abcdef0123456789abcdef"
+
+    def continuation(self, ns, *parts, records=None):
+        path = ns.joinpath("launcher-continuations", *parts, self.NAME)
+        jsonl(path, records or self.RECORDS)
+        return path
+
+    def test_a_launcher_continuation_session_is_read(self):
+        ns = self.namespace()
+        self.sync(self.continuation(ns, self.H, "sessions"))
+        self.assertEqual(self.h.renames(), [["w2:t1", "OMP 환경 계약 정리"]])
+        self.assertEqual(self.h.reports()[-1][-2:], ["--token", "model=6.1-sol high"])
+
+    def test_a_symlinked_continuation_directory_is_not_read(self):
+        ns = self.namespace()
+        real = self.h.root / "real-sessions"
+        jsonl(real / self.NAME, self.RECORDS)
+        (ns / "launcher-continuations" / self.H).mkdir(parents=True)
+        (ns / "launcher-continuations" / self.H / "sessions").symlink_to(real)
+        self.sync(ns / "launcher-continuations" / self.H / "sessions" / self.NAME)
+        self.assertEqual(self.h.renames(), [])
+
+    def test_a_foreign_handle_shape_or_extra_nesting_is_not_read(self):
+        ns = self.namespace()
+        for parts in (("0123456789ABCDEF0123456789ABCDEF", "sessions"), ("0123", "sessions"),
+                      (self.H, "other"), (self.H, "sessions", "deeper"), ("a", self.H, "sessions")):
+            self.sync(self.continuation(ns, *parts))
+            self.assertEqual(self.h.renames(), [], parts)
+        jsonl(ns / "history" / "deeper" / self.NAME, self.RECORDS)
+        self.sync(ns / "history" / "deeper" / self.NAME)
+        self.assertEqual(self.h.renames(), [])
+
+    def test_a_continuation_path_outside_the_namespace_is_not_read(self):
+        ns = self.namespace()
+        outside = self.h.root / "other-ns"
+        outside.mkdir()
+        self.sync(self.continuation(outside, self.H, "sessions"))
+        self.assertEqual(self.h.renames(), [])
+
     def test_a_non_jsonl_path_is_not_read(self):
         ns = self.namespace()
         self.sync(self.session(ns, self.RECORDS, name="session.txt"))

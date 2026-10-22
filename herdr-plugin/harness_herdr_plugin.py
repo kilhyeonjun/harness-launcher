@@ -370,19 +370,32 @@ OMP_OWNER_SCHEMA = "p0-normal-omp-owner-v1"
 OMP_HEADER_BYTES = 16 * 1024
 
 
+# The launcher's continuation handle (bin/harness_omp_continuation.py: 32 lowercase hex).
+OMP_HANDLE = re.compile(r"^[0-9a-f]{32}$")
+
+
 def omp_session_path(pane):
     """The OMP session file herdr reports for a pane, or None.
 
-    Only a `.jsonl` directly under `<namespace>/history`, where `<namespace>` carries
-    the launcher's owner marker for exactly that path; the file itself is opened
-    without following a symlink (open_owned) and must be a regular file we own."""
+    Only a `.jsonl` whose directory is exactly `<namespace>/history` or
+    `<namespace>/launcher-continuations/<handle>/sessions`, where `<namespace>`
+    carries the launcher's owner marker for exactly that path. No component between
+    the namespace and the file may be a symlink, and the file itself is opened
+    without following one (open_owned) and must be a regular file we own."""
     session = pane.get("agent_session")
     value = session.get("value") if isinstance(session, dict) else None
     if pane.get("agent") != "omp" or not isinstance(value, str) or not os.path.isabs(value):
         return None
-    history = os.path.dirname(value)
-    namespace = os.path.dirname(history)
-    if not value.endswith(".jsonl") or os.path.basename(history) != "history":
+    if not value.endswith(".jsonl"):
+        return None
+    directory = os.path.dirname(value)
+    parts = directory.split(os.sep)
+    if parts[-1] == "history":
+        namespace = os.path.dirname(directory)
+    elif (len(parts) > 3 and parts[-1] == "sessions" and OMP_HANDLE.match(parts[-2])
+          and parts[-3] == "launcher-continuations"):
+        namespace = os.path.dirname(os.path.dirname(os.path.dirname(directory)))
+    else:
         return None
     marker = open_owned(os.path.join(namespace, ".owner.json"))
     if marker is None:
@@ -393,9 +406,13 @@ def omp_session_path(pane):
         except ValueError:
             return None
     if (not isinstance(owner, dict) or owner.get("schema") != OMP_OWNER_SCHEMA
-            or owner.get("prefix") != os.path.realpath(namespace)
-            or os.path.realpath(history) != os.path.join(owner["prefix"], "history")):
+            or owner.get("prefix") != os.path.realpath(namespace)):
         return None
+    current = namespace
+    for part in os.path.relpath(directory, namespace).split(os.sep):
+        current = os.path.join(current, part)
+        if os.path.islink(current) or not os.path.isdir(current):
+            return None
     return value
 
 
