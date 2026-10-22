@@ -12,7 +12,7 @@ import stat
 import subprocess
 import sys
 
-CAPSULE_SHA256 = 'ac3b5ff05faf3597e9a4409a4ee2f9c5b61c7dc003c1c96ef51f3a7e68f8faf0'
+CAPSULE_SHA256 = 'b014b1a9592552a27e8f088238e638c786de45023c7635a57144da00d14ba371'
 SYSTEM_DIRS = ('/usr/bin', '/bin')
 HISTORICAL_KEYS = frozenset(('status', 'reason', 'selected', 'physical', 'physical_parent',
     'system_jq', 'manifest_jq_bindings', 'jq_real_query', 'native_calls',
