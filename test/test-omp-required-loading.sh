@@ -17,6 +17,19 @@ REPO = Path(sys.argv.pop())
 KERNEL = os.environ.get('HARNESS_TEST_OMP_SOURCE')
 
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+def settings_yaml(text):
+    # The compiler's overlay: block mappings of JSON scalars/flow lists only.
+    import re
+    root={}; stack=[(-1,root)]
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith('#'): continue
+        indent=len(line)-len(line.lstrip())
+        key,value=re.fullmatch(r'("(?:[^"\\]|\\.)*"|[^:"]+):(?: (.*))?',line.strip()).groups()
+        key=json.loads(key) if key.startswith('"') else key
+        while stack[-1][0]>=indent: stack.pop()
+        if value is None: stack[-1][1][key]={}; stack.append((indent,stack[-1][1][key]))
+        else: stack[-1][1][key]=json.loads(value)
+    return root
 def put(path, value, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value if isinstance(value, str) else json.dumps(value))
@@ -48,9 +61,9 @@ class RequiredLoading(unittest.TestCase):
         put(self.profile/'.claude/skills/fixture-required/SKILL.md', '---\nname: fixture-required\ndescription: Fixture activation contract\n---\nCANONICAL_SKILL_MARKER\n')
         put(self.profile/'.claude/rules/required.md', '<rule_contract id="fixture-required">CANONICAL_REQUIRED_MARKER</rule_contract>\n')
         settings = (kernel/'.claude/source/settings.yaml').read_text().split('\nhooks:',1)[0]
-        put(self.profile/'.claude/source/settings.yaml', settings+'\nhooks:\n  omp_required_contract: w07.required-resolver-consumer.v1\n  omp_upstream_base_version: \"18.11.3\"\n  omp_upstream_base_revision: 96894a6147d8cc64b7e00ad3a7d7178fd93b9531\n  omp_default_mode: required\n  omp_default_compatibility: equivalent\n  entries:\n    - event: PreToolUse\n      matcher: Bash\n      script: pre-bash-curl-block.sh\n      omp_decision_only: true\n    - event: UserPromptSubmit\n      script: fixture-prompt.sh\n      omp_decision_only: true\n')
+        put(self.profile/'.claude/source/settings.yaml', settings+'\nhooks:\n  omp_default_mode: required\n  entries:\n    - event: PreToolUse\n      matcher: Bash\n      script: pre-bash-curl-block.sh\n      runtimes: claude, omp\n      omp_decision_only: true\n    - event: UserPromptSubmit\n      script: fixture-prompt.sh\n      runtimes: claude, omp\n      omp_decision_only: true\n')
         for name in ('core/scripts/harness_compile.py','core/scripts/omp_required_extension.ts',
-                     'core/bin/harness-python','core/hooks/pre-bash-curl-block.sh'):
+                     'core/bin/harness-python','core/hooks/pre-bash-curl-block.sh','core/omp/policy-omp.md'):
             src = kernel/name; put(self.profile/name, src.read_text(), src.stat().st_mode&0o777)
         put(self.profile/'core/hooks/fixture-prompt.sh', '#!/bin/bash\nexit 0\n', 0o700)
         self.binary = self.root/'fake-native'
@@ -64,14 +77,14 @@ if policy is None: raise SystemExit(84)
 bundle=Path(policy).parent
 m=json.loads((bundle/'selection.json').read_text())
 assert 'CANONICAL_REQUIRED_MARKER' in Path(policy).read_text()
-assert '--extension='+str(bundle/'required-extension.ts') in args
+assert '--trusted-extension='+str(bundle/'required-extension.ts') in args
 assert '--no-extensions' in args
-assert args.count('--harness-required-bundle='+str(bundle/'selection.json'))==1
-assert m['schema']==2 and m['runtime_version'] in ('18.11.3-kh.w07.1','18.11.3-kh.w07.mm.1')
+assert not any(a.startswith('--harness-required-bundle') for a in args)
+assert m['schema']==1 and m['runtime_version']=='18.11.3'
 skills=[{'name':s['name'],'sha256':hashlib.sha256((bundle/s['path']).read_bytes()).hexdigest()} for s in m['selected_skills']]
 assert [s['name'] for s in skills]==['fixture-required']
 assert 'CANONICAL_SKILL_MARKER' in (bundle/'skills/fixture-required/SKILL.md').read_text()
-Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':hashlib.sha256(Path(policy).read_bytes()).hexdigest(),'skills':skills,'selection':m['effective_selection_sha256'],'inventory_admitted':False,'ready':False,'proof':'structural-fake-only','argv':args,'mode':json.loads((bundle/'model-mode.json').read_text()) if (bundle/'model-mode.json').exists() else None}))
+Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':hashlib.sha256(Path(policy).read_bytes()).hexdigest(),'skills':skills,'selection':m['effective_selection_sha256'],'inventory_admitted':False,'ready':False,'proof':'structural-fake-only','argv':args,'mode':(bundle/'omp-settings.yml').read_text() if (bundle/'omp-settings.yml').exists() else None}))
 ''', 0o555)
         put(self.ns/'.owner.json', {'schema':'p0-normal-omp-owner-v1','prefix':str(self.ns),
             'binary':str(self.binary),'asset_sha256':sha(self.binary),'identity':{'owner':'fixture'}})
@@ -99,10 +112,8 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
                       'controller':{'native':'fixture','pane':'fixture','managed':'fixture'},'scope':'OMP3_CONFIGURATION','ssot':None}
         self.publisher.prepare(provenance)
         self.row = self.p.capture_row('ex',str(self.profile),str(self.snapshot/'bin/aliases.zsh'),str(self.binary),str(self.ns),
-             '2099-01-01T00:00:00Z',{'version':'18.11.3-kh.w07.1','source_revision':'1'*40,
-             'contract_id':'w07.required-resolver-consumer.v1','upstream_base_version':'18.11.3',
-             'upstream_base_revision':'96894a6147d8cc64b7e00ad3a7d7178fd93b9531',
-             'source_patch_sha256':'2'*64,'build_provenance_sha256':'3'*64},provenance)
+             '2099-01-01T00:00:00Z',{'version':'18.11.3',
+             'source_revision':'96894a6147d8cc64b7e00ad3a7d7178fd93b9531'},provenance)
         self.publisher.publish('ex', self.row, self.publisher.token())
         # Match the continuation fixture: admit the selected real jq directory,
         # never a shared bin prefix that could shadow declared system children.
@@ -117,14 +128,21 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         environment.start(); self.addCleanup(environment.stop)
 
 
-    def install_mode_source(self, capable=False):
+    def install_mode_source(self):
         for name in ('core/omp/model_modes.py','.claude/source/omp-model-modes.json'):
             put(self.profile/name,(Path(KERNEL)/name).read_text())
-        if capable:
-            release=dict(self.row['binary']['release'],version='18.11.3-kh.w07.mm.1')
-            row=self.p.capture_row('ex',str(self.profile),str(self.snapshot/'bin/aliases.zsh'),
-                str(self.binary),str(self.ns),'2099-01-01T00:00:00Z',release,self.row['provenance'])
-            self.publisher.publish('ex',row,self.publisher.token())
+
+    def overlay(self, mode):
+        spec=json.loads((self.profile/'.claude/source/omp-model-modes.json').read_text())
+        models={i:spec['modeled_selectors'][x] for i,x in spec['modes'][mode].items()}
+        chains={'anthropic/claude-opus-5-5':['openai-codex/gpt-6.1-sol'],
+                'openai-codex/gpt-6.1-sol':['anthropic/claude-opus-5-5']}
+        return {'modelRoles':{w:models[i]+':'+e for w,(i,e) in spec['workloads'].items()},
+                'task':{'agentModelOverrides':{a:'@advisor' if i=='reviewer' else '@task'
+                                               for a,i in spec['named_agent_roles'].items()}},
+                'retry':{'modelFallback':True,'fallbackOn':'usage-limit',
+                         'fallbackRevertPolicy':'cooldown-expiry','fallbackChains':chains},
+                'contextPromotion':{'enabled':False}}
 
     def public_exec(self,args):
         return subprocess.run(['/bin/zsh',str(self.snapshot/'bin/harness-exec'),str(self.profile),'omp',*args],
@@ -138,55 +156,49 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         self.snapshot.chmod(0o700)
         (self.snapshot/'bin').chmod(0o700)
 
-    def test_MM4_same_public_sealed_healthy_check_reports_desired_without_native(self):
-        # Structural public-entry control only, not the MM3-dependent resume own RED.
+    def test_MM4_same_public_sealed_healthy_and_retired_check_refused(self):
         healthy = self.public_exec([])
         self.assertEqual(healthy.returncode, 0, healthy.stderr)
         self.assertEqual(json.loads(self.capture.read_text())['proof'],'structural-fake-only')
         self.install_mode_source()
         self.capture.unlink()
         before=self.file_state()
+        # The fork-only metadata check is retired; it is now an unknown option.
         result=self.public_exec(['--model-mode-check','gpt-only'])
-        self.assertEqual(result.returncode,0,result.stderr)
-        value=json.loads(result.stdout)
-        self.assertEqual(value['mode_id'],'gpt-only')
-        self.assertEqual(value['roles']['default']['desired'],
-                         {'model':'openai-codex/gpt-6.1-sol','effort':'high'})
-        self.assertEqual(value['roles']['default']['resolved'],{'model':None,'effort':None})
-        self.assertEqual(value['native_support'],'UNSUPPORTED_NATIVE')
-        self.assertEqual(value['auth'],'NOT_PROBED')
-        self.assertFalse(value['runtime_verified'])
+        self.assertEqual(result.returncode,2,result.stderr)
         self.assertFalse(self.capture.exists())
         self.assertEqual(before,self.file_state())
 
-    def test_MM4_four_modes_and_fresh_default_bind_canonical_artifact(self):
-        self.install_mode_source(capable=True)
+    def test_MM4_four_modes_and_fresh_default_bind_settings_overlay(self):
+        self.install_mode_source()
         for mode in (None,'gpt-only','opus-only','hybrid-gpt-lead','hybrid-opus-lead'):
             with self.subTest(mode=mode):
                 args=[] if mode is None else ['--model-mode',mode]
                 self.run_entry(args)
                 loaded=json.loads(self.capture.read_text())
-                actual=loaded['mode']
-                wanted,_,_=self.p.model_mode_request(str(self.profile),args)
-                self.assertEqual(actual,wanted)
-                self.assertEqual(actual['selected_mode'],mode or 'hybrid-opus-lead')
+                self.assertEqual(settings_yaml(loaded['mode']),self.overlay(mode or 'hybrid-opus-lead'))
+                wanted,_=self.p.model_mode_request(str(self.profile),args)
+                self.assertEqual(wanted['selected_mode'],mode or 'hybrid-opus-lead')
                 self.assertFalse(any(a.startswith('--model-mode') for a in loaded['argv']))
                 bundle=self.profile/'.harness/omp'/loaded['selection']
+                self.assertIn('--config='+str(bundle/'omp-settings.yml'),loaded['argv'])
+                self.assertFalse((bundle/'model-mode.json').exists())
+                manifest=json.loads((bundle/'selection.json').read_text())
+                self.assertIn('model-mode:'+(mode or 'hybrid-opus-lead'),manifest['bundle_ids'])
                 prepared=self.p.validate_required_prepared(str(self.profile),
                     str(self.snapshot/'bin/aliases.zsh'),str(self.ns/'cwd'),str(self.binary),
                     str(self.ns),str(bundle/'selection.json'))
-                self.assertEqual(prepared['model_mode']['recipe_sha256'],actual['recipe_sha256'])
+                self.assertEqual(prepared['model_mode'],
+                                 {'mode_id':wanted['selected_mode'],'recipe_sha256':wanted['recipe_sha256']})
                 self.assertFalse(prepared['ready']);self.assertFalse(prepared['inventory_admitted'])
-                self.assertTrue(all(r['availability']=='UNKNOWN' for r in prepared['model_mode']['roles'].values()))
-                self.assertTrue(all(s['behavior']=='preserve-existing' for s in actual['capability_services']))
 
     def test_MM4_literal_values_and_double_dash_are_not_controls(self):
         self.install_mode_source()
         prompt='--model-mode opus-only\n--model-mode-check gpt-only'
-        artifact,argv,check=self.p.model_mode_request(str(self.profile),['--tools','Read','--',prompt])
+        artifact,argv=self.p.model_mode_request(str(self.profile),['--tools','Read','--',prompt])
         self.assertEqual(artifact['selected_mode'],'hybrid-opus-lead')
-        self.assertEqual(argv,['--tools','Read','--',prompt]);self.assertFalse(check)
-        _,argv,_=self.p.model_mode_request(str(self.profile),['--model-mode=gpt-only','--','--model-mode-check'])
+        self.assertEqual(argv,['--tools','Read','--',prompt])
+        _,argv=self.p.model_mode_request(str(self.profile),['--model-mode=gpt-only','--','--model-mode-check'])
         self.assertEqual(argv,['--','--model-mode-check'])
 
     def test_MM4_malformed_override_stock_and_stale_source_stop_without_effects(self):
@@ -195,14 +207,13 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         bad=(['--model-mode'],['--model-mode','foreign'],
              ['--model-mode','gpt-only','--model-mode','opus-only'],
              ['--model-mode-check','gpt-only','extra'],['--model-mode','gpt-only','--thinking','low'],
-             ['--model-mode','gpt-only','--model=foreign'],['--model-mode','gpt-only'])
+             ['--model-mode','gpt-only','--model=foreign'])
         for args in bad:
             with self.subTest(args=args):
                 result=self.public_exec(args)
                 self.assertEqual(result.returncode,2,result.stderr)
                 self.assertFalse(self.capture.exists())
                 self.assertEqual(before,self.file_state())
-        self.install_mode_source(capable=True)
         self.run_entry(['--model-mode','gpt-only'])
         loaded=json.loads(self.capture.read_text())
         bundle=self.profile/'.harness/omp'/loaded['selection']
@@ -215,21 +226,17 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
                 str(self.ns/'cwd'),str(self.binary),str(self.ns),str(bundle/'selection.json'))
         self.assertEqual(before,self.file_state())
 
-    def test_MM4_check_each_mode_no_auth_or_availability_probe(self):
+    def test_MM4_public_entry_each_mode_same_fallback_chains(self):
         self.install_mode_source()
         for mode in ('gpt-only','opus-only','hybrid-gpt-lead','hybrid-opus-lead'):
             with self.subTest(mode=mode):
-                before=self.file_state()
-                result=self.public_exec(['--model-mode-check',mode])
+                result=self.public_exec(['--model-mode',mode])
                 self.assertEqual(result.returncode,0,result.stderr)
-                value=json.loads(result.stdout)
-                self.assertEqual(value['mode_id'],mode)
-                self.assertTrue(all(r['availability']=='UNKNOWN' and r['fallback']==[]
-                                    for r in value['roles'].values()))
-                self.assertFalse(value['retry']['modelFallback'])
-                self.assertFalse(value['contextPromotion']['enabled'])
-                self.assertEqual(value['native_support'],'UNSUPPORTED_NATIVE')
-                self.assertEqual(before,self.file_state())
+                loaded=json.loads(self.capture.read_text())
+                self.assertEqual(settings_yaml(loaded['mode']),self.overlay(mode))
+                self.assertEqual(settings_yaml(loaded['mode'])['retry']['fallbackChains'],
+                                 self.overlay('gpt-only')['retry']['fallbackChains'])
+                self.capture.unlink()
 
     def restore_home(self):
         if self.saved_home is None: os.environ.pop('HOME',None)
@@ -250,7 +257,7 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         self.assertEqual([s['name'] for s in loaded['skills']],['fixture-required'])
         self.assertRegex(loaded['policy_sha256'], '^[0-9a-f]{64}$')
         self.assertFalse(loaded['ready']); self.assertFalse(loaded['inventory_admitted'])
-        bundle = next((self.profile/'.harness/omp').iterdir())
+        bundle = next(p for p in (self.profile/'.harness/omp').iterdir() if p.is_dir())
         manifest = json.loads((bundle/'selection.json').read_text())
         workspace = manifest['workspace']
         self.assertEqual(workspace,str(self.ns/'cwd'))
@@ -274,17 +281,22 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
                 workspace,str(self.binary),str(self.ns),str(bundle/'selection.json'))
 
     def test_required_disabling_and_startup_operands_refuse_before_child(self):
-        for args in (['--no-skills'],['--no-extensions'],['--skills=foreign'],['--','fixture prompt'],['--print'],['--harness-required-bundle=/foreign'],['--','--harness-required-bundle=/foreign']):
+        for args in (['--no-skills'],['--no-extensions'],['--skills=foreign'],['--','fixture prompt'],['--print'],['--harness-required-bundle=/foreign'],['--','--harness-required-bundle=/foreign'],['--trusted-extension=/foreign.ts'],['--trusted-extension','/foreign.ts']):
             with self.subTest(args=args): self.run_entry(args,2)
 
-    def test_stock_release_cannot_enter_schema2_and_missing_build_metadata_is_invalid(self):
+    def test_fork_release_version_is_refused_and_malformed_release_is_invalid(self):
+        # A row published for the retired fork stays readable, but its version is
+        # not an upstream semver, so the compiler refuses the schema-1 selection.
         self.publisher.block('ex', self.publisher.token(), self.row['provenance'], 'fixture-handover')
+        fork = {'version':'18.11.3-kh.w07.mm.1','source_revision':'1'*40,
+                'contract_id':'w07.required-resolver-consumer.v1','upstream_base_version':'18.11.3',
+                'upstream_base_revision':'96894a6147d8cc64b7e00ad3a7d7178fd93b9531',
+                'source_patch_sha256':'2'*64,'build_provenance_sha256':'3'*64}
         row = self.p.capture_row('ex',str(self.profile),str(self.snapshot/'bin/aliases.zsh'),str(self.binary),
-            str(self.ns),'2099-01-01T00:00:00Z',{'version':'18.11.3',
-            'source_revision':'96894a6147d8cc64b7e00ad3a7d7178fd93b9531'},self.row['provenance'])
+            str(self.ns),'2099-01-01T00:00:00Z',fork,self.row['provenance'])
         self.publisher.publish('ex',row,self.publisher.token())
         self.run_entry(expected=2)
-        bad = dict(self.row['binary']['release']); bad.pop('build_provenance_sha256')
+        bad = dict(fork); bad.pop('build_provenance_sha256')
         with self.assertRaises(self.p.ProjectionError): self.p.check_binary_release(bad)
 
     def test_source_missing_or_current_revoked_refuses_before_child(self):

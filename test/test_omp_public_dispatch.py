@@ -236,9 +236,11 @@ class PublicOmpDispatch(unittest.TestCase):
             self.assertIn(b'OMP_MODEL_MODE_LAUNCHER_UNSUPPORTED', result.stderr)
             self.assertEqual(1, len(self.calls()))
             self.assert_preserved(); self.assert_snapshot_preserved()
+        # The retired --model-mode-check is no mode control; the default mode
+        # still meets the old closure's refusal and prints no metadata.
         check = self.run_entry([str(self.public), 'omp', '--model-mode-check', 'gpt-only'])
-        self.assertEqual(2, check.returncode, check.stderr)
-        self.assertEqual('UNSUPPORTED_LAUNCHER', json.loads(check.stdout)['native_support'])
+        self.assertEqual((2, b''), (check.returncode, check.stdout), check.stderr)
+        self.assertIn(b'OMP_MODEL_MODE_LAUNCHER_UNSUPPORTED', check.stderr)
         self.assertEqual(1, len(self.calls()))
         help_result = self.run_entry([str(self.public), 'omp', '--help'])
         self.assertEqual((0, b'SYNTHETIC_OMP_HELP\n'), (help_result.returncode, help_result.stdout), help_result.stderr)

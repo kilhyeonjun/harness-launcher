@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import html
 import json
@@ -401,7 +402,7 @@ def parse_settings_yaml(path: Path, source_reader: SourceReader | None = None) -
 
     data: dict[str, Any] = {
         "settings": {"env": {}, "attribution": {}},
-        "hooks": {"codex_exclusions": [], "entries": [], "omp_extensions": []},
+        "hooks": {"entries": [], "omp_extensions": []},
     }
     section: str | None = None
     subsection: str | None = None
@@ -416,13 +417,13 @@ def parse_settings_yaml(path: Path, source_reader: SourceReader | None = None) -
         indent = len(raw) - len(raw.lstrip(" "))
 
         if indent == 0:
-            if stripped not in {"settings:", "hooks:", "omp_settings:"}:
+            if stripped not in {"settings:", "hooks:", "omp_settings:", "omp_launch:"}:
                 raise HarnessCompileError(f"{path}:{line_number} unsupported top-level key")
             section = stripped[:-1]
-            if section == "omp_settings":
-                if "omp_settings" in data:
-                    raise HarnessCompileError(f"{path}:{line_number} duplicate omp_settings section")
-                data["omp_settings"] = {}
+            if section in {"omp_settings", "omp_launch"}:
+                if section in data:
+                    raise HarnessCompileError(f"{path}:{line_number} duplicate {section} section")
+                data[section] = {}
             subsection = None
             permission_list = None
             current_entry = None
@@ -485,20 +486,15 @@ def parse_settings_yaml(path: Path, source_reader: SourceReader | None = None) -
 
         if section == "hooks":
             if indent == 2:
-                if stripped.startswith(("omp_default_mode:", "omp_default_compatibility:", "omp_required_contract:", "omp_upstream_base_version:", "omp_upstream_base_revision:")):
+                if stripped.startswith("omp_default_mode:"):
                     key, _, value = stripped.partition(":")
                     data["hooks"][key] = parse_scalar(value)
                     continue
-                if stripped in {"codex_exclusions:", "entries:", "omp_extensions:"}:
+                if stripped in {"entries:", "omp_extensions:"}:
                     subsection = stripped[:-1]
                     current_entry = None
                     continue
                 raise HarnessCompileError(f"{path}:{line_number} unsupported hooks key")
-            if indent == 4 and subsection == "codex_exclusions":
-                if not stripped.startswith("- "):
-                    raise HarnessCompileError(f"{path}:{line_number} expected codex exclusion")
-                data["hooks"]["codex_exclusions"].append(parse_scalar(stripped[2:]))
-                continue
             if indent == 4 and subsection in {"entries", "omp_extensions"}:
                 if not stripped.startswith("- ") or ":" not in stripped:
                     raise HarnessCompileError(f"{path}:{line_number} expected hook entry")
@@ -513,21 +509,45 @@ def parse_settings_yaml(path: Path, source_reader: SourceReader | None = None) -
                 current_entry[key.strip()] = parse_scalar(value)
                 continue
 
-        if section == "omp_settings":
+        if section in {"omp_settings", "omp_launch"}:
             if indent != 2:
-                raise HarnessCompileError(f"{path}:{line_number} unsupported omp_settings indentation")
+                raise HarnessCompileError(f"{path}:{line_number} unsupported {section} indentation")
             if ":" not in stripped:
-                raise HarnessCompileError(f"{path}:{line_number} malformed omp_settings line")
+                raise HarnessCompileError(f"{path}:{line_number} malformed {section} line")
             key, _, value = stripped.partition(":")
             key = key.strip()
-            if key in data["omp_settings"]:
-                raise HarnessCompileError(f"{path}:{line_number} duplicate omp_settings key: {key}")
-            data["omp_settings"][key] = parse_scalar(value)
+            if key in data[section]:
+                raise HarnessCompileError(f"{path}:{line_number} duplicate {section} key: {key}")
+            data[section][key] = parse_scalar(value)
             continue
 
         raise HarnessCompileError(f"{path}:{line_number} unsupported settings indentation")
 
     return data
+
+
+def check_hook_entry(entry: Any, index: int) -> None:
+    if not isinstance(entry, dict):
+        raise HarnessCompileError(f"hooks.entries[{index}] must be mapping")
+    for key in ("event", "script"):
+        if not isinstance(entry.get(key), str) or not entry[key].strip():
+            raise HarnessCompileError(f"hooks.entries[{index}].{key} is required")
+    if not entry["script"].endswith(".sh"):
+        raise HarnessCompileError(f"hooks.entries[{index}].script must end with .sh")
+    if "timeout" in entry and not isinstance(entry["timeout"], int):
+        raise HarnessCompileError(f"hooks.entries[{index}].timeout must be integer")
+    if "hook_runtime" in entry and entry["hook_runtime"] != "claude":
+        raise HarnessCompileError(f"hooks.entries[{index}].hook_runtime must be claude")
+    if entry.get("omp_mode", "required") not in {"required", "auto", "manual", "off", "unsupported"}:
+        raise HarnessCompileError("invalid OMP hook mode")
+    if entry.get("omp_required", True) and entry.get("omp_mode", "required") != "required":
+        raise HarnessCompileError("OMP required hook cannot be disabled")
+    if "omp_compatibility" in entry:
+        raise HarnessCompileError(f"hooks.entries[{index}].omp_compatibility is replaced by runtimes")
+    entry_runtimes(entry, index)
+    for flag in ("omp_required", "omp_decision_only"):
+        if flag in entry and type(entry[flag]) is not bool:
+            raise HarnessCompileError(f"invalid OMP {flag}")
 
 
 def require_path(data: dict[str, Any], dotted_path: str) -> Any:
@@ -613,41 +633,18 @@ def check_source(root: Path, source_reader: SourceReader | None = None) -> None:
             if type(value) is not OMP_PROJECT_SETTINGS_ALLOWLIST[key]:
                 raise HarnessCompileError(f"omp_settings.{key} must be boolean")
 
+    validate_omp_launch(data)
+
     if "hooks" in data:
         hooks = data["hooks"]
-        for key, value in {"omp_required_contract": "w07.required-resolver-consumer.v1",
-                           "omp_upstream_base_version": "18.11.3",
-                           "omp_upstream_base_revision": "96894a6147d8cc64b7e00ad3a7d7178fd93b9531"}.items():
-            if key in hooks and hooks[key] != value:
-                raise HarnessCompileError("invalid OMP required contract metadata")
         if hooks.get("omp_default_mode", "required") != "required":
             raise HarnessCompileError("hooks.omp_default_mode must retain required")
-        if hooks.get("omp_default_compatibility", "unsupported") not in {"equivalent", "unsupported"}:
-            raise HarnessCompileError("invalid OMP default compatibility")
         entries = hooks.get("entries")
         if not isinstance(entries, list):
             raise HarnessCompileError("hooks.entries must be list")
         for index, entry in enumerate(entries):
-            if not isinstance(entry, dict):
-                raise HarnessCompileError(f"hooks.entries[{index}] must be mapping")
-            for key in ("event", "script"):
-                if not isinstance(entry.get(key), str) or not entry[key].strip():
-                    raise HarnessCompileError(f"hooks.entries[{index}].{key} is required")
-            if not entry["script"].endswith(".sh"):
-                raise HarnessCompileError(f"hooks.entries[{index}].script must end with .sh")
-            if "timeout" in entry and not isinstance(entry["timeout"], int):
-                raise HarnessCompileError(f"hooks.entries[{index}].timeout must be integer")
-            if "hook_runtime" in entry and entry["hook_runtime"] != "claude":
-                raise HarnessCompileError(f"hooks.entries[{index}].hook_runtime must be claude")
-            if entry.get("omp_mode", "required") not in {"required", "auto", "manual", "off", "unsupported"}:
-                raise HarnessCompileError("invalid OMP hook mode")
-            if entry.get("omp_required", True) and entry.get("omp_mode", "required") != "required":
-                raise HarnessCompileError("OMP required hook cannot be disabled")
-            if entry.get("omp_compatibility", "equivalent") not in {"equivalent", "unsupported"}:
-                raise HarnessCompileError("invalid OMP hook compatibility")
-            for flag in ("omp_required", "omp_decision_only"):
-                if flag in entry and type(entry[flag]) is not bool:
-                    raise HarnessCompileError(f"invalid OMP {flag}")
+            check_hook_entry(entry, index)
+        render_hooks_policy(data)
 
     for catalog_key in ("agents", "commands", "skills"):
         if catalog_key in data:
@@ -728,18 +725,191 @@ OMP_PROJECT_SETTINGS_HEADER = (
 )
 
 
+# Decision 038 P3: launch-time OMP argv. Only tools the bridge adapts may be exposed.
+# Upstream hashline `edit` has no pre-write review hook, so it stays refused.
+OMP_LAUNCH_TOOLS_ALLOWED = ("read", "write", "bash", "grep", "glob", "find", "wait", "task", "todo", "ask", "web_search")
+OMP_LAUNCH_SETTINGS_ALLOWLIST = {"dev.autoqa": bool, "lsp.formatOnWrite": bool, "edit.recoverInlineEdits": bool,
+                                "skills.enableClaudeProject": bool}
+OMP_LAUNCH_SETTINGS_ARTIFACT = "omp-settings.yml"
+OMP_LAUNCH_SETTINGS_HEADER = ("# Generated by harness_compile.py from .claude/source/settings.yaml omp_launch"
+                              " and omp-model-modes.json; sealed in the OMP bundle.\n")
+
+
+# Single pinned herdr observer, copied byte-identical and sealed. The harness wrapper is the only launched entry.
+OMP_LAUNCH_EXTENSIONS = {
+    "herdr-agent-state": dict(
+        pin="core/omp/extensions/herdr-agent-state.pin.json",
+        upstream="core/omp/extensions/herdr-agent-state.ts",
+        patched="core/omp/extensions/herdr-agent-state.harness.ts",
+        patch="core/omp/extensions/herdr-agent-state.harness.patch"),
+}
+# Hard-coded: a re-pin can narrow but never widen the non-gating event set.
+OMP_OBSERVER_EVENTS = frozenset({"agent_end", "agent_start", "session_shutdown", "session_start", "session_switch",
+    "tool_approval_requested", "tool_approval_resolved", "tool_execution_end", "tool_execution_start"})
+OMP_OBSERVER_SIGNATURE = "export default function (pi) {"
+
+
+def omp_launch_extension_names(data: dict[str, Any]) -> list[str]:
+    raw = data.get("omp_launch", {}).get("extensions")
+    if raw is None:
+        return []
+    names = raw.split(",") if isinstance(raw, str) else []
+    if not names or len(set(names)) != len(names) or any(n not in OMP_LAUNCH_EXTENSIONS for n in names):
+        raise HarnessCompileError("omp_launch.extensions must list unique admitted observers: " + ",".join(OMP_LAUNCH_EXTENSIONS))
+    return names
+
+
+def render_omp_launch_extension(name: str, read: Any) -> tuple[dict[str, Any], dict[str, str]]:
+    """Return (manifest row, bundle files) for one pinned observer; refuse on any pin/closure mismatch."""
+    spec = OMP_LAUNCH_EXTENSIONS[name]
+    try:
+        pin = json.loads(read(spec["pin"]))
+    except ValueError as exc:
+        raise HarnessCompileError("OMP observer pin malformed") from exc
+    handlers = pin.get("allowed_handlers") if isinstance(pin, dict) else None
+    if not isinstance(handlers, list) or any(not isinstance(h, str) for h in handlers) or any(
+            not re.fullmatch(r"[0-9a-f]{64}", str(pin.get(k, ""))) for k in ("upstream_sha256", "patched_sha256", "patch_sha256")):
+        raise HarnessCompileError("OMP observer pin malformed")
+    if not set(handlers) <= OMP_OBSERVER_EVENTS:
+        raise HarnessCompileError("OMP observer pin widens the hard-coded handler set")
+    upstream, patched, patch = read(spec["upstream"]), read(spec["patched"]), read(spec["patch"])
+    if (omp_digest(upstream.encode()), omp_digest(patched.encode()), omp_digest(patch.encode())) != (
+            pin["upstream_sha256"], pin["patched_sha256"], pin["patch_sha256"]):
+        raise HarnessCompileError("OMP observer bytes differ from pin")
+    # Pure-observer audit of the shipped (patched) file. `pi` may appear only in the exact default-export signature,
+    # `pi.on("<event>", ...)` with a literal pinned event, and `pi.events.on(...)`; every other use (alias, call, index,
+    # optional chain, spaced member) leaves a stray `pi` token and is refused.
+    if patched.count("export default") != 1 or patched.count(OMP_OBSERVER_SIGNATURE) != 1:
+        raise HarnessCompileError("OMP observer default export signature not literal")
+    allowed = set(handlers)
+    literal = re.findall(r"\bpi\.on\(([\"'])([A-Za-z_]+)\1,", patched)
+    if len(literal) != len(re.findall(r"\bpi\.on\(", patched)) or {h for _, h in literal} - allowed:
+        raise HarnessCompileError("OMP observer registers a non-pinned or non-literal handler")
+    if len(re.findall(r"\bpi\b", patched)) != 1 + len(literal) + len(re.findall(r"\bpi\.events\.on\(", patched)):
+        raise HarnessCompileError("OMP observer uses a non-observer pi capability")
+    entry = Path(spec["patched"]).name
+    return (dict(name=name, entry=entry, upstream_sha256=pin["upstream_sha256"], patched_sha256=pin["patched_sha256"]),
+            {entry: patched})
+
+
+def validate_omp_launch(data: dict[str, Any]) -> None:
+    if "omp_launch" not in data:
+        return
+    launch = data["omp_launch"]
+    tools = launch.get("tools")
+    names = tools.split(",") if isinstance(tools, str) else []
+    if not names or len(set(names)) != len(names) or any(n not in OMP_LAUNCH_TOOLS_ALLOWED for n in names):
+        raise HarnessCompileError("omp_launch.tools must list unique adapted tools: " + ",".join(OMP_LAUNCH_TOOLS_ALLOWED))
+    omp_launch_extension_names(data)
+    for key, value in launch.items():
+        if key in {"tools", "extensions"}:
+            continue
+        if key not in OMP_LAUNCH_SETTINGS_ALLOWLIST:
+            raise HarnessCompileError(f"unsupported omp_launch key: {key}")
+        if type(value) is not OMP_LAUNCH_SETTINGS_ALLOWLIST[key]:
+            raise HarnessCompileError(f"omp_launch.{key} must be boolean")
+
+
+def render_omp_launch_settings(data: dict[str, Any], mode_settings: dict[str, Any] | None = None) -> str | None:
+    """Bundle --config overlay: allowlisted omp_launch settings plus the selected model mode."""
+    validate_omp_launch(data)
+    settings = nest_dotted({k: v for k, v in data.get("omp_launch", {}).items() if k not in {"tools", "extensions"}})
+    for key, value in (mode_settings or {}).items():
+        if key in settings:
+            raise HarnessCompileError(f"omp_launch {key} collides with model mode settings")
+        settings[key] = value
+    return render_omp_yaml(settings, OMP_LAUNCH_SETTINGS_HEADER) if settings else None
+
+
 def render_omp_project_settings(data: dict[str, Any]) -> str | None:
     """Render OMP's <cwd>/.omp/config.yml project layer; OMP reads nested keys, not dotted ones."""
     if "omp_settings" not in data:
         return None
-    groups: dict[str, list[tuple[str, Any]]] = {}
-    for key in sorted(data["omp_settings"]):
+    return render_omp_yaml(nest_dotted(data["omp_settings"]), OMP_PROJECT_SETTINGS_HEADER)
+
+
+def nest_dotted(settings: dict[str, Any]) -> dict[str, Any]:
+    nested: dict[str, Any] = {}
+    for key, value in settings.items():
         group, _, leaf = key.partition(".")
-        groups.setdefault(group, []).append((leaf, data["omp_settings"][key]))
-    lines = [OMP_PROJECT_SETTINGS_HEADER]
-    for group, leaves in groups.items():
-        lines.append(f"{group}:\n")
-        lines.extend(f"  {leaf}: {'true' if value else 'false'}\n" for leaf, value in leaves)
+        nested.setdefault(group, {})[leaf] = value
+    return nested
+
+
+def render_omp_yaml(settings: dict[str, Any], header: str) -> str:
+    """Block mappings with sorted keys; JSON scalars/flow lists are valid YAML and quote '/', '@', ':'."""
+    lines = [header]
+
+    def emit(mapping: dict[str, Any], indent: str) -> None:
+        for key in sorted(mapping):
+            name = key if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", key) else json.dumps(key)
+            value = mapping[key]
+            if isinstance(value, dict):
+                lines.append(f"{indent}{name}:\n")
+                emit(value, indent + "  ")
+            else:
+                text = ("true" if value else "false") if isinstance(value, bool) else json.dumps(value, ensure_ascii=False)
+                lines.append(f"{indent}{name}: {text}\n")
+
+    emit(settings, "")
+    return "".join(lines)
+
+
+HOOK_RUNTIMES = ("claude", "codex", "omp")
+HOOKS_POLICY_PATH = ".claude/source/hooks.yaml"
+HOOKS_POLICY_HEADER = (
+    "# Generated by harness_compile.py from .claude/source/settings.yaml hooks.entries runtimes; do not edit manually.\n"
+    "# The launcher's Codex prepare reads codex_exclusions from this file.\n"
+)
+
+
+def entry_runtimes(entry: dict[str, Any], index: int | None = None) -> tuple[str, ...]:
+    """The runtimes an entry declares; there is no default, so a missing declaration fails."""
+    label = f"hooks.entries[{index}]" if index is not None else f'hook {entry.get("script")}'
+    raw = entry.get("runtimes")
+    if not isinstance(raw, str) or not raw.strip():
+        raise HarnessCompileError(f"{label}.runtimes is required")
+    names = tuple(name.strip() for name in raw.split(","))
+    if any(name not in HOOK_RUNTIMES for name in names) or len(set(names)) != len(names):
+        raise HarnessCompileError(f"{label}.runtimes must list distinct values from {', '.join(HOOK_RUNTIMES)}")
+    # The launcher builds Codex hooks from the rendered Claude settings.json, so
+    # a codex-only entry would be declared yet never wired.
+    if "codex" in names and "claude" not in names:
+        raise HarnessCompileError(f"{label}.runtimes lists codex without claude; Codex hooks derive from settings.json")
+    return names
+
+
+def render_hooks_policy(data: dict[str, Any]) -> str:
+    """Render the Codex exclusion list the launcher reads.
+
+    The launcher drops a hook when its event or script basename is listed, so an
+    event is listed when none of its entries runs on Codex, and a script when none
+    of its remaining entries does. A script that runs on Codex for one event and
+    not for another (outside a listed event) cannot be expressed and fails.
+    """
+    # Only entries that list claude reach settings.json, which is what the launcher reads.
+    entries = [e for e in data.get("hooks", {}).get("entries", []) if "claude" in entry_runtimes(e)]
+    events: list[str] = []
+    for entry in entries:
+        if entry["event"] not in events:
+            events.append(entry["event"])
+    excluded_events = [event for event in events
+                       if all("codex" not in entry_runtimes(e) for e in entries if e["event"] == event)]
+    remaining = [entry for entry in entries if entry["event"] not in excluded_events]
+    scripts: list[str] = []
+    for entry in remaining:
+        if entry["script"] not in scripts:
+            scripts.append(entry["script"])
+    excluded_scripts = []
+    for script in scripts:
+        flags = {"codex" in entry_runtimes(e) for e in remaining if e["script"] == script}
+        if flags == {False}:
+            excluded_scripts.append(script)
+        elif flags == {True, False}:
+            raise HarnessCompileError(f"{script}: Codex runtimes differ by event; the launcher cannot express it")
+    lines = [HOOKS_POLICY_HEADER, "hooks:\n", "  source: .claude/settings.json\n",
+             "  mode: settings-driven\n", "  codex_exclusions:\n"]
+    lines.extend(f"    - {name}\n" for name in excluded_events + excluded_scripts)
     return "".join(lines)
 
 
@@ -893,6 +1063,8 @@ def render_settings(data: dict[str, Any], existing: dict[str, Any] | None = None
 
     hook_output: dict[str, list[dict[str, Any]]] = {}
     for entry in hooks.get("entries", []):
+        if "claude" not in entry_runtimes(entry):
+            continue
         event = entry["event"]
         # hook_runtime prefixes only this hook process, so a Codex child of the
         # Claude Bash tool does not inherit the marker the way settings.env would.
@@ -1218,6 +1390,8 @@ def write_surfaces(root: Path) -> None:
             settings_path,
             render_settings(data, read_existing_settings(settings_path)),
         )
+    if "hooks" in data:
+        write_if_changed(root / HOOKS_POLICY_PATH, render_hooks_policy(data))
     omp_settings = render_omp_project_settings(data)
     if omp_settings is not None:
         omp_dir = root / ".omp"
@@ -1232,26 +1406,7 @@ def write_surfaces(root: Path) -> None:
     write_codex_project_agents(root)
 
 
-OMP_ADAPTER_VERSION = "w07-required-v2"
-OMP_REQUIRED_CONTRACT = "w07.required-resolver-consumer.v1"
-OMP_NATIVE_VERSION = "18.11.3-kh.w07.1"
-OMP_MODE_NATIVE_VERSION = "18.11.3-kh.w07.mm.1"
-OMP_BASE_REVISION = "96894a6147d8cc64b7e00ad3a7d7178fd93b9531"
-
-
-def validate_omp_native_release(release: dict[str, Any]) -> None:
-    fields = {"contract_id", "upstream_base_version", "upstream_base_revision", "version",
-              "source_revision", "source_patch_sha256", "build_provenance_sha256", "binary_sha256"}
-    if (not isinstance(release, dict) or set(release) != fields or
-            release["contract_id"] != OMP_REQUIRED_CONTRACT or
-            release["upstream_base_version"] != "18.11.3" or
-            release["upstream_base_revision"] != OMP_BASE_REVISION or
-            release["version"] not in {OMP_NATIVE_VERSION, OMP_MODE_NATIVE_VERSION} or
-            not re.fullmatch(r"[0-9a-f]{40}", str(release["source_revision"])) or
-            any(not re.fullmatch(r"[0-9a-f]{64}", str(release[k])) for k in
-                ("source_patch_sha256", "build_provenance_sha256", "binary_sha256"))):
-        raise HarnessCompileError("OMP unsupported native release binding")
-
+OMP_ADAPTER_VERSION = "upstream-required-v1"
 OMP_EVENTS = {"SessionStart": "session_start", "UserPromptSubmit": "input",
               "PreToolUse": "tool_call", "PostToolUse": "tool_result",
               "PostToolUseFailure": "tool_result", "Stop": "session_stop",
@@ -1289,67 +1444,33 @@ def omp_read(root: Path, relative: str) -> bytes:
 
 
 def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any]) -> tuple[str, dict[str, str]]:
-    """Render an already admitted selection. Hashes bind bytes, never grant authority.
+    """Render an already admitted schema-1 selection. Hashes bind bytes, never grant authority.
 
-    Normal prepare must compare CURRENT existing projection/lease before exec;
-    native consumption and required policy recheck that same current binding.
-    This compiler has no authority store, native import or provider operation.
+    The launcher owns projection/lease/binary admission before exec; the bridge
+    verifies this bundle once at load. No authority store, native import or provider operation.
     """
     selection = json.loads(omp_json(selection))
     allowed = {"schema", "profile", "runtime", "runtime_version", "source_or_release_binding",
                "repo_workspace_identity", "bundle_ids", "approved_overrides_sha256", "hooks", "skills",
-               "extensions", "bridge_rewrites", "workspace", "current_projection", "hook_dependencies", "contract_id", "native_release"}
+               "extensions", "bridge_rewrites", "workspace", "hook_dependencies"}
     if set(selection) - allowed:
         raise HarnessCompileError("OMP unknown selection field")
-    if selection.get("schema") not in {1, 2} or selection.get("runtime") != "omp":
+    if selection.get("schema") != 1 or selection.get("runtime") != "omp":
         raise HarnessCompileError("OMP unknown schema/runtime")
     for key in ("profile", "runtime_version", "source_or_release_binding", "repo_workspace_identity"):
         if not isinstance(selection.get(key), str) or not selection[key].strip():
             raise HarnessCompileError(f"OMP missing selection {key}")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", selection["runtime_version"]):
+        raise HarnessCompileError("OMP runtime_version must be an upstream semver")
     if not re.fullmatch(r"[0-9a-f]{64}", str(selection.get("approved_overrides_sha256", ""))):
         raise HarnessCompileError("OMP invalid overrides hash")
-    if selection["schema"] == 2:
-        release = selection.get("native_release")
-        validate_omp_native_release(release)
-        if (selection.get("contract_id") != OMP_REQUIRED_CONTRACT or
-                selection["runtime_version"] != release["version"] or
-                data.get("hooks", {}).get("omp_required_contract") != OMP_REQUIRED_CONTRACT or
-                data.get("hooks", {}).get("omp_upstream_base_version") != "18.11.3" or
-                data.get("hooks", {}).get("omp_upstream_base_revision") != OMP_BASE_REVISION):
-            raise HarnessCompileError("OMP required contract mismatch")
-        projection = selection.get("current_projection")
-        if not isinstance(projection, dict) or not isinstance(projection.get("expected"), dict):
-            raise HarnessCompileError("OMP incomplete normal binding")
-        current = projection["expected"]
-        def path_value(value: Any) -> bool:
-            return isinstance(value, str) and value.startswith("/") and "\0" not in value
-        dependencies = selection.get("hook_dependencies")
-        if (not path_value(selection.get("workspace")) or
-                any(not re.fullmatch(r"[0-9a-f]{64}", str(selection.get(k, "")))
-                    for k in ("source_or_release_binding", "repo_workspace_identity")) or
-                any(not path_value(current.get(k)) for k in ("binary_path", "namespace_path")) or
-                any(not re.fullmatch(r"[0-9a-f]{64}", str(current.get(k, ""))) for k in
-                    ("profile_binding_sha256", "provenance_sha256", "consumer_sha256", "projection_helper_sha256")) or
-                any(not path_value(projection.get(k)) for k in ("helper", "python", "home", "registry", "source", "consumer")) or
-                projection.get("source") != str(root) or
-                projection.get("sha256") != current.get("projection_helper_sha256") or
-                not isinstance(dependencies, list) or len(dependencies) != 3 or
-                any(not isinstance(d, dict) or set(d) != {"name", "path", "sha256"} or
-                    not path_value(d["path"]) or not re.fullmatch(r"[0-9a-f]{64}", str(d["sha256"])) for d in dependencies) or
-                {d["name"] for d in dependencies} != {"bash", "jq", "python3"} or
-                next(d["path"] for d in dependencies if d["name"] == "bash") != "/bin/bash" or
-                projection.get("python") != next(d["path"] for d in dependencies if d["name"] == "python3")):
-            raise HarnessCompileError("OMP incomplete normal binding")
-        if (current.get("binary_sha256") != release["binary_sha256"] or
-                current.get("binary_release") != {k:v for k,v in release.items() if k != "binary_sha256"}):
-            raise HarnessCompileError("OMP native/current binding mismatch")
-    elif selection["runtime_version"] != "18.11.3" or "native_release" in selection or "contract_id" in selection:
-        raise HarnessCompileError("OMP unsupported native version")
     for key in ("hooks", "skills", "extensions", "bridge_rewrites", "bundle_ids"):
         if not isinstance(selection.get(key), list):
             raise HarnessCompileError(f"OMP {key} must be a list")
         if any(not isinstance(i, str) for i in selection[key]) or len(set(selection[key])) != len(selection[key]):
             raise HarnessCompileError(f"OMP duplicate or malformed {key}")
+    if selection["extensions"]:
+        raise HarnessCompileError("OMP selected extensions cannot be combined with --trusted-extension")
     canonical: dict[str, str] = {}
 
     def read(relative: str) -> str:
@@ -1369,7 +1490,8 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
             raise HarnessCompileError("OMP executed shared helper binding mismatch")
     template = read("core/scripts/omp_required_extension.ts")
     rule_paths = [p.relative_to(root).as_posix() for p in iter_rule_files(root)]
-    policy = render_claude(root, data) + "\n" + "\n".join(read(p) for p in rule_paths)
+    policy = (render_claude(root, data) + "\n" + "\n".join(read(p) for p in rule_paths)
+              + "\n" + read("core/omp/policy-omp.md"))
     entries = data.get("hooks", {}).get("entries", [])
     known, hooks = set(), []
     for entry in entries:
@@ -1377,15 +1499,18 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
         if ident in known:
             raise HarnessCompileError("OMP duplicate canonical hook")
         known.add(ident)
+        if "omp" not in entry_runtimes(entry):
+            if ident in selection["hooks"]:
+                raise HarnessCompileError(f"OMP selection names a hook without the omp runtime: {ident}")
+            continue
         mode = entry.get("omp_mode", data.get("hooks", {}).get("omp_default_mode", "required"))
-        compatibility = entry.get("omp_compatibility", data.get("hooks", {}).get("omp_default_compatibility", "unsupported"))
         if mode not in {"required", "auto", "manual", "off", "unsupported"}:
             raise HarnessCompileError("OMP invalid canonical hook mode")
         if entry.get("omp_required", True) and mode != "required":
             raise HarnessCompileError("OMP required hook cannot be disabled")
         if mode in {"off", "unsupported"} or (mode == "manual" and ident not in selection["hooks"]):
             continue
-        if compatibility != "equivalent" or entry["event"] not in OMP_EVENTS:
+        if entry["event"] not in OMP_EVENTS:
             raise HarnessCompileError(f"OMP unsupported selected hook: {ident}")
         script = "core/hooks/" + entry["script"]
         read(script)
@@ -1431,20 +1556,6 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
             except UnicodeDecodeError as exc:
                 raise HarnessCompileError(f"OMP unsupported binary skill asset: {relative_resource}") from exc
         skills.append(dict(name=name, path=f"skills/{name}/SKILL.md", required=entry.get("omp_mode") == "required"))
-    # Compatibility is canonical source evidence; caller module assertions cannot grant it.
-    admitted_extensions = data.get("hooks", {}).get("omp_extensions", [])
-    extension_map = {e["id"]: e for e in admitted_extensions}
-    if len(extension_map) != len(admitted_extensions):
-        raise HarnessCompileError("OMP duplicate canonical extension")
-    extensions = []
-    for ident in selection["extensions"]:
-        ext = extension_map.get(ident)
-        if ext is None or ext.get("native_input_behavior") != "none" or not ext.get("canonical_source_evidence"):
-            raise HarnessCompileError("OMP unsupported independent protected-input writer/closure")
-        read(ext["path"])
-        if ext.get("closure_sha256") != canonical[ext["path"]]:
-            raise HarnessCompileError("OMP extension closure mismatch")
-        extensions.append(ext)
     rewrite_map = {h["canonical_id"]: h for h in hooks}
     for ident in selection["bridge_rewrites"]:
         hook = rewrite_map.get(ident)
@@ -1460,6 +1571,7 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
                 if item.startswith("model-mode:")]
     if len(mode_ids) > 1:
         raise HarnessCompileError("OMP multiple model mode selections")
+    mode_settings = None
     if "omp_model_modes" in data:
         raw = read(OMP_MODE_SOURCE)
         read("core/omp/model_modes.py")
@@ -1470,18 +1582,25 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
             raise HarnessCompileError("OMP model mode source changed after load")
         try:
             spec = helper["parse_model_modes"](raw)
-            artifact = helper["expand_model_mode"](
-                spec, mode_ids[0] if mode_ids else spec["default"],
-                data["omp_model_modes_sha256"],
-            )
+            mode_settings = helper["expand_model_mode"](spec, mode_ids[0] if mode_ids else spec["default"])
         except ValueError as exc:
             raise HarnessCompileError(str(exc)) from exc
-        files["model-mode.json"] = omp_json(artifact) + "\n"
     elif mode_ids:
         raise HarnessCompileError("OMP model mode source missing")
-    manifest = dict(selection, source_root=str(root), adapter_version=OMP_ADAPTER_VERSION,
+    overlay = render_omp_launch_settings(data, mode_settings)
+    if overlay is not None:
+        files[OMP_LAUNCH_SETTINGS_ARTIFACT] = overlay
+    launch = dict(launch_tools=data["omp_launch"]["tools"].split(",")) if "omp_launch" in data else {}
+    launch_extensions = []
+    for ext_name in omp_launch_extension_names(data):
+        row, ext_files = render_omp_launch_extension(ext_name, read)
+        launch_extensions.append(row)
+        files.update(ext_files)
+    if launch_extensions:
+        launch["launch_extensions"] = launch_extensions
+    manifest = dict(selection, **launch, source_root=str(root), adapter_version=OMP_ADAPTER_VERSION,
                     canonical_inputs=[dict(path=p, sha256=h) for p, h in sorted(canonical.items())],
-                    hook_map=hooks, selected_skills=skills, selected_extensions=extensions,
+                    hook_map=hooks, selected_skills=skills,
                     bridge_total_timeout_ms=28000)
     effective = omp_digest(omp_json(manifest).encode())
     manifest["effective_selection_sha256"] = effective
@@ -1491,22 +1610,14 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
     return f".harness/omp/{effective}", files
 
 
-def _validate_omp_skill_tuples(rows: list[dict[str, str]], *, expectation: bool = False) -> None:
+def _validate_omp_skill_tuples(rows: list[dict[str, str]]) -> None:
     if not isinstance(rows, list) or any(not isinstance(r, dict) or set(r) != {"name", "path", "sha256"}
         or any(not isinstance(r[k], str) or not r[k] for k in r)
         or not Path(r["path"]).is_absolute() or "\0" in r["path"]
         or not re.fullmatch(r"[0-9a-f]{64}", r["sha256"]) for r in rows):
         raise HarnessCompileError("OMP malformed skill inventory")
-    if expectation and len({omp_json(r) for r in rows}) != len(rows):
+    if len({omp_json(r) for r in rows}) != len(rows):
         raise HarnessCompileError("OMP duplicate expected skill")
-
-
-def assert_omp_skill_inventory(expected: list[dict[str, str]], actual: list[dict[str, str]]) -> None:
-    """Exact full UTF-8 tuple multiset; no normalization, filtering or dedup."""
-    _validate_omp_skill_tuples(expected, expectation=True)
-    _validate_omp_skill_tuples(actual)
-    if sorted(actual, key=omp_json) != sorted(expected, key=omp_json):
-        raise HarnessCompileError("OMP ambient/colliding/missing skill")
 
 
 def validate_omp_caller_argv(manifest: dict[str, Any], caller_argv: list[str]) -> None:
@@ -1514,8 +1625,8 @@ def validate_omp_caller_argv(manifest: dict[str, Any], caller_argv: list[str]) -
     values = {"--system-prompt", "--system-prompt-template", "--model", "--provider", "--thinking", "--tools",
               "--smol", "--slow", "--plan", "--models", "--api-key", "--service-tier",
               "--max-time", "--approval-mode", "--resume", "-r", "--restore"}
-    protected = {"--no-skills", "--skill", "--skills", "--extension", "-e",
-                 "--hook", "--plugin-dir", "--config", "--profile", "--cwd", "--add-dir",
+    protected = {"--no-skills", "--skill", "--skills", "--extension", "-e", "--trusted-extension",
+                 "--hook", "--plugin-dir", "--config", "--tools", "--profile", "--cwd", "--add-dir",
                  "--session-dir", "--from-claude", "--from-codex", "--goal",
                  "--no-extensions", "--append-system-prompt", "--no-rules", "--rule", "--rules"}
     temporal = any(h["event"] == "UserPromptSubmit" and h["required"] for h in manifest["hook_map"])
@@ -1523,14 +1634,10 @@ def validate_omp_caller_argv(manifest: dict[str, Any], caller_argv: list[str]) -
     while index < len(caller_argv):
         arg = caller_argv[index]
         if arg == "--":
-            if any(a.split("=", 1)[0] == "--harness-required-bundle" for a in caller_argv[index+1:]):
-                raise HarnessCompileError("OMP reserved launcher locator")
             if temporal and index + 1 < len(caller_argv):
                 raise HarnessCompileError("OMP unsupported pre-provider timing for requested startup action/mode")
             break
         flag = arg.split("=", 1)[0]
-        if flag == "--harness-required-bundle":
-            raise HarnessCompileError("OMP reserved launcher locator")
         if temporal and (flag in {"--print", "-p", "--mode"} or not arg.startswith("-")):
             raise HarnessCompileError("OMP unsupported pre-provider timing for requested startup action/mode")
         if flag in protected or (arg.startswith("-e") and not arg.startswith("--")):
@@ -1543,11 +1650,7 @@ def validate_omp_caller_argv(manifest: dict[str, Any], caller_argv: list[str]) -
 
 
 def prepare_omp_bundle(bundle: Path, expected: dict[str, Any], caller_argv: list[str]) -> tuple[dict[str, Any], list[str]]:
-    """Structural preparation only. Native must admit and consume its real inventory.
-
-    The caller holds existing current/namespace/workspace gates and supplies the
-    source-rendered expectation. A locator and hashes never grant authority.
-    """
+    """Structural preparation only; the caller holds the launcher gates and the bridge verifies at load."""
     if not bundle.is_absolute() or bundle.resolve() != bundle or bundle.name != expected.get("effective_selection_sha256"):
         raise HarnessCompileError("OMP bundle path binding mismatch")
     actual = json.loads(omp_read(bundle, "selection.json"))
@@ -1569,62 +1672,89 @@ def prepare_omp_bundle(bundle: Path, expected: dict[str, Any], caller_argv: list
         raise HarnessCompileError("OMP required artifact missing")
     wanted = [dict(name=s["name"], path=str(bundle / s["path"]), sha256=artifacts[s["path"]]["sha256"])
               for s in actual["selected_skills"]]
-    _validate_omp_skill_tuples(wanted, expectation=True)  # Expected shape only; no actual inventory.
+    _validate_omp_skill_tuples(wanted)  # Expected shape only; no actual inventory.
     validate_omp_caller_argv(actual, caller_argv)
+    # Upstream refuses --trusted-extension mixed with --extension/-e/--hook; no ambient extensions load.
     required = [f"--append-system-prompt={bundle / 'policy.md'}", "--no-extensions",
-                f"--extension={bundle / 'required-extension.ts'}"]
-    required.extend(f'--extension={Path(actual["source_root"]) / e["path"]}' for e in actual["selected_extensions"])
-    if actual["schema"] == 2:
-        validate_omp_native_release(actual["native_release"])
-        required.append(f"--harness-required-bundle={bundle / 'selection.json'}")
+                f"--trusted-extension={bundle / 'required-extension.ts'}"]
+    for row in actual.get("launch_extensions", []):
+        spec = OMP_LAUNCH_EXTENSIONS.get(row.get("name"))
+        if spec is None or row.get("entry") != Path(spec["patched"]).name or row["entry"] not in artifacts \
+                or artifacts[row["entry"]]["sha256"] != row.get("patched_sha256"):
+            raise HarnessCompileError("OMP launch extension binding mismatch")
+        required.append(f"--trusted-extension={bundle / row['entry']}")
+    if "launch_tools" in actual:
+        required.append(f"--tools={','.join(actual['launch_tools'])}")
+    if OMP_LAUNCH_SETTINGS_ARTIFACT in artifacts:
+        required.append(f"--config={bundle / OMP_LAUNCH_SETTINGS_ARTIFACT}")
+    elif "launch_tools" in actual:
+        raise HarnessCompileError("OMP launch overlay artifact missing")
     split = caller_argv.index("--") if "--" in caller_argv else len(caller_argv)
-    p = actual.get("current_projection", {})
-    stable = p.get("expected", {})
-    prepared = dict(schema=actual["schema"], contract_id=actual.get("contract_id"), bundle_dir=str(bundle),
+    prepared = dict(schema=actual["schema"], bundle_dir=str(bundle),
         selection_sha256=actual["effective_selection_sha256"], manifest_sha256=omp_digest(omp_read(bundle, "selection.json")),
-        expected_inventory=wanted, native_release=actual.get("native_release"),
+        expected_inventory=wanted,
         binding=dict(profile=actual["profile"], source_root=actual["source_root"], workspace=actual.get("workspace"),
-            binary=stable.get("binary_path"), namespace=stable.get("namespace_path"),
             source_or_release_binding=actual["source_or_release_binding"],
-            repo_workspace_identity=actual["repo_workspace_identity"], stable_current=stable,
-            current_descriptor=p, dependency_binding=actual.get("hook_dependencies", [])),
+            repo_workspace_identity=actual["repo_workspace_identity"],
+            dependency_binding=actual.get("hook_dependencies", [])),
         canonical_closure_sha256=omp_digest(omp_json(actual["canonical_inputs"]).encode()),
         artifact_closure_sha256=omp_digest(omp_json(actual["artifacts"]).encode()), ready=False, inventory_admitted=False)
     return prepared, caller_argv[:split] + required + caller_argv[split:]
 
 
-def verify_omp_bundle(bundle: Path, expected: dict[str, Any], caller_argv: list[str],
-                      resolved_skills: list[dict[str, str]]) -> list[str]:
-    """Strict legacy wrapper. The actual inventory argument is mandatory."""
-    prepared, argv = prepare_omp_bundle(bundle, expected, caller_argv)
-    assert_omp_skill_inventory(prepared["expected_inventory"], resolved_skills)
-    return argv
-
-
 def write_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any], *, check: bool = False) -> str:
     relative, files = render_omp_bundle(root, data, selection)
-    for name, content in files.items():
-        path = root / relative / name
-        if check:
+
+    def refuse_symlinks(directory: Path) -> None:
+        # Refuse existing symlinks/foreign paths, never unlink to bypass.
+        for node in (directory, *directory.parents):
+            if node == root.parent:
+                break
+            if node.is_symlink():
+                raise HarnessCompileError("OMP generated path substitution")
+
+    if check:
+        for name, content in files.items():
+            path = root / relative / name
             if omp_read(root, f"{relative}/{name}") != content.encode() or stat.S_IMODE(path.stat().st_mode) != 0o600:
                 raise HarnessCompileError("OMP generated artifact mismatch")
-        else:
+        return relative
+    bundles = (root / relative).parent
+    bundles.mkdir(parents=True, mode=0o700, exist_ok=True)
+    refuse_symlinks(bundles)
+    # Concurrent launchers may prepare the same selection; serialize writers so
+    # none reads a partially written immutable artifact.
+    lock = os.open(bundles / ".write.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        # Holding the lock, any temp file is a killed writer's leftover; it
+        # would leave its linked artifact with two links.
+        for stale in bundles.glob(".*.tmp"):
+            stale.unlink(missing_ok=True)
+        for name, content in files.items():
+            path = root / relative / name
             path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-            # Refuse existing symlinks/foreign paths, never unlink to bypass.
-            for node in (path.parent, *path.parent.parents):
-                if node == root.parent:
-                    break
-                if node.is_symlink():
-                    raise HarnessCompileError("OMP generated path substitution")
+            refuse_symlinks(path.parent)
             if path.exists() or path.is_symlink():
                 if (omp_read(root, f"{relative}/{name}") != content.encode()
                         or stat.S_IMODE(path.stat().st_mode) != 0o600):
                     raise HarnessCompileError("OMP immutable generated artifact changed")
                 continue
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "w") as stream:
-                stream.write(content)
-            path.chmod(0o600)
+            # Publish complete bytes only: an interrupted write leaves a temp
+            # file beside the bundles, never a partial immutable artifact.
+            temp = bundles / f".{os.getpid()}.{name.replace('/', '_')}.tmp"
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            os.fchmod(fd, 0o600)
+            try:
+                with os.fdopen(fd, "w") as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.link(temp, path)
+            finally:
+                temp.unlink(missing_ok=True)
+    finally:
+        os.close(lock)
     return relative
 
 

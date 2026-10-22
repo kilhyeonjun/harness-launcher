@@ -1269,7 +1269,7 @@ _harness_launcher_omp_check_args() {
           [[ "$value" != --harness-required-bundle(|=*) ]] || return 2
         done
         return 0 ;;
-      --harness-required-bundle|--harness-required-bundle=*) return 2 ;;
+      --harness-required-bundle|--harness-required-bundle=*|--trusted-extension|--trusted-extension=*) return 2 ;;
       --model|--smol|--slow|--plan|--provider|--models|--thinking|--service-tier|--tools|--skills|--max-time)
         [[ $# -ge 2 && "$2" != -* ]] || {
           echo 'harness-launcher: OMP option requires a literal value' >&2; return 2
@@ -1387,6 +1387,18 @@ _harness_launcher_omp_native() (
   shift
   cd "$run_dir" || return 2
   umask 077
+  # A continuation's native holds its own lock: fcntl locks die with their
+  # owning process, so the launcher's workspace lease alone would free a handle
+  # whose native outlived a killed launcher. -e keeps the fd across exec.
+  if [[ "${(t)_harness_omp_native_lock-}" == *local* && -n "$_harness_omp_native_lock" ]]; then
+    local native_lock_fd=""
+    [[ ! -L "$_harness_omp_native_lock" ]] || return 2
+    : >> "$_harness_omp_native_lock" || return 2
+    zmodload zsh/system || return 2
+    zsystem flock -t 0 -e -f native_lock_fd "$_harness_omp_native_lock" 2>/dev/null || {
+      echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
+    }
+  fi
   # Env contract v2 (decision 038): the 13 fixed fields, PI_AUTO_QA=0, then two
   # optional groups that are forwarded whole or not at all, never synthesized.
   local -a extra=(PI_AUTO_QA=0)
@@ -1404,11 +1416,14 @@ _harness_launcher_omp_native() (
     [[ "${(t)_harness_omp_herdr_resume-}" == *local* ]] && herdr_resume="$_harness_omp_herdr_resume"
     extra+=(HERDR_RESUME_ARGV="$herdr_resume")
   fi
-  /usr/bin/env -i HOME="$root/home" PATH=/usr/bin:/bin LANG=C LC_ALL=C \
-    TMPDIR="$root/tmp" XDG_CACHE_HOME="$root/cache" XDG_CONFIG_HOME="$root/config" \
-    XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
-    PI_CODING_AGENT_DIR="$root/agent" PI_CODING_AGENT_SESSION_DIR="$root/history" \
-    PI_NATIVES_DIR="$root/native-cache" TERM=xterm-256color "${extra[@]}" "$native_bin" "$@"
+  local -a native_env=(HOME="$root/home" PATH=/usr/bin:/bin LANG=C LC_ALL=C
+    TMPDIR="$root/tmp" XDG_CACHE_HOME="$root/cache" XDG_CONFIG_HOME="$root/config"
+    XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data"
+    PI_CODING_AGENT_DIR="$root/agent" PI_CODING_AGENT_SESSION_DIR="$root/history"
+    PI_NATIVES_DIR="$root/native-cache" TERM=xterm-256color "${extra[@]}")
+  # Become the native so the lock's owner is the native itself.
+  [[ -z "${native_lock_fd-}" ]] || exec /usr/bin/env -i "${native_env[@]}" "$native_bin" "$@"
+  /usr/bin/env -i "${native_env[@]}" "$native_bin" "$@"
 )
 
 _harness_launcher_run_omp() (
@@ -1549,14 +1564,15 @@ PYREQUEST
       echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
     }
     _harness_launcher_omp_validate || return 2
-    if [[ "$continuation_mode" == --session-resume && "${omp_model_mode:--}" != - ]]; then
-      selected="$(_harness_launcher_omp_continuation_metadata MODE_PEEK)" || return 2
-      fields=("${(@f)selected}")
-      [[ ${#fields} -eq 8 && "$fields[6]" != - ]] || return 2
-      _harness_launcher_omp_native "$fields[4]" \
-        --inspect-session-model-mode "$fields[6]" --json |
-        "$continuation_python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
-        validate-model-mode-peek "$omp_model_mode" "$omp_model_recipe" || return 2
+    # A native whose launcher died keeps this handle's native lock: refuse it
+    # before any record transition. The workspace lease orders all launchers.
+    local _harness_omp_native_lock="$HARNESS_OMP_ROOT/launcher-continuations/$continuation_h/native.lock" probe_fd=""
+    if [[ -e "$_harness_omp_native_lock" || -L "$_harness_omp_native_lock" ]]; then
+      [[ -f "$_harness_omp_native_lock" && ! -L "$_harness_omp_native_lock" ]] || return 2
+      zsystem flock -t 0 -f probe_fd "$_harness_omp_native_lock" 2>/dev/null || {
+        echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
+      }
+      zsystem flock -u "$probe_fd"
     fi
     local operation=NEW_PREPARE
     [[ "$continuation_mode" == --session-resume ]] && operation=RESUME_ADMIT
@@ -1601,6 +1617,9 @@ PYREQUEST
     native_rc=$?
     selected="$(_harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" "$native_rc")"
     metadata_rc=$?
+    # Every state resumes once the native has written its session file.
+    (( native_rc == 0 && metadata_rc == 0 )) ||
+      print -ru2 -- "harness-launcher: OMP continuation not finalized; resume with: ${HARNESS_PREFIX:-harness-exec} omp --session-resume $continuation_h --"
     (( native_rc == 0 )) || return "$native_rc"
     (( metadata_rc == 0 )) || return 2
     fields=("${(@f)selected}")
@@ -1722,11 +1741,25 @@ _harness_launcher_run() {
     if [[ "${omp_native_args[1]-}" == (--session-new|--session-resume) ]]; then
       # Entry alone supplies this exact internal transport after origin/store
       # verification. Raw public outer controls are refused by Entry pre-begin.
-      [[ -z "$isolated_source_run_dir" && "$1" == --isolated-session && "$selector_i" == 3 ]] || {
+      local continuation_session=""
+      if [[ -z "$isolated_source_run_dir" && "$1" == --isolated-session && "$selector_i" == 3 ]]; then
+        continuation_session="$2"
+      elif [[ -z "$isolated_source_run_dir" && "$selector_i" == 1 && "${omp_native_args[1]}" == --session-resume \
+              && "${omp_native_args[2]-}" =~ '^[0-9a-f]{32}$' ]]; then
+        # herdr's bare resume argv: the handle names its session; use the
+        # session directory's own spelling (the record binds that spelling).
+        local continuation_entry
+        local -a continuation_found=()
+        for continuation_entry in "${HARNESS_SESSION_STATE_HOME:-/nonexistent}"/sessions/*(N/); do
+          [[ "${(L)${continuation_entry:t}//-/}" == "${omp_native_args[2]}" ]] && continuation_found+=("${continuation_entry:t}")
+        done
+        (( ${#continuation_found} == 1 )) && continuation_session="$continuation_found[1]"
+      fi
+      [[ -n "$continuation_session" ]] || {
         echo 'harness-launcher: OMP_CONTINUATION_UNBOUND' >&2; return 2
       }
       _harness_launcher_omp_projection_select || return 2
-      _harness_launcher_omp_continuation "$2" "${omp_native_args[@]}"
+      _harness_launcher_omp_continuation "$continuation_session" "${omp_native_args[@]}"
       return $?
     fi
     _harness_launcher_omp_check_args "${omp_native_args[@]}" || return 2
@@ -3069,8 +3102,8 @@ _harness_launcher_complete() {
   esac
   if [[ "${words[omp_i]-}" == omp ]]; then
     if (( CURRENT == omp_i + 1 )); then
-      compadd -- --version --help login models --model-mode --model-mode-check
-    elif [[ "${words[CURRENT-1]-}" == (--model-mode|--model-mode-check) ]]; then
+      compadd -- --version --help login models --model-mode
+    elif [[ "${words[CURRENT-1]-}" == --model-mode ]]; then
       compadd -- gpt-only opus-only hybrid-gpt-lead hybrid-opus-lead
     elif [[ "${words[omp_i+1]-}" == login ]] && (( CURRENT == omp_i + 2 )); then
       compadd -- anthropic openai-codex

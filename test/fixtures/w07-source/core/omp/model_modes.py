@@ -1,4 +1,4 @@
-"""Typed desired OMP chat recipes; capability services keep native behavior."""
+"""Validate canonical OMP model modes and expand one into upstream settings."""
 
 import json
 
@@ -55,38 +55,22 @@ def parse_model_modes(raw: str) -> dict:
     return spec
 
 
-def expand_model_mode(spec: dict, mode: str, recipe_sha256: str) -> dict:
+def expand_model_mode(spec: dict, mode: str) -> dict:
+    """Upstream OMP settings for one mode; merged into the bundle's --config overlay."""
     require(mode in MODES, "unknown selected mode")
-    intent_models = {
-        intent: spec["modeled_selectors"][selector]
-        for intent, selector in spec["modes"][mode].items()
-    }
-    allowed = sorted(set(intent_models.values()))
+    models = {intent: spec["modeled_selectors"][selector]
+              for intent, selector in spec["modes"][mode].items()}
+    aliases = {"reviewer": "@advisor", "worker": "@task"}
+    require(all(v in aliases for v in spec["named_agent_roles"].values()),
+            "agent intent must be reviewer or worker")
+    g, o = SELECTORS["G"], SELECTORS["O"]
     return {
-        "schema": "omp.session-model-mode.v1",
-        "selected_mode": mode,
-        "recipe_sha256": recipe_sha256,
-        "roles": {
-            name: {"model": intent_models[intent], "thinking": effort, "fallback": []}
-            for name, (intent, effort) in spec["workloads"].items()
-        },
-        "intent_models": intent_models,
-        "agent_intents": spec["named_agent_roles"],
-        "default_agent_intent": "worker",
-        "allowed_selectors": allowed,
-        "model_fallbacks": {model: [] for model in allowed},
-        "retry": {"modelFallback": False},
+        "modelRoles": {name: f"{models[intent]}:{effort}"
+                       for name, (intent, effort) in spec["workloads"].items()},
+        "task": {"agentModelOverrides": {agent: aliases[intent]
+                                         for agent, intent in spec["named_agent_roles"].items()}},
+        "retry": {"modelFallback": True, "fallbackOn": "usage-limit",
+                  "fallbackRevertPolicy": "cooldown-expiry",
+                  "fallbackChains": {o: [g], g: [o]}},
         "contextPromotion": {"enabled": False},
-        "chat_reasoning_mode": {
-            "status": "desired-policy-only",
-            "scope": "managed-chat-and-reasoning",
-            "image_input": "vision",
-            "prompted_chat_judge": "judge",
-        },
-        "capability_services": [
-            {"capability": capability, "kind": "existing-capability-service",
-             "selection": "existing-native-routing", "availability": "UNKNOWN",
-             "behavior": "preserve-existing"}
-            for capability in ("apps", "search", "image_generation", "tts", "stt")
-        ],
     }

@@ -305,15 +305,25 @@ RESUME skips generic session create, GC, new owner and finish. Both locks remain
 held through known terminal observation and finalization, then release N first.
 NEW retains its ordinary finish exactly once.
 
-PENDING does not yield a usable handle. Native zero plus a durable identity
-postcheck yields READY; RESUME changes it to IN_FLIGHT before the one call.
-Unknown terminal leaves PENDING/IN_FLIGHT unresolved. Known failure, fork or
-changed identity blocks the receipt and retains partial effects. Native
-nonzero is preserved; native zero with failed postcheck becomes wrapper exit2.
-No automatic retry, native UUID fabrication or history import occurs.
+Native zero plus a durable identity postcheck yields READY; RESUME changes the
+record to IN_FLIGHT before the one call. Known failure, fork or changed identity
+blocks the receipt and retains partial effects; native nonzero is preserved and
+a resume hint is printed. RESUME admits READY, PENDING, IN_FLIGHT and BLOCKED:
+the exclusive workspace lease plus a free per-handle native lock prove no live
+owner. A recorded native identity must still match; an unknown one adopts the
+handle's single eligible session file. The native itself holds
+`N/launcher-continuations/H/native.lock` (fcntl locks die with their owner, so
+the launcher's lease alone would free a handle whose native outlived a killed
+launcher); RESUME refuses `OMP_CONTINUATION_BUSY` while it is held.
+herdr's bare `harness-exec <harness> omp --session-resume H --` names its own
+session; no caller cwd is injected. Origin matching ignores provenance that
+changes across launcher releases and binary upgrades (runtime pin, manifest,
+binding bytes, binary and namespace marker SHA, lock size/times); a binding may
+name any launcher release under the same launcher-runtimes root. No automatic
+retry, native UUID fabrication or history import occurs.
 
 The bounded observer examines at most16 directory entries and exactly one
-JSONL of at most1 MiB. It discards the first LF-terminated title line and reads
+JSONL of any size. It discards the first LF-terminated title line and reads
 only the second strict UTF-8 v3 header, at most64 KiB per line. It verifies U,
 absolute P, original C, timestamp, filename and absent/null parentSession.
 Transcript bodies are never read. Every read checks full pre/post stat identity;
@@ -338,14 +348,12 @@ the compiler alone emits immutable `.harness/omp/<selection-sha>/` assets. The
 structural API returns a non-ready prepared expectation and preserves argv value
 and terminator boundaries. Only the launcher inserts one reserved manifest
 locator. The original environment keeps the 13 fixed fields plus the v2 additions above. Continuation keeps
-its owned session-dir/resume flags, original literal prompt and terminal handling;
-its strict release validator shares the projection's amended-release schema.
+its owned session-dir/resume flags, original literal prompt and terminal handling.
 
-Schema2 binds contract `w07.required-resolver-consumer.v1`, exact amended version
-`18.11.3-kh.w07.1`, reviewed native source revision/patch/build provenance and actual
-binary SHA separately from upstream base18.11.3/rev96894. These metadata are part
-of the existing trusted publisher's selected binary release, not self-reported
-capabilities or new authority. No stock fallback or config repair is performed.
+The selection is schema 1 with `runtime_version` set to the enrolled upstream
+binary's release version and no fork contract fields. Release metadata is a
+shape check only; rows published for the retired fork stay readable so one
+stale row cannot block the shared enrollment state. No config repair is performed.
 The private `validate-required-prepared(source, consumer, workspace, B, N,
 bundle_manifest)` helper verb re-derives canonical expectations under real current
 selection and checks existing assets without writing or running native. Native
@@ -1677,21 +1685,13 @@ proof alone does not establish either, or native/provider behavior.
 The model-mode parser consumes only launcher flags before `--`, then passes
 literal argv through the existing required resolver. Recipes come from the
 canonical MM1 JSON/helper; launcher code does not duplicate the model router.
-Selection `bundle_ids` includes `model-mode:<id>`; compiler-owned `model-mode.json`
-and prepared metadata bind the selected ID, recipe SHA and canonical/artifact
-closures. Readonly validation rederives the saved selected ID, never fresh default.
-Entry classifies mode-check before begin, and installed exec rejects old current
-closures lacking the mode protocol instead of silently bypassing the default.
-The prospective native version is `18.11.3-kh.w07.mm.1`; its existing exact eight
-release fields remain strict. Actual source/patch/build/binary pins are pending.
-Before `RESUME_ADMIT`, readonly MODE_PEEK obtains the bound native path and calls
-`--inspect-session-model-mode <path> --json`. Exact output is schema
-`omp.session-model-mode.peek.v1`, status `bound|legacy|invalid`, binding
-`{mode_id,recipe_sha256}` only for bound, and actual-byte `snapshot_sha256`.
-Unreadable output uses null snapshot SHA and nonzero status. Every non-bound,
-nonzero, malformed or mismatching result stops without ledger/native mutation.
-Peek is a UX guard; native SDK/CLI rechecks the actual adopted snapshot before
-history/outbox/transition effects. No other sealed artifact is reconstructed.
+Selection `bundle_ids` includes `model-mode:<id>` (the source default when none
+is given, also on resume); the compiler renders the mode into the bundle's
+`omp-settings.yml` overlay and prepared metadata binds the selected ID and the
+source recipe SHA. Readonly validation rederives the saved selected ID, never a
+fresh default. Installed exec rejects old current closures lacking the mode
+protocol instead of silently bypassing the default. No native version gate,
+mode check or saved-session mode peek remains.
 All four CI jobs and aggregate, all 144 scheduled invocations, DevMap/APFS,
 required locator/resources and native capability services remain in force.
 Final projection freeze including MM4 precedes one genuine jq evidence renewal;

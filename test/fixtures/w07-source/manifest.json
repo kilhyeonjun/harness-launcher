@@ -37,10 +37,10 @@
       "sha256": "bcf62a30730fc418701e2ceff7da09ef1a08f22e5d4c121c68784ace3b815411"
     },
     {
-      "bytes": 287,
+      "bytes": 118,
       "mode": "0644",
       "path": ".claude/source/settings.yaml",
-      "sha256": "911d811d7125c506bf448b37ab2518418c45b7fb91045dd1b1b4e94be7dfa10c"
+      "sha256": "eea857428b3034727e97e1db5d15bf5acbe91324c21db01f94eb5e57696f2905"
     },
     {
       "bytes": 33,
@@ -61,22 +61,28 @@
       "sha256": "8a75eeed2be986e4c87ec400aad69544f5ef942f40d1ab7ac360e6c855e01275"
     },
     {
-      "bytes": 3867,
+      "bytes": 3458,
       "mode": "0644",
       "path": "core/omp/model_modes.py",
-      "sha256": "27d5cd1d4c2dc73cf5cb0e41cee12a2260503d405986c46b0fc1554bbd597227"
+      "sha256": "ae1e0c65d924fa52dd46fc5ef348f4df7ccaa0b9e0ebd312e6fc0fa2d0676587"
     },
     {
-      "bytes": 84022,
+      "bytes": 595,
+      "mode": "0644",
+      "path": "core/omp/policy-omp.md",
+      "sha256": "39f2cf5ced5ec99b0905e7a47f2a14a14ac8f3fa3c8dd5cb3bee5ae06ad7151e"
+    },
+    {
+      "bytes": 88943,
       "mode": "0644",
       "path": "core/scripts/harness_compile.py",
-      "sha256": "2d7652d651617978a7f27c3d36c23e754fe85315306c400f7cf3fa35dbe1213a"
+      "sha256": "77de70b0ec7e7b7b7aef94d1cd2daf909be979b37c16b3278610e168b0021a9f"
     },
     {
-      "bytes": 28155,
+      "bytes": 30692,
       "mode": "0644",
       "path": "core/scripts/omp_required_extension.ts",
-      "sha256": "fb0f8a87140082a03c064991e0cafdc9c7c4c0b48cc9447c9675f2cc18ff475c"
+      "sha256": "6fa32b1b5e0f5cb63b15c990a6df97349dd32266c5999e67968d6cb0e2a64444"
     }
   ],
   "origin": "w07-portable-synthetic-fixture",

@@ -323,14 +323,14 @@ See [OMP entry and prepared namespace](docs/architecture.md#omp-entry-and-prepar
 and [typed host/profile enrollment](docs/architecture.md#typed-omp-hostprofile-enrollment)
 for the exact boundary and supported options.
 
-Enrolled normal OMP sessions also require the paired canonical core compiler and
-reviewed native contract `w07.required-resolver-consumer.v1`. Structural preparation
-returns `ready=false` and `inventory_admitted=false`; the launcher inserts one
-reserved `--harness-required-bundle=<physical selection.json>` before `--`.
-Caller-supplied locator/resource overrides refuse. The selected amended version
-is `18.11.3-kh.w07.1`; source revision, patch/build provenance and actual binary
-hash must match the trusted current projection. Stock `18.11.3` cannot satisfy
-schema2. Management and never-enrolled routing retain their existing behavior.
+Enrolled normal OMP sessions also require the paired canonical core compiler.
+The launcher builds a schema-1 selection whose `runtime_version` is the enrolled
+upstream binary's release version; the compiler emits the bundle and its argv
+(`--no-extensions --trusted-extension=<bundle>/required-extension.ts`, plus the
+bundle `--config` settings overlay). Structural preparation returns `ready=false`
+and `inventory_admitted=false`. Caller-supplied `--trusted-extension`, locator
+and resource overrides refuse. The binary pin, namespace and profile binding
+stay exact. Management and never-enrolled routing retain their existing behavior.
 
 Native must resolve its real complete inventory, validate it, consume the same
 array/bytes and complete required policy startup before readiness. Source-equal
@@ -363,12 +363,17 @@ no symlink components or group/world write permission, and payload files must be
 regular singlelink files with their pinned modes and hashes. A system-owned
 sticky temporary ancestor is allowed above the owned checkout/fixture.
 
-The four real source files and seven synthetic YAML inputs are pinned by
+The real source files (the compiler, bridge, model-mode helper and source, OMP
+policy section, Python wrapper and curl guard) and seven synthetic YAML inputs
+are pinned by
 `test/omp-fixture-policy.json`. The fixture `manifest.json` has identical bytes;
 `test/omp-fixture-source.py` pins their policy SHA-256. For a reviewed fixture
 update, update the fixed payload records (path, raw SHA-256, size and mode), write
 both JSON files identically, then update `POLICY_SHA256` in the helper and run the
-regressions in the same change. Origin/revision/digests identify test input only;
+regressions in the same change. The compiler, bridge, model-mode helper and OMP
+policy section are copies of the canonical upstream-OMP (schema 1) sources (alias tokens neutralized); the pinned
+`revision` string predates them and is a fixture label, not their provenance.
+Origin/revision/digests identify test input only;
 they grant no runtime, lease, native readiness or disclosure authority.
 
 These suites execute the real compiler/template with synthetic input and owned
@@ -904,10 +909,7 @@ OMP model modes are launcher controls: `ex omp --model-mode <id>` selects
 `gpt-only`, `opus-only`, `hybrid-gpt-lead`, or `hybrid-opus-lead`; a fresh mode
 source defaults to its canonical `hybrid-opus-lead` recipe. Tokens after `--`
 remain data. Direct model/provider/effort overrides conflict with a mode.
-`ex omp --model-mode-check <id>` prints desired model/effort, empty fallback,
-unresolved model/effort and availability `UNKNOWN`, without auth or model APIs.
-Check is metadata and grants no native capability or workspace/session authority.
-Mode execution requires the distinct modified native release and its actual
-source/patch/build/binary custody; stock 18.11.3 and the old w07 release stop.
-Resume requires an explicit matching mode and current canonical recipe hash;
-legacy/mismatch/invalid saved bindings stop before ledger/history/outbox changes.
+The id is validated by the source's own parser; the compiler renders the mode
+into the bundle's `omp-settings.yml` overlay (model roles, agent overrides and
+cross-provider fallback chains). Resume uses `--model-mode` when given, else the
+source default.
