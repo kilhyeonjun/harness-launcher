@@ -10,10 +10,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
   `HARNESS_RUN_DIR` only when the outer runner set all four validly, and
   `HERDR_ENV`/`HERDR_SOCKET_PATH`/`HERDR_PANE_ID` only when all three are
   valid. No other caller variable is forwarded.
-- Set `HERDR_RESUME_ARGV` when resuming an OMP continuation with HERDR context:
-  contains the compact JSON array of the exact launcher argv that resumes this
-  continuation through harness-exec. Available when `--session-resume` mode,
-  HERDR triple is forwarded, and the continuation handle is valid.
+- With the HERDR triple, also set `HERDR_RESUME_ARGV`: for OMP continuation
+  launches the JSON argv of the public `harness-exec <harness-dir> omp
+  --session-resume <handle> --` command, otherwise empty. A caller's own value
+  is never forwarded.
 - Show title, model and effort of OMP panes in the herdr plugin from the
   agent's session file under the OMP history directory or a launcher
   continuation session directory.

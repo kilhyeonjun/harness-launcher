@@ -143,22 +143,43 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     def assign(values):return '; '.join(k+'='+shlex.quote(v) for k,v in values.items())
     for values,extra in [
         (tuple_env,tuple_env),
-        ({**tuple_env,**herdr_env},{**tuple_env,**herdr_env}),
+        ({**tuple_env,**herdr_env},{**tuple_env,**herdr_env,'HERDR_RESUME_ARGV':''}),
         ({**tuple_env,'HARNESS_SESSION_ID':'not-a-uuid'},{}),
         ({k:v for k,v in tuple_env.items() if k!='HARNESS_RUN_DIR'},{}),
         ({**tuple_env,'HARNESS_SOURCE_ROOT':'rel/path'},{}),
         ({**tuple_env,'HARNESS_SESSION_ROOT':''},{}),
         ({**tuple_env,'HARNESS_RUN_DIR':'run'},{}),
-        (herdr_env,herdr_env),
+        (herdr_env,{**herdr_env,'HERDR_RESUME_ARGV':''}),
         ({**herdr_env,'HERDR_ENV':'0'},{}),
         ({**herdr_env,'HERDR_SOCKET_PATH':'rel.sock'},{}),
         ({**herdr_env,'HERDR_PANE_ID':''},{}),
         ({k:v for k,v in herdr_env.items() if k!='HERDR_SOCKET_PATH'},{}),
         ({**tuple_env,**{**herdr_env,'HERDR_ENV':'0'}},tuple_env),
-        ({**{**tuple_env,'HARNESS_SESSION_ID':'x'},**herdr_env},herdr_env),
+        ({**{**tuple_env,'HARNESS_SESSION_ID':'x'},**herdr_env},{**herdr_env,'HERDR_RESUME_ARGV':''}),
     ]:
         got=native_env(assign(values))
         assert got=={**fake_env,**extra},(values,got)
+        passed+=1
+    # HERDR_RESUME_ARGV comes only from the continuation caller's own local.
+    # Breaks caught: forwarding a caller/exported value, or forwarding without the triple.
+    resume='["harness-exec","/h a\\"b","omp","--session-resume","'+'a'*32+'","--"]'
+    local_resume='f(){ local _harness_omp_herdr_resume='+shlex.quote(resume)+'; _harness_launcher_omp_native "$2/cwd" --version; }; '
+    herdr_out={**herdr_env,'HERDR_RESUME_ARGV':''}
+    for values,setup,extra in [
+        (herdr_env,'',herdr_out),
+        ({**herdr_env,'HERDR_RESUME_ARGV':'["evil"]'},'',herdr_out),
+        ({**herdr_env,'_harness_omp_herdr_resume':'["evil"]'},'export _harness_omp_herdr_resume; ',herdr_out),
+        ({**herdr_env,'_harness_omp_herdr_resume':'["evil"]'},'',herdr_out),
+        (herdr_env,local_resume,{**herdr_env,'HERDR_RESUME_ARGV':resume}),
+        ({**herdr_env,'HERDR_ENV':'0'},local_resume,{}),
+    ]:
+        capture.unlink(missing_ok=True)
+        call=setup+('f "$@"' if setup==local_resume else '_harness_launcher_omp_native "$2/cwd" --version')
+        script='source "$1/bin/aliases.zsh"; HARNESS_OMP_ROOT="$2" HARNESS_OMP_BIN="$3"; '+assign(values)+'; '+call
+        done=subprocess.run(['/bin/zsh','-f','-c',script,'test',str(repo),str(ns),str(binary)],cwd=profile,env={**env,**leak},capture_output=True,timeout=20)
+        assert done.returncode==0,(values,setup,done.stderr.decode())
+        got=json.loads(capture.read_text())['env']
+        assert got=={**fake_env,**extra},(values,setup,got)
         passed+=1
     # Exact management tuples must bypass workspace/session preparation. These
     # expectations come from the public command contract, not its classifier.
@@ -286,24 +307,6 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     lock.write_text('');lock.chmod(0o644);run(['omp',*management[2]],expected=2,no_allocate=True);assert lock.exists();lock.unlink()
     print('SAVED_FAKE_PROOF='+json.dumps({'schema':'omp-routing-fake-v1','startup_baseline':fake_env,'cases':[{**x,'outgoing':[b.decode() for b in x['outgoing']] if x['outgoing'] is not None else None} for x in observations]},separators=(',',':')))
     print('PASS:',passed,'OMP real-entry/dispatcher argv/env/cwd/exit and fail-closed cases; native fake only')
-    # HERDR_RESUME_ARGV tests: forwarded to native only when HERDR_ENV=1 and set in parent.
-    # Test that HERDR_RESUME_ARGV is forwarded through _harness_launcher_omp_native to native OMP
-    capture.unlink(missing_ok=True)
-    script_herdr_fwd='source "$1/bin/aliases.zsh"; HARNESS_OMP_ROOT="$2" HARNESS_OMP_BIN="$3"; HERDR_RESUME_ARGV=\'["harness-exec","/fake","omp","--session-resume","aabbccdd"]\'; HERDR_ENV=1 HERDR_SOCKET_PATH=/tmp/herdr.sock HERDR_PANE_ID=p_1; _harness_launcher_omp_native "$2/cwd" --version'
-    result_herdr_fwd=subprocess.run(['/bin/zsh','-f','-c',script_herdr_fwd,'test',str(repo),str(ns),str(binary)],cwd=profile,env={**env},capture_output=True,timeout=20)
-    if capture.exists():
-        got_env_herdr=json.loads(capture.read_text())['env']
-        assert 'HERDR_RESUME_ARGV' in got_env_herdr,(script_herdr_fwd,'HERDR_RESUME_ARGV not forwarded with HERDR_ENV=1',got_env_herdr)
-        assert got_env_herdr['HERDR_RESUME_ARGV']=='["harness-exec","/fake","omp","--session-resume","aabbccdd"]',(script_herdr_fwd,'HERDR_RESUME_ARGV wrong value',got_env_herdr)
-    passed+=1
-    # HERDR_RESUME_ARGV not forwarded without HERDR_ENV=1
-    capture.unlink(missing_ok=True)
-    script_herdr_absent='source "$1/bin/aliases.zsh"; HARNESS_OMP_ROOT="$2" HARNESS_OMP_BIN="$3"; HERDR_RESUME_ARGV=\'["should","not","appear"]\'; HERDR_ENV=0; _harness_launcher_omp_native "$2/cwd" --version'
-    result_herdr_absent=subprocess.run(['/bin/zsh','-f','-c',script_herdr_absent,'test',str(repo),str(ns),str(binary)],cwd=profile,env={**env},capture_output=True,timeout=20)
-    if capture.exists():
-        got_env_herdr_absent=json.loads(capture.read_text())['env']
-        assert 'HERDR_RESUME_ARGV' not in got_env_herdr_absent,(script_herdr_absent,'HERDR_RESUME_ARGV present without HERDR_ENV=1',got_env_herdr_absent)
-    passed+=1
     for directory, _, files in os.walk(snapshot):
         Path(directory).chmod(0o700)
         for name in files:

@@ -1396,9 +1396,13 @@ _harness_launcher_omp_native() (
   fi
   if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
     extra+=(HERDR_ENV=1 HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" HERDR_PANE_ID="$HERDR_PANE_ID")
-    if [[ -n "${HERDR_RESUME_ARGV-}" ]]; then
-      extra+=(HERDR_RESUME_ARGV="$HERDR_RESUME_ARGV")
-    fi
+    # Only the continuation caller's own local sets the resume argv; an inherited
+    # value (including a caller's HERDR_RESUME_ARGV) never passes. It is always
+    # present with the triple, empty otherwise, so a workspace .env loaded by the
+    # native runtime cannot supply one.
+    local herdr_resume=""
+    [[ "${(t)_harness_omp_herdr_resume-}" == *local* ]] && herdr_resume="$_harness_omp_herdr_resume"
+    extra+=(HERDR_RESUME_ARGV="$herdr_resume")
   fi
   /usr/bin/env -i HOME="$root/home" PATH=/usr/bin:/bin LANG=C LC_ALL=C \
     TMPDIR="$root/tmp" XDG_CACHE_HOME="$root/cache" XDG_CONFIG_HOME="$root/config" \
@@ -1576,21 +1580,17 @@ PYREQUEST
       [[ "$value" == -- ]] && break
       native_options+=("$value")
     done
-    # HERDR resume argv: provide the launcher-native public form to resume this
-    # continuation, when HERDR is forwarded to the native OMP and this is a resume.
-    if [[ "$continuation_mode" == --session-resume && "${HERDR_ENV:-}" == 1 && \
-          -n "${HERDR_SOCKET_PATH:-}" && -n "${HERDR_PANE_ID:-}" && \
-          "$continuation_h" =~ '^[0-9a-f]{32}$' && -n "${HARNESS_DIR:-}" ]]; then
-      # Compact JSON array: the exact argv that resumes through the launcher
-      local -a herdr_resume_form=("harness-exec" "${HARNESS_DIR:A}" "omp" "--session-resume" "$continuation_h" "--")
-      local herdr_resume_json resume_item
-      herdr_resume_json="["
-      for resume_item in "${herdr_resume_form[@]}"; do
-        [[ -z "$herdr_resume_json" || "$herdr_resume_json" == "[" ]] && herdr_resume_json="${herdr_resume_json}\"${resume_item}\"" \
-          || herdr_resume_json="${herdr_resume_json},\"${resume_item}\""
-      done
-      herdr_resume_json="${herdr_resume_json}]"
-      export HERDR_RESUME_ARGV="$herdr_resume_json"
+    # herdr restores a pane with bare `omp --resume=<path>`, bypassing this
+    # launcher. Give the native OMP (and the kh herdr observer) the exact public
+    # command that resumes this same continuation H through the registered source.
+    local _harness_omp_herdr_resume=""
+    if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
+      _harness_omp_herdr_resume="$("$continuation_python" -I -S -B -c \
+        'import json,sys;print(json.dumps(sys.argv[1:],separators=(",",":")))' \
+        harness-exec "${config_root:A}" omp --session-resume "$continuation_h" --)" || {
+        _harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" 2 >/dev/null
+        return 2
+      }
     fi
     if [[ "$continuation_mode" == --session-new ]]; then
       _harness_launcher_omp_native "$retained_c" "${native_options[@]}" --session-dir "$retained_s" -- "${native_prompt[@]}"
