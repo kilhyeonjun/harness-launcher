@@ -449,6 +449,10 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(entry['enrollment_generation'],2)
         self.assertEqual(entry['profile_binding'],self.m.profile_binding('ex',str(self.profile)))  # fresh binding written
         self.select()
+        # A swapped directory (same device, different inode) is not a remap.
+        self.renumber('profile_root',key='ino')
+        self.rejected(self.enroll,'OMP_BINDING_MISMATCH')
+        self.renumber('profile_root',key='ino',delta=-1)
         # A genuinely different root is still a binding change, not a remap.
         reg=self.registry/'ex'; reg.write_text(str(self.other)+'\n')
         row=self.m.capture_row('ex',str(self.other),str(self.consumer),str(self.binary),str(self.ns),self.expiry,self.release,self.provenance)

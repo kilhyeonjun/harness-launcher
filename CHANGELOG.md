@@ -14,6 +14,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - The publisher matches a re-published profile binding through the same device
   remapping as readers, so republishing works after a reboot renumbers APFS
   devices. A different root still fails with `OMP_BINDING_MISMATCH`.
+- Rolling back to a launcher snapshot that predates this change still fails
+  every row with `OMP_BINDING_MISMATCH` until the row is republished.
 - `omp --session-resume <handle>` (and `--session-new`) without a trailing `--`
   is accepted as a prompt-less launch. A prompt still has to follow `--`.
 
