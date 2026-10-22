@@ -1398,14 +1398,23 @@ _harness_launcher_run_omp() (
   _harness_launcher_omp_validate || return 2
   local root="$HARNESS_OMP_ROOT" lease_fd=""
   if [[ "${1:-}" != (--version|--help) ]]; then
-    # Retain one normal native-home owner for this namespace, in addition to
-    # any existing isolated-workspace lease held by the outer runner.
+    # Hold the normal native-home lease, in addition to any existing
+    # isolated-workspace lease held by the outer runner. Fresh sessions share
+    # it: OMP itself locks its auth refresh, session files and settings writes.
+    # Management (login/models) rewrites the home and stays exclusive.
+    local -a lease_mode=(-r)
+    [[ "${1:-}" == (login|models) ]] && lease_mode=()
     [[ ! -L "$root/.launcher.lock" ]] || return 2
     umask 077
     : >> "$root/.launcher.lock" || return 2
     zmodload zsh/system || return 2
-    zsystem flock -t 0 -f lease_fd "$root/.launcher.lock" || {
-      echo 'harness-launcher: OMP namespace is already active' >&2; return 2
+    zsystem flock -t 0 "${lease_mode[@]}" -f lease_fd "$root/.launcher.lock" 2>/dev/null || {
+      if (( ${#lease_mode} )); then
+        echo 'harness-launcher: OMP namespace is busy with login/models' >&2
+      else
+        echo 'harness-launcher: OMP namespace has active sessions; close them before login/models' >&2
+      fi
+      return 2
     }
   fi
   # Nonpublic management owns the prepared native home, not a workspace.
@@ -1519,7 +1528,7 @@ PYREQUEST
     [[ ! -L "$HARNESS_OMP_ROOT/.launcher.lock" ]] || return 2
     : >> "$HARNESS_OMP_ROOT/.launcher.lock" || return 2
     zmodload zsh/system || return 2
-    zsystem flock -t 0 -f namespace_fd "$HARNESS_OMP_ROOT/.launcher.lock" || {
+    zsystem flock -t 0 -r -f namespace_fd "$HARNESS_OMP_ROOT/.launcher.lock" 2>/dev/null || {
       echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
     }
     _harness_launcher_omp_validate || return 2
@@ -2278,10 +2287,53 @@ _harness_launcher_run_session() {
   else
     if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
     _harness_launcher_announce_run_dir "${HARNESS_RUN_DIR:-$HARNESS_DIR}"
-    HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
-      HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
-      "$_HARNESS_LAUNCHER_BIN/launcher.sh"
-    return $?
+    # The menu offers OMP when this profile's namespace selects; an enrolled
+    # profile that fails selection is listed with its error label instead.
+    # The menu only hands back `omp [--model-mode <id>]` and exits 75; the full
+    # OMP checks (binary hash included) run here, so the menu itself stays cheap.
+    local omp_handoff_dir="" omp_unavailable="" omp_probe tui_rc
+    local -a omp_native_args=() omp_handoff_lines=()
+    omp_probe="$( (_harness_launcher_omp_projection_select && [[ -n "$HARNESS_OMP_BIN" ]] && print -r READY) 2>&1)"
+    if [[ "$omp_probe" == *READY ]]; then
+      omp_handoff_dir="$(mktemp -d "${TMPDIR:-/tmp}/harness-omp-handoff.XXXXXX")" || return 2
+    elif [[ "$omp_probe" =~ 'harness-launcher: (OMP_[A-Z_]+)' ]]; then
+      omp_unavailable="$match[1]"
+    fi
+    {
+      while true; do
+        HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
+          HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
+          HARNESS_LAUNCHER_OMP_HANDOFF="${omp_handoff_dir:+$omp_handoff_dir/argv}" \
+          HARNESS_LAUNCHER_OMP_UNAVAILABLE="$omp_unavailable" \
+          "$_HARNESS_LAUNCHER_BIN/launcher.sh"
+        tui_rc=$?
+        (( tui_rc == 75 )) && [[ -n "$omp_handoff_dir" ]] || return $tui_rc
+        # Fixed grammar only: another runtime could have written this file.
+        local handoff="$omp_handoff_dir/argv"
+        [[ -f "$handoff" && ! -L "$handoff" && -O "$handoff" ]] || return 2
+        omp_handoff_lines=("${(@f)$(<"$handoff")}")
+        rm -f "$handoff"
+        if [[ ${#omp_handoff_lines} -eq 1 && "$omp_handoff_lines[1]" == omp ]]; then
+          omp_native_args=()
+        elif [[ ${#omp_handoff_lines} -eq 3 && "$omp_handoff_lines[1]" == omp && "$omp_handoff_lines[2]" == --model-mode \
+                && "$omp_handoff_lines[3]" =~ '^[a-z0-9][a-z0-9-]*$' ]]; then
+          omp_native_args=(--model-mode "$omp_handoff_lines[3]")
+        else
+          echo 'harness-launcher: OMP menu handoff is invalid' >&2; return 2
+        fi
+        if _harness_launcher_omp_model_mode "${omp_native_args[@]}" \
+            && _harness_launcher_omp_check_args "${omp_native_args[@]}" \
+            && _harness_launcher_omp_projection_select && _harness_launcher_omp_validate; then
+          [[ -z "$isolated_session_id" ]] || \
+            echo "harness-launcher: isolated session $isolated_session_id; OMP continuation is not enabled on this entry" >&2
+          _harness_launcher_run_omp "${omp_native_args[@]}"
+          return $?
+        fi
+        echo '⚠️  OMP 시작 실패 — 메뉴로 돌아갑니다.' >&2
+      done
+    } always {
+      [[ -z "$omp_handoff_dir" ]] || rm -rf "$omp_handoff_dir"
+    }
   fi
 }
 
