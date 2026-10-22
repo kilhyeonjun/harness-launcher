@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — Codex hook approval capture
+## Unreleased
 
 - Add the operator command `codex-hook-trust.py capture --session-id UUID [--profile]
   [--dry-run]`, which records the owner's existing native Codex hook approval as
@@ -15,6 +15,11 @@ Notable changes are recorded here. This project follows semantic versioning for 
   after the operator types `record` on the controlling terminal under the exact
   hooks, scripts and callbacks. Writes are atomic and 0600 with a backup of the
   previous record.
+- Forward the isolated-session tuple to OMP continuation launches
+  (`omp --session-new`/`--session-resume`). The continuation now sets
+  `HARNESS_SESSION_ID`/`HARNESS_SOURCE_ROOT`/`HARNESS_SESSION_ROOT`/
+  `HARNESS_RUN_DIR` from its own session record (run dir = retained cwd);
+  before, the native OMP received none of the four.
 
 ## 0.77.1 — 2026-10-22
 

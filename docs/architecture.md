@@ -182,10 +182,13 @@ fields), plus the v2 additions of decision 038:
   `dev.autoqa`; without it OMP pushes tool-issue reports to an external QA
   service.
 - `HARNESS_SESSION_ID`, `HARNESS_SOURCE_ROOT`, `HARNESS_SESSION_ROOT` and
-  `HARNESS_RUN_DIR`, only as a whole and only when the outer runner set all
-  four and they are valid (a UUID and three absolute paths). The broker's
-  delivery and hook identity depend on them. Any missing or invalid member
-  drops all four; the launcher never synthesizes them.
+  `HARNESS_RUN_DIR`, only as a whole and only when the runner set all four and
+  they are valid (a UUID and three absolute paths). The broker's delivery and
+  hook identity depend on them. Any missing or invalid member drops all four;
+  the launcher never synthesizes them. A continuation launch sets them from
+  its own session record after the record is bound: the continuation id, the
+  recorded source and session roots, and the retained cwd (the session root)
+  as run directory.
 - `HERDR_ENV=1`, `HERDR_SOCKET_PATH` and `HERDR_PANE_ID`, only as a whole and
   only when `HERDR_ENV` is `1`, the socket path is absolute and the pane id is
   non-empty, so the herdr observer can attach to the pane.

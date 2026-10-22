@@ -1586,6 +1586,21 @@ PYREQUEST
     # Repeat authority/origin/header checks after IN_FLIGHT and immediately
     # before the one foreground call. No generic create/GC/owner preparation.
     _harness_launcher_omp_continuation_metadata RESOLVE "$expected_sha" "$own_nonce" >/dev/null || return 2
+    # Env contract v2 forwards the isolated-session tuple whole. The continuation
+    # owns W, so it reads the roots from the record RESOLVE just bound: source
+    # root = this registered source, session root = retained cwd = run dir.
+    local HARNESS_SESSION_ID="$continuation_w" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
+    local HARNESS_RUN_DIR="$retained_c" continuation_record="$continuation_state/sessions/$continuation_w"
+    {
+      [[ -f "$continuation_record/source-root" && ! -L "$continuation_record/source-root" &&
+         -f "$continuation_record/session-root" && ! -L "$continuation_record/session-root" ]] &&
+        IFS= read -r HARNESS_SOURCE_ROOT < "$continuation_record/source-root" &&
+        IFS= read -r HARNESS_SESSION_ROOT < "$continuation_record/session-root" &&
+        [[ "$HARNESS_SOURCE_ROOT" == "${config_root:A}" && "$HARNESS_SESSION_ROOT" == "$retained_c" ]]
+    } || {
+      _harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" 2 >/dev/null
+      return 2
+    }
     local -a omp_required_argv
     _harness_launcher_omp_required_argv "$retained_c" "${native_options[@]}" -- "${native_prompt[@]}" || {
       _harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" 2 >/dev/null
