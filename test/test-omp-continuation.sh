@@ -546,12 +546,11 @@ try {
             'TMPDIR':str(self.ns/'tmp'),'XDG_CACHE_HOME':str(self.ns/'cache'),'XDG_CONFIG_HOME':str(self.ns/'config'),
             'XDG_STATE_HOME':str(self.ns/'state'),'XDG_DATA_HOME':str(self.ns/'data'),
             'PI_CODING_AGENT_DIR':str(self.ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(self.ns/'history'),
-            'PI_NATIVES_DIR':str(self.ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0'}
+            'PI_NATIVES_DIR':str(self.ns/'native-cache'),'TERM':'xterm-256color'}
         for call in calls:
             self.assertEqual({k:call['env'][k] for k in expected_env},expected_env)
             # Darwin may add this Python-startup key after env -i. Production
-            # still sends the v2 set (13 + PI_AUTO_QA=0; the fixture env carries no
-            # harness tuple or herdr triple); this is not a wider env grant.
+            # still sends exactly13; this observation is not a wider env grant.
             self.assertLessEqual(set(call['env'])-set(expected_env),{'__CF_USER_TEXT_ENCODING'})
 
     def test_C10_namespace_busy_no_native_or_receipt_transition(self):
