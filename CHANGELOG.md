@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## Unreleased — Codex hook capture, OMP lane A
 
 - Add the operator command `codex-hook-trust.py capture --session-id UUID [--profile]
   [--dry-run]`, which records the owner's existing native Codex hook approval as
