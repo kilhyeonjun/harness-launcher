@@ -20,6 +20,13 @@ Notable changes are recorded here. This project follows semantic versioning for 
   `HARNESS_SESSION_ID`/`HARNESS_SOURCE_ROOT`/`HARNESS_SESSION_ROOT`/
   `HARNESS_RUN_DIR` from its own session record (run dir = retained cwd);
   before, the native OMP received none of the four.
+- `harness-session create` works through the Homebrew command link again.
+  The engine looked for its helpers beside the invoked link
+  (`<prefix>/bin`) instead of beside its target in
+  `share/harness-launcher`, so every create failed with "creation helper
+  unavailable". All helper lookups (creation, work proof, Codex history,
+  transcript archive, usage sync, Codex policy, report) now resolve the link
+  chain once through `engine_path`/`engine_dir`.
 
 ## 0.77.1 — 2026-10-22
 
