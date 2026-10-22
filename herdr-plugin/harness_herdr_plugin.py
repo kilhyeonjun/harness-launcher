@@ -366,6 +366,55 @@ def upward(pane, relative):
     return found
 
 
+OMP_OWNER_SCHEMA = "p0-normal-omp-owner-v1"
+OMP_HEADER_BYTES = 16 * 1024
+
+
+def omp_session_path(pane):
+    """The OMP session file herdr reports for a pane, or None.
+
+    Only a `.jsonl` directly under `<namespace>/history`, where `<namespace>` carries
+    the launcher's owner marker for exactly that path; the file itself is opened
+    without following a symlink (open_owned) and must be a regular file we own."""
+    session = pane.get("agent_session")
+    value = session.get("value") if isinstance(session, dict) else None
+    if pane.get("agent") != "omp" or not isinstance(value, str) or not os.path.isabs(value):
+        return None
+    history = os.path.dirname(value)
+    namespace = os.path.dirname(history)
+    if not value.endswith(".jsonl") or os.path.basename(history) != "history":
+        return None
+    marker = open_owned(os.path.join(namespace, ".owner.json"))
+    if marker is None:
+        return None
+    with marker:
+        try:
+            owner = json.loads(marker.read(OMP_HEADER_BYTES))
+        except ValueError:
+            return None
+    if (not isinstance(owner, dict) or owner.get("schema") != OMP_OWNER_SCHEMA
+            or owner.get("prefix") != os.path.realpath(namespace)
+            or os.path.realpath(history) != os.path.join(owner["prefix"], "history")):
+        return None
+    return value
+
+
+def omp_title(path):
+    """The title record at the head of an OMP session file; "" when absent."""
+    handle = open_owned(path)
+    if handle is None:
+        return ""
+    with handle:
+        for raw in handle.read(OMP_HEADER_BYTES).split(b"\n")[:-1]:
+            try:
+                record = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("type") == "title":
+                return clean(record["title"]) if isinstance(record.get("title"), str) else ""
+    return ""
+
+
 def session_of(pane, agent):
     session = pane.get("agent_session")
     value = session.get("value") if isinstance(session, dict) else None
@@ -466,6 +515,9 @@ class Titles:
     def title(self, pane):
         terminal = (pane.get("terminal_title_stripped") or "").strip()
         agent = pane.get("agent")
+        if agent == "omp":
+            path = omp_session_path(pane)
+            return (path and omp_title(path)) or terminal
         if agent == "codex":
             return self.codex(pane)[0] or terminal
         if agent == "claude":
@@ -488,6 +540,14 @@ class Titles:
             message = record.get("message") if record else None
             if isinstance(message, dict):
                 return model_text(message.get("model"), record.get("effort"))
+        elif pane.get("agent") == "omp":
+            path = omp_session_path(pane)
+            model = tail_record(path, "model_change") if path else None
+            level = tail_record(path, "thinking_level_change") if path else None
+            if model:
+                # `provider/model`: the provider names no model.
+                return model_text(str(model.get("model")).rpartition("/")[2],
+                                  level.get("thinkingLevel") if level else None)
         return ""
 
     def prune(self):

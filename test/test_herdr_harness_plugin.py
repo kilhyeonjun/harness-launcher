@@ -1028,6 +1028,76 @@ class MetadataTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertEqual(len(self.h.reports()), 2)
 
 
+class OmpSessionTest(HerdrPluginTestCase):
+    """OMP panes: title, model and effort come from the session file herdr reports."""
+
+    NAME = "2026-10-22T01-48-51-617Z_01a1614b-fa21-73a0-8f28-1ec16c4f5e53.jsonl"
+
+    def namespace(self, marker=True):
+        ns = self.h.root / "omp-ns"
+        (ns / "history").mkdir(parents=True)
+        if marker:
+            (ns / ".owner.json").write_text(json.dumps({"schema": "p0-normal-omp-owner-v1", "prefix": str(ns.resolve())}))
+        return ns
+
+    def session(self, ns, records, name=None):
+        path = ns / "history" / (name or self.NAME)
+        jsonl(path, records)
+        return path
+
+    def omp_pane(self, path):
+        item = pane("w2:p1", "w2:t1", agent="omp", title="")
+        item["cwd"] = str(self.h.root)
+        item["agent_session"] = {"agent": "omp", "kind": "path", "source": "herdr:omp", "value": str(path)}
+        return item
+
+    def sync(self, path):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)], [self.omp_pane(path)])
+        self.assertRan(self.h.run("startup"))
+
+    RECORDS = [{"type": "title", "v": 1, "title": "OMP 환경 계약 정리", "pad": "x" * 64},
+               {"type": "session", "version": 3, "id": "01a1614b", "cwd": "/work"},
+               {"type": "model_change", "model": "openai-codex/gpt-5.5"},
+               {"type": "thinking_level_change", "thinkingLevel": "low"},
+               {"type": "message", "role": "user"},
+               {"type": "model_change", "model": "openai-codex/gpt-6.1-sol"},
+               {"type": "thinking_level_change", "thinkingLevel": "high"}]
+
+    def test_title_model_and_effort_come_from_the_session_file(self):
+        path = self.session(self.namespace(), self.RECORDS)
+        self.sync(path)
+        self.assertEqual(self.h.renames(), [["w2:t1", "OMP 환경 계약 정리"]])
+        self.assertEqual(self.h.reports()[-1][-2:], ["--token", "model=6.1-sol high"])
+
+    def test_a_model_without_a_provider_prefix_is_used_as_is(self):
+        path = self.session(self.namespace(), [{"type": "model_change", "model": "claude-opus-5-5"}])
+        self.sync(path)
+        self.assertEqual(self.h.reports()[-1][-2:], ["--token", "model=opus-5-5"])
+
+    def test_a_symlinked_session_file_is_not_read(self):
+        ns = self.namespace()
+        real = self.session(ns, self.RECORDS, name="real.jsonl")
+        link = ns / "history" / self.NAME
+        link.symlink_to(real)
+        self.sync(link)
+        self.assertEqual(self.h.renames(), [])
+        self.assertNotIn("--token", self.h.reports()[-1])
+
+    def test_a_file_outside_an_owned_history_directory_is_not_read(self):
+        ns = self.namespace(marker=False)  # no owner marker
+        self.sync(self.session(ns, self.RECORDS))
+        self.assertEqual(self.h.renames(), [])
+        other = self.h.root / "elsewhere" / self.NAME
+        jsonl(other, self.RECORDS)
+        self.sync(other)
+        self.assertEqual(self.h.renames(), [])
+
+    def test_a_non_jsonl_path_is_not_read(self):
+        ns = self.namespace()
+        self.sync(self.session(ns, self.RECORDS, name="session.txt"))
+        self.assertEqual(self.h.renames(), [])
+
+
 class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
     """A Claude turn whose last answer marks a recommendation waits for the user's choice."""
 
