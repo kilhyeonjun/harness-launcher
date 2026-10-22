@@ -5,6 +5,7 @@ import io
 import importlib.util
 import json
 import os
+import pty
 import re
 from pathlib import Path
 import shutil
@@ -376,9 +377,19 @@ class CaptureApprovalTests(unittest.TestCase):
             self.assertEqual(operator_main(m, ['capture', '--dry-run']), 1)
         self.assertIn('--session-id', ''.join(c.args[0] for c in err.write.call_args_list))
         # Without the operator's terminal, or without the operator's answer, nothing is recorded.
-        with mock.patch('builtins.open', side_effect=OSError('no tty')):
+        with mock.patch.object(m.os, 'open', side_effect=OSError('no tty')):
             with self.assertRaisesRegex(ValueError, 'interactive terminal'):
                 m.confirm_on_tty({}, {})
+        shown = {'hooks': {'x': 1}, 'scripts': {}, 'callbacks': {}}
+        for answer, expected in ((b'record\n', True), (b'yes\n', False), (b'', False)):
+            master, slave = pty.openpty()
+            try:
+                os.write(master, answer if answer else b'\x04')
+                with mock.patch.object(m.os, 'open', return_value=os.dup(slave)):
+                    self.assertIs(m.confirm_on_tty(shown, {'record': 'r'}), expected)
+                self.assertIn(b"Type 'record'", os.read(master, 65536))
+            finally:
+                os.close(slave); os.close(master)
         with mock.patch('sys.stderr') as err:
             self.assertEqual(operator_main(m, ['capture', '--session-id', record.name], confirm=False), 1)
         self.assertIn('did not confirm', ''.join(c.args[0] for c in err.write.call_args_list))

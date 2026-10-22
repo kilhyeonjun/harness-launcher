@@ -389,7 +389,10 @@ capture must be operator-run (an agent must never run it). The session can write
 its own profile, so its native decision is evidence, not approval: without
 `--dry-run`, capture prints the exact normalized hooks, scripts and callbacks on
 the controlling terminal (`/dev/tty`) and records only after the operator types
-`record`. No terminal, or any other answer, writes nothing.
+`record`. No terminal, or any other answer, writes nothing. Both checks guard
+against accidents, not against a same-user process: the limit on what a record
+can grant is that inheritance trusts only hooks the source home already trusts,
+with the same normalized command and scripts equal to the session's fresh clone.
 
 The command invents no approval. It refuses (exit 1, nothing written) unless
 every hook has a trusted, enabled native decision whose hash equals the generated

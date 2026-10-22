@@ -15,6 +15,7 @@ session's profile whose hash equals the generated hook hash.
 """
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -144,7 +145,7 @@ def git_output(target, *args):
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null")
     return subprocess.run(
-        ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+        ["git", "--no-optional-locks", "--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
          "-C", str(target), *args], env=env, capture_output=True, timeout=5, check=True).stdout
 
 
@@ -483,11 +484,11 @@ def write_private(directory, name, data):
 
 def confirm_on_tty(grant, summary):
     """The operator, not the session, approves: show the exact hooks on the controlling terminal."""
-    try:
-        tty = open("/dev/tty", "r+", encoding="utf-8")
+    try:  # like getpass: Linux cannot open /dev/tty with mode "r+"
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
     except OSError as error:
         raise ValueError("capture needs the operator's interactive terminal") from error
-    with tty:
+    with io.TextIOWrapper(io.FileIO(fd, "r+"), encoding="utf-8") as tty:
         tty.write(json.dumps({"hooks": grant["hooks"], "scripts": grant["scripts"], "callbacks": grant["callbacks"],
                               "record": summary["record"]}, indent=2, sort_keys=True) + "\n")
         tty.write("Record these exact hooks as approved for every fresh isolated session? Type 'record': ")
@@ -547,11 +548,12 @@ def main(argv=None):
     try:
         if not args.session_id:
             raise ValueError("pass --session-id UUID explicitly; the session is never taken from the environment")
+        args.session_id = str(uuid.UUID(args.session_id))
         if args.state_home:
             os.environ["HARNESS_SESSION_STATE_HOME"] = args.state_home
         state = state_home()
         os.environ["HARNESS_SESSION_ID"] = args.session_id
-        os.environ["HARNESS_SESSION_ROOT"] = str(state / "worktrees" / str(uuid.UUID(args.session_id)))
+        os.environ["HARNESS_SESSION_ROOT"] = str(state / "worktrees" / args.session_id)
         os.environ["HARNESS_SOURCE_ROOT"] = regular(state / "sessions" / args.session_id / "source-root", state).decode().strip()
         summary = capture(Path(os.environ["HARNESS_SESSION_ROOT"]) / ".harness/codex", args.profile, args.dry_run,
                           confirm=confirm_on_tty)
