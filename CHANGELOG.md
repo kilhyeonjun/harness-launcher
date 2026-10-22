@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## 0.76.0 — 2026-10-22
 
 - Extend the OMP native environment (contract v2, decision 038): always set
   `PI_AUTO_QA=0` so OMP stops pushing tool-issue reports to its QA service;
@@ -11,7 +11,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
   `HERDR_ENV`/`HERDR_SOCKET_PATH`/`HERDR_PANE_ID` only when all three are
   valid. No other caller variable is forwarded.
 - Show title, model and effort of OMP panes in the herdr plugin from the
-  agent's session file under the OMP history directory.
+  agent's session file under the OMP history directory or a launcher
+  continuation session directory.
 
 ## 0.75.0 — 2026-10-22
 
