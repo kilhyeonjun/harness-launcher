@@ -245,14 +245,14 @@ class Consumers(FixtureCase):
                            'test_D_origin_mount_at_parent_is_refused_per_field']:
                 self.assertIn(oracle, result.stderr)
 
-    def test_direct_continuation_default_runs_all_35(self):
-        self.suite('test-omp-continuation.sh', 35, False)
+    def test_direct_continuation_default_runs_all_37(self):
+        self.suite('test-omp-continuation.sh', 37, False)
 
     def test_direct_required_default_runs_all_9(self):
         self.suite('test-omp-required-loading.sh', 9, False)
 
-    def test_direct_continuation_explicit_runs_all_35(self):
-        self.suite('test-omp-continuation.sh', 35, True)
+    def test_direct_continuation_explicit_runs_all_37(self):
+        self.suite('test-omp-continuation.sh', 37, True)
 
     def test_direct_required_explicit_runs_all_9(self):
         self.suite('test-omp-required-loading.sh', 9, True)

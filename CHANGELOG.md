@@ -2,6 +2,21 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased — OMP projection rows survive activation and reboot
+
+- An enrolled OMP projection row stays valid across launcher activation.
+  Readers still require the consumer to be the current snapshot's
+  `aliases.zsh` with matching manifest hashes, but no longer compare the row's
+  stored launcher revision/hashes to the live ones. Those values remain
+  publish-time provenance, and the publisher still requires them to be true
+  when it writes the row. Profile, binary, namespace and selection checks are
+  unchanged.
+- The publisher matches a re-published profile binding through the same device
+  remapping as readers, so republishing works after a reboot renumbers APFS
+  devices. A different root still fails with `OMP_BINDING_MISMATCH`.
+- `omp --session-resume <handle>` (and `--session-new`) without a trailing `--`
+  is accepted as a prompt-less launch. A prompt still has to follow `--`.
+
 ## 0.77.2 — 2026-10-23
 
 - Add the operator command `codex-hook-trust.py capture --session-id UUID [--profile]

@@ -1556,8 +1556,8 @@ _harness_launcher_omp_continuation() (
     [[ ${#1} -le 65536 ]] || return 2
     native_options+=("$1"); shift
   done
-  [[ "${1:-}" == -- && ${#native_options} -le 128 ]] || return 2
-  shift
+  [[ ( $# -eq 0 || "$1" == -- ) && ${#native_options} -le 128 ]] || return 2
+  (( $# == 0 )) || shift
   (( $# <= 1 )) || return 2
   if (( $# )); then [[ ${#1} -le 65536 ]] || return 2; native_prompt=("$1"); fi
   _harness_launcher_omp_check_args "${native_options[@]}" -- "${native_prompt[@]}" || return 2

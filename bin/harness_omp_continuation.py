@@ -143,7 +143,8 @@ def request(args):
             require(sep == '=' and flag in OPTIONS and bool(literal))
             options.append(value)
         require(len(options) <= 128)
-    require(bool(tail) and tail.pop(0) == '--' and len(tail) <= 1)
+    # Bare `--session-new|--session-resume <h>` is a prompt-less launch; any prompt follows `--`.
+    require(not tail or (tail.pop(0) == '--' and len(tail) <= 1))
     for prompt in tail:
         require(type(prompt) is str and '\0' not in prompt and len(prompt.encode('utf-8')) <= 65536)
     return {'mode': mode, 'handle': h, 'options': options, 'prompt': tail}

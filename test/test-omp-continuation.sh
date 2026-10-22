@@ -213,6 +213,12 @@ class ContinuationTests(unittest.TestCase):
                       ['omp','--print','--session-new','--'] ]:
             with self.subTest(args=args),self.assertRaises(m.ContinuationError):m.request(args)
 
+    def test_C03b_bare_resume_needs_no_trailing_separator(self):
+        m=self.continuation(); h='12345678123442348234123456789abc'
+        self.assertEqual(m.request(['omp','--session-resume',h]),{'mode':'RESUME','handle':h,'options':[],'prompt':[]})
+        self.assertEqual(m.request(['omp','--session-resume',h,'--','next'])['prompt'],['next'])
+        with self.assertRaises(m.ContinuationError): m.request(['omp','--session-resume',h,'next'])
+
     def test_C01_kernel_origin_is_single_and_immutable(self):
         row=self.kernel(); self.assertEqual(row['handle'],self.h); self.assertEqual(row['status'],'PENDING')
         origin=copy.deepcopy(row['kernel_origin']); self.op('NEW_PREPARE')
@@ -285,6 +291,12 @@ class ContinuationTests(unittest.TestCase):
             self.assertIn(b'OMP_CONTINUATION_BUSY',done.stderr);self.assertEqual(self.record.read_bytes(),before)
         finally:os.close(fd)
         self.public_shell(['--session-resume',self.h,'--print','--','two'],0)
+        self.assertEqual(json.loads(self.record.read_bytes())['status'],'READY')
+
+    def test_C03c_public_bare_resume_without_separator(self):
+        self.public_fixture();self.public_shell(['--session-new','--print','--','one'],0)
+        self.public_shell(['--session-resume',self.h,'two'],2)
+        self.public_shell(['--session-resume',self.h],0)
         self.assertEqual(json.loads(self.record.read_bytes())['status'],'READY')
 
     def test_C12_C23_retired_workspace_not_recreated(self):
