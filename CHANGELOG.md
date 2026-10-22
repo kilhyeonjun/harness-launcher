@@ -27,6 +27,11 @@ Notable changes are recorded here. This project follows semantic versioning for 
   unavailable". All helper lookups (creation, work proof, Codex history,
   transcript archive, usage sync, Codex policy, report) now resolve the link
   chain once through `engine_path`/`engine_dir`.
+- OMP native `PATH` appends the launcher's Homebrew bin (`/opt/homebrew/bin`
+  on arm64, `/usr/local/bin` otherwise) after `/usr/bin:/bin`, so OMP finds
+  `uv`, `gh` and other Homebrew tools. It is a launcher constant, never the
+  caller's `PATH`, and is added only as a real directory owned by the user or
+  root without other-user write (group write only for the macOS admin group).
 
 ## 0.77.1 — 2026-10-22
 

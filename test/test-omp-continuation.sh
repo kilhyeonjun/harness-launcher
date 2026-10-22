@@ -17,6 +17,19 @@ def digest(p): return hashlib.sha256(p.read_bytes()).hexdigest()
 def encoded(v): return json.dumps(v, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
 def put(p, v, mode=0o600): p.write_bytes(encoded(v)); p.chmod(mode)
 
+def omp_native_path():
+    """Env contract v2 PATH: /usr/bin:/bin plus the CPU's Homebrew bin when it
+    is a real user/root-owned directory without other-write (group write only
+    for the Darwin admin group). Computed from the host, not the caller PATH."""
+    import platform, stat as _stat
+    tool = '/opt/homebrew/bin' if platform.machine() == 'arm64' else '/usr/local/bin'
+    try: s = os.lstat(tool)
+    except OSError: return '/usr/bin:/bin'
+    ok = (_stat.S_ISDIR(s.st_mode) and s.st_uid in (0, os.getuid()) and not s.st_mode & 0o002 and
+          (not s.st_mode & 0o020 or (sys.platform == 'darwin' and s.st_gid == 80)))
+    return '/usr/bin:/bin' + (':' + tool if ok else '')
+
+
 class ContinuationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='omp-continuation-')
@@ -440,7 +453,7 @@ raise SystemExit(EXIT_CODE)
         self.assertEqual(calls[1]['argv'],['--print',*required,'--session-dir',str(self.sessions),'--resume',native,'--',prompt])
         self.assertEqual(calls[1]['cwd'],str(self.work));self.assertEqual(calls[1]['held'],[True,True])
         self.assertEqual(self.events.read_text(),'finish\n')
-        expected_env={'HOME':str(self.ns/'home'),'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C',
+        expected_env={'HOME':str(self.ns/'home'),'PATH':omp_native_path(),'LANG':'C','LC_ALL':'C',
             'TMPDIR':str(self.ns/'tmp'),'XDG_CACHE_HOME':str(self.ns/'cache'),'XDG_CONFIG_HOME':str(self.ns/'config'),
             'XDG_STATE_HOME':str(self.ns/'state'),'XDG_DATA_HOME':str(self.ns/'data'),
             'PI_CODING_AGENT_DIR':str(self.ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(self.ns/'history'),

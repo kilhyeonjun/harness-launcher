@@ -7,6 +7,17 @@ from pathlib import Path
 import hashlib, json, os, shlex, signal, subprocess, sys, tempfile, time
 
 repo=Path(sys.argv[1]); passed=0; observations=[]
+def omp_native_path():
+    """Env contract v2 PATH: /usr/bin:/bin plus the CPU's Homebrew bin when it
+    is a real user/root-owned directory without other-write (group write only
+    for the Darwin admin group). Computed from the host, not the caller PATH."""
+    import platform, stat as _stat
+    tool = '/opt/homebrew/bin' if platform.machine() == 'arm64' else '/usr/local/bin'
+    try: s = os.lstat(tool)
+    except OSError: return '/usr/bin:/bin'
+    ok = (_stat.S_ISDIR(s.st_mode) and s.st_uid in (0, os.getuid()) and not s.st_mode & 0o002 and
+          (not s.st_mode & 0o020 or (sys.platform == 'darwin' and s.st_gid == 80)))
+    return '/usr/bin:/bin' + (':' + tool if ok else '')
 with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     root=Path(tmp).resolve(); home=root/'caller-home'; profile=root/'project with spaces'; ns=root/'normal'; tools=root/'tools'; capture=root/'capture.json'; wire=root/'wire.argv'; ready=root/'ready'; release=root/'release'
     leaves=['home','agent','history','cwd','tmp','cache','config','state','data','native-cache']
@@ -75,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
         'manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
     }))
     current.chmod(0o600)
-    expected_env={'HOME':str(ns/'home'),'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C','TMPDIR':str(ns/'tmp'),'XDG_CACHE_HOME':str(ns/'cache'),'XDG_CONFIG_HOME':str(ns/'config'),'XDG_STATE_HOME':str(ns/'state'),'XDG_DATA_HOME':str(ns/'data'),'PI_CODING_AGENT_DIR':str(ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(ns/'history'),'PI_NATIVES_DIR':str(ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0'}
+    expected_env={'HOME':str(ns/'home'),'PATH':omp_native_path(),'LANG':'C','LC_ALL':'C','TMPDIR':str(ns/'tmp'),'XDG_CACHE_HOME':str(ns/'cache'),'XDG_CONFIG_HOME':str(ns/'config'),'XDG_STATE_HOME':str(ns/'state'),'XDG_DATA_HOME':str(ns/'data'),'PI_CODING_AGENT_DIR':str(ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(ns/'history'),'PI_NATIVES_DIR':str(ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0'}
     # Calibrate only the fake interpreter startup, not the OMP contract. macOS
     # adds this nonsecret field even to a directly launched empty-env Python.
     baseline=subprocess.run([sys.executable,'-c','import os,json;print(json.dumps(dict(os.environ)))'],env=expected_env,text=True,capture_output=True,check=True)
@@ -159,6 +170,35 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     ]:
         got=native_env(assign(values))
         assert got=={**fake_env,**extra},(values,got)
+        passed+=1
+    # Launcher tool dirs (A2): appended after /usr/bin:/bin in candidate order,
+    # only for a real directory owned by the user/root with no other-write;
+    # group write only for the Darwin admin group (gid 80). Breaks caught:
+    # following a symlink, admitting a world/group-writable dir, reordering.
+    tooldirs=root/'tooldirs';tooldirs.mkdir()
+    def tooldir(name,mode,gid=None):
+        p=tooldirs/name;p.mkdir();p.chmod(mode)
+        if gid is not None:os.chown(p,-1,gid)
+        return str(p)
+    good=tooldir('good',0o755);good2=tooldir('good2',0o700)
+    other_write=tooldir('other-write',0o757)
+    (tooldirs/'link').symlink_to(good);link=str(tooldirs/'link')
+    plain=tooldirs/'file';plain.write_text('');plain.chmod(0o755)
+    cases=[([good],[good]),([other_write],[]),([link],[]),([str(plain)],[]),
+           ([str(tooldirs/'missing')],[]),(['relative'],[]),([good,other_write,good2],[good,good2]),
+           ([good2,good],[good2,good])]
+    if os.getgid()!=80:cases.append(([tooldir('group-write',0o775)],[]))
+    if 80 in os.getgroups():cases.append(([tooldir('admin-group',0o775,80)],[tooldirs.joinpath('admin-group').as_posix()]))
+    for candidates,admitted in cases:
+        setup='_harness_launcher_omp_tool_dirs(){ print -rl -- '+' '.join(shlex.quote(c) for c in candidates)+'; }'
+        got=native_env(setup)
+        assert got['PATH']==':'.join(['/usr/bin:/bin',*admitted]),(candidates,got['PATH'])
+        passed+=1
+    # The constant itself: arm64 selects /opt/homebrew/bin, any other CPU /usr/local/bin.
+    for cpu,dirs in [('arm64','/opt/homebrew/bin'),('x86_64','/usr/local/bin')]:
+        done=subprocess.run(['/bin/zsh','-f','-c','source "$1/bin/aliases.zsh"; CPUTYPE=$2; _harness_launcher_omp_tool_dirs','test',str(repo),cpu],
+                            env={**env,**leak},capture_output=True,text=True,timeout=20)
+        assert done.returncode==0 and done.stdout==dirs+'\n',(cpu,done.stdout,done.stderr)
         passed+=1
     # HERDR_RESUME_ARGV comes only from the continuation caller's own local.
     # Breaks caught: forwarding a caller/exported value, or forwarding without the triple.

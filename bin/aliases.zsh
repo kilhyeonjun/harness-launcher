@@ -1382,6 +1382,34 @@ except (AssertionError,OSError,ValueError,TypeError):
 PYOMP
 }
 
+# The one launcher-owned tool directory for the OMP native PATH: Homebrew's
+# bin for this CPU. A constant, never derived from the caller's PATH.
+_harness_launcher_omp_tool_dirs() {
+  if [[ "$CPUTYPE" == arm64 ]]; then print -r -- /opt/homebrew/bin
+  else print -r -- /usr/local/bin; fi
+}
+
+# _harness_launcher_omp_native_path: /usr/bin:/bin, then each launcher tool
+# directory that is a real directory (not a symlink) owned by the user or root
+# and writable by no other user. Homebrew keeps its prefix group-writable for
+# the macOS admin group, so group write is accepted only for gid 80 on Darwin.
+# Appended last, so a system tool always wins over a Homebrew one.
+_harness_launcher_omp_native_path() {
+  local native_path=/usr/bin:/bin dir
+  local -A st
+  if zmodload -F zsh/stat b:zstat 2>/dev/null; then
+    for dir in ${(f)"$(_harness_launcher_omp_tool_dirs)"}; do
+      st=()
+      [[ "$dir" == /* && -d "$dir" && ! -L "$dir" ]] && zstat -L -H st -- "$dir" 2>/dev/null || continue
+      (( st[uid] == UID || st[uid] == 0 )) || continue
+      (( ! (st[mode] & 8#002) )) || continue
+      (( ! (st[mode] & 8#020) )) || [[ "$OSTYPE" == darwin* && "$st[gid]" == 80 ]] || continue
+      native_path+=":$dir"
+    done
+  fi
+  print -r -- "$native_path"
+}
+
 _harness_launcher_omp_native() (
   local run_dir="$1" root="$HARNESS_OMP_ROOT" native_bin="$HARNESS_OMP_BIN"
   shift
@@ -1416,7 +1444,9 @@ _harness_launcher_omp_native() (
     [[ "${(t)_harness_omp_herdr_resume-}" == *local* ]] && herdr_resume="$_harness_omp_herdr_resume"
     extra+=(HERDR_RESUME_ARGV="$herdr_resume")
   fi
-  local -a native_env=(HOME="$root/home" PATH=/usr/bin:/bin LANG=C LC_ALL=C
+  local native_path
+  native_path="$(_harness_launcher_omp_native_path)" || return 2
+  local -a native_env=(HOME="$root/home" PATH="$native_path" LANG=C LC_ALL=C
     TMPDIR="$root/tmp" XDG_CACHE_HOME="$root/cache" XDG_CONFIG_HOME="$root/config"
     XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data"
     PI_CODING_AGENT_DIR="$root/agent" PI_CODING_AGENT_SESSION_DIR="$root/history"

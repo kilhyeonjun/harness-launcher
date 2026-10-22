@@ -171,13 +171,21 @@ Invalid paths, modes, marker or full digest fail closed before workspace
 allocation. Canonicalize paths when preparing them; symlink spellings fail.
 
 The outgoing native environment contains exactly `HOME=<root>/home`,
-`PATH=/usr/bin:/bin`, `LANG=C`, `LC_ALL=C`, `TMPDIR=<root>/tmp`, the four
+`PATH=/usr/bin:/bin[:<tool dir>]`, `LANG=C`, `LC_ALL=C`, `TMPDIR=<root>/tmp`, the four
 `XDG_{CACHE,CONFIG,STATE,DATA}_HOME` values under the matching root leaves,
 `PI_CODING_AGENT_DIR=<root>/agent`,
 `PI_CODING_AGENT_SESSION_DIR=<root>/history`,
 `PI_NATIVES_DIR=<root>/native-cache`, and `TERM=xterm-256color` (the 13 fixed
 fields), plus the v2 additions of decision 038:
 
+- The launcher tool directory in `PATH`, appended after `/usr/bin:/bin` so a
+  system tool always wins: Homebrew's bin for the CPU (`/opt/homebrew/bin` on
+  arm64, `/usr/local/bin` otherwise), a launcher constant that is never read
+  from the caller's `PATH`. It is added only when it is a real directory (not
+  a symlink) owned by the user or root and not writable by other users; group
+  write is accepted only for the macOS `admin` group (gid 80), which is how
+  Homebrew keeps its prefix. Otherwise `PATH` stays `/usr/bin:/bin`. This lets
+  the native find tools such as `uv` and `gh` without an absolute path.
 - `PI_AUTO_QA=0`, always. It is OMP's highest-priority source for
   `dev.autoqa`; without it OMP pushes tool-issue reports to an external QA
   service.
