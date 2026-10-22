@@ -452,7 +452,11 @@ def validate_selected(row, name, root, consumer, devmap=None):
     require(row['lane'] in ('BOOTSTRAP_ACTIVE', 'SSOT_ACTIVE'), 'OMP_PROJECTION_REVOKED')
     fresh(row['valid_until']); check_provenance(row['provenance'], row['lane'], row['valid_until'])
     require(profile_matches(row['profile_binding'], name, root, devmap), BINDING)
-    require(row['launcher'] == launcher_binding(consumer), BINDING)
+    # The consumer must be the current sealed snapshot with matching manifest
+    # hashes. row['launcher'] is publish-time provenance and is deliberately not
+    # compared: activation is the reviewed release step, and pinning it forced a
+    # rubber-stamp republish of every row on every release.
+    launcher_binding(consumer)
     require(row['binary'] == binary_binding(row['binary']['path'], row['binary']['release']), BINDING)
     require(namespace_matches(row['native_home'], row['binary'], devmap), BINDING)
 
@@ -879,13 +883,16 @@ class Publisher:
             with self.locked():
                 index, state, token = self.records(); require(token == expected)
                 check_row(row)
-                validate_selected(row, name, row['profile_binding']['root'],
-                                  str(physical(Path.home()) / '.local/state/kilhyeonjun-harness/launcher-runtimes' / row['launcher']['revision'] / 'bin/aliases.zsh'))
+                devmap = DevMap()  # one device mapping for this publication (APFS reboot renumbering)
+                consumer = str(physical(Path.home()) / '.local/state/kilhyeonjun-harness/launcher-runtimes' / row['launcher']['revision'] / 'bin/aliases.zsh')
+                validate_selected(row, name, row['profile_binding']['root'], consumer, devmap)
+                # Stored provenance must be true when written, even though readers do not pin it.
+                require(row['launcher'] == launcher_binding(consumer), BINDING)
                 previous = index['enrolled_profiles'].get(name)
                 prior_row = state['profiles'].get(name)
                 if previous:
                     require(previous['disposition'] != 'REVOKED', 'OMP_PROJECTION_REVOKED')
-                    require(previous['profile_binding'] == row['profile_binding'], BINDING)
+                    require(profile_matches(previous['profile_binding'], name, row['profile_binding']['root'], devmap), BINDING)
                     require(not prior_row['bootstrap_retired'] or row['bootstrap_retired'])
                     require(not prior_row['bootstrap_retired'] or row['lane'] == 'SSOT_ACTIVE')
                     require(row['lane'] != 'SSOT_ACTIVE' or previous['disposition'] == 'BLOCKED')

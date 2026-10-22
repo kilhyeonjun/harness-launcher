@@ -422,11 +422,21 @@ An active selected row joins payload generation, enrollment generation,
 canonical row SHA-256 and operation provenance. Its host includes installation
 locator, OS hostname/system/architecture/UID and registry-directory identity.
 Its profile includes root/registry identities and registry hash. The row pins
-current managed selection hash/revision/manifest and consumer source hash,
 the exact physical `0555` executable/full hash/size/UID/release, and the `0700`
 prepared namespace/physical identity/`0600` owner-marker hash and owner
-binding. The selected snapshot manifest must contain and hash both consumer
-and helper; the stager already packages all tracked `bin` files. A fresh-shell
+binding. It also records the managed selection hash/revision/manifest and
+consumer source hash, but only as publish-time provenance: the publisher
+requires them to equal the live values when it writes the row, and readers do
+not compare them. Each read instead requires the consumer to be the current
+`current.json` snapshot's `bin/aliases.zsh` and the snapshot manifest to match
+and hash both consumer and helper; the stager already packages all tracked
+`bin` files. Activation is itself the reviewed release step. Pinning the row
+to one launcher revision made every activation fail every row with
+`OMP_BINDING_MISMATCH` until the operator republished identical receipts,
+which attested nothing new. The publisher compares a re-published profile
+binding through the same device remapping readers use, so a reboot that
+renumbers APFS devices does not block republication; a different root or
+registry hash still does. A fresh-shell
 snapshot test verifies helper availability rather than assuming a fixed
 release file count. The index is re-read with unchanged bytes and file
 identity after selection (I1/I2); disagreement stops without retry. Only then

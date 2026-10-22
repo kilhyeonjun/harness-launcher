@@ -140,7 +140,7 @@ class ProjectionTests(unittest.TestCase):
         for mutate in [lambda v:v.update(unknown=1),lambda v:v.update(schema_version=True),lambda v:v.update(generation=False),lambda v:v.update(complete_enrollment_set=False)]:
             v=json.loads(original);mutate(v);put(self.index,v);self.rejected(self.select)
         self.index.write_bytes(original);self.index.chmod(0o644);self.rejected(self.select);self.index.chmod(0o600)
-        for edit in [lambda r:r.update(valid_until='2000-01-01T00:00:00Z'),lambda r:r['provenance'].update(approved=True),lambda r:r['launcher'].update(current_sha256='0'*64),lambda r:r['binary'].update(bytes=True),lambda r:r.update(bootstrap_retired=0)]:
+        for edit in [lambda r:r.update(valid_until='2000-01-01T00:00:00Z'),lambda r:r['provenance'].update(approved=True),lambda r:r['launcher'].update(current_sha256='x'),lambda r:r['binary'].update(bytes=True),lambda r:r.update(bootstrap_retired=0)]:
             saved=self.state.read_bytes();index=self.index.read_bytes();self.corrupt_row(edit);self.rejected(self.select);self.state.write_bytes(saved);self.index.write_bytes(index)
         alias=self.consumer.read_bytes();self.consumer.chmod(0o600);self.consumer.write_bytes(alias+b'\n#tamper');self.consumer.chmod(0o400);self.rejected(self.select)
 
@@ -217,7 +217,7 @@ class ProjectionTests(unittest.TestCase):
 
     def test_publish_rejects_unbound_expired_wrong_profile_and_legacy_retirement_early(self):
         row=self.row()
-        for edit in [lambda r:r['provenance'].update(binding_sha256='0'*64),lambda r:r.update(valid_until='2000-01-01T00:00:00Z'),lambda r:r['profile_binding'].update(root=str(self.other)),lambda r:r['native_home']['root_identity'].update(ino=0)]:
+        for edit in [lambda r:r['provenance'].update(binding_sha256='0'*64),lambda r:r.update(valid_until='2000-01-01T00:00:00Z'),lambda r:r['profile_binding'].update(root=str(self.other)),lambda r:r['native_home']['root_identity'].update(ino=0),lambda r:r['launcher'].update(current_sha256='0'*64)]:
             v=copy.deepcopy(row);edit(v)
             self.rejected(lambda:self.publisher.publish('ex',v,self.publisher.token()))
         self.rejected(lambda:self.publisher.publish('ex',row,self.publisher.token(),legacy_retired=True))
@@ -404,6 +404,55 @@ class ProjectionTests(unittest.TestCase):
             self.rejected(self.select, 'OMP_BINDING_MISMATCH')
         with self.other_device([self.home]):
             self.rejected(self.select, 'OMP_BINDING_MISMATCH')
+
+    # --- R: rows stay valid across launcher activation and reboot republish ---
+    def activate(self, revision='c'*40, version='0.65.0'):
+        """Simulated launcher activation: a new sealed snapshot becomes current."""
+        snap=self.runtime/revision; (snap/'bin').mkdir(parents=True)
+        for p in (self.snapshot/'bin').iterdir():
+            t=snap/'bin'/p.name; shutil.copyfile(p,t); t.chmod(p.stat().st_mode&0o777)
+        files={str(p.relative_to(snap)):{'mode':p.stat().st_mode&0o777,'sha256':digest(p)} for p in (snap/'bin').iterdir()}
+        put(snap/'manifest.json',{'version':version,'revision':revision,'files':files},0o400)
+        put(self.runtime/'current.json',{'version':version,'revision':revision,'path':str(snap),'manifest_sha256':digest(snap/'manifest.json')})
+        return snap/'bin/aliases.zsh'
+
+    def test_R_row_survives_activation_without_republish(self):
+        self.enroll(); want=self.select()
+        self.consumer=self.activate()
+        self.assertEqual(self.select(), want)
+        self.assertEqual(self.m.select('ex',str(self.profile),str(self.consumer),continuation=True)['snapshot_revision'],'c'*40)
+        row=json.loads(self.state.read_bytes())['profiles']['ex']
+        self.assertEqual(row['launcher']['revision'],'a'*40)  # publish-time provenance is kept, not rewritten
+        self.m.validate_selected(row,'ex',str(self.profile),str(self.consumer))
+        # Stored provenance values are not compared to the live consumer.
+        self.corrupt_row(lambda r:r['launcher'].update(current_sha256='0'*64)); self.assertEqual(self.select(), want)
+
+    def test_R_activation_still_binds_the_current_snapshot(self):
+        self.enroll(); stale=self.consumer; self.consumer=self.activate()
+        # A consumer that is not the current snapshot's aliases.zsh.
+        self.rejected(lambda:self.m.select('ex',str(self.profile),str(stale)),'OMP_BINDING_MISMATCH')
+        current=self.runtime/'current.json'; saved=current.read_bytes()
+        v=json.loads(saved); v['manifest_sha256']='0'*64; put(current,v)
+        self.rejected(self.select,'OMP_BINDING_MISMATCH'); current.write_bytes(saved)
+        for name in ('aliases.zsh','harness_omp_projection.py'):
+            with self.subTest(file=name):
+                p=self.consumer.parent/name; mode=p.stat().st_mode&0o777; body=p.read_bytes()
+                p.chmod(0o600); p.write_bytes(body+b'\n#tamper'); p.chmod(mode)
+                self.rejected(self.select,'OMP_BINDING_MISMATCH')
+                p.chmod(0o600); p.write_bytes(body); p.chmod(mode)
+        self.select()
+
+    def test_R_republish_after_renumbered_profile_devices(self):
+        self.enroll(); self.renumber('profile_root','registry_file')
+        self.enroll()
+        entry=json.loads(self.index.read_bytes())['enrolled_profiles']['ex']
+        self.assertEqual(entry['enrollment_generation'],2)
+        self.assertEqual(entry['profile_binding'],self.m.profile_binding('ex',str(self.profile)))  # fresh binding written
+        self.select()
+        # A genuinely different root is still a binding change, not a remap.
+        reg=self.registry/'ex'; reg.write_text(str(self.other)+'\n')
+        row=self.m.capture_row('ex',str(self.other),str(self.consumer),str(self.binary),str(self.ns),self.expiry,self.release,self.provenance)
+        self.rejected(lambda:self.publisher.publish('ex',row,self.publisher.token()),'OMP_BINDING_MISMATCH')
 
 
 if __name__=='__main__': unittest.main(verbosity=2)
