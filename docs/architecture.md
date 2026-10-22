@@ -189,6 +189,11 @@ fields), plus the v2 additions of decision 038:
 - `HERDR_ENV=1`, `HERDR_SOCKET_PATH` and `HERDR_PANE_ID`, only as a whole and
   only when `HERDR_ENV` is `1`, the socket path is absolute and the pane id is
   non-empty, so the herdr observer can attach to the pane.
+- `HERDR_RESUME_ARGV`, only when this is an OMP continuation launch
+  (`--session-resume` mode), the HERDR triple is forwarded, and the continuation
+  handle is a valid 32-character lowercase hexadecimal string. Contains a compact
+  JSON array of the exact launcher argv that resumes this continuation:
+  `["harness-exec", <harness-dir>, "omp", "--session-resume", <handle>, "--"]`.
 
 Ambient API keys, Node options, other runtime homes and any other caller
 variable are not forwarded. Native/platform startup may subsequently change its own process

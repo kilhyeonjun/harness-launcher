@@ -286,6 +286,24 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     lock.write_text('');lock.chmod(0o644);run(['omp',*management[2]],expected=2,no_allocate=True);assert lock.exists();lock.unlink()
     print('SAVED_FAKE_PROOF='+json.dumps({'schema':'omp-routing-fake-v1','startup_baseline':fake_env,'cases':[{**x,'outgoing':[b.decode() for b in x['outgoing']] if x['outgoing'] is not None else None} for x in observations]},separators=(',',':')))
     print('PASS:',passed,'OMP real-entry/dispatcher argv/env/cwd/exit and fail-closed cases; native fake only')
+    # HERDR_RESUME_ARGV tests: forwarded to native only when HERDR_ENV=1 and set in parent.
+    # Test that HERDR_RESUME_ARGV is forwarded through _harness_launcher_omp_native to native OMP
+    capture.unlink(missing_ok=True)
+    script_herdr_fwd='source "$1/bin/aliases.zsh"; HARNESS_OMP_ROOT="$2" HARNESS_OMP_BIN="$3"; HERDR_RESUME_ARGV=\'["harness-exec","/fake","omp","--session-resume","aabbccdd"]\'; HERDR_ENV=1 HERDR_SOCKET_PATH=/tmp/herdr.sock HERDR_PANE_ID=p_1; _harness_launcher_omp_native "$2/cwd" --version'
+    result_herdr_fwd=subprocess.run(['/bin/zsh','-f','-c',script_herdr_fwd,'test',str(repo),str(ns),str(binary)],cwd=profile,env={**env},capture_output=True,timeout=20)
+    if capture.exists():
+        got_env_herdr=json.loads(capture.read_text())['env']
+        assert 'HERDR_RESUME_ARGV' in got_env_herdr,(script_herdr_fwd,'HERDR_RESUME_ARGV not forwarded with HERDR_ENV=1',got_env_herdr)
+        assert got_env_herdr['HERDR_RESUME_ARGV']=='["harness-exec","/fake","omp","--session-resume","aabbccdd"]',(script_herdr_fwd,'HERDR_RESUME_ARGV wrong value',got_env_herdr)
+    passed+=1
+    # HERDR_RESUME_ARGV not forwarded without HERDR_ENV=1
+    capture.unlink(missing_ok=True)
+    script_herdr_absent='source "$1/bin/aliases.zsh"; HARNESS_OMP_ROOT="$2" HARNESS_OMP_BIN="$3"; HERDR_RESUME_ARGV=\'["should","not","appear"]\'; HERDR_ENV=0; _harness_launcher_omp_native "$2/cwd" --version'
+    result_herdr_absent=subprocess.run(['/bin/zsh','-f','-c',script_herdr_absent,'test',str(repo),str(ns),str(binary)],cwd=profile,env={**env},capture_output=True,timeout=20)
+    if capture.exists():
+        got_env_herdr_absent=json.loads(capture.read_text())['env']
+        assert 'HERDR_RESUME_ARGV' not in got_env_herdr_absent,(script_herdr_absent,'HERDR_RESUME_ARGV present without HERDR_ENV=1',got_env_herdr_absent)
+    passed+=1
     for directory, _, files in os.walk(snapshot):
         Path(directory).chmod(0o700)
         for name in files:
