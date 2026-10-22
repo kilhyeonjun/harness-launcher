@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — Codex hook approval capture
+## 0.78.0 — 2026-10-23
 
 - Add the operator command `codex-hook-trust.py capture --session-id UUID [--profile]
   [--dry-run]`, which records the owner's existing native Codex hook approval as
