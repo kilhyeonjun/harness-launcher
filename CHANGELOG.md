@@ -2,15 +2,19 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## Unreleased — Codex hook approval capture
 
 - Add the operator command `codex-hook-trust.py capture --session-id UUID [--profile]
   [--dry-run]`, which records the owner's existing native Codex hook approval as
   the private source approval record that fresh isolated sessions inherit. It
   creates no approval: every hook needs a trusted, enabled native decision equal
   to its generated hash, script blobs and callback bytes are verified, and any
-  mismatch or partial approval is refused. Writes are atomic and 0600 with a
-  backup of the previous record.
+  mismatch or partial approval is refused. The session can write its own
+  profile, so its decision is only evidence: capture refuses to run with a
+  `CODEX_SANDBOX*` or inherited `HARNESS_SESSION_*` environment and records only
+  after the operator types `record` on the controlling terminal under the exact
+  hooks, scripts and callbacks. Writes are atomic and 0600 with a backup of the
+  previous record.
 
 ## 0.77.1 — 2026-10-22
 

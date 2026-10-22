@@ -20,6 +20,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_codex_surface as fixtures
 
+
+def operator_main(m, args, confirm=True):
+    """Run capture as the operator would: no session environment, terminal answer mocked."""
+    saved = {k: os.environ.pop(k) for k in m.SESSION_ENV[:3] if k in os.environ}
+    try:
+        with mock.patch.object(m, 'confirm_on_tty', return_value=confirm):
+            return m.main(args)
+    finally:
+        os.environ.update(saved)
+
 @unittest.skipUnless(Path("/usr/bin/lockf").is_file(), "requires macOS /usr/bin/lockf")
 class IsolatedTrustIntegrationTests(unittest.TestCase):
     def build(self, tweak=lambda source, target, record: None, post_prepare=None):
@@ -359,9 +369,20 @@ class CaptureApprovalTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'CODEX_SANDBOX': 'seatbelt'}), mock.patch('sys.stderr') as err:
             self.assertEqual(m.main(['capture', '--dry-run']), 1)
         self.assertIn('operator', ''.join(c.args[0] for c in err.write.call_args_list))
-        with mock.patch('sys.stderr') as err:  # HARNESS_SESSION_* is inherited here
-            self.assertEqual(m.main(['capture', '--dry-run']), 1)
+        with mock.patch('sys.stderr') as err:  # HARNESS_SESSION_* is inherited here: fail closed
+            self.assertEqual(m.main(['capture', '--session-id', record.name, '--dry-run']), 1)
+        self.assertIn('operator', ''.join(c.args[0] for c in err.write.call_args_list))
+        with mock.patch('sys.stderr') as err:
+            self.assertEqual(operator_main(m, ['capture', '--dry-run']), 1)
         self.assertIn('--session-id', ''.join(c.args[0] for c in err.write.call_args_list))
+        # Without the operator's terminal, or without the operator's answer, nothing is recorded.
+        with mock.patch('builtins.open', side_effect=OSError('no tty')):
+            with self.assertRaisesRegex(ValueError, 'interactive terminal'):
+                m.confirm_on_tty({}, {})
+        with mock.patch('sys.stderr') as err:
+            self.assertEqual(operator_main(m, ['capture', '--session-id', record.name], confirm=False), 1)
+        self.assertIn('did not confirm', ''.join(c.args[0] for c in err.write.call_args_list))
+        self.assertFalse(approvals.exists())
         # Unsafe record directory: link, or not private.
         other_dir = state / 'elsewhere'; other_dir.mkdir()
         approvals.symlink_to(other_dir)
@@ -384,7 +405,7 @@ class CaptureApprovalTests(unittest.TestCase):
         self.assertNotIn(str(target), json.dumps(summary))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = m.main(['capture', '--session-id', record.name, '--dry-run', '--profile', 'base'])
+            code = operator_main(m, ['capture', '--session-id', record.name, '--dry-run', '--profile', 'base'])
         self.assertEqual(code, 0)
         for groups in hooks['hooks'].values():
             for group in groups:
@@ -394,7 +415,7 @@ class CaptureApprovalTests(unittest.TestCase):
         self.assertFalse(approvals.exists())
 
         # Capture writes a private atomic record that the launcher accepts and inherits from.
-        self.assertEqual(m.main(['capture', '--session-id', record.name]), 0)
+        self.assertEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
         self.assertEqual(stat.S_IMODE(approvals.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(grant_path.stat().st_mode), 0o600)
         grant = m.approval_record(state, source, target, hooks, record.joinpath('base-sha').read_text().strip())
@@ -412,31 +433,31 @@ class CaptureApprovalTests(unittest.TestCase):
 
         # Recapture backs up the previous record; a failed replace leaves it intact.
         first = grant_path.read_bytes()
-        self.assertEqual(m.main(['capture', '--session-id', record.name]), 0)
+        self.assertEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
         backups = [p for p in approvals.iterdir() if p != grant_path]
         self.assertEqual([p.read_bytes() for p in backups], [first])
         self.assertEqual(stat.S_IMODE(backups[0].stat().st_mode), 0o600)
         for backup in backups:
             backup.unlink()
         with mock.patch.object(m.os, 'replace', side_effect=OSError('boom')):
-            self.assertNotEqual(m.main(['capture', '--session-id', record.name]), 0)
+            self.assertNotEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
         self.assertEqual(grant_path.read_bytes(), first)
         self.assertEqual([p.name for p in approvals.iterdir() if '.tmp' in p.name], [], 'failed write left a temp file')
         # Existing record must stay a private regular file; only the newest five backups stay.
         grant_path.chmod(0o644)
-        self.assertNotEqual(m.main(['capture', '--session-id', record.name]), 0)
+        self.assertNotEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
         grant_path.chmod(0o600)
         grant_path.rename(grant_path.with_name('moved-record')); grant_path.symlink_to(grant_path.with_name('moved-record'))
-        self.assertNotEqual(m.main(['capture', '--session-id', record.name]), 0)
+        self.assertNotEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
         grant_path.unlink(); grant_path.with_name('moved-record').rename(grant_path)
         for _ in range(7):
-            self.assertEqual(m.main(['capture', '--session-id', record.name]), 0)
+            self.assertEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
         self.assertEqual(len([p for p in approvals.iterdir() if '.bak-' in p.name]), 5)
         first = grant_path.read_bytes()
         # Refusal exits non-zero with a message and leaves the record alone.
         write_profile(skip=entries[-1][0])
         with mock.patch('sys.stderr') as err:
-            self.assertEqual(m.main(['capture', '--session-id', record.name]), 1)
+            self.assertEqual(operator_main(m, ['capture', '--session-id', record.name]), 1)
         self.assertIn('refused', ''.join(c.args[0] for c in err.write.call_args_list))
         self.assertEqual(grant_path.read_bytes(), first)
         # Operator shells have no session environment: --session-id selects it.
@@ -444,9 +465,9 @@ class CaptureApprovalTests(unittest.TestCase):
             os.environ.pop(name)
         os.environ['HARNESS_SESSION_STATE_HOME'] = str(state); os.environ['HARNESS_CODEX_BIN'] = str(fixture.codex_bin)
         write_profile()
-        self.assertEqual(m.main(['capture', '--dry-run', '--session-id', record.name]), 0)
-        self.assertEqual(m.main(['capture', '--dry-run', '--session-id', 'not-a-uuid']), 1)
-        self.assertEqual(m.main(['capture', '--dry-run']), 1)
+        self.assertEqual(operator_main(m, ['capture', '--dry-run', '--session-id', record.name]), 0)
+        self.assertEqual(operator_main(m, ['capture', '--dry-run', '--session-id', 'not-a-uuid']), 1)
+        self.assertEqual(operator_main(m, ['capture', '--dry-run']), 1)
         self.assertNotEqual(original, first, 'fixture grant used a placeholder receipt')
         # Leave the fixture as found so the warm-preparation checks in build() stay meaningful.
         shutil.rmtree(approvals); approvals.mkdir(); grant_path.write_bytes(original); grant_path.chmod(0o600)

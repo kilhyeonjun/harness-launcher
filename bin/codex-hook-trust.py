@@ -481,7 +481,21 @@ def write_private(directory, name, data):
         raise
 
 
-def capture(published, profile="base", dry_run=False):
+def confirm_on_tty(grant, summary):
+    """The operator, not the session, approves: show the exact hooks on the controlling terminal."""
+    try:
+        tty = open("/dev/tty", "r+", encoding="utf-8")
+    except OSError as error:
+        raise ValueError("capture needs the operator's interactive terminal") from error
+    with tty:
+        tty.write(json.dumps({"hooks": grant["hooks"], "scripts": grant["scripts"], "callbacks": grant["callbacks"],
+                              "record": summary["record"]}, indent=2, sort_keys=True) + "\n")
+        tty.write("Record these exact hooks as approved for every fresh isolated session? Type 'record': ")
+        tty.flush()
+        return tty.readline().strip() == "record"
+
+
+def capture(published, profile="base", dry_run=False, confirm=None):
     try:
         state, source, grant, summary = build_grant(Path(published), profile)
     except (OSError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
@@ -492,6 +506,9 @@ def capture(published, profile="base", dry_run=False):
     summary["replaces_existing"] = os.path.lexists(directory / name)
     if dry_run:
         return summary
+    # The session can write its own profile, so its native decision is evidence, not approval.
+    if confirm is not None and not confirm(grant, summary):
+        raise ValueError("the operator did not confirm the hook set")
     try:
         os.mkdir(directory, 0o700)
     except FileExistsError:
@@ -508,6 +525,9 @@ def capture(published, profile="base", dry_run=False):
     return summary
 
 
+SESSION_ENV = ("HARNESS_SESSION_ID", "HARNESS_SESSION_ROOT", "HARNESS_SOURCE_ROOT", "HARNESS_SESSION_STATE_HOME")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="codex-hook-trust.py", description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -518,10 +538,12 @@ def main(argv=None):
     cap.add_argument("--dry-run", action="store_true", help="print what would be recorded; write nothing")
     args = parser.parse_args(argv)
     sandboxed = any(key.startswith("CODEX_SANDBOX") for key in os.environ)
-    inherited = any(key in os.environ for key in ("HARNESS_SESSION_ID", "HARNESS_SESSION_ROOT", "HARNESS_SOURCE_ROOT"))
+    inherited = any(key in os.environ for key in SESSION_ENV[:3])
     if sandboxed or inherited:
-        print("codex-hook-trust: warning: capture must be operator-run from a shell outside the session being approved; "
+        print("codex-hook-trust: refused: capture must be operator-run from a shell outside any session; "
               "an agent must never run it", file=sys.stderr)
+        return 1
+    saved = {key: os.environ.get(key) for key in SESSION_ENV}
     try:
         if not args.session_id:
             raise ValueError("pass --session-id UUID explicitly; the session is never taken from the environment")
@@ -531,10 +553,17 @@ def main(argv=None):
         os.environ["HARNESS_SESSION_ID"] = args.session_id
         os.environ["HARNESS_SESSION_ROOT"] = str(state / "worktrees" / str(uuid.UUID(args.session_id)))
         os.environ["HARNESS_SOURCE_ROOT"] = regular(state / "sessions" / args.session_id / "source-root", state).decode().strip()
-        summary = capture(Path(os.environ["HARNESS_SESSION_ROOT"]) / ".harness/codex", args.profile, args.dry_run)
+        summary = capture(Path(os.environ["HARNESS_SESSION_ROOT"]) / ".harness/codex", args.profile, args.dry_run,
+                          confirm=confirm_on_tty)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         print(f"codex-hook-trust: {'refused' if isinstance(error, ValueError) else 'failed'}: {error}", file=sys.stderr)
         return 1
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
     print(("DRY RUN: nothing written\n" if args.dry_run else "recorded\n") + json.dumps(summary, indent=2, sort_keys=True))
     return 0
 

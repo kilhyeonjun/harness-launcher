@@ -384,8 +384,12 @@ python3 "$(brew --prefix)/share/harness-launcher/codex-hook-trust.py" capture --
 ```
 
 `--session-id` is mandatory: the session is never taken from the environment, and
-a Codex sandbox or inherited `HARNESS_SESSION_*` environment prints a warning that
-capture must be operator-run (an agent must never run it).
+a Codex sandbox or inherited `HARNESS_SESSION_*` environment is refused (exit 1):
+capture must be operator-run (an agent must never run it). The session can write
+its own profile, so its native decision is evidence, not approval: without
+`--dry-run`, capture prints the exact normalized hooks, scripts and callbacks on
+the controlling terminal (`/dev/tty`) and records only after the operator types
+`record`. No terminal, or any other answer, writes nothing.
 
 The command invents no approval. It refuses (exit 1, nothing written) unless
 every hook has a trusted, enabled native decision whose hash equals the generated
