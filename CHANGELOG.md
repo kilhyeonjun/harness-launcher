@@ -24,8 +24,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
   root. Resume admits READY, PENDING, IN_FLIGHT and BLOCKED records (a recorded
   native identity must match; an unknown one adopts the handle's single session
   file), with no size cap on the header-only native read. A nonzero native exit
-  prints the resume command once the session is recorded; a session without a
-  single intact native file is told to start a new session. The unused readonly
+  prints the resume command once the session is recorded. When recording fails,
+  the launcher prints the `--rebind-runtime` and resume commands (a launcher
+  upgrade during the run) and says that `OMP_CONTINUATION_NOT_PERSISTED` or
+  `OMP_CONTINUATION_NATIVE_FORK` needs a new session. The unused readonly
   `validate-required-prepared` helper verb is removed.
 - herdr's bare `harness-exec <harness> omp --session-resume <handle> --` now
   resumes (the handle names its own session; no caller cwd is injected).

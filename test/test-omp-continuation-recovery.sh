@@ -359,8 +359,11 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
         for args in (['omp'], ['omp', '--model-mode', 'gpt-only'], ['omp', '--session-resume', H, '--']):
             with self.subTest(args=args):
                 self.assertIsNone(entry.omp_model_mode_plan(self.profile, args, None, {}))
-        with self.assertRaises(Exception):
+        # The Entry does not catch ProjectionError (a plain Exception), so an
+        # unknown mode escapes as the helper's own error, not OpsError.
+        with self.assertRaises(Exception) as caught:
             entry.omp_model_mode_plan(self.profile, ['omp', '--model-mode', 'foreign'], None, {})
+        self.assertEqual(type(caught.exception).__name__, 'ProjectionError')
 
     def test_herdr_bare_resume_of_pending_record_uses_default_mode_overlay(self):
         self.public_fixture(); self.op('NEW_PREPARE'); native = self.native_file()

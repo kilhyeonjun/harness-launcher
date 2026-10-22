@@ -1620,8 +1620,15 @@ PYREQUEST
     selected="$(_harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" "$native_rc")"
     metadata_rc=$?
     # A recorded session file resumes from any state; without one the handle cannot.
+    # A launcher upgrade during the run also fails here, and a rebind repairs it.
     if (( metadata_rc != 0 )); then
-      print -ru2 -- "harness-launcher: OMP continuation $continuation_h has no single intact session file; start a new session"
+      print -ru2 -- "harness-launcher: OMP continuation $continuation_h not finalized (see the error above); OMP_CONTINUATION_NOT_PERSISTED or OMP_CONTINUATION_NATIVE_FORK means start a new session"
+      local _harness_omp_rebind
+      _harness_omp_rebind="$("$continuation_python" -I -S -B -c \
+        'import json,sys;print(json.load(open(sys.argv[1]))["path"]+"/bin/harness_omp_continuation.py")' \
+        "${continuation_helper:A:h:h:h}/current.json" 2>/dev/null)" &&
+        print -ru2 -- "harness-launcher: if the launcher was upgraded, run: $continuation_python -I -S -B $_harness_omp_rebind --rebind-runtime $continuation_state ${config_root:A} $continuation_w"
+      print -ru2 -- "harness-launcher: then resume with: harness-exec ${config_root:A} omp --session-resume $continuation_h --"
     elif (( native_rc != 0 )); then
       print -ru2 -- "harness-launcher: OMP continuation not finalized; resume with: harness-exec ${config_root:A} omp --session-resume $continuation_h --"
     fi
