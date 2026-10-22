@@ -2,6 +2,21 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.75.0 — 2026-10-22
+
+- Let several OMP sessions share one prepared namespace. Fresh and continuation
+  sessions now take the native-home lease shared; `login`/`models` keep it
+  exclusive and are refused while a session runs. Lock failures print one
+  launcher message instead of the raw `zsystem` error.
+- Offer "New — OMP" in the no-argument menu for profiles with a selectable OMP
+  namespace, with a model-mode picker read from the profile's canonical
+  `omp-model-modes.json`. An enrolled profile whose selection fails is listed
+  as unavailable with its `OMP_*` label. The menu hands back only `omp
+  [--model-mode <id>]` with exit status 75 through a file other runtimes never
+  see; the runner revalidates it, returns to the menu on failure, and history
+  rows replay it.
+- Tolerate concurrent first creation of the OMP continuation container.
+
 ## 0.73.2 — 2026-10-22
 
 - Reuse an immutable transcript archive after SQLite rebuilds only characterized

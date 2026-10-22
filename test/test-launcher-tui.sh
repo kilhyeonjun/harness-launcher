@@ -52,6 +52,7 @@ write_stub() {
   echo "CMUX_WORKSPACE_ID:\${CMUX_WORKSPACE_ID:-<UNSET>}"
   echo "CMUX_TAB_ID:\${CMUX_TAB_ID:-<UNSET>}"
   echo "CMUX_SURFACE_ID:\${CMUX_SURFACE_ID:-<UNSET>}"
+  echo "OMP_HANDOFF_LEAK:\${HARNESS_LAUNCHER_OMP_HANDOFF:-<UNSET>}"
 } >> "\$TEST_STUB_FILE"
 printf '%s\n' "\$@" > "\$TEST_STUB_FILE.argv"
 exit 0
@@ -845,3 +846,36 @@ assert "Stop" in h and "UserPromptSubmit" in h, "TUI session opt-in lost"
 assert sys.argv[2] in h["SessionStart"][0]["hooks"][0]["command"], "TUI source binding changed"
 PYCODE
 echo 'PASS: TUI session opt-in preserves canonical launch binding'
+
+# --- OMP composer: offered only with the runner's handoff; modes from source.
+reset_plan
+mkdir -p "$TEST_HARNESS/.claude/source"
+cat > "$TEST_HARNESS/.claude/source/omp-model-modes.json" <<'JSON'
+{"schema":1,"default":"hybrid-opus-lead","modeled_selectors":{"G":"openai-codex/gpt-6.1-sol","O":"anthropic/claude-opus-5-5"},"modes":{"gpt-only":{"leader":"G","worker":"G","helper":"G","reviewer":"G"},"hybrid-opus-lead":{"leader":"O","worker":"G","helper":"G","reviewer":"O"}}}
+JSON
+HANDOFF="$TEST_TEMP/omp-handoff"
+OUT="$TEST_TEMP/omp.out"; STUB="$TEST_TEMP/omp.stub"
+run_tui $'2\n2\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+grep -Fq 'hybrid-opus-lead (기본) — leader claude-opus-5-5' "$OUT" || fail 'OMP default mode must be listed first' "$OUT"
+[ "$(cat "$HANDOFF")" = $'omp\n--model-mode\ngpt-only' ] || fail 'OMP mode handoff argv' "$HANDOFF"
+[ ! -e "$STUB" ] || fail 'OMP choice must not execute another runtime' "$STUB"
+rm -f "$HANDOFF"
+run_tui $'3\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+[ "$(cat "$HANDOFF")" = $'omp\n--model-mode\ngpt-only' ] || fail 'OMP history replay handoff' "$OUT"
+rm -f "$HANDOFF"
+run_tui $'1\n2\n1\n' "$OUT" "$STUB"
+! grep -Fq 'OMP' "$OUT" || fail 'OMP offered without the runner handoff' "$OUT"
+grep -q 'EXEC:claude ' "$STUB" || fail 'Claude must stay auto-selected without OMP' "$OUT"
+# Another runtime picked from the same menu never sees the handoff path.
+rm -f "$STUB"
+run_tui $'1\n1\n2\n1\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+grep -Fqx 'OMP_HANDOFF_LEAK:<UNSET>' "$STUB" || fail 'OMP handoff path leaked into Claude' "$STUB"
+[ ! -e "$HANDOFF" ] || fail 'Claude choice must not write the OMP handoff' "$HANDOFF"
+# An enrolled profile that fails selection is listed with its label, not hidden.
+run_seeded_tui_status $'2\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_UNAVAILABLE=OMP_PROJECTION_EXPIRED
+grep -Fq 'OMP — 사용 불가 (OMP_PROJECTION_EXPIRED)' "$OUT" || fail 'unavailable OMP must show its label' "$OUT"
+[ "$RUN_TUI_RC" -ne 75 ] && [ ! -e "$HANDOFF" ] || fail 'unavailable OMP must not hand off' "$OUT"
+rm -f "$TEST_HARNESS/.claude/source/omp-model-modes.json" "$STUB"; reset_plan
+run_tui $'2\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+[ "$(cat "$HANDOFF")" = 'omp' ] || fail 'OMP without model modes hands off the default launch' "$OUT"
+echo 'PASS: TUI OMP composer, model modes and replay'

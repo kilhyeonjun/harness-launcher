@@ -525,6 +525,14 @@ CODEX_BIN=""
 if CODEX_BIN="$(harness_codex_bin_resolve)"; then HAS_CODEX=true; fi
 KIRO_BIN=""
 if KIRO_BIN="$(harness_kiro_bin_resolve)"; then HAS_KIRO=true; fi
+# OMP is offered only when the parent runner selected this profile's prepared
+# namespace and passed a private handoff file; the runner starts OMP itself.
+# Neither value may reach another runtime launched from this menu.
+OMP_HANDOFF="${HARNESS_LAUNCHER_OMP_HANDOFF:-}"
+OMP_UNAVAILABLE="${HARNESS_LAUNCHER_OMP_UNAVAILABLE:-}"
+unset HARNESS_LAUNCHER_OMP_HANDOFF HARNESS_LAUNCHER_OMP_UNAVAILABLE
+HAS_OMP=false
+[ -n "$OMP_HANDOFF" ] || [ -n "$OMP_UNAVAILABLE" ] && HAS_OMP=true
 
 prewarm_probes
 migrate_legacy_plan
@@ -545,7 +553,7 @@ collect_launchpad() {
   local opts=() labels=() hist_lines=() i line ts summary runtime
   history_migrate_single_full || return 2
   AUTO_RUNTIME=false
-  if ! $HAS_CLAUDE && ! $HAS_CODEX && ! $HAS_KIRO; then
+  if ! $HAS_CLAUDE && ! $HAS_CODEX && ! $HAS_KIRO && ! $HAS_OMP; then
     echo "Error: no runtime found (claude / codex / kiro-cli not in PATH)" >&2
     echo "  claude 설치 여부 또는 HARNESS_CODEX_BIN / HARNESS_KIRO_BIN 설정을 확인하세요." >&2
     exit 1
@@ -555,6 +563,11 @@ collect_launchpad() {
   $HAS_CLAUDE && { opts+=("claude"); labels+=("☁️  New — Claude Code 구성…"); }
   $HAS_CODEX && { opts+=("codex"); labels+=("⚡ New — Codex CLI 구성…"); }
   $HAS_KIRO && { opts+=("kiro"); labels+=("🦜 New — Kiro CLI 구성…"); }
+  if [ -n "$OMP_UNAVAILABLE" ]; then
+    opts+=("omp"); labels+=("🥧 OMP — 사용 불가 ($OMP_UNAVAILABLE)")
+  elif $HAS_OMP; then
+    opts+=("omp"); labels+=("🥧 New — OMP 구성…")
+  fi
   # History rows — complete configs, newest first. Rows whose runtime is no
   # longer installed are hidden (the entry stays in the file). The full line is
   # captured per row so replay does not depend on the file staying unchanged
@@ -569,6 +582,7 @@ collect_launchpad() {
         claude) $HAS_CLAUDE || continue ;;
         codex)  $HAS_CODEX || continue ;;
         kiro)   $HAS_KIRO || continue ;;
+        omp)    $HAS_OMP || continue ;;
         *) continue ;;
       esac
       ts=$(history_field "$line" TS)
@@ -1244,6 +1258,53 @@ launch_codex() {
   return $rc
 }
 
+# --- OMP flow --------------------------------------------------------------
+# omp_modes — one "<mode>\t<label>" line per canonical model mode in this
+# profile's source, default first; no output when the profile has none.
+omp_modes() {
+  local spec="$HARNESS_DIR/.claude/source/omp-model-modes.json"
+  [ -f "$spec" ] || return 0
+  python3 -I - "$spec" <<'PYMODES' 2>/dev/null
+import json, sys
+spec = json.load(open(sys.argv[1]))
+names = {k: v.split('/')[-1] for k, v in spec['modeled_selectors'].items()}
+for mode in sorted(spec['modes'], key=lambda m: m != spec['default']):
+    roles = ' · '.join(f'{r} {names[s]}' for r, s in spec['modes'][mode].items())
+    print(f"{mode}\t{mode}{' (기본)' if mode == spec['default'] else ''} — {roles}")
+PYMODES
+}
+
+collect_omp() {
+  local lines=() opts=() modes=() line i
+  if [ -n "$OMP_UNAVAILABLE" ]; then
+    echo "⚠️  OMP를 시작할 수 없습니다: $OMP_UNAVAILABLE (${HARNESS_PREFIX:-$HARNESS_NAME} omp 로 상세 확인)" >&2
+    return 1
+  fi
+  while IFS= read -r line; do [ -n "$line" ] && lines+=("$line"); done < <(omp_modes)
+  CHOICE_MODE=""
+  if [ ${#lines[@]} -gt 0 ]; then
+    for line in "${lines[@]}"; do modes+=("${line%%$'\t'*}"); opts+=("${line#*$'\t'}"); done
+    BREADCRUMB="$HARNESS_NAME ▸ OMP"
+    menu "Model mode" "${opts[@]}" || return 1
+    for i in "${!opts[@]}"; do
+      [ "$MENU_RESULT" = "${opts[$i]}" ] && { CHOICE_MODE="${modes[$i]}"; break; }
+    done
+  fi
+  PLAN_SUMMARY="OMP · ${CHOICE_MODE:-default}"
+}
+
+# launch_omp — the parent runner owns the namespace lease and revalidates the
+# mode, so hand it the fresh-session argv and exit 75 instead of running OMP.
+launch_omp() {
+  local args=(omp)
+  [ -n "$OMP_HANDOFF" ] || { echo "⚠️  OMP를 시작할 수 없습니다: ${OMP_UNAVAILABLE:-not configured}" >&2; return 1; }
+  [ -n "$CHOICE_MODE" ] && args+=(--model-mode "$CHOICE_MODE")
+  history_save
+  launch_banner "$PLAN_SUMMARY" "${HARNESS_PREFIX:-$HARNESS_NAME}" "${args[@]}"
+  printf '%s\n' "${args[@]}" > "$OMP_HANDOFF" || return 1
+  exit 75
+}
+
 launch_kiro() {
   if [ "$CHOICE_MCP_SURFACE" = "light" ]; then
     export HARNESS_KIRO_MCP_PROFILE="light"
@@ -1300,6 +1361,7 @@ while true; do
       claude) collect_claude || { $AUTO_RUNTIME && exit 0; continue; } ;;
       codex)  collect_codex || { $AUTO_RUNTIME && exit 0; continue; } ;;
       kiro)   collect_kiro || { $AUTO_RUNTIME && exit 0; continue; } ;;
+      omp)    collect_omp || { $AUTO_RUNTIME && exit 0; continue; } ;;
       *) echo "Error: unknown runtime '$CHOICE_RUNTIME'" >&2; exit 1 ;;
     esac
   fi
@@ -1308,6 +1370,7 @@ while true; do
     claude) launch_claude ;;
     codex)  launch_codex ;;
     kiro)   launch_kiro ;;
+    omp)    launch_omp ;;
   esac
   # launch_* only returns on failure — surface it and let the user retry.
   echo "" >&2

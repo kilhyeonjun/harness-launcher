@@ -132,8 +132,22 @@ OMP is an explicit selector after the optional leading `--cwd <dir>` and one
 workspace control (`--isolated`, `--no-isolated`, or `--isolated-session <uuid>`).
 The dispatcher consumes it once: `ex omp omp -- text` passes `omp -- text` to
 OMP. Option values, empty arguments and tokens after `--` remain literal.
-`claude omp` and `omp claude` are refused. This does not add OMP to the TUI,
-change the default runtime, or add an automatic agent-selection alias.
+`claude omp` and `omp claude` are refused. This does not change the default
+runtime or add an automatic agent-selection alias.
+
+The no-argument menu offers "New — OMP" when the profile's projection selects
+a configured namespace; an enrolled profile whose selection fails is listed as
+unavailable with its `OMP_*` label instead of disappearing. The menu lists the
+profile source's canonical model modes (`.claude/source/omp-model-modes.json`,
+default first) and hands the chosen fresh-session argv back to the runner
+through a private temporary file whose path is removed from the menu's
+environment, so other runtimes it launches never see it. The runner honors
+the file only when the menu exits with status 75, only for the exact grammar
+`omp` or `omp --model-mode <id>`, and only as a regular, owned, non-symlink
+file. It then repeats the normal mode request, argument, projection and
+executable-pin checks before starting OMP in the already selected workspace,
+returning to the menu when they fail. The menu never executes OMP; history
+rows replay through the same handoff.
 
 Trusted `config/launcher.env` must explicitly bind all three values:
 
@@ -166,8 +180,13 @@ keys, Node options, other runtime homes and harness identity variables are not
 forwarded. Native/platform startup may subsequently change its own process
 environment; that is distinct from the launcher's outgoing contract. No auth,
 settings or session history is copied or adopted from Claude, Codex or a prior
-native profile. A root-local kernel lease serializes fresh OMP use of the
-native home; existing isolated workspace leases and finalization also apply.
+native profile. A root-local kernel lease guards the native home: fresh and
+continuation sessions hold it shared, so several OMP sessions can run at once
+(upstream OMP v18.11.3 source serializes OAuth refresh through SQLite leases,
+session files through per-file locks and settings writes through file locks;
+writes added by an amended release are not covered by that review), while
+`login`/`models` hold it exclusively. A busy lease is refused without waiting;
+existing isolated workspace leases and finalization also apply.
 The default cwd is `<root>/cwd`; an explicit outer cwd is resolved through the
 existing workspace-owner boundary. OMP homes are a deliberate exception to
 project-local generated runtime homes. This is a trusted application with
@@ -188,7 +207,7 @@ models ls openai-codex --json --kind chat --no-extensions
 All six management forms are classified before workspace/session allocation,
 isolated leases, heartbeat or journal preparation. Login/models validate the
 same executable pin and owned namespace and use the existing native-home kernel
-lock, outgoing environment, and fixed `<root>/cwd`, even when an outer `--cwd`
+lock exclusively (refused while any session holds it), outgoing environment, and fixed `<root>/cwd`, even when an outer `--cwd`
 or workspace control is supplied. A busy or invalid lock is refused without
 deleting it. Acquired locks unwind on exit/signals; the persistent lock file is
 retained. Native exit status is preserved. Missing, reordered or additional

@@ -467,7 +467,9 @@ def operate(value):
         if mode == 'NEW_PREPARE':
             require(row['status'] == 'PENDING' and row['native_identity'] is None)
             container = sessions.parent.parent
-            if not os.path.lexists(container): container.mkdir(mode=0o700)
+            # Concurrent first sessions may race here; ownership is checked next.
+            try: container.mkdir(mode=0o700)
+            except FileExistsError: pass
             owned_directory(container, True)
             sessions.parent.mkdir(mode=0o700)  # exclusive; no adoption/cleanup
             sessions.mkdir(mode=0o700)

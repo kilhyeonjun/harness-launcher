@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     configuration()
     for name in ['claude','codex','gum']:
         p=tools/name;p.write_text('#!/bin/sh\nexit 97\n');p.chmod(0o700)
-    env={'HOME':str(home),'PATH':str(tools)+':/opt/homebrew/bin:/usr/bin:/bin','LC_ALL':'C','TERM':'dumb','TMPDIR':str(root),'HARNESS_CLAUDE_PLUGIN_MIRROR':'0','PYTHONDONTWRITEBYTECODE':'1','OPENAI_API_KEY':'fixture-secret-must-not-leak','ANTHROPIC_API_KEY':'fixture-secret-must-not-leak','NODE_OPTIONS':'fixture-must-not-leak','HARNESS_SESSION_HEARTBEAT_SECONDS':'0.05','HARNESS_POST_EDIT_CODEX_SYNC':'0','HARNESS_POST_COMMIT_CODEX_SYNC':'0'}
+    env={'HOME':str(home),'PATH':str(tools)+':/opt/homebrew/bin:/usr/bin:/bin','LC_ALL':'C','TERM':'dumb','TMPDIR':str(root),'HARNESS_CLAUDE_PLUGIN_MIRROR':'0','PYTHONDONTWRITEBYTECODE':'1','OPENAI_API_KEY':'fixture-secret-must-not-leak','ANTHROPIC_API_KEY':'fixture-secret-must-not-leak','NODE_OPTIONS':'fixture-must-not-leak','HARNESS_SESSION_HEARTBEAT_SECONDS':'0.05','HARNESS_POST_EDIT_CODEX_SYNC':'0','HARNESS_POST_COMMIT_CODEX_SYNC':'0','HARNESS_KIRO_BIN':str(tools/'absent-kiro')}
     state=root/'sessions';env['HARNESS_SESSION_STATE_HOME']=str(state)
     # The new selector is activated only after first-rollout preparation. Keep
     # this legacy-routing fixture explicitly never-enrolled in its own HOME.
@@ -88,15 +88,15 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
                 for base in (state,profile/'.harness',home/'.local/state') if base.exists()
                 for p in sorted([base,*base.rglob('*')])]
     def count():return len(calls.read_text().splitlines()) if calls.exists() else 0
-    def run(args,expected=0,entry=False,tail=None,cwd=None,no_allocate=False):
+    def run(args,expected=0,entry=False,tail=None,cwd=None,no_allocate=False,stdin=b''):
         global passed
         capture.unlink(missing_ok=True);wire.unlink(missing_ok=True)
         before=count();before_allocation=allocation()
         if entry:command=['/bin/zsh',str(repo/'bin/harness-exec'),str(profile),*args]
         else:command=['/bin/zsh','-f','-c','source "$1/bin/aliases.zsh"; '+spy+'shift; _harness_launcher_run "$@"','test',str(repo),str(profile),*args]
-        result=subprocess.run(command,cwd=profile,env=env,input=b'',capture_output=True,timeout=20)
+        result=subprocess.run(command,cwd=profile,env=env,input=stdin,capture_output=True,timeout=20)
         assert result.returncode==expected,(args,result.returncode,expected,result.stderr.decode())
-        assert count()-before==(0 if tail is None else 1),('native invocation count',args)
+        assert count()-before==(0 if tail is None else 1),('native invocation count',args,result.stdout.decode()[-2000:],result.stderr.decode()[-2000:])
         if no_allocate:assert allocation()==before_allocation,('management allocated or changed launcher state',args)
         if tail is None:
             assert not capture.exists(),('refusal launched native',args)
@@ -186,14 +186,14 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     configuration(HARNESS_SESSION_ISOLATION_DEFAULT='1')
     run(['omp','--model','resume','--','literal'],tail=['--model','resume','--','literal'])
     configuration()
-    # A retained normal-home lease rejects a second launcher, then releases.
+    # Fresh sessions share the normal-home lease; management stays exclusive.
     command=['/bin/zsh','-f','-c','source "$1/bin/aliases.zsh"; shift; _harness_launcher_run "$@"','test',str(repo),str(profile),'omp','--','fixture-wait']
     active=subprocess.Popen(command,cwd=profile,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     try:
         deadline=time.monotonic()+10
         while not ready.exists() and active.poll() is None and time.monotonic()<deadline:time.sleep(.02)
         assert ready.exists(),('native barrier missing',active.poll())
-        run(['omp'],expected=2)
+        run(['omp'],tail=[])
         busy_identity=(lock.stat().st_dev,lock.stat().st_ino)
         for tail in management[2:]:run(['omp',*tail],expected=2,no_allocate=True)
         assert (lock.stat().st_dev,lock.stat().st_ino)==busy_identity
@@ -202,6 +202,20 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
         out,err=active.communicate(timeout=10)
     assert active.returncode==0,(active.returncode,err)
     run(['omp'],tail=[])
+    # Bare menu: the third composer is OMP; the runner then starts the same
+    # fresh native session after its own checks. A bad pin is refused there and
+    # the menu returns (here to EOF) without launching native.
+    run(['--no-isolated'],tail=[],stdin=b'3\n')
+    configuration(HARNESS_OMP_SHA256='0'*64);run(['--no-isolated'],stdin=b'3\n');configuration()
+    # Another runtime from the same menu cannot queue an OMP launch through the
+    # handoff file: only the menu's own OMP exit status is honored.
+    planted=tools/'claude';original=planted.read_text()
+    planted.write_text('#!/bin/sh\nfor d in "$TMPDIR"/harness-omp-handoff.*; do printf "omp\\n" > "$d/argv"; done\nexit 0\n')
+    run(['--no-isolated'],stdin=b'1\n1\n2\n1\n');planted.write_text(original)
+    # Without any OMP configuration the menu does not offer it at all.
+    (profile/'.harness/launcher-history').unlink(missing_ok=True)
+    configuration(HARNESS_OMP_BIN='',HARNESS_OMP_ROOT='',HARNESS_OMP_SHA256='')
+    run(['--no-isolated'],stdin=b'3\n');configuration()
     # Terminate only the owned fake process group, then prove reacquisition.
     ready.unlink();release.unlink();behavior.write_text('wait')
     signaled=subprocess.Popen(command[:-2]+management[2],cwd=profile,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
@@ -209,6 +223,7 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
         deadline=time.monotonic()+10
         while not ready.exists() and signaled.poll() is None and time.monotonic()<deadline:time.sleep(.02)
         assert ready.exists(),('management signal barrier missing',signaled.poll())
+        run(['omp'],expected=2)
         os.killpg(signaled.pid,signal.SIGTERM)
         out,err=signaled.communicate(timeout=10)
         assert signaled.returncode in (-signal.SIGTERM,143),(signaled.returncode,err)
