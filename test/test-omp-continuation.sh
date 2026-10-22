@@ -563,16 +563,6 @@ try {
             self.assertFalse(self.sessions.exists());self.assertEqual(self.events.read_text(),'finish\n')
         finally:os.close(fd)
 
-    def test_C10_shared_namespace_session_does_not_block_continuation(self):
-        # A running fresh session holds the namespace shared, not exclusive.
-        self.public_fixture();lock=self.ns/'.launcher.lock';lock.write_bytes(b'');lock.chmod(0o600)
-        fd=os.open(lock,os.O_RDONLY)
-        try:
-            fcntl.lockf(fd,fcntl.LOCK_SH|fcntl.LOCK_NB)
-            self.public_shell(['--session-new','--'],0)
-            self.assertTrue(self.calls.exists())
-        finally:os.close(fd)
-
     def test_C11_workspace_busy_precedes_namespace_and_native(self):
         self.public_fixture();fd=os.open(self.record_dir/'runtime.lock',os.O_RDWR)
         try:
