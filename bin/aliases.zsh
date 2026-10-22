@@ -1581,7 +1581,7 @@ PYREQUEST
       native_options+=("$value")
     done
     # herdr restores a pane with bare `omp --resume=<path>`, bypassing this
-    # launcher. Give the native OMP (and the kh herdr observer) the exact public
+    # launcher. Give the native OMP (and its herdr observer) the exact public
     # command that resumes this same continuation H through the registered source.
     local _harness_omp_herdr_resume=""
     if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
