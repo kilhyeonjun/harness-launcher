@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARNESS_TEST_OMP_SOURCE="$(python3 -I -S -B "$ROOT/test/omp-fixture-source.py")"
 export HARNESS_TEST_OMP_SOURCE
 python3 -I -S -B - "$ROOT" "$@" <<'PYTEST'
-import copy, fcntl, hashlib, importlib.util, json, os, shlex, shutil, subprocess, sys, tempfile, unittest
+import copy, fcntl, hashlib, importlib.util, json, os, pwd, shlex, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -451,8 +451,13 @@ raise SystemExit(EXIT_CODE)
 
     def test_C01_C03_C27_public_alias_layer_fake_only(self):
         self.public_fixture()
+        # Per-harness gh identity for this profile; the stub is the only gh.
+        token='ghs_continuation_fixture_token'
+        (self.profile/'config/config.yaml').write_text('github_user: fixture-user\n')
+        gh=self.tools/'gh';gh.write_text('#!/bin/sh\n[ "$*" = "auth token --user fixture-user" ] || exit 9\necho '+token+'\n');gh.chmod(0o700)
         prompt='literal --resume claude "quoted"\nline two'
-        self.public_shell(['--session-new','--print','--',prompt],0)
+        done=self.public_shell(['--session-new','--print','--',prompt],0)
+        self.assertNotIn(token.encode(),done.stdout+done.stderr)
         calls=[json.loads(x) for x in self.calls.read_text().splitlines()]
         bundle=next(p for p in (self.profile/'.harness/omp').iterdir() if p.is_dir())
         required=['--append-system-prompt='+str(bundle/'policy.md'),'--no-extensions',
@@ -462,8 +467,10 @@ raise SystemExit(EXIT_CODE)
         self.assertEqual(self.events.read_text(),'finish\n')
         # A caller's exported tuple from another session must not reach native OMP.
         hostile={'HARNESS_SESSION_ID':'00000000-0000-4000-8000-000000000000','HARNESS_SOURCE_ROOT':str(self.base),
-                 'HARNESS_SESSION_ROOT':str(self.base),'HARNESS_RUN_DIR':str(self.base)}
-        self.public_shell(['--session-resume',self.h,'--print','--',prompt],0,hostile)
+                 'HARNESS_SESSION_ROOT':str(self.base),'HARNESS_RUN_DIR':str(self.base),
+                 'GH_TOKEN':'caller-token','XDG_CONFIG_HOME':str(self.base),'PI_SHELL_PREFIX':'caller;'}
+        done=self.public_shell(['--session-resume',self.h,'--print','--',prompt],0,hostile)
+        self.assertNotIn(token.encode(),done.stdout+done.stderr)
         calls=[json.loads(x) for x in self.calls.read_text().splitlines()]
         native=str(self.sessions/'fixture_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.jsonl')
         self.assertEqual(calls[1]['argv'],['--print',*required,'--session-dir',str(self.sessions),'--resume',native,'--',prompt])
@@ -474,6 +481,10 @@ raise SystemExit(EXIT_CODE)
             'XDG_STATE_HOME':str(self.ns/'state'),'XDG_DATA_HOME':str(self.ns/'data'),
             'PI_CODING_AGENT_DIR':str(self.ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(self.ns/'history'),
             'PI_NATIVES_DIR':str(self.ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0',
+            # The model's bash commands get the passwd home (not the caller's
+            # HOME) and default XDG roots; the profile's own gh token, not the caller's.
+            'PI_SHELL_PREFIX':"export HOME='"+pwd.getpwuid(os.getuid()).pw_dir+"'; unset XDG_CONFIG_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_DATA_HOME;",
+            'GH_TOKEN':token,
             # Env contract v2: the continuation forwards its own isolated-session
             # tuple from the W record; the run dir is the retained cwd.
             'HARNESS_SESSION_ID':self.w,'HARNESS_SOURCE_ROOT':str(self.profile),
@@ -481,7 +492,7 @@ raise SystemExit(EXIT_CODE)
         for call in calls:
             self.assertEqual({k:call['env'].get(k) for k in expected_env},expected_env)
             # Darwin may add this Python-startup key after env -i. Production
-            # still sends the v2 set (13 + PI_AUTO_QA=0 + the harness tuple; the
+            # still sends the v2 set (13 + PI_AUTO_QA=0 + PI_SHELL_PREFIX + the harness tuple + GH_TOKEN; the
             # fixture env carries no herdr triple); this is not a wider env grant.
             self.assertLessEqual(set(call['env'])-set(expected_env),{'__CF_USER_TEXT_ENCODING'})
 

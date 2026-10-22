@@ -1410,6 +1410,23 @@ _harness_launcher_omp_native_path() {
   print -r -- "$native_path"
 }
 
+# The account's passwd record. macOS `id -P` reads the directory service, so
+# the home is the account's even when $HOME was changed by the caller.
+_harness_launcher_passwd_record() { /usr/bin/id -P 2>/dev/null; }
+
+# _harness_launcher_omp_account_home: the passwd home (second-to-last field; a
+# GECOS may contain ':'), only as an existing absolute directory whose path is
+# safe to single-quote into PI_SHELL_PREFIX. Never derived from $HOME.
+_harness_launcher_omp_account_home() {
+  local record home
+  record="$(_harness_launcher_passwd_record)" || return 1
+  local -a fields=("${(@s.:.)record}")
+  (( ${#fields} >= 2 )) || return 1
+  home="$fields[-2]"
+  [[ "$home" == /* && "$home" != *[^A-Za-z0-9\ ._/+@,%-]* && -d "$home" ]] || return 1
+  print -r -- "$home"
+}
+
 _harness_launcher_omp_native() (
   local run_dir="$1" root="$HARNESS_OMP_ROOT" native_bin="$HARNESS_OMP_BIN"
   shift
@@ -1427,9 +1444,18 @@ _harness_launcher_omp_native() (
       echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
     }
   fi
-  # Env contract v2 (decision 038): the 13 fixed fields, PI_AUTO_QA=0, then two
-  # optional groups that are forwarded whole or not at all, never synthesized.
-  local -a extra=(PI_AUTO_QA=0)
+  # Env contract v2 (decision 038): the 13 fixed fields, PI_AUTO_QA=0,
+  # PI_SHELL_PREFIX, two optional groups that are forwarded whole or not at all,
+  # never synthesized, and the optional per-harness GH_TOKEN (environ only).
+  # OMP's bash tool runs `$PI_SHELL_PREFIX <command>` under the namespace HOME.
+  # Give the model's commands the account home (gh keyring, ~/.gitconfig
+  # includeIf, ~/.local/state) and the default XDG roots; OMP itself keeps the
+  # namespace. The home is validated, so single quotes cannot be escaped.
+  local account_home
+  account_home="$(_harness_launcher_omp_account_home)" || {
+    echo 'harness-launcher: OMP_ACCOUNT_HOME_INVALID: passwd home is not a safe absolute directory' >&2; return 2
+  }
+  local -a extra=(PI_AUTO_QA=0 "PI_SHELL_PREFIX=export HOME='$account_home'; unset XDG_CONFIG_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_DATA_HOME;")
   local sid="${HARNESS_SESSION_ID-}" src="${HARNESS_SOURCE_ROOT-}" sroot="${HARNESS_SESSION_ROOT-}" rdir="${HARNESS_RUN_DIR-}"
   if [[ "$sid" =~ $_HARNESS_LAUNCHER_UUID_RE && "$src" == /* && "$sroot" == /* && "$rdir" == /* ]]; then
     extra+=(HARNESS_SESSION_ID="$sid" HARNESS_SOURCE_ROOT="$src" HARNESS_SESSION_ROOT="$sroot" HARNESS_RUN_DIR="$rdir")
@@ -1444,6 +1470,10 @@ _harness_launcher_omp_native() (
     [[ "${(t)_harness_omp_herdr_resume-}" == *local* ]] && herdr_resume="$_harness_omp_herdr_resume"
     extra+=(HERDR_RESUME_ARGV="$herdr_resume")
   fi
+  # Per-harness GitHub identity as for Claude/Codex: only the loader's own
+  # result, never the caller's value or an empty token (this is a subshell).
+  local HARNESS_GH_USER=""
+  harness_gh_token_load "${HARNESS_DIR-}" >/dev/null 2>&1 || unset GH_TOKEN
   local native_path
   native_path="$(_harness_launcher_omp_native_path)" || return 2
   local -a native_env=(HOME="$root/home" PATH="$native_path" LANG=C LC_ALL=C
@@ -1451,9 +1481,24 @@ _harness_launcher_omp_native() (
     XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data"
     PI_CODING_AGENT_DIR="$root/agent" PI_CODING_AGENT_SESSION_DIR="$root/history"
     PI_NATIVES_DIR="$root/native-cache" TERM=xterm-256color "${extra[@]}")
+  # A secret never rides on argv (ps shows argv to every local user), so
+  # instead of `env -i` clear this subshell's exports, keeping only a loaded
+  # GH_TOKEN; env then adds the non-secret fields and drops the `_` zsh adds.
+  local name
+  # Without zsh/parameter the loop and check below would be vacuous.
+  zmodload zsh/parameter 2>/dev/null && (( ${+parameters} )) || {
+    echo 'harness-launcher: OMP_ENV_NOT_CLOSED' >&2; return 2
+  }
+  for name in ${(k)parameters[(R)*export*]}; do
+    # unset of a readonly aborts this subshell; leave it to the check below.
+    [[ "$name" == GH_TOKEN || "${parameters[$name]}" == *readonly* ]] || unset -- "$name"
+  done
+  [[ -z "${(k)parameters[(R)*export*]:#GH_TOKEN}" ]] || {
+    echo 'harness-launcher: OMP_ENV_NOT_CLOSED' >&2; return 2
+  }
   # Become the native so the lock's owner is the native itself.
-  [[ -z "${native_lock_fd-}" ]] || exec /usr/bin/env -i "${native_env[@]}" "$native_bin" "$@"
-  /usr/bin/env -i "${native_env[@]}" "$native_bin" "$@"
+  [[ -z "${native_lock_fd-}" ]] || exec /usr/bin/env -u _ "${native_env[@]}" "$native_bin" "$@"
+  /usr/bin/env -u _ "${native_env[@]}" "$native_bin" "$@"
 )
 
 _harness_launcher_run_omp() (
