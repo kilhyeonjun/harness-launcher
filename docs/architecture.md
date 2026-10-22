@@ -305,15 +305,29 @@ RESUME skips generic session create, GC, new owner and finish. Both locks remain
 held through known terminal observation and finalization, then release N first.
 NEW retains its ordinary finish exactly once.
 
-PENDING does not yield a usable handle. Native zero plus a durable identity
-postcheck yields READY; RESUME changes it to IN_FLIGHT before the one call.
-Unknown terminal leaves PENDING/IN_FLIGHT unresolved. Known failure, fork or
-changed identity blocks the receipt and retains partial effects. Native
-nonzero is preserved; native zero with failed postcheck becomes wrapper exit2.
-No automatic retry, native UUID fabrication or history import occurs.
+Native zero plus a durable identity postcheck yields READY; RESUME changes the
+record to IN_FLIGHT before the one call. Known failure, fork or changed identity
+blocks the receipt and retains partial effects; native nonzero is preserved and
+a resume hint is printed. RESUME admits READY, PENDING, IN_FLIGHT and BLOCKED:
+the exclusive workspace lease plus a free per-handle native lock prove no live
+owner. A recorded native identity must still match; an unknown one adopts the
+handle's single eligible session file. The native itself holds
+`N/launcher-continuations/H/native.lock` (fcntl locks die with their owner, so
+the launcher's lease alone would free a handle whose native outlived a killed
+launcher); RESUME refuses `OMP_CONTINUATION_BUSY` while it is held.
+herdr's bare `harness-exec <harness> omp --session-resume H --` names its own
+session; no caller cwd is injected. The installed Entry resumes a session with its
+bound runtime; `harness_omp_continuation.py --rebind-runtime <state> <source> W`,
+run from the current selected snapshot (verified via `current.json` and the
+manifest), rewrites `bindings/W.json` to that snapshot under the Entry's binding
+lock and the free workspace/native locks, for the same source only. Origin matching ignores provenance that
+changes across launcher releases and binary upgrades (runtime pin, manifest,
+binding bytes, binary and namespace marker SHA, lock size/times); a binding may
+name any launcher release under the same launcher-runtimes root. No automatic
+retry, native UUID fabrication or history import occurs.
 
 The bounded observer examines at most16 directory entries and exactly one
-JSONL of at most1 MiB. It discards the first LF-terminated title line and reads
+JSONL of any size. It discards the first LF-terminated title line and reads
 only the second strict UTF-8 v3 header, at most64 KiB per line. It verifies U,
 absolute P, original C, timestamp, filename and absent/null parentSession.
 Transcript bodies are never read. Every read checks full pre/post stat identity;
@@ -338,19 +352,14 @@ the compiler alone emits immutable `.harness/omp/<selection-sha>/` assets. The
 structural API returns a non-ready prepared expectation and preserves argv value
 and terminator boundaries. Only the launcher inserts one reserved manifest
 locator. The original environment keeps the 13 fixed fields plus the v2 additions above. Continuation keeps
-its owned session-dir/resume flags, original literal prompt and terminal handling;
-its strict release validator shares the projection's amended-release schema.
+its owned session-dir/resume flags, original literal prompt and terminal handling.
 
-Schema2 binds contract `w07.required-resolver-consumer.v1`, exact amended version
-`18.11.3-kh.w07.1`, reviewed native source revision/patch/build provenance and actual
-binary SHA separately from upstream base18.11.3/rev96894. These metadata are part
-of the existing trusted publisher's selected binary release, not self-reported
-capabilities or new authority. No stock fallback or config repair is performed.
-The private `validate-required-prepared(source, consumer, workspace, B, N,
-bundle_manifest)` helper verb re-derives canonical expectations under real current
-selection and checks existing assets without writing or running native. Native
-must verify the managed launcher/current/helper/interpreter closure before it
-invokes that helper; a manifest-named executable or locator is not trusted by itself.
+The selection is schema 1 with `runtime_version` set to the enrolled upstream
+binary's release version and no fork contract fields. Release metadata is a
+shape check only; rows published for the retired fork stay readable so one
+stale row cannot block the shared enrollment state. No config repair is performed.
+The retired readonly `validate-required-prepared` helper verb had no production
+caller and is removed; a manifest-named executable or locator is not trusted by itself.
 
 Actual inventory admission belongs to the native producer: original resolver,
 full settings/filter/collision semantics, exact tuple multiset and actual raw byte
@@ -1545,12 +1554,12 @@ interpreter basename and exit status), retaining original child streams, status,
 fail-fast behavior, skip policy and success accounting. Metadata is emitted only
 after a child returns nonzero; external interruption or unavailable logs may still
 leave the actual internal failure unobserved. No guard or assertion is relaxed.
-Required-loading scopes this preparation PATH across its entry child, in-process
-readonly revalidation and CLI validator for the fixture lifetime. Cleanup restores
+Required-loading scopes this preparation PATH across its entry child and
+in-process checks for the fixture lifetime. Cleanup restores
 the caller environment; the validation assertions and production guards are unchanged.
 
 The standard ephemeral GitHub-hosted `macos-15` job has a CI-only prerequisite
-between Homebrew installation and the unchanged strict jq proof. The dedicated
+between Homebrew installation and the regression suites. The dedicated
 `test/omp-ci-owned-homebrew.py` requires consistent `GITHUB_ACTIONS=true`,
 `RUNNER_ENVIRONMENT=github-hosted` and `RUNNER_OS=macOS` fields inside that trusted
 job. These fields do not authenticate a local machine; this is never a personal
@@ -1575,67 +1584,17 @@ promised. Synthetic tests cover owned trees and injected uid/race/error
 observations; actual hosted prerequisite admission and remaining dependency
 ancestors still require new-source CI evidence. This adds no native/model proof.
 
-The portable `test/omp-real-jq-binding.py` derives its source root from its actual
-file location and reuses the admitted continuation fixture and unchanged
-production dependency preparation. Its ordinary mode accepts truthful system
-binding; its unchanged `--require-non-system` mode requires no jq in the
-unmodified `/usr/bin:/bin` search and a physical parent outside those directories.
-Both modes check whole jq bytes, all manifest bindings, a real synthetic query
-and native calls 0. A system host still strictly returns
-`REFUSED/NON_SYSTEM_JQ_REQUIRED`, exit 2; this is not a fallback PASS.
-
-CI's `test/omp-jq-ci-proof.py` checks a frozen, public-safe P1 evidence
-capsule at `test/fixtures/omp-jq-v2-p1-evidence.json` and nine whole source pins.
-Job 119376390928 at `6b23344f88c7cd4cdc948f618997c9ffed73c477` actually
-proved non-system selection/manifest/query/native0 on `macos-14`, with ordinary
-and strict calls to the unchanged inspector and identical source pins before
-and after both calls. This satisfies the historical actual-evidence condition
-for this exact source closure. The earlier P1 and actual093 capsules remain
-in Git history as evidence for their original sources; they cannot prove this
-changed source closure.
-
-The v2 capsule pins actual job/head, whole-log and observation-line digests.
-Its `source_receipt_sha256` hashes UTF-8 JSON of `{head, source_pins}` with sorted
-keys and compact separators. This is a source receipt, not the prior capsule's
-root approval receipt. Private preparation paths, dependency lists and raw
-logs/auth are excluded from the public capsule. Source changes fail historical
-reuse, not silently refresh it.
-
-To renew evidence after a source change, use a temporary evidence-only job in
-the existing workflow on the reviewed branch. Preserve all normal CI jobs.
-Run the original ordinary and strict inspector on an actual non-system host,
-require both passes and unchanged before/after source pins, and retain the actual
-job log before creating a new frozen capsule and exact verifier pins. Never
-remove or hide system jq, replace its locator, or relabel a system refusal as a
-non-system pass. A capture job proves only that observation, not whole-CI success;
-remove the temporary job and require the normal complete CI on the final source.
-
-After pure `test/test_omp_jq_ci_proof.py`, each current CI runs the original
-inspector ordinarily then strictly, without a shell or retry. Actual system
-binding requires strict exit2 with the exact refusal and is honestly reported
-`SYSTEM/REFUSAL_VERIFIED/current_non_system_physical_proof=false`. Actual
-non-system binding requires ordinary and strict exit0/PASS and is reported
-`NON_SYSTEM/FALLBACK_VERIFIED/true`. Every result retains exact types,
-selected/physical/hash/manifest/query/native0/copy=false/replacement=false checks;
-selected tool facts must be stable across calls. Historical and current host
-binary hashes need not equal. Ordinary failure short-circuits strict; all
-unexpected output, stderr, exceptions, timeout and mismatch fail closed.
-Only bounded statuses/digests are logged. Each stream has an 8192-byte
-accepted-output limit and each call a 60-second timeout, without a streaming
-memory or process-descendant containment claim. Source4, guards, native env,
-owned permissions, original syntax/docs/full suites and 20-minute job remain
-unchanged. No assertion or oracle is skipped. The old per-job fallback-host
-requirement is explicitly replaced by this historical-plus-current-branch
-contract; neither historical evidence nor pure tests prove a new whole-CI PASS.
-Root still requires normal actual CI before merge/release/install.
+The source-bound jq CI evidence pin (inspector, validator and frozen capsules)
+was retired with the local OMP fork on 2026-10-22 because it pinned fork-era
+sources. The runtime jq dependency checks remain.
 
 ## CI regression partition
 
 `./test/run-all.sh` without arguments still executes the full suite in its
 original order, with declared interpreters, source admission, environment,
 conditional skips and first-error status preserved. The current partition keeps
-all 143 existing suite invocations and adds the public-dispatch wrapper (144
-total). The four preservation suites count toward coverage even though the old
+every suite invocation in order (145 total, including the public-dispatch wrapper
+and the OMP continuation-recovery suite). The four preservation suites count toward coverage even though the old
 summary did not increment its passed counter for them.
 
 CI reuses that inventory and executor through
@@ -1652,7 +1611,7 @@ New default shell and Python entries remain covered by the same inventory; no
 independent CI allowlist may silently omit them. Each group runs serially on an
 independent `macos-15` job with its own checkout, home and temporary state and a
 20-minute limit. Every regression job retains the same pinned checkout, runtime
-bootstrap, owned Homebrew tests/preparation, source-bound jq tests/proof, shell
+bootstrap, owned Homebrew tests/preparation, shell
 syntax and documentation checks. No preparation result or fixture state is
 borrowed from another job. Existing guard, native environment and negative
 oracles remain unchanged.
@@ -1677,22 +1636,10 @@ proof alone does not establish either, or native/provider behavior.
 The model-mode parser consumes only launcher flags before `--`, then passes
 literal argv through the existing required resolver. Recipes come from the
 canonical MM1 JSON/helper; launcher code does not duplicate the model router.
-Selection `bundle_ids` includes `model-mode:<id>`; compiler-owned `model-mode.json`
-and prepared metadata bind the selected ID, recipe SHA and canonical/artifact
-closures. Readonly validation rederives the saved selected ID, never fresh default.
-Entry classifies mode-check before begin, and installed exec rejects old current
-closures lacking the mode protocol instead of silently bypassing the default.
-The prospective native version is `18.11.3-kh.w07.mm.1`; its existing exact eight
-release fields remain strict. Actual source/patch/build/binary pins are pending.
-Before `RESUME_ADMIT`, readonly MODE_PEEK obtains the bound native path and calls
-`--inspect-session-model-mode <path> --json`. Exact output is schema
-`omp.session-model-mode.peek.v1`, status `bound|legacy|invalid`, binding
-`{mode_id,recipe_sha256}` only for bound, and actual-byte `snapshot_sha256`.
-Unreadable output uses null snapshot SHA and nonzero status. Every non-bound,
-nonzero, malformed or mismatching result stops without ledger/native mutation.
-Peek is a UX guard; native SDK/CLI rechecks the actual adopted snapshot before
-history/outbox/transition effects. No other sealed artifact is reconstructed.
-All four CI jobs and aggregate, all 144 scheduled invocations, DevMap/APFS,
-required locator/resources and native capability services remain in force.
-Final projection freeze including MM4 precedes one genuine jq evidence renewal;
-SOURCE_CHANGED remains HOLD until actual hosted capture and final complete CI.
+Selection `bundle_ids` includes `model-mode:<id>` (the source default when none
+is given, also on resume); the compiler renders the mode into the bundle's
+`omp-settings.yml` overlay and prepared metadata binds the selected ID and the
+source recipe SHA. Readonly validation rederives the saved selected ID, never a
+fresh default. Installed exec rejects old current closures lacking the mode
+protocol instead of silently bypassing the default. No native version gate,
+mode check or saved-session mode peek remains.

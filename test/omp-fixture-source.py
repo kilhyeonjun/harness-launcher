@@ -11,11 +11,12 @@ from pathlib import Path
 import stat
 import sys
 
-POLICY_SHA256 = 'fe999320c71981fa068a770041106c6f876b1ad1305120bcbe3f68dd2d6b03a2'
+POLICY_SHA256 = '9ad35e87aec185f58077cf84094626a6b6c1927c540c79524b05273fb8a1dd39'
 CODE = {
     'core/scripts/harness_compile.py', 'core/scripts/omp_required_extension.ts',
     'core/bin/harness-python', 'core/hooks/pre-bash-curl-block.sh',
     'core/omp/model_modes.py', '.claude/source/omp-model-modes.json',
+    'core/omp/policy-omp.md',
 }
 YAML = {'.claude/source/' + name + '.yaml' for name in (
     'runtime-contract', 'budgets', 'settings', 'agents', 'commands', 'skills', 'claude-md')}
@@ -102,7 +103,7 @@ def admit():
             policy['revision'] == '281437a9e276d00fbe83e14eed7027e1196ff8b4',
             'test source identity mismatch')
     expected = {row['path']: row for row in policy['files']}
-    require(set(expected) == CODE | YAML and len(policy['files']) == 13,
+    require(set(expected) == CODE | YAML and len(policy['files']) == 14,
             'wrong fixed allowlist')
     directories = {'.'}
     for name in expected:

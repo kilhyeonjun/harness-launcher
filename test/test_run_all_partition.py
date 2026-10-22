@@ -310,7 +310,7 @@ class Workflow(unittest.TestCase):
         matches=list(re.finditer(r"^  ([a-z][a-z-]*):\n",job_source,re.M))
         jobs={m.group(1):job_source[m.end():matches[i+1].start() if i+1<len(matches) else len(job_source)] for i,m in enumerate(matches)}
         self.assertEqual(set(jobs),{"test"}|{"regression-"+g for g in GROUPS})
-        names=["Check out repository","Install runtime dependencies","Prepare owned CI Homebrew directory modes","Verify source-bound jq proof and current host branch","Check shell syntax","Lint public documentation","Run regression suite"]
+        names=["Check out repository","Install runtime dependencies","Prepare owned CI Homebrew directory modes","Check shell syntax","Lint public documentation","Run regression suite"]
         for group in GROUPS:
             job=jobs["regression-"+group]
             expected_names = names[:]

@@ -2,6 +2,48 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.77.0 — 2026-10-22
+
+- Run upstream OMP instead of the retired local fork. Required preparation
+  builds a schema-1 selection whose `runtime_version` is the enrolled binary's
+  release version (no fork contract, native release or current-projection
+  fields, no selected extensions) and no longer gates on the fork's native
+  version. The compiler's argv uses `--trusted-extension` and a bundle
+  `--config` settings overlay; caller `--trusted-extension` is refused.
+  Release metadata is a shape check; rows published for the fork stay readable.
+- Model modes stay a launcher control (`--model-mode <id>`, validated by the
+  source parser, default otherwise, also on resume) and are rendered by the
+  compiler into the settings overlay. Removed the fork-only
+  `--model-mode-check`, saved-session mode peek (`MODE_PEEK`,
+  `validate-model-mode-peek`, `--inspect-session-model-mode`) and the rule that
+  resume needs an explicit mode. `model_mode_request`/`model_mode_admit` keep
+  the call shape the installed Entry uses.
+- Continuations survive launcher and binary upgrades: origin matching ignores
+  runtime pin/manifest, binding bytes, binary and namespace-marker SHA and lock
+  size/times, and a binding may name any release under the launcher-runtimes
+  root. Resume admits READY, PENDING, IN_FLIGHT and BLOCKED records (a recorded
+  native identity must match; an unknown one adopts the handle's single session
+  file), with no size cap on the header-only native read. A nonzero native exit
+  prints the resume command once the session is recorded. When recording fails,
+  the launcher prints the `--rebind-runtime` and resume commands (a launcher
+  upgrade during the run) and says that `OMP_CONTINUATION_NOT_PERSISTED` or
+  `OMP_CONTINUATION_NATIVE_FORK` needs a new session. The unused readonly
+  `validate-required-prepared` helper verb is removed.
+- herdr's bare `harness-exec <harness> omp --session-resume <handle> --` now
+  resumes (the handle names its own session; no caller cwd is injected).
+- A continuation's native holds a per-handle `native.lock`, so a second resume
+  is refused `OMP_CONTINUATION_BUSY` even after its launcher was killed.
+- `harness_omp_continuation.py --rebind-runtime <state> <source> <session>`,
+  run from the currently selected runtime snapshot, points an OMP
+  continuation's session binding at that snapshot, so the Entry resumes it with
+  the new runtime instead of its old pin. It requires the same source and free
+  binding, workspace and native locks.
+- The synthetic OMP test source fixture now carries the upstream-OMP canonical
+  compiler, bridge, model-mode helper and OMP policy section.
+- Retired the source-bound jq CI evidence pin (inspector, validator, frozen
+  capsules and CI steps) with the fork; it pinned fork-era sources. Runtime jq
+  dependency checks remain.
+
 ## 0.76.0 — 2026-10-22
 
 - Extend the OMP native environment (contract v2, decision 038): always set

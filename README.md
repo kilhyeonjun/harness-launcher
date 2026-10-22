@@ -323,14 +323,14 @@ See [OMP entry and prepared namespace](docs/architecture.md#omp-entry-and-prepar
 and [typed host/profile enrollment](docs/architecture.md#typed-omp-hostprofile-enrollment)
 for the exact boundary and supported options.
 
-Enrolled normal OMP sessions also require the paired canonical core compiler and
-reviewed native contract `w07.required-resolver-consumer.v1`. Structural preparation
-returns `ready=false` and `inventory_admitted=false`; the launcher inserts one
-reserved `--harness-required-bundle=<physical selection.json>` before `--`.
-Caller-supplied locator/resource overrides refuse. The selected amended version
-is `18.11.3-kh.w07.1`; source revision, patch/build provenance and actual binary
-hash must match the trusted current projection. Stock `18.11.3` cannot satisfy
-schema2. Management and never-enrolled routing retain their existing behavior.
+Enrolled normal OMP sessions also require the paired canonical core compiler.
+The launcher builds a schema-1 selection whose `runtime_version` is the enrolled
+upstream binary's release version; the compiler emits the bundle and its argv
+(`--no-extensions --trusted-extension=<bundle>/required-extension.ts`, plus the
+bundle `--config` settings overlay). Structural preparation returns `ready=false`
+and `inventory_admitted=false`. Caller-supplied `--trusted-extension`, locator
+and resource overrides refuse. The binary pin, namespace and profile binding
+stay exact. Management and never-enrolled routing retain their existing behavior.
 
 Native must resolve its real complete inventory, validate it, consume the same
 array/bytes and complete required policy startup before readiness. Source-equal
@@ -363,12 +363,17 @@ no symlink components or group/world write permission, and payload files must be
 regular singlelink files with their pinned modes and hashes. A system-owned
 sticky temporary ancestor is allowed above the owned checkout/fixture.
 
-The four real source files and seven synthetic YAML inputs are pinned by
+The real source files (the compiler, bridge, model-mode helper and source, OMP
+policy section, Python wrapper and curl guard) and seven synthetic YAML inputs
+are pinned by
 `test/omp-fixture-policy.json`. The fixture `manifest.json` has identical bytes;
 `test/omp-fixture-source.py` pins their policy SHA-256. For a reviewed fixture
 update, update the fixed payload records (path, raw SHA-256, size and mode), write
 both JSON files identically, then update `POLICY_SHA256` in the helper and run the
-regressions in the same change. Origin/revision/digests identify test input only;
+regressions in the same change. The compiler, bridge, model-mode helper and OMP
+policy section are copies of the canonical upstream-OMP (schema 1) sources (alias tokens neutralized); the pinned
+`revision` string predates them and is a fixture label, not their provenance.
+Origin/revision/digests identify test input only;
 they grant no runtime, lease, native readiness or disclosure authority.
 
 These suites execute the real compiler/template with synthetic input and owned
@@ -764,8 +769,8 @@ cd harness-launcher
 ./test/run-all.sh
 ```
 
-The no-argument full runner retains the existing 143 suite invocations in order
-and adds the public-dispatch wrapper (144 total). CI runs its four fixed groups
+The no-argument full runner keeps its suite invocations in order (145 total,
+including the public-dispatch wrapper and the OMP continuation-recovery suite). CI runs its four fixed groups
 on separate `macos-15` jobs, each still limited to 20 minutes and retaining the
 same preparation, jq, syntax and documentation checks. The required `test`
 aggregate fails unless all four jobs succeed with complete, nonoverlapping
@@ -853,11 +858,11 @@ The regression runner preserves shell-suite output and exit status. On child
 failure it also reports only the suite basename, interpreter basename and status;
 this identifies the dispatch boundary without dumping arguments or environment.
 The required-loading fixture applies that same preparation PATH to its parent
-readonly checks and CLI validator, then restores the caller PATH at cleanup.
+in-process checks, then restores the caller PATH at cleanup.
 
 The standard ephemeral GitHub-hosted `macos-15` CI job prepares its two
-Homebrew directory modes after dependency installation and before the strict jq
-proof. `test/omp-ci-owned-homebrew.py` preflights `/opt/homebrew` and
+Homebrew directory modes after dependency installation, so the jq dependency
+checks see owned directories. `test/omp-ci-owned-homebrew.py` preflights `/opt/homebrew` and
 `/opt/homebrew/Cellar` together, then removes only group/other write bits on
 current-uid-owned directory descriptors. Root-owned safe directories are no-ops;
 root-owned unsafe or foreign-owned directories stop the job. This prerequisite
@@ -866,48 +871,15 @@ is exclusively for that trusted disposable job; exporting CI environment flags
 on a personal or shared machine does not authorize running it. Its synthetic
 tests use owned temporary trees and never modify the actual Homebrew prefix.
 
-For an optional local check, run `python3 -I -S -B test/omp-real-jq-binding.py`.
-It verifies actual jq bytes, manifest binding and a real synthetic query without
-native calls. Its unchanged `--require-non-system` mode requires jq absent from
-`/usr/bin:/bin` and a selected physical parent outside those directories; a
-system host still returns `REFUSED`, reason `NON_SYSTEM_JQ_REQUIRED`, exit 2.
-
-CI runs the pure `test/test_omp_jq_ci_proof.py` tests and the test-only
-`test/omp-jq-ci-proof.py` validator after normal dependency setup. The validator
-pins the public-safe `test/fixtures/omp-jq-v2-p1-evidence.json` capsule: actual
-job 118499176581 at source `449e1f2776a3555f23ef41cf5f375178a494f5d5`
-proved real non-system selection, complete manifest/hash binding, query exit 0
-and native calls 0 with the P1 sources. Both ordinary and strict inspector calls
-passed, and all nine source pins matched before and after the calls. This
-satisfies the historical actual-evidence condition only while those nine
-producer/admission/policy/source pins match. The previous actual093 capsule
-remains as historical evidence for its original sources and is not reused for
-P1. Changed relevant source fails reuse; capsule metadata grants no authority.
-
-Every current CI invokes the unchanged inspector ordinarily, then strictly.
-A real system result must pass ordinary binding and produce the exact strict
-refusal above, reported as `SYSTEM` / `REFUSAL_VERIFIED` with
-`current_non_system_physical_proof=false`. An actual non-system result must
-pass both calls and is reported as `NON_SYSTEM` / `FALLBACK_VERIFIED` / true.
-No historical binary hash is imposed on a different current host. Each result
-retains all original binding/query/no-native assertions and both calls must
-agree on selected tool facts. Neither `exit 2` nor another failure is ignored.
-Malformed or oversized output, any stderr, timeout or mismatch fails without
-logging raw child JSON. The 8192-byte per-stream accepted-output limit and
-60-second per-call timeout claim no streaming or descendant containment.
-Original guards, source admission, owned permissions, syntax/docs/full suites
-and the 20-minute CI job budget remain unchanged. Historical fallback evidence
-is not current fallback or whole-CI success; new actual CI remains required
-before the normal merge/release/install decision.
+The source-bound jq CI evidence pin was retired with the local OMP fork
+(2026-10-22) because it pinned fork-era sources; the runtime jq dependency
+checks above remain.
 
 OMP model modes are launcher controls: `ex omp --model-mode <id>` selects
 `gpt-only`, `opus-only`, `hybrid-gpt-lead`, or `hybrid-opus-lead`; a fresh mode
 source defaults to its canonical `hybrid-opus-lead` recipe. Tokens after `--`
 remain data. Direct model/provider/effort overrides conflict with a mode.
-`ex omp --model-mode-check <id>` prints desired model/effort, empty fallback,
-unresolved model/effort and availability `UNKNOWN`, without auth or model APIs.
-Check is metadata and grants no native capability or workspace/session authority.
-Mode execution requires the distinct modified native release and its actual
-source/patch/build/binary custody; stock 18.11.3 and the old w07 release stop.
-Resume requires an explicit matching mode and current canonical recipe hash;
-legacy/mismatch/invalid saved bindings stop before ledger/history/outbox changes.
+The id is validated by the source's own parser; the compiler renders the mode
+into the bundle's `omp-settings.yml` overlay (model roles, agent overrides and
+cross-provider fallback chains). Resume uses `--model-mode` when given, else the
+source default.

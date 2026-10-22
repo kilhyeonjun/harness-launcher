@@ -52,11 +52,7 @@ if [[ "${@[local_omp_selector]-}" == omp ]]; then
   "$omp_bootstrap_python" -I -S -B "$SCRIPT_DIR/harness_omp_projection.py" \
     model-mode-early "$HARNESS_DIR" "$omp_dispatch_bin" "${@[local_omp_selector+1,-1]}"
   omp_mode_rc=$?
-  case "$omp_mode_rc" in
-    0) ;;
-    10) exit 0 ;;
-    *) exit "$omp_mode_rc" ;;
-  esac
+  (( omp_mode_rc == 0 )) || exit "$omp_mode_rc"
   if [[ "$SCRIPT_DIR" != "$omp_dispatch_bin" ]]; then
     exec /bin/zsh "$omp_dispatch_bin/harness-exec" "$HARNESS_DIR" "$@"
   fi
@@ -66,7 +62,16 @@ source "$SCRIPT_DIR/aliases.zsh"
 
 # Both isolated controls default to their session root; injecting the caller's
 # directory would run in the canonical checkout and fail the TUI's boundary check.
-case "${1:-}" in
+# A continuation resume (herdr's bare `omp --session-resume <h> --`) runs in
+# its recorded workspace; a caller directory would only be refused.
+omp_resume=false
+if [[ "${1:-}" == omp ]]; then
+  for omp_arg in "${@:2}"; do
+    [[ "$omp_arg" == -- ]] && break
+    [[ "$omp_arg" == --session-resume ]] && { omp_resume=true; break; }
+  done
+fi
+$omp_resume || case "${1:-}" in
   --cwd|--isolated|--isolated-session) ;;
   *)
     if HARNESS_CURRENT_DIR="$(harness_resolve_run_dir "$HARNESS_DIR" "$PWD" 2>/dev/null)"; then

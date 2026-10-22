@@ -98,18 +98,18 @@ class FixtureAdmission(FixtureCase):
             hooks=[],skills=[],extensions=[],bridge_rewrites=[])
         name, files = compiler.render_omp_bundle(self.root, compiler.load_source(self.root), selection)
         manifest = json.loads(files['selection.json'])
-        artifact = json.loads(files['model-mode.json'])
-        self.assertEqual(artifact['selected_mode'], 'hybrid-opus-lead')
-        self.assertEqual(artifact['roles']['default']['model'], 'anthropic/claude-opus-5-5')
-        self.assertEqual(artifact['roles']['task']['model'], 'openai-codex/gpt-6.1-sol')
-        recipe = hashlib.sha256((self.root/'.claude/source/omp-model-modes.json').read_bytes()).hexdigest()
-        self.assertEqual(artifact['recipe_sha256'], recipe)
+        # Upstream contract: the mode is a settings overlay, no model-mode.json.
+        self.assertNotIn('model-mode.json', files)
+        overlay = files['omp-settings.yml']
+        self.assertIn('default: "anthropic/claude-opus-5-5:high"', overlay)
+        self.assertIn('task: "openai-codex/gpt-6.1-sol:medium"', overlay)
+        self.assertIn('"anthropic/claude-opus-5-5": ["openai-codex/gpt-6.1-sol"]', overlay)
         closure = {row['path']:row['sha256'] for row in manifest['canonical_inputs']}
-        for relative in ('.claude/source/omp-model-modes.json','core/omp/model_modes.py',
+        for relative in ('.claude/source/omp-model-modes.json','core/omp/model_modes.py','core/omp/policy-omp.md',
                          'core/scripts/harness_compile.py','core/scripts/omp_required_extension.ts'):
             self.assertEqual(closure[relative],hashlib.sha256((self.root/relative).read_bytes()).hexdigest())
         assets = {row['relative_path']:row['sha256'] for row in manifest['artifacts']}
-        self.assertEqual(assets['model-mode.json'],hashlib.sha256(files['model-mode.json'].encode()).hexdigest())
+        self.assertEqual(assets['omp-settings.yml'],hashlib.sha256(overlay.encode()).hexdigest())
         self.assertTrue(name.endswith(manifest['effective_selection_sha256']))
         self.assertFalse((self.base/'payload-imported').exists())
 
@@ -232,14 +232,6 @@ class Consumers(FixtureCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('Ran ' + str(count) + ' tests', result.stderr)
         stderr = result.stderr
-        if name == 'test-omp-continuation.sh' and not any(
-                flag in argv for flag in ('--native-source', '--native-bun')):
-            skipped = ("test_MM4_actual_cold_resume_refuses_before_ledger_transition "
-                       "(__main__.ContinuationTests) ... skipped "
-                       "'explicit accepted MM3 source/Bun integration input required'")
-            self.assertEqual(stderr.count(skipped), 1, stderr)
-            self.assertTrue(stderr.rstrip().endswith('OK (skipped=1)'), stderr)
-            stderr = stderr.replace(skipped, '').replace('OK (skipped=1)', 'OK')
         self.assertTrue(stderr.rstrip().endswith('OK'), result.stderr)
         self.assertNotIn('skipped=', stderr)
         if name == 'test-omp-required-loading.sh':
@@ -253,14 +245,14 @@ class Consumers(FixtureCase):
                            'test_D_origin_mount_at_parent_is_refused_per_field']:
                 self.assertIn(oracle, result.stderr)
 
-    def test_direct_continuation_default_runs_all_37(self):
-        self.suite('test-omp-continuation.sh', 37, False)
+    def test_direct_continuation_default_runs_all_34(self):
+        self.suite('test-omp-continuation.sh', 34, False)
 
     def test_direct_required_default_runs_all_9(self):
         self.suite('test-omp-required-loading.sh', 9, False)
 
-    def test_direct_continuation_explicit_runs_all_37(self):
-        self.suite('test-omp-continuation.sh', 37, True)
+    def test_direct_continuation_explicit_runs_all_34(self):
+        self.suite('test-omp-continuation.sh', 34, True)
 
     def test_direct_required_explicit_runs_all_9(self):
         self.suite('test-omp-required-loading.sh', 9, True)

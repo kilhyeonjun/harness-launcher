@@ -8,6 +8,7 @@ Trusted same-UID kernel/config state remains the existing data TCB.
 """
 import copy
 import datetime
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -230,12 +231,15 @@ def binding(state, source, w, consumer, context):
     # Existing isolation metadata permits 0600/0644, without changing that policy.
     require(stat.S_ISREG(lock_meta.st_mode) and lock_meta.st_uid == os.getuid() and
             lock_meta.st_nlink == 1 and not lock_meta.st_mode & 0o022)
-    bound_path = consumer.parent.parent.parent/'bindings'/(w.lower()+'.json')
+    # The pin records which launcher release began the session. Any release
+    # under the same launcher-runtimes root may continue it (upgrades).
+    runtimes = consumer.parent.parent.parent
+    bound_path = runtimes/'bindings'/(w.lower()+'.json')
     raw, _ = p.read_file(bound_path, limit=LIMIT); bound = p.decode(raw)
     keys(bound, 'source_root runtime'); keys(bound['runtime'], 'version revision path manifest_sha256')
-    require(bound['source_root'] == str(source) and bound['runtime']['path'] == str(consumer.parent.parent))
-    require(bound['runtime']['revision'] == context['snapshot_revision'] and
-            bound['runtime']['manifest_sha256'] == context['manifest_sha256'])
+    require(bound['source_root'] == str(source) and type(bound['runtime']['path']) is str and
+            Path(bound['runtime']['path']).parent == runtimes and
+            re.fullmatch('[0-9a-f]{40}', Path(bound['runtime']['path']).name))
     return {'handle': h, 'source_root': str(source), 'state_root': str(state),
             'launcher_session_id': w, 'session_dir': str(directory), 'workspace_root': str(work),
             'workspace_identity': owned_directory(work), 'runtime_pin_revision': context['snapshot_revision'],
@@ -277,21 +281,28 @@ def check_record(row):
     return row
 
 
-def origin_matches(origin, actual, namespace_path):
-    """Recorded kernel_origin vs live binding; only st_dev may differ (renumbering).
+# Provenance that legitimately changes across launcher releases, binary
+# upgrades and lock use; it is history, not identity.
+VOLATILE = ('runtime_pin_revision', 'runtime_manifest_sha256', 'binary_sha256',
+            'namespace_marker_sha256', 'original_binding_sha256')
 
-    One DevMap spans the three identities. Anchors: the state root for the
-    workspace and the lock (their chains pass worktrees/ or sessions/<id>/); HOME's
-    nearest shared ancestor for the namespace. Non-dev fields, including the lock's
-    size/mtime/ctime, stay exact.
+
+def origin_matches(origin, actual, namespace_path):
+    """Recorded kernel_origin vs live binding; volatile provenance is ignored.
+
+    st_dev may differ (renumbering). One DevMap spans the three identities.
+    Anchors: the state root for the workspace and the lock (their chains pass
+    worktrees/ or sessions/<id>/); HOME's nearest shared ancestor for the
+    namespace. The lock's size/mtime/ctime change with use and are ignored.
     """
-    moved = ('workspace_identity', 'runtime_lock_identity', 'namespace_identity')
+    moved = ('workspace_identity', 'runtime_lock_identity', 'namespace_identity') + VOLATILE
     if {k: v for k, v in origin.items() if k not in moved} != {k: v for k, v in actual.items() if k not in moved}:
         return False
+    stable = lambda value: {k: value.get(k) for k in STABLE}
     devmap = p.DevMap(); state = Path(actual['state_root'])
     return (devmap.match(origin['workspace_identity'], actual['workspace_identity'],
                          Path(actual['workspace_root']), state) and
-            devmap.match(origin['runtime_lock_identity'], actual['runtime_lock_identity'],
+            devmap.match(stable(origin['runtime_lock_identity']), stable(actual['runtime_lock_identity']),
                          Path(actual['session_dir'])/'runtime.lock', state) and
             devmap.match(origin['namespace_identity'], actual['namespace_identity'], Path(namespace_path)))
 
@@ -335,10 +346,10 @@ def resolve(state, source, h, consumer):
     """Untrusted candidate until Entry also verifies its own store.bound checks."""
     try:
         _, raw, row, context = load_record(state, source, h, consumer)
-        require(row['status'] == 'READY', 'OMP_CONTINUATION_IN_FLIGHT_UNRESOLVED')
-        same_native(row['native_identity'], inspect_native(
-            Path(context['namespace_path'])/'launcher-continuations'/h/'sessions', Path(row['kernel_origin']['workspace_root'])),
-            context['namespace_path'])
+        # Same acceptance as RESUME_ADMIT: any state with one eligible session file.
+        observed = inspect_native(Path(context['namespace_path'])/'launcher-continuations'/h/'sessions',
+                                  Path(row['kernel_origin']['workspace_root']))
+        if row['native_identity'] is not None: same_native(row['native_identity'], observed, context['namespace_path'])
         return selection(row, raw, context)
     except ContinuationError: raise
     except (p.ProjectionError, OSError, ValueError, TypeError, KeyError):
@@ -380,7 +391,7 @@ def _inspect_native(sessions, cwd):
     require(len(matches) == 1, 'OMP_CONTINUATION_NATIVE_FORK' if len(matches) > 1 else 'OMP_CONTINUATION_NOT_PERSISTED')
     path = p.physical(matches[0]); before = path.lstat()
     require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and
-            before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o600 and before.st_size <= 1048576,
+            before.st_nlink == 1 and stat.S_IMODE(before.st_mode) == 0o600,
             'OMP_CONTINUATION_NOT_PERSISTED')
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
@@ -450,7 +461,7 @@ def operate(value):
     try:
         keys(value, 'schema mode state_root source_root launcher_session_id consumer handle expected_sha256 lifecycle_nonce terminal_status')
         require(value['schema'] == 'omp-continuation-operation/v1')
-        mode = value['mode']; require(mode in ('RESOLVE', 'NEW_PREPARE', 'RESUME_ADMIT', 'FINALIZE', 'MODE_PEEK'))
+        mode = value['mode']; require(mode in ('RESOLVE', 'NEW_PREPARE', 'RESUME_ADMIT', 'FINALIZE'))
         path, raw, row, context = load_record(value['state_root'], value['source_root'], value['handle'], value['consumer'])
         require(row['kernel_origin']['launcher_session_id'] == value['launcher_session_id'])
         p.sha(value['expected_sha256']); nonce(value['lifecycle_nonce'])
@@ -459,11 +470,6 @@ def operate(value):
         sessions = Path(context['namespace_path'])/'launcher-continuations'/row['handle']/'sessions'
         cwd = Path(row['kernel_origin']['workspace_root'])
         if mode != 'FINALIZE': require(value['terminal_status'] is None)
-        if mode == 'MODE_PEEK':
-            require(row['status'] == 'READY', 'OMP_CONTINUATION_IN_FLIGHT_UNRESOLVED')
-            observed = inspect_native(sessions, cwd)
-            same_native(row['native_identity'], observed, context['namespace_path'])
-            return selection(row, raw, context)
         if mode == 'NEW_PREPARE':
             require(row['status'] == 'PENDING' and row['native_identity'] is None)
             container = sessions.parent.parent
@@ -474,8 +480,11 @@ def operate(value):
             sessions.parent.mkdir(mode=0o700)  # exclusive; no adoption/cleanup
             sessions.mkdir(mode=0o700)
         elif mode == 'RESUME_ADMIT':
-            require(row['status'] == 'READY', 'OMP_CONTINUATION_IN_FLIGHT_UNRESOLVED')
-            observed = inspect_native(sessions, cwd); same_native(row['native_identity'], observed, context['namespace_path'])
+            # The caller's exclusive workspace lease plus a free native lock prove
+            # no live owner, so any state resumes. An unknown identity (the native
+            # never finalized) adopts this handle's single eligible session file.
+            observed = inspect_native(sessions, cwd)
+            if row['native_identity'] is not None: same_native(row['native_identity'], observed, context['namespace_path'])
             row.update(status='IN_FLIGHT', lifecycle_nonce=uuid.uuid4().hex, native_identity=observed,
                        last_terminal_status=None, last_admitted_context_provenance=provenance(context))
             raw = replace_record(path, raw, row)
@@ -495,8 +504,9 @@ def operate(value):
             except (ContinuationError, p.ProjectionError, OSError, ValueError, TypeError, KeyError) as exc:
                 failure = exc.label if isinstance(exc, ContinuationError) else 'OMP_CONTINUATION_NOT_PERSISTED'
             row.update(last_terminal_status=terminal, last_admitted_context_provenance=provenance(context))
+            if failure is None: row['native_identity'] = observed  # bind what a later resume must match
             if terminal == 0 and failure is None:
-                row.update(status='READY', native_identity=observed, last_observation_grade='SAME_FILE')
+                row.update(status='READY', last_observation_grade='SAME_FILE')
             else:
                 grade = 'NATIVE_NONZERO' if terminal else (
                     'NATIVE_FORK' if failure == 'OMP_CONTINUATION_NATIVE_FORK' else
@@ -510,8 +520,74 @@ def operate(value):
         raise ContinuationError() from None
 
 
+def _exclusive(path, create=False):
+    """Nonblocking exclusive lock or OMP_CONTINUATION_BUSY; returns the fd to close."""
+    fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | (os.O_CREAT if create else 0), 0o600)
+    try:
+        meta = os.fstat(fd)
+        require(stat.S_ISREG(meta.st_mode) and meta.st_uid == os.getuid() and meta.st_nlink == 1)
+        try: (fcntl.flock if create else fcntl.lockf)(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError: raise ContinuationError('OMP_CONTINUATION_BUSY') from None
+        return fd
+    except BaseException:
+        os.close(fd); raise
+
+
+def rebind_runtime(state, source, w):
+    """Point an OMP continuation's session binding at the selected runtime.
+
+    The installed Entry resumes a session with its bound runtime. Only this
+    file's own snapshot, verified as the current selection, may claim it; the
+    source must match, and the binding, workspace and native locks must be free.
+    """
+    fds = []
+    try:
+        consumer = p.physical(Path(__file__).resolve().with_name('aliases.zsh'))
+        context = current_context(source, consumer)
+        state = p.physical(state); source = p.physical(source); workspace_id(w); h = w.replace('-', '').lower()
+        runtimes = consumer.parent.parent.parent
+        current = p.decode(p.read_file(runtimes/'current.json')[0])
+        keys(current, 'version revision path manifest_sha256')
+        require(current['path'] == str(consumer.parent.parent) and current['revision'] == context['snapshot_revision'])
+        # Verify first: load_record reopens runtime.lock, and closing any fd
+        # of a file drops this process's fcntl locks on it.
+        record, record_raw, row, _ = load_record(state, source, h, consumer)
+        require(row['kernel_origin']['launcher_session_id'] == w)
+        bindings = runtimes/'bindings'; owned_directory(bindings, True)
+        path = bindings/(w.lower()+'.json')
+        bound_raw = p.read_file(path, limit=LIMIT)[0]
+        owned_directory(runtimes/'binding-locks', True)
+        fds.append(_exclusive(runtimes/'binding-locks'/(w.lower()+'.lock'), create=True))
+        fds.append(_exclusive(state/'sessions'/w/'runtime.lock'))
+        native = Path(context['namespace_path'])/'launcher-continuations'/h/'native.lock'
+        if os.path.lexists(native): fds.append(_exclusive(native))
+        require(p.read_file(record, limit=LIMIT)[0] == record_raw and
+                p.read_file(path, limit=LIMIT)[0] == bound_raw, 'OMP_CONTINUATION_STALE')
+        bound = p.decode(bound_raw)
+        require(type(bound) is dict and bound.get('source_root') == str(source))
+        value = {'source_root': str(source), 'runtime': current}
+        if bound != value:
+            # Same bytes/mode as the Entry's binding store writer.
+            temp = bindings/('.'+uuid.uuid4().hex+'.tmp')
+            fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(json.dumps(value, sort_keys=True).encode()); stream.flush(); os.fsync(stream.fileno())
+                os.replace(temp, path); p.sync_directory(bindings)
+            finally: temp.unlink(missing_ok=True)
+        return current
+    except ContinuationError: raise
+    except p.ProjectionError as exc: raise ContinuationError(exc.label) from None
+    except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        raise ContinuationError() from None
+    finally:
+        for fd in fds: os.close(fd)
+
+
 def main(argv):
     try:
+        if len(argv) == 5 and argv[1] == '--rebind-runtime':
+            sys.stdout.buffer.write(p.canonical(rebind_runtime(*argv[2:]))+b'\n'); return 0
         require(len(argv) == 3 and argv[1] == '--input-fd' and re.fullmatch('[0-9]{1,3}', argv[2]))
         fd = int(argv[2]); raw = bytearray()
         while len(raw) <= LIMIT:

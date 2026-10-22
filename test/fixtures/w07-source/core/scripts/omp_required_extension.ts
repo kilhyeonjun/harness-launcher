@@ -1,9 +1,9 @@
-/** W07 required bridge. No native/package imports. Only compiler emits copies.
- * Hashes are integrity evidence; existing launcher admission remains authority.
+/** Required policy bridge, loaded by upstream OMP via --trusted-extension. No native/package imports.
+ * Only the compiler emits copies. The bundle is verified once at load; launcher admission remains authority.
  */
 import { createHash } from 'node:crypto';
-import { readFileSync, lstatSync, realpathSync, accessSync, constants } from 'node:fs';
-import { dirname, resolve, relative, isAbsolute } from 'node:path';
+import { existsSync, readFileSync, lstatSync, realpathSync, accessSync, constants } from 'node:fs';
+import { basename, dirname, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
@@ -11,13 +11,12 @@ type RecordValue = Record<string, any>;
 type NativeToolResult = { toolName: string; toolCallId: string; input: RecordValue;
   content: ({ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string })[];
   details?: unknown; isError: boolean };
-type Context = { cwd: string; sessionManager: { getSessionId(): string }; abort(): void; shutdown(): void };
+type Context = { cwd: string; sessionManager: { getSessionId(): string }; abort(): void; shutdown(): void;
+  ui?: { notify?(message: string, type?: 'info' | 'warning' | 'error'): void } };
 type API = { on(event: string, handler: (event: RecordValue, context: Context) => any): void;
-  appendEntry(type: string, value: unknown): void;
-  requiredLoadStatus?(): Readonly<RecordValue> };
+  appendEntry(type: string, value: unknown): void };
 export type Services = {
   load(): RecordValue;
-  current(manifest: RecordValue, context: Context): Promise<boolean>;
   run(hook: RecordValue, payload: RecordValue, signal: AbortSignal): Promise<{ code: number; stdout: string }>;
   transforms?: Record<string, (raw: RecordValue, signal: AbortSignal) => Promise<RecordValue>>;
 };
@@ -35,35 +34,112 @@ function freeze<T>(value: T): T {
   }
   return value;
 }
-function requireValue(ok: unknown, reason: string): asserts ok {
-  if (!ok) throw new Error(`OMP_REQUIRED_${reason}`);
+// `detail` is a pre-formatted suffix (leading ' ' or ': '); it never carries hook stderr.
+function requireValue(ok: unknown, reason: string, detail = ''): asserts ok {
+  if (!ok) throw Object.assign(new Error(`OMP_REQUIRED_${reason}`), { detail });
 }
+const ADMISSION = 'OMP required policy admission failed';
+const errorCode = (error: unknown) => /^OMP_REQUIRED_([A-Z0-9_]+)$/.exec((error as Error)?.message ?? '')?.[1] ?? 'INTERNAL';
+function denial(error: unknown) {
+  const code = errorCode(error);
+  const detail = code === 'INTERNAL' ? '' : (error as any).detail ?? '';
+  return { block: true, reason: `${ADMISSION}: ${code}${detail}` };
+}
+// Claude parity: a hook blocks only with exit 2 or an explicit deny decision.
+const blocks = (error: unknown) => errorCode(error) === 'CANONICAL_DENY' || (error as any)?.exit === 2;
+const CONTROL = /[\u0000-\u001f\u007f]/g;
+const reasonText = (v: unknown) => canonical(typeof v === 'string' ? v.replace(CONTROL, '') : v).replace(CONTROL, '').slice(0, 300);
 function object(value: unknown): value is RecordValue {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
-export function admitComposition(extensions: RecordValue[]) {
-  // Called by owned normal prepare before extension loading as well as here.
-  for (const e of extensions) requireValue(e.native_input_behavior === 'none' &&
-    /^[a-f0-9]{64}$/.test(e.closure_sha256) && !!e.canonical_source_evidence, 'UNSUPPORTED_INPUT_WRITER');
+// Hook-supplied deny reason as a `: <json text>` suffix (empty when the output carries none).
+function why(parsed: unknown) {
+  if (!object(parsed)) return '';
+  const d = object(parsed.hookSpecificOutput) ? parsed.hookSpecificOutput : parsed;
+  const text = d.permissionDecisionReason ?? parsed.reason ?? parsed.stopReason ?? d.reason ?? parsed.error;
+  return text === undefined ? '' : `: ${reasonText(text)}`;
 }
-function semantic(tool: string, raw: RecordValue): { name: string; input: RecordValue } {
-  if (tool === 'task') return { name: 'task', input: { ...raw } };
+type View = { name: string; input: RecordValue; cwd?: string; extra: RecordValue };
+const GATE_ONLY = ['path', 'paths', '_path']; // native event input adds these to edit; never part of the view
+const unset = (v: unknown) => v === undefined || v === null || v === false ||
+  (typeof v === 'string' && !v.trim()) || (Array.isArray(v) && !v.length);
+function absPath(cwd: string, p: unknown) {
+  // Native strips a leading '@' or ':' and maps a bare '/' to cwd; newlines split path lists. Refuse, never resolve.
+  requireValue(typeof p === 'string' && !!p.trim() && !p.includes('\0') && !p.includes('\n') && !p.startsWith('~') &&
+    !/^[@:]/.test(p) && p !== '/' && !/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(p), 'PATH_INPUT');
+  return resolve(cwd, p);
+}
+const PASSIVE = ['wait', 'ask', 'todo', 'web_search', 'vibe_wait', 'vibe_list', 'vibe_kill'];
+const AGENT = ['task', 'vibe_spawn', 'vibe_send'];
+// Native `path` of the search tools may be a glob, a `;`/`,`/space list, a URL or carry a `:N-M` selector.
+// The effect target is the search root: selector stripped, then the static prefix before the first glob segment.
+// ponytail: a literal file name that ends in a selector-shaped ':12' is read as a selector; lists are refused, not split.
+const SELECTOR = /(?::(?:raw|conflicts|img|[-+,\d]+))+$/i;
+const GLOB_SEGMENT = /[*?[{]/;
+function searchRoot(cwd: string, p: unknown) {
+  absPath(cwd, p);
+  const bare = (p as string).replace(SELECTOR, '');
+  requireValue(!/["]|\{[^}]*\/[^}]*\}/.test(bare) && !/[;,\s]/.test(bare.replace(/\{[^}]*\}/g, '')), 'SEARCH_PATH_FORM');
+  const segments = bare.split('/'), at = segments.findIndex(seg => GLOB_SEGMENT.test(seg));
+  return absPath(cwd, at < 0 ? bare : segments.slice(0, at).join('/') || (bare.startsWith('/') ? '/' : '.'));
+}
+// Search tools by native schema: the pattern key, and the view-only keys that never change the target.
+const SEARCH: Record<string, { pattern: string; view: string[] }> = {
+  grep: { pattern: 'pattern', view: ['case', 'gitignore', 'skip'] },
+  find: { pattern: 'query', view: ['grep_keywords'] },
+  ast_grep: { pattern: 'pat', view: ['lang', 'skip'] },
+};
+const pick = (raw: RecordValue, keys: string[]) => Object.fromEntries(keys.filter(k => k in raw).map(k => [k, raw[k]]));
+// Fail closed: only mapped tools/keys pass; everything else is refused, never guessed.
+function semantic(tool: string, raw: RecordValue, ctx: Context, writeOps?: Map<string, string>, id?: string): View {
+  const only = (native: string[], code = 'UNSUPPORTED_TOOL_MAPPING') =>
+    requireValue(Object.keys(raw).every(k => native.includes(k) || GATE_ONLY.includes(k)), code);
+  const search = (pattern: unknown, path: unknown, legacy: RecordValue = {}): View => {
+    requireValue(typeof pattern === 'string' && !!pattern, 'SEARCH_INPUT');
+    const target = path === undefined ? resolve(ctx.cwd) : searchRoot(ctx.cwd, path);
+    return { name: 'Grep', input: { pattern, ...(path === undefined ? {} : { path: target }), ...legacy },
+      extra: { effects: [{ kind: 'search', paths: [target] }] } };
+  };
+  if (AGENT.includes(tool)) return { name: tool, input: { ...raw }, extra: { effects: [{ kind: 'tool', name: tool, kind_detail: 'agent' }] } };
+  if (PASSIVE.includes(tool)) return { name: tool, input: { ...raw }, extra: { effects: [{ kind: 'tool', name: tool, kind_detail: 'passive' }] } };
   if (tool === 'bash') {
     requireValue(typeof raw.command === 'string', 'BASH_INPUT');
-    requireValue(Object.keys(raw).every(k => ['command', 'timeout', 'path', 'paths'].includes(k)), 'UNSUPPORTED_BASH_SHAPE');
+    requireValue(Object.keys(raw).every(k => ['command', 'timeout', 'cwd', ...GATE_ONLY].includes(k) ||
+      (['async', 'pty', 'name', 'ready'].includes(k) && unset(raw[k]))), 'UNSUPPORTED_BASH_SHAPE');
     requireValue(raw.timeout === undefined || (Number.isFinite(raw.timeout) && raw.timeout > 0), 'BASH_TIMEOUT');
-    return { name: 'Bash', input: { ...raw } };
+    const cwd = unset(raw.cwd) ? ctx.cwd : absPath(ctx.cwd, raw.cwd);
+    const timeout = raw.timeout === undefined ? {} : { timeout: raw.timeout };
+    return { name: 'Bash', cwd, input: { command: raw.command, ...timeout },
+      extra: { effects: [{ kind: 'exec', command: raw.command, cwd, ...timeout, background: false }] } };
   }
   if (tool === 'write') {
+    only(['path', 'content'], 'WRITE_INPUT');
     requireValue(typeof raw.path === 'string' && typeof raw.content === 'string', 'WRITE_INPUT');
-    return { name: 'Write', input: { ...raw, file_path: raw.path } };
+    const path = absPath(ctx.cwd, raw.path);
+    // The op is fixed at Pre: after the write the file exists and Post would misreport an add.
+    const op = (id && writeOps?.get(id)) || (existsSync(path) ? 'update' : 'add');
+    if (id) writeOps?.set(id, op);
+    return { name: 'Write', input: { file_path: path, content: raw.content },
+      extra: { effects: [{ kind: 'file_change', path, op, after: raw.content, after_source: 'native', tool: 'write' }] } };
   }
   if (tool === 'read') {
-    requireValue(typeof raw.path === 'string', 'READ_INPUT');
-    return { name: 'Read', input: { ...raw, file_path: raw.path } };
+    only(['path'], 'READ_INPUT');  // native readSchema has only `path`; selectors ride inline
+    requireValue(typeof raw.path !== 'string' || !/[;"]/.test(raw.path), 'READ_PATH_FORM');
+    const path = absPath(ctx.cwd, typeof raw.path === 'string' ? raw.path.replace(SELECTOR, '') : raw.path);
+    return { name: 'Read', input: { file_path: path }, extra: { effects: [{ kind: 'read', paths: [path] }] } };
   }
-  // Native edit/patched/computer/python raw shapes need their exact source
-  // adapter. Refuse that action rather than guessing Claude's input fields.
+  if (SEARCH[tool]) {
+    const { pattern, view } = SEARCH[tool];
+    only([pattern, 'path', ...view]);
+    return search(raw[pattern], raw.path, pick(raw, view));
+  }
+  if (tool === 'glob') { // native `path` holds the glob(s); there is no separate root key
+    only(['path', 'hidden', 'gitignore', 'limit']);
+    const target = raw.path === undefined ? resolve(ctx.cwd) : searchRoot(ctx.cwd, raw.path);
+    return { name: 'Glob', input: { pattern: raw.path ?? '.', path: target, ...pick(raw, ['hidden', 'gitignore', 'limit']) },
+      extra: { effects: [{ kind: 'search', paths: [target] }] } };
+  }
+  // Hashline edit (no upstream pre-write review hook), ast_edit, eval, github, lsp, mcp__* and the rest need their own adapter.
   throw new Error('OMP_REQUIRED_UNSUPPORTED_TOOL_MAPPING');
 }
 function rawInput(tool: string, normalized: RecordValue): RecordValue {
@@ -71,50 +147,30 @@ function rawInput(tool: string, normalized: RecordValue): RecordValue {
   // Bash command is the only currently proven lossless rewrite adapter.
   requireValue(typeof normalized.command === 'string', 'RAW_INPUT');
   const raw: RecordValue = {};
-  for (const k of ['command', 'timeout']) if (k in normalized) raw[k] = normalized[k];
-  requireValue(Object.keys(normalized).every(k => ['command', 'timeout', 'path', 'paths'].includes(k)), 'RAW_UNKNOWN_FIELD');
+  for (const k of ['command', 'timeout', 'cwd']) if (k in normalized) raw[k] = normalized[k];
+  requireValue(Object.keys(normalized).every(k => ['command', 'timeout', 'cwd', ...GATE_ONLY].includes(k)), 'RAW_UNKNOWN_FIELD');
   return raw;
-}
-function nativeRelease(release: RecordValue, version: string) {
-  const fields = ['contract_id', 'upstream_base_version', 'upstream_base_revision', 'version',
-    'source_revision', 'source_patch_sha256', 'build_provenance_sha256', 'binary_sha256'];
-  requireValue(object(release) && Object.keys(release).length === fields.length && fields.every(k => k in release) &&
-    release.contract_id === 'w07.required-resolver-consumer.v1' && release.version === version &&
-    ['18.11.3-kh.w07.1', '18.11.3-kh.w07.mm.1'].includes(version) && release.upstream_base_version === '18.11.3' &&
-    release.upstream_base_revision === '96894a6147d8cc64b7e00ad3a7d7178fd93b9531' &&
-    /^[a-f0-9]{40}$/.test(release.source_revision) &&
-    ['source_patch_sha256', 'build_provenance_sha256', 'binary_sha256'].every(k =>
-      typeof release[k] === 'string' && /^[a-f0-9]{64}$/.test(release[k])), 'NATIVE_RELEASE_BINDING');
 }
 export function registerRequired(api: API, services: Services) {
   let manifest: RecordValue | undefined, ready = false, session = '', closed = false;
-  let nativeEpoch: number | undefined, starting = false;
   let startupContext: string[] = [], promptContext: string[] = [], pendingPrompt: string | undefined;
   const observedResults = new Set<string>();
-  const deny = () => ({ block: true, reason: 'OMP required policy admission failed' });
+  const writeOps = new Map<string, string>();
+  const deny = (error: unknown = new Error('OMP_REQUIRED_NOT_READY')) => denial(error);
   function clearContext() { startupContext = []; promptContext = []; pendingPrompt = undefined; }
+  // Only a foreign session ends the session; every other failure is scoped to its event.
   function halt(ctx: Context) { ready = false; clearContext(); ctx.abort(); ctx.shutdown(); }
-  function nativeStatus(ctx: Context) {
-    if (manifest?.schema !== 2) return;
-    requireValue(typeof api.requiredLoadStatus === 'function', 'NATIVE_STATUS_MISSING');
-    const value = api.requiredLoadStatus();
-    requireValue(value && value.contract_id === 'w07.required-resolver-consumer.v1' &&
-      value.selection_sha256 === manifest.effective_selection_sha256 &&
-      value.manifest_sha256 === manifest.manifest_sha256 &&
-      value.session_id === session && value.session_id === ctx.sessionManager.getSessionId() &&
-      Number.isSafeInteger(value.epoch) && value.epoch >= 0 &&
-      value.phase === (starting ? 'consumed_wait_policy' : 'ready'), 'NATIVE_CONSUMED_BINDING');
-    if (nativeEpoch === undefined) nativeEpoch = value.epoch;
-    requireValue(value.epoch === nativeEpoch, 'NATIVE_EPOCH');
+  function bound(ctx: Context) {
+    requireValue(manifest && !closed, 'SESSION_BINDING');
+    if (ctx.sessionManager.getSessionId() !== session) { halt(ctx); requireValue(false, 'SESSION_BINDING'); }
   }
-  async function current(ctx: Context) {
-    requireValue(manifest && !closed && ctx.sessionManager.getSessionId() === session, 'SESSION_BINDING');
-    try {
-      nativeStatus(ctx);
-      requireValue(await services.current(manifest, ctx), 'REVOKED_OR_FOREIGN');
-      nativeStatus(ctx);
-    } catch (error) { ready = false; clearContext(); throw error; }
+  // Visible, durable notice. The receipt keeps only the code; hook-supplied reason text is shown, not persisted.
+  function notice(ctx: Context, event: string, error: unknown, message = denial(error).reason) {
+    try { api.appendEntry('harness-omp-notice', { event, code: errorCode(error) }); } catch {}
+    try { ctx.ui?.notify?.(`${message} (${event})`, 'warning'); } catch {}
   }
+  const skipper = (ctx: Context, event: string) => (error: unknown) => { notice(ctx, event, error); return true; };
+  const claudeParity = (ctx: Context, event: string) => (error: unknown) => !blocks(error) && skipper(ctx, event)(error);
   async function deadline<T>(work: (signal: AbortSignal) => Promise<T>, milliseconds: number, parent?: AbortSignal): Promise<T> {
     const ctl = new AbortController(); let timer: ReturnType<typeof setTimeout>;
     let rejectParent: (error: Error) => void;
@@ -129,32 +185,41 @@ export function registerRequired(api: API, services: Services) {
     finally { clearTimeout(timer!); ctl.abort(); parent?.removeEventListener('abort', cancel); }
   }
   function payload(event: RecordValue, ctx: Context, kind: string, raw?: RecordValue) {
-    const view = raw ? semantic(event.toolName, raw) : undefined;
+    const view = raw ? semantic(event.toolName, raw, ctx, writeOps, event.toolCallId) : undefined;
     return { hook_event_name: kind, session_id: session, tool_use_id: event.toolCallId,
-      cwd: ctx.cwd, tool_name: view?.name, tool_input: view?.input,
+      cwd: view?.cwd ?? ctx.cwd, tool_name: view?.name, tool_input: view?.input, ...view?.extra,
       is_error: event.isError, prompt: event.text };
   }
-  async function hooks(kind: string, p: RecordValue, signal: AbortSignal, final = false) {
+  async function one(hook: RecordValue, p: RecordValue, signal: AbortSignal) {
+    const result = await deadline(s => services.run(hook, p, s),
+      Math.min(hook.timeout_ms, Math.max(1, manifest!.bridge_total_timeout_ms)), signal);
+    const output = result.stdout.trim();
+    let parsed: any;
+    try { parsed = JSON.parse(output); } catch { parsed = undefined; }
+    if (result.code !== 0) throw Object.assign(new Error('OMP_REQUIRED_HOOK_NONZERO'),
+      { detail: ` ${basename(hook.script)} exit=${result.code}${why(parsed)}`, exit: result.code });
+    if (!output) return undefined;
+    requireValue(object(parsed), 'HOOK_MALFORMED');
+    const decision = parsed.hookSpecificOutput ?? parsed;
+    requireValue(!('input' in parsed) && !('updatedInput' in decision), 'DECISION_REWRITE');
+    requireValue(parsed.decision !== 'block' && parsed.continue !== false &&
+      decision.permissionDecision !== 'deny' && !parsed.error, 'CANONICAL_DENY',
+      why(parsed));
+    if (decision.additionalContext === undefined) return undefined;
+    requireValue(typeof decision.additionalContext === 'string', 'CONTEXT_SHAPE');
+    return decision.additionalContext as string;
+  }
+  // `skip(error)` returning true drops that hook's result and continues; otherwise the error ends the event.
+  async function hooks(kind: string, p: RecordValue, signal: AbortSignal, final = false, skip?: (error: unknown) => boolean) {
     const context: string[] = [];
     for (const hook of manifest!.hook_map.filter((h: RecordValue) => h.event === kind &&
       (!p.tool_name || new RegExp(`^(?:${h.matcher})$`).test(p.tool_name)))) {
       requireValue(!final || hook.decision_only, 'UNSUPPORTED_EFFECTFUL_RECHECK');
       requireValue(!signal.aborted, 'ABORTED');
-      const result = await deadline(s => services.run(hook, p, s),
-        Math.min(hook.timeout_ms, Math.max(1, manifest!.bridge_total_timeout_ms)), signal);
-      requireValue(result.code === 0, 'HOOK_NONZERO');
-      const output = result.stdout.trim();
-      if (!output) continue;
-      const parsed = JSON.parse(output);
-      requireValue(object(parsed), 'HOOK_MALFORMED');
-      const decision = parsed.hookSpecificOutput ?? parsed;
-      requireValue(!('input' in parsed) && !('updatedInput' in decision), 'DECISION_REWRITE');
-      requireValue(parsed.decision !== 'block' && parsed.continue !== false &&
-        decision.permissionDecision !== 'deny' && !parsed.error, 'CANONICAL_DENY');
-      if (decision.additionalContext !== undefined) {
-        requireValue(typeof decision.additionalContext === 'string', 'CONTEXT_SHAPE');
-        context.push(decision.additionalContext);
-      }
+      try {
+        const text = await one(hook, p, signal);
+        if (text !== undefined) context.push(text);
+      } catch (error) { if (!skip?.(error)) throw error; }
     }
     return context;
   }
@@ -163,14 +228,14 @@ export function registerRequired(api: API, services: Services) {
     if (!ready) return deny();
     try {
       return await deadline(async signal => {
-        await current(ctx);
+        bound(ctx);
         requireValue(typeof event.toolCallId === 'string' && !!event.toolCallId && object(event.input), 'CALL_ID');
         const original = copy(event.input);
         const originalPayload = payload(event, ctx, 'PreToolUse', original);
         const context = await hooks('PreToolUse', originalPayload, signal);
         const transforms = manifest!.bridge_rewrites.filter((t: RecordValue) => t.tool === event.toolName);
         const passive = () => context.length ? { additionalContext: [...new Set(context)].join('\n') } : {};
-        if (!transforms.length) { await current(ctx); return passive(); }
+        if (!transforms.length) return passive();
         let raw = rawInput(event.toolName, original);
         for (const transform of transforms) {
           requireValue(!!services.transforms?.[transform.canonical_entry_id], 'REWRITE_MISSING');
@@ -178,65 +243,62 @@ export function registerRequired(api: API, services: Services) {
             transform.timeout_ms ?? manifest!.bridge_total_timeout_ms, signal));
           requireValue(object(raw) && !signal.aborted, 'REWRITE_MALFORMED');
           // Validate RAW, never return normalized path/paths gate-only fields.
-          requireValue(Object.keys(raw).every(k => ['command', 'timeout'].includes(k)), 'REWRITE_RAW_SHAPE');
-          semantic(event.toolName, raw);
+          requireValue(Object.keys(raw).every(k => ['command', 'timeout', 'cwd'].includes(k)), 'REWRITE_RAW_SHAPE');
+          semantic(event.toolName, raw, ctx);
         }
-        await current(ctx);
         context.push(...await hooks('PreToolUse', payload(event, ctx, 'PreToolUse', raw), signal, true));
         requireValue(!signal.aborted, 'ABORTED');
-        await current(ctx);
         return { input: freeze(copy(raw)), ...passive() };
       }, manifest!.bridge_total_timeout_ms);
-    } catch { return deny(); }
+    } catch (error) { writeOps.delete(event?.toolCallId); return deny(error); }
   });
-  api.on('session_start', async (_event, ctx) => {
-    ready = false; starting = true; nativeEpoch = undefined; clearContext(); observedResults.clear();
+  // Upstream emits session_switch for /new, /resume and /fork: rebind and rerun startup policy, never halt.
+  async function start(ctx: Context) {
+    ready = false; clearContext(); observedResults.clear(); writeOps.clear();
     try {
       manifest = freeze(copy(services.load()));
-      requireValue(manifest.runtime === 'omp' &&
-        ((manifest.schema === 1 && manifest.runtime_version === '18.11.3' && !manifest.contract_id && !manifest.native_release) ||
-         (manifest.schema === 2 && manifest.contract_id === 'w07.required-resolver-consumer.v1' &&
-          ['18.11.3-kh.w07.1', '18.11.3-kh.w07.mm.1'].includes(manifest.runtime_version) &&
-          manifest.native_release?.contract_id === manifest.contract_id &&
-          manifest.native_release?.version === manifest.runtime_version &&
-          /^[a-f0-9]{64}$/.test(manifest.manifest_sha256))), 'SCHEMA');
-      if (manifest.schema === 2) nativeRelease(manifest.native_release, manifest.runtime_version);
+      requireValue(manifest.runtime === 'omp' && manifest.schema === 1 &&
+        /^\d+\.\d+\.\d+$/.test(manifest.runtime_version), 'SCHEMA');
       requireValue(Number.isInteger(manifest.bridge_total_timeout_ms) && manifest.bridge_total_timeout_ms > 0 &&
         manifest.bridge_total_timeout_ms < 30000, 'BUDGET');
-      admitComposition(manifest.selected_extensions ?? []);
       session = ctx.sessionManager.getSessionId(); requireValue(!!session && !closed, 'IDENTITY');
-      startupContext = await deadline(async signal => {
-        await current(ctx); const context = await hooks('SessionStart', payload({}, ctx, 'SessionStart'), signal);
-        await current(ctx); return context;
-      },
+      startupContext = await deadline(signal => hooks('SessionStart', payload({}, ctx, 'SessionStart'), signal),
         manifest.bridge_total_timeout_ms);
       ready = true;
-      api.appendEntry('harness-omp-selection', manifest.schema === 2 ? {
-        contract_id: manifest.contract_id, selection_sha256: manifest.effective_selection_sha256,
-        manifest_sha256: manifest.manifest_sha256, session_sha256: digest(session), epoch: nativeEpoch,
-        phase: 'consumed_wait_policy', count: manifest.selected_skills.length,
-      } : { selection_sha256: manifest.effective_selection_sha256,
+      api.appendEntry('harness-omp-selection', { selection_sha256: manifest.effective_selection_sha256,
         profile: manifest.profile, session_id: session, skills: manifest.selected_skills.length,
         hooks: manifest.hook_map.length });
-    } catch { halt(ctx); }
-    finally { starting = false; }
-  });
+    } catch (error) {
+      // Fail closed without killing the session: tools stay denied and the user is told why.
+      ready = false; clearContext();
+      notice(ctx, 'session_start', error, `${denial(error).reason}; every tool call is denied in this session`);
+    }
+  }
+  api.on('session_start', async (_event, ctx) => start(ctx));
+  api.on('session_switch', async (_event, ctx) => start(ctx));
   api.on('input', async (event, ctx) => {
     pendingPrompt = undefined; promptContext = [];
+    if (!ready) return {};
     try {
-      requireValue(ready && event.source === 'interactive' && typeof event.text === 'string', 'UNSUPPORTED_PROMPT_MODE');
-      promptContext = await deadline(async signal => {
-        await current(ctx); const context = await hooks('UserPromptSubmit', payload(event, ctx, 'UserPromptSubmit'), signal);
-        await current(ctx); return context;
-      },
-        manifest!.bridge_total_timeout_ms);
+      bound(ctx);
+      requireValue(event.source === 'interactive' && typeof event.text === 'string', 'UNSUPPORTED_PROMPT_MODE');
+      promptContext = await deadline(signal => hooks('UserPromptSubmit', payload(event, ctx, 'UserPromptSubmit'), signal,
+        false, claudeParity(ctx, 'input')), manifest!.bridge_total_timeout_ms);
       pendingPrompt = event.text;
       return {};
-    } catch { halt(ctx); return { handled: true }; }
+    } catch (error) {
+      promptContext = [];
+      if (!ready) return { handled: true }; // foreign session: already halted
+      notice(ctx, 'input', error);
+      // Block only this prompt on a canonical block or an unsupported prompt source; otherwise proceed.
+      if (blocks(error) || errorCode(error) === 'UNSUPPORTED_PROMPT_MODE') return { handled: true };
+      pendingPrompt = event.text;
+      return {};
+    }
   });
   api.on('before_agent_start', async (event, ctx) => {
     try {
-      requireValue(ready, 'NOT_READY'); await current(ctx);
+      requireValue(ready, 'NOT_READY'); bound(ctx);
       if (pendingPrompt === undefined) requireValue(promptContext.length === 0, 'UNSUPPORTED_CONTEXT_REQUEST');
       if (pendingPrompt === undefined && !startupContext.length) return {};
       requireValue(typeof event.prompt === 'string' &&
@@ -248,15 +310,18 @@ export function registerRequired(api: API, services: Services) {
       const context = [...new Set([...startupContext, ...promptContext])];
       clearContext();
       return context.length ? { systemPrompt: [...event.systemPrompt, ...context] } : {};
-    } catch { halt(ctx); return {}; }
+    } catch (error) {
+      clearContext();
+      if (ready) notice(ctx, 'before_agent_start', error);
+      return {};
+    }
   });
   api.on('user_bash', async (event, ctx) => {
     try {
       requireValue(ready, 'NOT_READY');
       await deadline(async signal => {
-        await current(ctx);
+        bound(ctx);
         await hooks('PreToolUse', payload({ toolName: 'bash' }, ctx, 'PreToolUse', { command: event.command }), signal);
-        await current(ctx);
       }, manifest!.bridge_total_timeout_ms);
       return undefined;
     } catch {
@@ -268,22 +333,10 @@ export function registerRequired(api: API, services: Services) {
   api.on('user_python', async (_event, _ctx) => ({ result: {
     output: 'OMP_REQUIRED_UNSUPPORTED_USER_PYTHON_MAPPING', exitCode: 2, cancelled: true, truncated: false,
   } }));
-  api.on('resources_discover', async (_event, ctx) => {
-    try {
-      // Resources are discovered while native builds the session, before its
-      // session_start event. Static loading never opens the tool readiness latch.
-      if (!manifest) manifest = freeze(copy(services.load()));
-      // Schema2 native resolver alone produces skills. This callback supplies none.
-      if (manifest.schema === 2) return {};
-      requireValue(!closed && manifest.schema === 1 && manifest.runtime === 'omp', 'RESOURCE_SELECTION');
-      admitComposition(manifest.selected_extensions ?? []);
-      requireValue(await services.current(manifest, ctx), 'RESOURCE_REVOKED');
-      return { skillPaths: manifest!.selected_skills.map((s: RecordValue) => resolve(manifest!.bundle_dir, s.path)) };
-    } catch { halt(ctx); return { skillPaths: [] }; }
-  });
   api.on('tool_result', async (event, ctx) => {
+    if (!ready) return;
     try {
-      requireValue(ready, 'NOT_READY'); await current(ctx);
+      bound(ctx);
       const result = event as NativeToolResult;
       requireValue(typeof result.toolCallId === 'string' && !!result.toolCallId && object(result.input) &&
         typeof result.isError === 'boolean' && Array.isArray(result.content) && result.content.every(c =>
@@ -294,14 +347,23 @@ export function registerRequired(api: API, services: Services) {
       const p = payload(event, ctx, kind, result.input);
       p.tool_response = copy({ content: result.content, ...(result.details === undefined ? {} : { details: result.details }),
         isError: result.isError });
-      observedResults.add(result.toolCallId);
-      await deadline(s => hooks(kind, p, s), manifest!.bridge_total_timeout_ms);
-      await current(ctx);
-    } catch { halt(ctx); }
+      observedResults.add(result.toolCallId); writeOps.delete(result.toolCallId);
+      // Claude parity: Post hooks cannot undo the effect; a failing one is skipped and reported.
+      await deadline(s => hooks(kind, p, s, false, skipper(ctx, 'tool_result')), manifest!.bridge_total_timeout_ms);
+    } catch (error) { notice(ctx, 'tool_result', error); }
   });
   api.on('session_stop', async (event, ctx) => {
-    try { await current(ctx); await deadline(s => hooks('Stop', payload(event, ctx, 'Stop'), s), manifest!.bridge_total_timeout_ms); return {}; }
-    catch { return deny(); }
+    if (!ready) return {};
+    try {
+      bound(ctx);
+      await deadline(s => hooks('Stop', payload(event, ctx, 'Stop'), s, false, claudeParity(ctx, 'session_stop')),
+        manifest!.bridge_total_timeout_ms);
+      return {};
+    } catch (error) {
+      notice(ctx, 'session_stop', error);
+      // Upstream SessionStopEventResult: a block decision continues the session with the reason.
+      return blocks(error) ? { decision: 'block', reason: denial(error).reason } : {};
+    }
   });
   api.on('session_shutdown', async (event, ctx) => {
     ready = false; closed = true; clearContext(); observedResults.clear();
@@ -341,12 +403,17 @@ function dependencyRead(dependency: RecordValue) {
   return readFileSync(path);
 }
 
-async function runScript(path: string, args: string[], input: string, signal: AbortSignal, cwd: string, home?: string, hookPath?: string, hookPython?: string) {
+async function runScript(path: string, args: string[], input: string, signal: AbortSignal, cwd: string, hookPath?: string, hookPython?: string, hookTuple = false) {
   return await new Promise<{ code: number; stdout: string }>((accept, reject) => {
     // No settings.env/global authority copy and no inherited Claude/Codex identity.
     const env: Record<string, string> = { HARNESS_HOOK_RUNTIME: 'omp' };
     for (const key of ['HOME', 'PATH', 'LANG', 'LC_ALL', 'TMPDIR']) if (process.env[key]) env[key] = process.env[key]!;
-    if (home) env.HOME = home; // Exact existing projection home, never parent env expansion.
+    // Launcher env v2 tuple: pass through only when the outer runner set it and the shape is valid; never synthesized.
+    const tuple = hookTuple ? process.env : {} as NodeJS.ProcessEnv;  // hook children only, not rewrite helpers
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tuple.HARNESS_SESSION_ID ?? ''))
+      env.HARNESS_SESSION_ID = tuple.HARNESS_SESSION_ID!;
+    for (const key of ['HARNESS_SOURCE_ROOT', 'HARNESS_SESSION_ROOT', 'HARNESS_RUN_DIR'])
+      if (tuple[key] && isAbsolute(tuple[key]!)) env[key] = tuple[key]!;
     if (hookPath) env.PATH = hookPath;
     if (hookPython) env.HARNESS_PYTHON = hookPython; // Existing helper override; child only, exact sealed interpreter.
     const child = spawn(path, args, { cwd, env, signal, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -381,13 +448,6 @@ export default function requiredExtension(api: API) {
       requireValue(first && (exactPython ? first === d.path : realpathSync(first) === realpathSync(d.path)),
         'HOOK_PATH_SHADOW');
     }
-    if (m.hook_map.some((h: any) => ['core/hooks/pre-bash-curl-block.sh', 'core/hooks/pre-edit-config-protection.sh'].includes(h.script)))
-      requireValue(m.canonical_inputs.some((a: any) => a.path === 'core/bin/harness-python'), 'HELPER_UNSEALED');
-  }
-  function sealedClosure(m: RecordValue) {
-    executionClosure(m);
-    for (const a of m.canonical_inputs) requireValue(digest(ownedRead(resolve(m.source_root, a.path))) === a.sha256, 'SOURCE_CHANGED');
-    for (const a of m.artifacts) requireValue(digest(ownedRead(resolve(bundleDir, a.relative_path))) === a.sha256, 'ARTIFACT_CHANGED');
   }
   const transforms: NonNullable<Services['transforms']> = {};
   registerRequired(api, {
@@ -404,7 +464,6 @@ export default function requiredExtension(api: API) {
         requireValue(relative(bundleDir, p) === a.relative_path && digest(ownedRead(p)) === a.sha256 &&
           (lstatSync(p).mode & 0o777) === parseInt(a.mode, 8), 'ARTIFACT');
       }
-      for (const a of loaded.canonical_inputs) requireValue(digest(ownedRead(resolve(loaded.source_root, a.path))) === a.sha256, 'SOURCE_CHANGED');
       // Several original guards deliberately return 0 when jq/python is absent.
       // Their prerequisite is therefore admission, never a guard-success fallback.
       const dependencies = loaded.hook_dependencies ?? [];
@@ -414,49 +473,22 @@ export default function requiredExtension(api: API) {
       hookPython = dependencies.find((d: any) => d.name === 'python3')?.path;
       for (const rewrite of loaded.bridge_rewrites) {
         transforms[rewrite.canonical_entry_id] = async (raw, signal) => {
+          // Harness source may advance after load (root fast-forward); only ownership/ACL is rechecked.
           const path = resolve(loaded.source_root, rewrite.script);
-          sealedClosure(loaded);
-          requireValue(digest(ownedRead(path)) === rewrite.sha256, 'REWRITE_SOURCE');
-          const result = await runScript('/bin/bash', [path], canonical(raw), signal, loaded.workspace, undefined, hookPath, hookPython);
+          ownedRead(path);
+          const result = await runScript('/bin/bash', [path], canonical(raw), signal, loaded.workspace, hookPath, hookPython);
           requireValue(result.code === 0, 'REWRITE_NONZERO');
           const parsed = JSON.parse(result.stdout);
           requireValue(object(parsed) && Object.keys(parsed).length === 1 && object(parsed.input), 'REWRITE_RESULT');
           return parsed.input;
         };
       }
-      return { ...loaded, bundle_dir: bundleDir, manifest_sha256: digest(manifestBytes) };
-    },
-    async current(m, ctx) {
-      sealedClosure(m); // Validate actual execution closure before invoking even the readonly selector.
-      // Reuse the existing readonly projection selector. Launcher-owned public
-      // lane supplies this exact descriptor; absence is a precise admission error.
-      const p = m.current_projection;
-      requireValue(object(p) && digest(ownedRead(p.helper)) === p.sha256, 'CURRENT_PROJECTION_MISSING');
-      requireValue(typeof p.home === 'string' && isAbsolute(p.home) && realpathSync(p.home) === p.home &&
-        p.registry === resolve(p.home, '.config/harness-launcher/profiles'), 'CURRENT_PROJECTION_HOME');
-      requireValue(p.python === m.hook_dependencies?.find((d: any) => d.name === 'python3')?.path, 'CURRENT_INTERPRETER');
-      requireValue(object(p.expected) && typeof p.expected.profile_binding_sha256 === 'string' &&
-        typeof p.expected.binary_sha256 === 'string', 'CURRENT_EXPECTATION');
-      const result = await runScript(p.python, [p.helper, 'select-continuation-source', p.source, p.registry, p.source, p.consumer],
-        '', AbortSignal.timeout(2000), ctx.cwd, p.home);
-      requireValue(result.code === 0, 'CURRENT_PROJECTION_REFUSED');
-      const value = JSON.parse(result.stdout);
-      requireValue(value.binary_release?.version === m.runtime_version &&
-        value.binary_release?.source_revision === (m.schema === 2 ? m.native_release?.source_revision : '96894a6147d8cc64b7e00ad3a7d7178fd93b9531'), 'NATIVE_SOURCE_VERSION');
-      if (m.schema === 2) {
-        const { binary_sha256, ...release } = m.native_release;
-        requireValue(canonical(value.binary_release) === canonical(release) && value.binary_sha256 === binary_sha256, 'NATIVE_RELEASE');
-      }
-      requireValue(Object.keys(p.expected).every(k => JSON.stringify(value[k]) === JSON.stringify(p.expected[k])), 'CURRENT_BINDING');
-      requireValue(ctx.cwd === m.workspace, 'WORKSPACE');
-      sealedClosure(m);
-      return true;
+      return loaded;
     },
     async run(h, p, signal) {
-      sealedClosure(loaded);
       const path = resolve(loaded.source_root, h.script);
-      requireValue(digest(ownedRead(path)) === h.script_sha256, 'SCRIPT_CHANGED');
-      return await runScript('/bin/bash', [path], JSON.stringify(p), signal, p.cwd, undefined, hookPath, hookPython);
+      ownedRead(path);
+      return await runScript('/bin/bash', [path], JSON.stringify(p), signal, p.cwd, hookPath, hookPython, true);
     },
     transforms,
   });
