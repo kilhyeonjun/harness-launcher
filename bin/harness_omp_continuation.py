@@ -402,8 +402,8 @@ def _inspect_native(sessions, cwd):
                 'OMP_CONTINUATION_IDENTITY_CHANGED')
     finally: os.close(fd)
     value = p.decode(raw)
-    require(type(value) is dict and set(value) in (
-        {'type','version','id','cwd','timestamp'}, {'type','version','id','cwd','timestamp','parentSession'}))
+    # OMP adds optional header fields (title, titleSource, additionalDirectories, ...) as a session is used.
+    require(type(value) is dict and {'type','version','id','cwd','timestamp'} <= set(value))
     require(value.get('parentSession') is None, 'OMP_CONTINUATION_NATIVE_FORK')
     require(value['type'] == 'session' and type(value['version']) is int and value['version'] == 3)
     native_id = value['id']; require(type(native_id) is str and str(uuid.UUID(native_id)) == native_id)

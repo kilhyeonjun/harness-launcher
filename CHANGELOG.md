@@ -2,6 +2,13 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.77.1 — 2026-10-22
+
+- OMP continuations accept a session header with OMP's optional fields
+  (`title`, `titleSource`, `additionalDirectories`, ...). OMP writes them once a
+  session is titled, so every titled session failed to resume with
+  `OMP_CONTINUATION_UNBOUND`. A `parentSession` still marks a native fork.
+
 ## 0.77.0 — 2026-10-22
 
 - Run upstream OMP instead of the retired local fork. Required preparation
