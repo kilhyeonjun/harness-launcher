@@ -209,6 +209,13 @@ class ContinuationTests(unittest.TestCase):
         self.assertEqual(json.loads(self.record.read_bytes())['kernel_origin'],origin)
         self.assertEqual(self.record.stat().st_mode&0o777,0o600)
 
+    def test_C01b_titled_header_with_optional_fields_is_admitted(self):
+        # OMP adds title/titleSource (and other optional fields) to the header once a session is titled.
+        self.kernel(); self.op('NEW_PREPARE')
+        self.native_file(title='Lane B followups',titleSource='auto',additionalDirectories=['/extra'])
+        self.assertEqual(self.op('FINALIZE',0)['status'],'READY')
+        self.op('RESUME_ADMIT'); self.assertEqual(self.op('FINALIZE',0)['status'],'READY')
+
     def test_C02_public_metadata_allows_append_not_inode_replacement(self):
         self.kernel(); self.op('NEW_PREPARE'); path=self.native_file();self.op('FINALIZE',0)
         self.op('RESUME_ADMIT')
