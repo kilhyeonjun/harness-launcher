@@ -1473,7 +1473,7 @@ _harness_launcher_omp_native() (
   # Per-harness GitHub identity as for Claude/Codex: only the loader's own
   # result, never the caller's value or an empty token (this is a subshell).
   local HARNESS_GH_USER=""
-  harness_gh_token_load "${HARNESS_DIR-}" >/dev/null 2>&1 || unset GH_TOKEN
+  [[ -n "${HARNESS_DIR-}" ]] && harness_gh_token_load "$HARNESS_DIR" >/dev/null 2>&1 || unset GH_TOKEN
   local native_path
   native_path="$(_harness_launcher_omp_native_path)" || return 2
   local -a native_env=(HOME="$root/home" PATH="$native_path" LANG=C LC_ALL=C

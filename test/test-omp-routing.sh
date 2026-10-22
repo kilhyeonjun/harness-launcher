@@ -144,7 +144,8 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     tuple_env={'HARNESS_SESSION_ID':uid,'HARNESS_SOURCE_ROOT':'/src','HARNESS_SESSION_ROOT':'/sess','HARNESS_RUN_DIR':'/run'}
     herdr_env={'HERDR_ENV':'1','HERDR_SOCKET_PATH':'/tmp/herdr.sock','HERDR_PANE_ID':'p_1'}
     leak={'HERDR_PANE_ID_X':'x','HARNESS_PREFIX':'leak','CODEX_THREAD_ID':'leak','PI_CODING_AGENT_DIR':'/leak','PI_AUTO_QA':'1',
-          'GH_TOKEN':'caller-token-must-not-leak','XDG_CONFIG_HOME':'/leak-xdg','PI_SHELL_PREFIX':'leak;'}
+          'GH_TOKEN':'caller-token-must-not-leak','XDG_CONFIG_HOME':'/leak-xdg','PI_SHELL_PREFIX':'leak;',
+          'BASH_FUNC_x%%':'() { :; }','a-b':'1'}
     # Through the public dispatcher the runner discards the caller's own session
     # tuple and the runtime filter drops a herdr pane without a live socket, so
     # nothing optional (and nothing from `leak`) reaches the native.
@@ -224,6 +225,13 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
         # The token travels in environ only: never in env's argv or any output.
         assert wire.read_bytes().split(b'\0')[:2]==[b'-u',b'_'] and token.encode() not in wire.read_bytes()
         assert token.encode() not in done.stdout+done.stderr
+        passed+=1
+    # An empty profile dir never reaches the loader (no /config lookup): a
+    # loader stub that would hand out a token must not be called.
+    stub='harness_gh_token_load(){ export GH_TOKEN=stub-token; }; '
+    for setup in ['HARNESS_DIR=','unset HARNESS_DIR']:
+        got=native_env(stub+setup)
+        assert got==fake_env,(setup,got)
         passed+=1
     # An export the launcher cannot clear refuses instead of leaking.
     done=native_env('typeset -rx READONLY_CALLER_VAR=leak',expected=2)
