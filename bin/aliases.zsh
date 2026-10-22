@@ -2287,13 +2287,16 @@ _harness_launcher_run_session() {
   else
     if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
     _harness_launcher_announce_run_dir "${HARNESS_RUN_DIR:-$HARNESS_DIR}"
-    # The menu offers OMP when this profile's namespace selects; an enrolled
-    # profile that fails selection is listed with its error label instead.
-    # The menu only hands back `omp [--model-mode <id>]` and exits 75; the full
-    # OMP checks (binary hash included) run here, so the menu itself stays cheap.
-    local omp_handoff_dir="" omp_unavailable="" omp_probe tui_rc
+    # Where OMP is set up at all (an enrollment index or a configured binary),
+    # the menu offers it when this profile's namespace selects and otherwise
+    # lists it with the selection's error label; elsewhere OMP stays hidden and
+    # no probe runs. The menu only hands back `omp [--model-mode <id>]` and
+    # exits 75; the full OMP checks (binary hash included) run here.
+    local omp_handoff_dir="" omp_unavailable="" omp_probe="" tui_rc
     local -a omp_native_args=() omp_handoff_lines=()
-    omp_probe="$( (_harness_launcher_omp_projection_select && [[ -n "$HARNESS_OMP_BIN" ]] && print -r READY) 2>&1)"
+    if [[ -e "$HOME/.config/harness-launcher/omp-projection-v1/enrollment.json" || -n "$HARNESS_OMP_BIN" ]]; then
+      omp_probe="$( (_harness_launcher_omp_projection_select && [[ -n "$HARNESS_OMP_BIN" ]] && print -r READY) 2>&1)"
+    fi
     if [[ "$omp_probe" == *READY ]]; then
       omp_handoff_dir="$(mktemp -d "${TMPDIR:-/tmp}/harness-omp-handoff.XXXXXX")" || return 2
     elif [[ "$omp_probe" =~ 'harness-launcher: (OMP_[A-Z_]+)' ]]; then
