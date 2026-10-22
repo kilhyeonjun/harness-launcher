@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,33 @@ class SessionCreationContractTest(unittest.TestCase):
             self.assertFalse((outside / 'settings.local.json').exists())
             self.assertEqual(list((state / 'sessions').iterdir()), [])
             self.assertEqual(list((state / 'worktrees').iterdir()), [])
+
+    def test_create_through_homebrew_link_chain_uses_helpers_beside_the_target(self) -> None:
+        """Homebrew links prefix/bin -> keg/bin -> share; helpers exist only in share."""
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            prefix = base / 'prefix'
+            keg = prefix / 'Cellar/harness-launcher/1.0'
+            shutil.copytree(ROOT / 'bin', keg / 'share/harness-launcher', symlinks=True,
+                            ignore=shutil.ignore_patterns('__pycache__'))
+            (keg / 'bin').mkdir()
+            (keg / 'bin/harness-session').symlink_to('../share/harness-launcher/session-isolation.sh')
+            (prefix / 'bin').mkdir()
+            entry = prefix / 'bin/harness-session'
+            entry.symlink_to('../Cellar/harness-launcher/1.0/bin/harness-session')
+            source, state = base / 'source', base / 'state'
+            subprocess.run(['git', 'init', '-q', '-b', 'main', str(source)], check=True)
+            subprocess.run(['git', '-C', str(source), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+                            'commit', '-q', '--allow-empty', '-m', 'seed'], check=True)
+            environment = dict(os.environ, HARNESS_SESSION_STATE_HOME=str(state), HARNESS_PYTHON_BIN=sys.executable)
+            environment.pop('HARNESS_HEADLESS', None)
+            done = subprocess.run([str(entry), 'create', '--local', str(source)],
+                                  env=environment, capture_output=True, text=True, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            fields = dict(line.split('=', 1) for line in done.stdout.splitlines())
+            self.assertEqual(set(fields), {'HARNESS_SESSION_ID', 'HARNESS_SOURCE_ROOT', 'HARNESS_SESSION_ROOT', 'HARNESS_RUN_DIR'})
+            journal = state / 'sessions' / fields['HARNESS_SESSION_ID'] / 'journal'
+            self.assertIn('state=OPEN', journal.read_text())
 
     def test_state_spelling_survives_parent_alias_for_legacy_consumers(self) -> None:
         """Legacy catalog compares the configured state prefix with session-root."""

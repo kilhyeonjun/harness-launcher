@@ -171,21 +171,32 @@ Invalid paths, modes, marker or full digest fail closed before workspace
 allocation. Canonicalize paths when preparing them; symlink spellings fail.
 
 The outgoing native environment contains exactly `HOME=<root>/home`,
-`PATH=/usr/bin:/bin`, `LANG=C`, `LC_ALL=C`, `TMPDIR=<root>/tmp`, the four
+`PATH=/usr/bin:/bin[:<tool dir>]`, `LANG=C`, `LC_ALL=C`, `TMPDIR=<root>/tmp`, the four
 `XDG_{CACHE,CONFIG,STATE,DATA}_HOME` values under the matching root leaves,
 `PI_CODING_AGENT_DIR=<root>/agent`,
 `PI_CODING_AGENT_SESSION_DIR=<root>/history`,
 `PI_NATIVES_DIR=<root>/native-cache`, and `TERM=xterm-256color` (the 13 fixed
 fields), plus the v2 additions of decision 038:
 
+- The launcher tool directory in `PATH`, appended after `/usr/bin:/bin` so a
+  system tool always wins: Homebrew's bin for the CPU (`/opt/homebrew/bin` on
+  arm64, `/usr/local/bin` otherwise), a launcher constant that is never read
+  from the caller's `PATH`. It is added only when it is a real directory (not
+  a symlink) owned by the user or root and not writable by other users; group
+  write is accepted only for the macOS `admin` group (gid 80), which is how
+  Homebrew keeps its prefix. Otherwise `PATH` stays `/usr/bin:/bin`. This lets
+  the native find tools such as `uv` and `gh` without an absolute path.
 - `PI_AUTO_QA=0`, always. It is OMP's highest-priority source for
   `dev.autoqa`; without it OMP pushes tool-issue reports to an external QA
   service.
 - `HARNESS_SESSION_ID`, `HARNESS_SOURCE_ROOT`, `HARNESS_SESSION_ROOT` and
-  `HARNESS_RUN_DIR`, only as a whole and only when the outer runner set all
-  four and they are valid (a UUID and three absolute paths). The broker's
-  delivery and hook identity depend on them. Any missing or invalid member
-  drops all four; the launcher never synthesizes them.
+  `HARNESS_RUN_DIR`, only as a whole and only when the runner set all four and
+  they are valid (a UUID and three absolute paths). The broker's delivery and
+  hook identity depend on them. Any missing or invalid member drops all four;
+  the launcher never synthesizes them. A continuation launch sets them from
+  its own session record after the record is bound: the continuation id, the
+  recorded source and session roots, and the retained cwd (the session root)
+  as run directory.
 - `HERDR_ENV=1`, `HERDR_SOCKET_PATH` and `HERDR_PANE_ID`, only as a whole and
   only when `HERDR_ENV` is `1`, the socket path is absolute and the pane id is
   non-empty, so the herdr observer can attach to the pane.

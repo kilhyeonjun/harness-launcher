@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — Codex hook approval capture
+## 0.77.2 — 2026-10-23
 
 - Add the operator command `codex-hook-trust.py capture --session-id UUID [--profile]
   [--dry-run]`, which records the owner's existing native Codex hook approval as
@@ -15,6 +15,24 @@ Notable changes are recorded here. This project follows semantic versioning for 
   after the operator types `record` on the controlling terminal under the exact
   hooks, scripts and callbacks. Writes are atomic and 0600 with a backup of the
   previous record.
+- Forward the isolated-session tuple to OMP continuation launches
+  (`omp --session-new`/`--session-resume`). The continuation now sets
+  `HARNESS_SESSION_ID`/`HARNESS_SOURCE_ROOT`/`HARNESS_SESSION_ROOT`/
+  `HARNESS_RUN_DIR` from its own session record (run dir = retained cwd);
+  before, the native OMP received none of the four, or a caller's exported
+  tuple from another session.
+- `harness-session create` works through the Homebrew command link again.
+  The engine looked for its helpers beside the invoked link
+  (`<prefix>/bin`) instead of beside its target in
+  `share/harness-launcher`, so every create failed with "creation helper
+  unavailable". All helper lookups (creation, work proof, Codex history,
+  transcript archive, usage sync, Codex policy, report) now resolve the link
+  chain once through `engine_path`/`engine_dir`.
+- OMP native `PATH` appends the launcher's Homebrew bin (`/opt/homebrew/bin`
+  on arm64, `/usr/local/bin` otherwise) after `/usr/bin:/bin`, so OMP finds
+  `uv`, `gh` and other Homebrew tools. It is a launcher constant, never the
+  caller's `PATH`, and is added only as a real directory owned by the user or
+  root without other-user write (group write only for the macOS admin group).
 
 ## 0.77.1 — 2026-10-22
 

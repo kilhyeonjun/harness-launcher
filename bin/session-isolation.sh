@@ -9,8 +9,11 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OB
 state_home() { printf '%s\n' "${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"; }
 session_dir() { printf '%s/sessions/%s\n' "$(state_home)" "$1"; }
 integration_queue_enabled() { [[ -e "$(state_home)/integration-queue.json" || -L "$(state_home)/integration-queue.json" ]]; }
-# Homebrew exposes this script through a bin symlink; helpers live beside its target.
-integration_queue() {
+# engine_path: this script's physical file. Homebrew exposes it through a chain
+# of symlinks (prefix bin -> keg bin -> share/harness-launcher), and every
+# helper lives beside the final target, never beside a link. Link traversal is
+# bounded so a concurrent broken install fails instead of looping.
+engine_path() {
   local script="${BASH_SOURCE[0]}" directory hop
   for hop in {1..40}; do
     directory="$(cd -P -- "$(dirname -- "$script")" && pwd -P)" || return 2
@@ -19,7 +22,16 @@ integration_queue() {
     script="$(readlink "$script")" || return 2
     [[ "$script" == /* ]] || script="$directory/$script"
   done
-  [[ -f "$script" && ! -L "$script" && -f "$directory/harness_integration_queue.py" ]] || return 2
+  [[ -f "$script" && ! -L "$script" ]] || return 2
+  printf '%s\n' "$script"
+}
+# engine_dir: the physical directory holding this script and its helpers.
+engine_dir() { local script; script="$(engine_path)" || return 2; printf '%s\n' "${script%/*}"; }
+integration_queue() {
+  local script directory
+  script="$(engine_path)" || return 2
+  directory="${script%/*}"
+  [[ -f "$directory/harness_integration_queue.py" ]] || return 2
   # A guardian must replace its background shell: that shell waiting for its
   # child would otherwise keep the execution group alive forever after a crash.
   if [[ "${1:-}" == guardian ]]; then
@@ -55,7 +67,7 @@ write_heartbeat() {
 # create's stdout is a key=value contract.
 agent_usage_sync() {
   local bin
-  bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  bin="$(engine_dir)" || return 0
   [[ -f "$bin/harness-common.sh" ]] || return 0
   ( source "$bin/harness-common.sh"; harness_agent_usage_sync_session "$bin" "$1" "$2" ) >/dev/null || true
 }
@@ -258,11 +270,11 @@ headless_local_files() {
   done
 }
 create() {
-  local source="$1" local_only="${2:-0}" reserved_id="${3:-}" root state id base sha dir local_file has_origin=0 helper
+  local source="$1" local_only="${2:-0}" reserved_id="${3:-}" root state id base sha dir local_file has_origin=0 helper=""
   source="$(cd "$source" && pwd -P)"
   git -C "$source" rev-parse --is-inside-work-tree >/dev/null
   state="$(state_home)"
-  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_creation.py"
+  helper="$(engine_dir)/harness_session_creation.py" || helper=""
   if [[ -n "$reserved_id" ]]; then
     valid_id "$reserved_id" || { echo 'harness-session: invalid reserved UUID' >&2; return 2; }
     dir="$state/sessions/$reserved_id"; root="$state/worktrees/$reserved_id"
@@ -424,7 +436,7 @@ terminal_epoch() {
 # original pathname disappear; failures restore the same directory/inode.
 work_content_verified() {
   local dir="$1" root="$2" helper tmp
-  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_work_proof.py"
+  helper="$(engine_dir)/harness_session_work_proof.py" || return 1
   [[ -f "$helper" && ! -L "$helper" ]] || return 1
   tmp="$(mktemp "$dir/.work-proof.XXXXXX")" || return 1
   if python3 -I "$helper" --state "$(cd "$dir/../.." && pwd -P)" --owner "${dir##*/}" --retained-root "$root" --preserve-python-caches > "$tmp"; then
@@ -436,7 +448,7 @@ work_content_verified() {
 retire_native_root() {
   local root="$1" tomb="$2" dir="$3" source="$4" id="$5" staged="${6:-0}"
   local helper py native catalog receipt output snapshot revision='legacy-unknown'
-  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-history.py"
+  helper="$(engine_dir)/codex-history.py" || return 1
   [[ -f "$helper" && ! -L "$helper" ]] || return 1
   source "$(dirname "$helper")/harness-common.sh"
   py="$(harness_python3_resolve)" && native="$(harness_codex_bin_resolve)" || return 1
@@ -470,13 +482,13 @@ retire_native_root() {
 }
 archive_verified() {
   local state="$1" id="$2" source="$3" script
-  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_archive.py"
+  script="$(engine_dir)/harness_session_archive.py" || return 1
   [[ -f "$script" && ! -L "$script" ]] || return 1
   python3 "$script" verify --state "$state" --owner "$id" --source "$source" >/dev/null 2>&1
 }
 archive_session_transcripts() {
   local state="$1" id="$2" source="$3" root="$4" script
-  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_archive.py"
+  script="$(engine_dir)/harness_session_archive.py" || return 1
   [[ -f "$script" && ! -L "$script" ]] || return 1
   python3 "$script" archive --state "$state" --owner "$id" --source "$source" --root "$root" >/dev/null 2>&1 \
     && archive_verified "$state" "$id" "$source"
@@ -555,7 +567,7 @@ gc_unlocked() {
   [[ ! -L "$state" && ! -L "$sessions" && ! -L "$worktrees" ]] || return 2
   state="$(cd "$state" && pwd -P)" || return 2
   sessions="$(cd "$sessions" && pwd -P)"; worktrees="$(cd "$worktrees" && pwd -P)"
-  history_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-history.py"
+  history_helper="$(engine_dir)/codex-history.py" || return 2
   [[ -f "$history_helper" && ! -L "$history_helper" ]] || return 2
   source "$(dirname "$history_helper")/harness-common.sh"
   history_python="$(harness_python3_resolve)" || return 2
@@ -1090,15 +1102,8 @@ codex_sandbox_profile() {
   verifier_sandbox_profile "$1" "$2" "$3" "$source" "$exe" || return
   # Codex bootstraps the system requirements even with an isolated CODEX_HOME.
   # Grant data read of that trusted file only, before the final credential denies.
-  local policy_script="${BASH_SOURCE[0]}" policy_dir policy_hop
-  for policy_hop in {1..40}; do
-    [[ -L "$policy_script" ]] || break
-    policy_dir="$(cd "$(dirname "$policy_script")" && pwd -P)" || return
-    policy_script="$(readlink "$policy_script")" || return
-    [[ "$policy_script" == /* ]] || policy_script="$policy_dir/$policy_script"
-  done
-  [[ -f "$policy_script" && ! -L "$policy_script" ]] || return 2
-  policy_dir="$(cd "$(dirname "$policy_script")" && pwd -P)" || return
+  local policy_dir
+  policy_dir="$(engine_dir)" || return 2
   python3 -I -B "$policy_dir/harness_codex_policy.py" || return
   # PTYs as Codex's own Seatbelt policy grants them: openpty(), and a slave
   # tty only with the sandbox extension the kernel issues for a PTY opened
@@ -1434,7 +1439,7 @@ case "${1:-}" in
       shift 2
       if [[ "${1:-}" == --local ]]; then shift; [[ $# -eq 1 ]] || exit 2; create "$1" 1 "$reserved_id"; else [[ $# -eq 1 ]] || exit 2; create "$1" 0 "$reserved_id"; fi
     else
-      creation_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_creation.py"
+      creation_script="$(engine_dir)/harness_session_creation.py" || creation_script=""
       [[ -f "$creation_script" && ! -L "$creation_script" ]] || { echo 'harness-session: creation helper unavailable' >&2; exit 2; }
       if [[ "${1:-}" == --local ]]; then
         shift; [[ $# -eq 1 ]] || exit 2
@@ -1461,23 +1466,9 @@ case "${1:-}" in
   heartbeat) shift; heartbeat_session "$1" ;;
   report)
     shift
-    # Homebrew exposes this script through a bin symlink; modules live beside
-    # its target. Bound link traversal so a concurrent broken install fails.
-    report_script="${BASH_SOURCE[0]}"
-    for report_hop in {1..40}; do
-      report_dir="$(cd -P -- "$(dirname -- "$report_script")" && pwd -P)" || exit 2
-      report_script="$report_dir/$(basename -- "$report_script")"
-      [[ -L "$report_script" ]] || break
-      report_script="$(readlink "$report_script")" || exit 2
-      case "$report_script" in
-        /*) ;;
-        *) report_script="$report_dir/$report_script" ;;
-      esac
-    done
-    [[ -f "$report_script" && ! -L "$report_script" ]] || {
+    report_dir="$(engine_dir)" || {
       echo 'harness-session: cannot resolve report entry' >&2; exit 2;
     }
-    report_dir="$(cd -P -- "$(dirname -- "$report_script")" && pwd -P)" || exit 2
     [[ -f "$report_dir/harness-common.sh" && -r "$report_dir/harness-common.sh" \
         && -f "$report_dir/harness_session_report.py" && -r "$report_dir/harness_session_report.py" ]] || {
       echo 'harness-session: report modules unavailable' >&2; exit 2;

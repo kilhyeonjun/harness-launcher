@@ -17,6 +17,19 @@ def digest(p): return hashlib.sha256(p.read_bytes()).hexdigest()
 def encoded(v): return json.dumps(v, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
 def put(p, v, mode=0o600): p.write_bytes(encoded(v)); p.chmod(mode)
 
+def omp_native_path():
+    """Env contract v2 PATH: /usr/bin:/bin plus the CPU's Homebrew bin when it
+    is a real user/root-owned directory without other-write (group write only
+    for the Darwin admin group). Computed from the host, not the caller PATH."""
+    import platform, stat as _stat
+    tool = '/opt/homebrew/bin' if platform.machine() == 'arm64' else '/usr/local/bin'
+    try: s = os.lstat(tool)
+    except OSError: return '/usr/bin:/bin'
+    ok = (_stat.S_ISDIR(s.st_mode) and s.st_uid in (0, os.getuid()) and not s.st_mode & 0o002 and
+          (not s.st_mode & 0o020 or (sys.platform == 'darwin' and s.st_gid == 80)))
+    return '/usr/bin:/bin' + (':' + tool if ok else '')
+
+
 class ContinuationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='omp-continuation-')
@@ -330,7 +343,7 @@ class ContinuationTests(unittest.TestCase):
         helper.write_text('raise RuntimeError("MUST_NOT_IMPORT")\n');helper.chmod(0o400)
         self.context(2)
 
-    def public_shell(self, tail, expected):
+    def public_shell(self, tail, expected, extra_env=None):
         # Public alias-layer fixture only. The required real Entry composition
         # is separate and cannot be replaced by this seeded-kernel fixture.
         script='''source "$1"
@@ -346,7 +359,8 @@ _harness_launcher_run "$@"
         env={'HOME':str(self.home),'PATH':self.preparation_path,'LC_ALL':'C','TERM':'dumb',
              'HARNESS_SESSION_STATE_HOME':str(self.state),'FIXTURE_PYTHON':sys.executable,
              'FIXTURE_EVENTS':str(self.events),'HARNESS_CLAUDE_PLUGIN_MIRROR':'0',
-             'HARNESS_POST_EDIT_CODEX_SYNC':'0','HARNESS_POST_COMMIT_CODEX_SYNC':'0','TMPDIR':str(self.base)}
+             'HARNESS_POST_EDIT_CODEX_SYNC':'0','HARNESS_POST_COMMIT_CODEX_SYNC':'0','TMPDIR':str(self.base),
+             **(extra_env or {})}
         self.assertEqual(self.binary.parent,self.base)
         self.assertTrue(self.binary.read_text().startswith('#!'+sys.executable+' -I'))
         self.assertEqual((self.snapshot/'bin/harness_omp_continuation.py').read_bytes(),
@@ -434,22 +448,29 @@ raise SystemExit(EXIT_CODE)
         self.assertEqual(len(calls),1);self.assertEqual(calls[0]['argv'],['--print',*required,'--session-dir',str(self.sessions),'--',prompt])
         self.assertEqual(calls[0]['cwd'],str(self.work));self.assertEqual(calls[0]['held'],[True,True])
         self.assertEqual(self.events.read_text(),'finish\n')
-        self.public_shell(['--session-resume',self.h,'--print','--',prompt],0)
+        # A caller's exported tuple from another session must not reach native OMP.
+        hostile={'HARNESS_SESSION_ID':'00000000-0000-4000-8000-000000000000','HARNESS_SOURCE_ROOT':str(self.base),
+                 'HARNESS_SESSION_ROOT':str(self.base),'HARNESS_RUN_DIR':str(self.base)}
+        self.public_shell(['--session-resume',self.h,'--print','--',prompt],0,hostile)
         calls=[json.loads(x) for x in self.calls.read_text().splitlines()]
         native=str(self.sessions/'fixture_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.jsonl')
         self.assertEqual(calls[1]['argv'],['--print',*required,'--session-dir',str(self.sessions),'--resume',native,'--',prompt])
         self.assertEqual(calls[1]['cwd'],str(self.work));self.assertEqual(calls[1]['held'],[True,True])
         self.assertEqual(self.events.read_text(),'finish\n')
-        expected_env={'HOME':str(self.ns/'home'),'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C',
+        expected_env={'HOME':str(self.ns/'home'),'PATH':omp_native_path(),'LANG':'C','LC_ALL':'C',
             'TMPDIR':str(self.ns/'tmp'),'XDG_CACHE_HOME':str(self.ns/'cache'),'XDG_CONFIG_HOME':str(self.ns/'config'),
             'XDG_STATE_HOME':str(self.ns/'state'),'XDG_DATA_HOME':str(self.ns/'data'),
             'PI_CODING_AGENT_DIR':str(self.ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(self.ns/'history'),
-            'PI_NATIVES_DIR':str(self.ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0'}
+            'PI_NATIVES_DIR':str(self.ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0',
+            # Env contract v2: the continuation forwards its own isolated-session
+            # tuple from the W record; the run dir is the retained cwd.
+            'HARNESS_SESSION_ID':self.w,'HARNESS_SOURCE_ROOT':str(self.profile),
+            'HARNESS_SESSION_ROOT':str(self.work),'HARNESS_RUN_DIR':str(self.work)}
         for call in calls:
-            self.assertEqual({k:call['env'][k] for k in expected_env},expected_env)
+            self.assertEqual({k:call['env'].get(k) for k in expected_env},expected_env)
             # Darwin may add this Python-startup key after env -i. Production
-            # still sends the v2 set (13 + PI_AUTO_QA=0; the fixture env carries no
-            # harness tuple or herdr triple); this is not a wider env grant.
+            # still sends the v2 set (13 + PI_AUTO_QA=0 + the harness tuple; the
+            # fixture env carries no herdr triple); this is not a wider env grant.
             self.assertLessEqual(set(call['env'])-set(expected_env),{'__CF_USER_TEXT_ENCODING'})
 
     def test_C10_namespace_busy_no_native_or_receipt_transition(self):
