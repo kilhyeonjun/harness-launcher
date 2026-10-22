@@ -3,8 +3,19 @@
 
 This never approves a new hook. Missing or changed evidence leaves native
 Codex review intact. The caller publishes the returned config under its CAS.
+
+Operator command (never run by the launcher itself):
+
+  codex-hook-trust.py capture --session-id UUID [--state-home DIR]
+                              [--profile base] [--dry-run]
+
+records an approval the owner already gave natively in an OPEN launcher session.
+It invents nothing: every hook must have a trusted, enabled decision in the
+session's profile whose hash equals the generated hook hash.
 """
+import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +24,8 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
+import time
 import tomllib
 import uuid
 
@@ -24,6 +37,12 @@ EVENTS = {
     "PreCompact": "pre_compact", "PostCompact": "post_compact",
 }
 PROFILE_FILES = {f"{name}.config.toml" for name in ("fast", "base", "sol", "astra", "plan", "rich")}
+PROFILE_NAMES = {name.removesuffix(".config.toml") for name in PROFILE_FILES}
+KEEP_BACKUPS = 5
+ALGORITHM = "codex-0.161-command-hooks"
+NORMALIZATION = "literal-core-and-approved-callback-paths-v1"
+STATUS_SCRIPTS = (("$HOME/.orca/agent-hooks/codex-hook.sh", ""),
+                  ("$HOME/.codex/herdr-agent-state.sh", " session"))
 PACKAGE_CALLBACKS = {"codex-hook-adapter.sh", "codex-pretool-adapter.py", "codex-cmux-title-sync.py", "harness-launch-record"}
 
 
@@ -126,7 +145,7 @@ def git_output(target, *args):
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null")
     return subprocess.run(
-        ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+        ["git", "--no-optional-locks", "--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
          "-C", str(target), *args], env=env, capture_output=True, timeout=5, check=True).stdout
 
 
@@ -151,7 +170,7 @@ def approved_package_command(command, grant):
               "codex-cmux-title-sync.py": len(tokens) == 2,
               "harness-launch-record": (len(tokens) == 3 and tokens[2] == "codex")}
     if not shapes[name] or path not in {Path(__file__).parent / name, Path(__file__).resolve().parent / name}:
-        raise ValueError("callback outside current verified package")
+        raise ValueError(f"callback outside current verified package {Path(__file__).resolve().parent}")
     approved = [p for p in grant["callbacks"] if Path(p).name == name]
     if len(approved) != 1:
         raise ValueError("ambiguous callback approval")
@@ -188,13 +207,16 @@ def root_identity_matches(recorded, path):
         return False
 
 
+def state_home():
+    return Path(os.environ.get("HARNESS_SESSION_STATE_HOME") or
+                Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "harness-launcher").resolve()
+
+
 def broker_source(published):
     target = published.parent.parent
     sid = os.environ.get("HARNESS_SESSION_ID", "")
     uuid.UUID(sid)
-    state = Path(os.environ.get("HARNESS_SESSION_STATE_HOME") or
-                 Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "harness-launcher")
-    state = state.resolve()
+    state = state_home()
     record = state / "sessions" / sid
     if target != state / "worktrees" / sid or target.resolve() != target:
         raise ValueError("not a physical broker root")
@@ -252,15 +274,17 @@ def equivalent_command(command, desired, source, target, base, grant):
                 return False
         return True
     # Existing status-only registry commands stay literal, with no root rewrite.
-    for script, argument in (("$HOME/.orca/agent-hooks/codex-hook.sh", ""),
-                             ("$HOME/.codex/herdr-agent-state.sh", " session")):
-        expected = (f"/bin/sh -c 's=\"{script}\"; [ -x \"$s\" ] && {{ /bin/sh \"$s\"{argument} "
-                    ">/dev/null 2>&1; exit 0; }; cat >/dev/null'")
-        if command == expected:
+    for script, argument in STATUS_SCRIPTS:
+        if command == status_command(script, argument):
             return callback_approved(Path(script.replace("$HOME", str(Path.home()))), grant)
     return (len(tokens) in (2, 3) and callback_approved(Path(tokens[1]), grant) and
             Path(tokens[1]).name in {"codex-cmux-title-sync.py", "harness-launch-record"} and
             (len(tokens) == 2 or tokens[2] == "codex"))
+
+
+def status_command(script, argument):
+    return (f"/bin/sh -c 's=\"{script}\"; [ -x \"$s\" ] && {{ /bin/sh \"$s\"{argument} "
+            ">/dev/null 2>&1; exit 0; }; cat >/dev/null'")
 
 
 def callback_approved(path, grant):
@@ -279,12 +303,29 @@ def normalized_hooks(hooks, target, source, grant):
     return result
 
 
+def hooks_digest(normalized):
+    return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def native_identity(expected_digest=None):
+    """Binary digest first; an unapproved executable is never run for its version."""
+    native = Path(os.environ.get("HARNESS_CODEX_BIN") or shutil.which("codex") or "")
+    digest = hashlib.sha256(regular(native.resolve(), limit=256 * 1024 * 1024)).hexdigest()
+    if expected_digest is not None and digest != expected_digest:
+        raise ValueError("native executable changed (the codex on PATH or HARNESS_CODEX_BIN must be the approved one)")
+    version = subprocess.run([str(native), "--version"], text=True, capture_output=True, timeout=5, check=True).stdout.strip()
+    return digest, version
+
+
 def approval_record(state, source, target, hooks, base):
     path = state / "hook-approvals" / (hashlib.sha256(str(source).encode()).hexdigest() + ".json")
-    grant = json.loads(regular(path, state, private=True))
+    return validate_grant(json.loads(regular(path, state, private=True)), source, target, hooks, base)
+
+
+def validate_grant(grant, source, target, hooks, base):
     if grant.get("schema_version") != 1 or grant.get("source") != str(source):
         raise ValueError("foreign approval")
-    if grant.get("algorithm") != "codex-0.161-command-hooks" or not re.fullmatch(r"[0-9a-f]{64}", grant.get("approval_receipt_sha256", "")):
+    if grant.get("algorithm") != ALGORITHM or not re.fullmatch(r"[0-9a-f]{64}", grant.get("approval_receipt_sha256", "")):
         raise ValueError("missing approval provenance")
     snapshot = grant.get("approved_snapshot", {})
     if not re.fullmatch(r"[0-9a-f]{40}", snapshot.get("base_sha", "")) or not re.fullmatch(r"[0-9a-f]{64}", snapshot.get("audit_raw_hooks_sha256", "")):
@@ -293,27 +334,24 @@ def approval_record(state, source, target, hooks, base):
         if git_output(target, "cat-file", "-t", commit).strip() != b"commit":
             raise ValueError("missing source snapshot commit")
     normalized = normalized_hooks(hooks, target, source, grant)
-    normalized_sha = hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
-    if (grant.get("normalization") != "literal-core-and-approved-callback-paths-v1" or
-            grant.get("normalized_hooks_sha256") != normalized_sha or grant.get("hooks") != normalized):
+    if (grant.get("normalization") != NORMALIZATION or
+            grant.get("normalized_hooks_sha256") != hooks_digest(normalized) or grant.get("hooks") != normalized):
         raise ValueError("approved hook set changed")
-    native = Path(os.environ.get("HARNESS_CODEX_BIN") or shutil.which("codex") or "")
-    if hashlib.sha256(regular(native.resolve(), limit=256 * 1024 * 1024)).hexdigest() != grant.get("codex_binary_sha256"):
-        raise ValueError("native executable changed")
-    version = subprocess.run([str(native), "--version"], text=True, capture_output=True, timeout=5, check=True).stdout.strip()
+    _, version = native_identity(grant.get("codex_binary_sha256"))
     if version != grant.get("codex_version"):
         raise ValueError("native version changed")
     return grant
 
 
-def inherit(config, candidate_hooks, published):
+def inherit(config, candidate_hooks, published, grant=None):
     """Append verified entries only; existing target decisions always win."""
     try:
         source, target, base, state = broker_source(published)
         source_home = source / ".harness/codex"
         old_hooks = json.loads(regular(source_home / "hooks.json", source))
         new_hooks = json.loads(regular(candidate_hooks))
-        grant = approval_record(state, source, target, new_hooks, base)
+        grant = (validate_grant(grant, source, target, new_hooks, base) if grant is not None
+                 else approval_record(state, source, target, new_hooks, base))
         old_state = tomllib.loads(regular(source_home / "config.toml", source).decode()).get("hooks", {}).get("state", {})
         live_state = tomllib.loads(config).get("hooks", {}).get("state", {})
     except (OSError, ValueError, UnicodeError, KeyError, subprocess.SubprocessError):
@@ -349,3 +387,188 @@ def inherit(config, candidate_hooks, published):
     result = config.rstrip() + "\n" + "".join(entries) if entries else config
     tomllib.loads(result)
     return result
+
+
+def callback_paths(command):
+    """Byte-pinned files a hook command may call: status scripts and package callbacks."""
+    for script, argument in STATUS_SCRIPTS:
+        if command == status_command(script, argument):
+            return [Path(script.replace("$HOME", str(Path.home())))]
+    return [Path(token) for token in shlex.split(command) if Path(token).name in PACKAGE_CALLBACKS]
+
+
+def native_decisions(home, target, profile, hooks):
+    """Every hook needs a trusted, enabled native decision equal to its generated hash."""
+    text = regular(home / f"{profile}.config.toml", target).decode()
+    decided = tomllib.loads(text).get("hooks", {}).get("state", {})
+    evidence = {}
+    for event, groups in hooks.get("hooks", {}).items():
+        for gi, group in enumerate(groups):
+            if set(group) - {"hooks", "matcher"}:
+                raise ValueError("unsupported hook group")
+            for hi, handler in enumerate(group["hooks"]):
+                expected = fingerprint(event, group.get("matcher"), handler)
+                key = f"{home / 'hooks.json'}:{EVENTS[event]}:{gi}:{hi}"
+                decision = decided.get(key)
+                if (not isinstance(decision, dict) or decision.get("trusted_hash") != expected or
+                        decision.get("enabled", True) is not True):
+                    raise ValueError(f"no trusted enabled native decision for {EVENTS[event]}:{gi}:{hi} in {profile}")
+                evidence[key] = {"trusted_hash": expected, "enabled": True}
+    if not evidence:
+        raise ValueError("no command hooks to record")
+    return evidence
+
+
+def build_grant(published, profile):
+    if profile not in PROFILE_NAMES:
+        raise ValueError("unknown profile")
+    source, target, base, state = broker_source(published)
+    if published != target / ".harness/codex":
+        raise ValueError("not the session codex home")
+    raw = regular(published / "hooks.json", target)
+    hooks = json.loads(raw)
+    evidence = native_decisions(published, target, profile, hooks)
+    commands = [handler["command"] for groups in hooks["hooks"].values() for group in groups for handler in group["hooks"]]
+    callbacks = {str(path): hashlib.sha256(regular(path)).hexdigest()
+                 for command in commands for path in callback_paths(command)}
+    scripts = {}
+    for relative in sorted({m.group(1).lstrip("/") for command in commands for m in root_pattern(target).finditer(command)}):
+        digest = hashlib.sha256(regular(target / relative, target)).hexdigest()
+        if digest != hashlib.sha256(git_output(target, "show", f"{base}:{relative}")).hexdigest():
+            raise ValueError(f"script differs from the session snapshot: {relative}")
+        scripts[relative] = {"sha256": digest, "base_blob_sha256": digest}
+    grant = {"schema_version": 1, "source": str(source), "algorithm": ALGORITHM,
+             "approved_snapshot": {"base_sha": base, "audit_raw_hooks_sha256": hashlib.sha256(raw).hexdigest()},
+             "normalization": NORMALIZATION, "callbacks": callbacks, "scripts": scripts}
+    grant["hooks"] = normalized_hooks(hooks, target, source, grant)
+    grant["normalized_hooks_sha256"] = hooks_digest(grant["hooks"])
+    grant["codex_binary_sha256"], grant["codex_version"] = native_identity()
+    evidence_doc = {"native_decisions": evidence, "profile": profile, "source": str(source), "base_sha": base,
+                    "normalized_hooks_sha256": grant["normalized_hooks_sha256"],
+                    "codex_binary_sha256": grant["codex_binary_sha256"], "codex_version": grant["codex_version"]}
+    grant["approval_evidence"] = evidence_doc  # audit only: reads do not enforce it
+    grant["approval_receipt_sha256"] = hashlib.sha256(
+        json.dumps(evidence_doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    validate_grant(grant, source, target, hooks, base)
+    # Dry-run the launcher's own inheritance: a record that carries nothing is refused.
+    inherited = tomllib.loads(inherit("", published / "hooks.json", published, grant)).get("hooks", {}).get("state", {})
+    if not inherited:
+        raise ValueError("record would inherit no hook: the canonical source home has no matching trusted decision")
+    summary = {"source": str(source), "session_id": os.environ["HARNESS_SESSION_ID"], "profile": profile,
+               "base_sha": base, "hooks": len(evidence), "inheritable_hooks": len(inherited),
+               "scripts": len(scripts), "callbacks": sorted(Path(p).name for p in callbacks),
+               "codex_version": grant["codex_version"], "codex_binary_sha256": grant["codex_binary_sha256"],
+               "approval_receipt_sha256": grant["approval_receipt_sha256"]}
+    return state, source, grant, summary
+
+
+def write_private(directory, name, data):
+    """Create `name` atomically with mode 0600; never follows or overwrites a link."""
+    temp = directory / f".{name}.tmp-{uuid.uuid4().hex}"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, directory / name)
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def confirm_on_tty(grant, summary):
+    """The operator, not the session, approves: show the exact hooks on the controlling terminal."""
+    try:  # like getpass: Linux cannot open /dev/tty with mode "r+"
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError as error:
+        raise ValueError("capture needs the operator's interactive terminal") from error
+    with io.TextIOWrapper(io.FileIO(fd, "r+"), encoding="utf-8") as tty:
+        tty.write(json.dumps({"hooks": grant["hooks"], "scripts": grant["scripts"], "callbacks": grant["callbacks"],
+                              "record": summary["record"]}, indent=2, sort_keys=True) + "\n")
+        tty.write("Record these exact hooks as approved for every fresh isolated session? Type 'record': ")
+        tty.flush()
+        return tty.readline().strip() == "record"
+
+
+def capture(published, profile="base", dry_run=False, confirm=None):
+    try:
+        state, source, grant, summary = build_grant(Path(published), profile)
+    except (OSError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
+        raise ValueError(f"unreadable or unsupported evidence: {error}") from error
+    directory = state / "hook-approvals"
+    name = hashlib.sha256(str(source).encode()).hexdigest() + ".json"
+    summary["record"] = str(directory / name)
+    summary["replaces_existing"] = os.path.lexists(directory / name)
+    if dry_run:
+        return summary
+    # The session can write its own profile, so its native decision is evidence, not approval.
+    if confirm is not None and not confirm(grant, summary):
+        raise ValueError("the operator did not confirm the hook set")
+    try:
+        os.mkdir(directory, 0o700)
+    except FileExistsError:
+        pass
+    info = os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("hook-approvals is not a private directory (owner-only 0700, not a link)")
+    if summary["replaces_existing"]:
+        previous = regular(directory / name, state, private=True)
+        write_private(directory, f"{name}.bak-{time.time_ns()}", previous)
+        for old in sorted(directory.glob(f"{name}.bak-*"))[:-KEEP_BACKUPS]:
+            old.unlink(missing_ok=True)
+    write_private(directory, name, (json.dumps(grant, indent=2, sort_keys=True) + "\n").encode())
+    return summary
+
+
+SESSION_ENV = ("HARNESS_SESSION_ID", "HARNESS_SESSION_ROOT", "HARNESS_SOURCE_ROOT", "HARNESS_SESSION_STATE_HOME")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="codex-hook-trust.py", description=__doc__.split("\n\n")[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    cap = commands.add_parser("capture", help="record the owner's native approval for the session's hook set")
+    cap.add_argument("--session-id", required=False, help="open launcher session UUID (required)")
+    cap.add_argument("--state-home", help="launcher session state directory")
+    cap.add_argument("--profile", default="base", choices=sorted(PROFILE_NAMES), help="native profile holding the approval")
+    cap.add_argument("--dry-run", action="store_true", help="print what would be recorded; write nothing")
+    args = parser.parse_args(argv)
+    sandboxed = any(key.startswith("CODEX_SANDBOX") for key in os.environ)
+    inherited = any(key in os.environ for key in SESSION_ENV[:3])
+    if sandboxed or inherited:
+        print("codex-hook-trust: refused: capture must be operator-run from a shell outside any session; "
+              "an agent must never run it", file=sys.stderr)
+        return 1
+    saved = {key: os.environ.get(key) for key in SESSION_ENV}
+    try:
+        if not args.session_id:
+            raise ValueError("pass --session-id UUID explicitly; the session is never taken from the environment")
+        args.session_id = str(uuid.UUID(args.session_id))
+        if args.state_home:
+            os.environ["HARNESS_SESSION_STATE_HOME"] = args.state_home
+        state = state_home()
+        os.environ["HARNESS_SESSION_ID"] = args.session_id
+        os.environ["HARNESS_SESSION_ROOT"] = str(state / "worktrees" / args.session_id)
+        os.environ["HARNESS_SOURCE_ROOT"] = regular(state / "sessions" / args.session_id / "source-root", state).decode().strip()
+        summary = capture(Path(os.environ["HARNESS_SESSION_ROOT"]) / ".harness/codex", args.profile, args.dry_run,
+                          confirm=confirm_on_tty)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        print(f"codex-hook-trust: {'refused' if isinstance(error, ValueError) else 'failed'}: {error}", file=sys.stderr)
+        return 1
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    print(("DRY RUN: nothing written\n" if args.dry_run else "recorded\n") + json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
