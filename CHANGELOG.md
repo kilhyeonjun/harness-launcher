@@ -19,7 +19,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
   (`omp --session-new`/`--session-resume`). The continuation now sets
   `HARNESS_SESSION_ID`/`HARNESS_SOURCE_ROOT`/`HARNESS_SESSION_ROOT`/
   `HARNESS_RUN_DIR` from its own session record (run dir = retained cwd);
-  before, the native OMP received none of the four.
+  before, the native OMP received none of the four, or a caller's exported
+  tuple from another session.
 - `harness-session create` works through the Homebrew command link again.
   The engine looked for its helpers beside the invoked link
   (`<prefix>/bin`) instead of beside its target in

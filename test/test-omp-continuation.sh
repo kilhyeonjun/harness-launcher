@@ -343,7 +343,7 @@ class ContinuationTests(unittest.TestCase):
         helper.write_text('raise RuntimeError("MUST_NOT_IMPORT")\n');helper.chmod(0o400)
         self.context(2)
 
-    def public_shell(self, tail, expected):
+    def public_shell(self, tail, expected, extra_env=None):
         # Public alias-layer fixture only. The required real Entry composition
         # is separate and cannot be replaced by this seeded-kernel fixture.
         script='''source "$1"
@@ -359,7 +359,8 @@ _harness_launcher_run "$@"
         env={'HOME':str(self.home),'PATH':self.preparation_path,'LC_ALL':'C','TERM':'dumb',
              'HARNESS_SESSION_STATE_HOME':str(self.state),'FIXTURE_PYTHON':sys.executable,
              'FIXTURE_EVENTS':str(self.events),'HARNESS_CLAUDE_PLUGIN_MIRROR':'0',
-             'HARNESS_POST_EDIT_CODEX_SYNC':'0','HARNESS_POST_COMMIT_CODEX_SYNC':'0','TMPDIR':str(self.base)}
+             'HARNESS_POST_EDIT_CODEX_SYNC':'0','HARNESS_POST_COMMIT_CODEX_SYNC':'0','TMPDIR':str(self.base),
+             **(extra_env or {})}
         self.assertEqual(self.binary.parent,self.base)
         self.assertTrue(self.binary.read_text().startswith('#!'+sys.executable+' -I'))
         self.assertEqual((self.snapshot/'bin/harness_omp_continuation.py').read_bytes(),
@@ -447,7 +448,10 @@ raise SystemExit(EXIT_CODE)
         self.assertEqual(len(calls),1);self.assertEqual(calls[0]['argv'],['--print',*required,'--session-dir',str(self.sessions),'--',prompt])
         self.assertEqual(calls[0]['cwd'],str(self.work));self.assertEqual(calls[0]['held'],[True,True])
         self.assertEqual(self.events.read_text(),'finish\n')
-        self.public_shell(['--session-resume',self.h,'--print','--',prompt],0)
+        # A caller's exported tuple from another session must not reach native OMP.
+        hostile={'HARNESS_SESSION_ID':'00000000-0000-4000-8000-000000000000','HARNESS_SOURCE_ROOT':str(self.base),
+                 'HARNESS_SESSION_ROOT':str(self.base),'HARNESS_RUN_DIR':str(self.base)}
+        self.public_shell(['--session-resume',self.h,'--print','--',prompt],0,hostile)
         calls=[json.loads(x) for x in self.calls.read_text().splitlines()]
         native=str(self.sessions/'fixture_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.jsonl')
         self.assertEqual(calls[1]['argv'],['--print',*required,'--session-dir',str(self.sessions),'--resume',native,'--',prompt])
