@@ -232,14 +232,6 @@ class Consumers(FixtureCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('Ran ' + str(count) + ' tests', result.stderr)
         stderr = result.stderr
-        if name == 'test-omp-continuation.sh' and not any(
-                flag in argv for flag in ('--native-source', '--native-bun')):
-            skipped = ("test_MM4_actual_cold_resume_refuses_before_ledger_transition "
-                       "(__main__.ContinuationTests) ... skipped "
-                       "'explicit accepted MM3 source/Bun integration input required'")
-            self.assertEqual(stderr.count(skipped), 1, stderr)
-            self.assertTrue(stderr.rstrip().endswith('OK (skipped=1)'), stderr)
-            stderr = stderr.replace(skipped, '').replace('OK (skipped=1)', 'OK')
         self.assertTrue(stderr.rstrip().endswith('OK'), result.stderr)
         self.assertNotIn('skipped=', stderr)
         if name == 'test-omp-required-loading.sh':
@@ -253,14 +245,14 @@ class Consumers(FixtureCase):
                            'test_D_origin_mount_at_parent_is_refused_per_field']:
                 self.assertIn(oracle, result.stderr)
 
-    def test_direct_continuation_default_runs_all_37(self):
-        self.suite('test-omp-continuation.sh', 37, False)
+    def test_direct_continuation_default_runs_all_34(self):
+        self.suite('test-omp-continuation.sh', 34, False)
 
     def test_direct_required_default_runs_all_9(self):
         self.suite('test-omp-required-loading.sh', 9, False)
 
-    def test_direct_continuation_explicit_runs_all_37(self):
-        self.suite('test-omp-continuation.sh', 37, True)
+    def test_direct_continuation_explicit_runs_all_34(self):
+        self.suite('test-omp-continuation.sh', 34, True)
 
     def test_direct_required_explicit_runs_all_9(self):
         self.suite('test-omp-required-loading.sh', 9, True)

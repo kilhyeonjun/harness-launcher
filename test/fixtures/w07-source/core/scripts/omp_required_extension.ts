@@ -64,7 +64,7 @@ const GATE_ONLY = ['path', 'paths', '_path']; // native event input adds these t
 const unset = (v: unknown) => v === undefined || v === null || v === false ||
   (typeof v === 'string' && !v.trim()) || (Array.isArray(v) && !v.length);
 function absPath(cwd: string, p: unknown) {
-  // The fork strips a leading '@' or ':' and maps a bare '/' to cwd; newlines split path lists. Refuse, never resolve.
+  // Native strips a leading '@' or ':' and maps a bare '/' to cwd; newlines split path lists. Refuse, never resolve.
   requireValue(typeof p === 'string' && !!p.trim() && !p.includes('\0') && !p.includes('\n') && !p.startsWith('~') &&
     !/^[@:]/.test(p) && p !== '/' && !/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(p), 'PATH_INPUT');
   return resolve(cwd, p);
@@ -123,7 +123,7 @@ function semantic(tool: string, raw: RecordValue, ctx: Context, writeOps?: Map<s
       extra: { effects: [{ kind: 'file_change', path, op, after: raw.content, after_source: 'native', tool: 'write' }] } };
   }
   if (tool === 'read') {
-    only(['path'], 'READ_INPUT');  // fork readSchema has only `path`; selectors ride inline
+    only(['path'], 'READ_INPUT');  // native readSchema has only `path`; selectors ride inline
     requireValue(typeof raw.path !== 'string' || !/[;"]/.test(raw.path), 'READ_PATH_FORM');
     const path = absPath(ctx.cwd, typeof raw.path === 'string' ? raw.path.replace(SELECTOR, '') : raw.path);
     return { name: 'Read', input: { file_path: path }, extra: { effects: [{ kind: 'read', paths: [path] }] } };
@@ -252,7 +252,8 @@ export function registerRequired(api: API, services: Services) {
       }, manifest!.bridge_total_timeout_ms);
     } catch (error) { writeOps.delete(event?.toolCallId); return deny(error); }
   });
-  api.on('session_start', async (_event, ctx) => {
+  // Upstream emits session_switch for /new, /resume and /fork: rebind and rerun startup policy, never halt.
+  async function start(ctx: Context) {
     ready = false; clearContext(); observedResults.clear(); writeOps.clear();
     try {
       manifest = freeze(copy(services.load()));
@@ -272,7 +273,9 @@ export function registerRequired(api: API, services: Services) {
       ready = false; clearContext();
       notice(ctx, 'session_start', error, `${denial(error).reason}; every tool call is denied in this session`);
     }
-  });
+  }
+  api.on('session_start', async (_event, ctx) => start(ctx));
+  api.on('session_switch', async (_event, ctx) => start(ctx));
   api.on('input', async (event, ctx) => {
     pendingPrompt = undefined; promptContext = [];
     if (!ready) return {};
@@ -330,15 +333,6 @@ export function registerRequired(api: API, services: Services) {
   api.on('user_python', async (_event, _ctx) => ({ result: {
     output: 'OMP_REQUIRED_UNSUPPORTED_USER_PYTHON_MAPPING', exitCode: 2, cancelled: true, truncated: false,
   } }));
-  api.on('resources_discover', async (_event, ctx) => {
-    try {
-      // Resources are discovered while native builds the session, before its
-      // session_start event. Static loading never opens the tool readiness latch.
-      if (!manifest) manifest = freeze(copy(services.load()));
-      requireValue(!closed && manifest.schema === 1 && manifest.runtime === 'omp', 'RESOURCE_SELECTION');
-      return { skillPaths: manifest!.selected_skills.map((s: RecordValue) => resolve(manifest!.bundle_dir, s.path)) };
-    } catch (error) { notice(ctx, 'resources_discover', error); return { skillPaths: [] }; }
-  });
   api.on('tool_result', async (event, ctx) => {
     if (!ready) return;
     try {
@@ -365,7 +359,11 @@ export function registerRequired(api: API, services: Services) {
       await deadline(s => hooks('Stop', payload(event, ctx, 'Stop'), s, false, claudeParity(ctx, 'session_stop')),
         manifest!.bridge_total_timeout_ms);
       return {};
-    } catch (error) { notice(ctx, 'session_stop', error); return blocks(error) ? deny(error) : {}; }
+    } catch (error) {
+      notice(ctx, 'session_stop', error);
+      // Upstream SessionStopEventResult: a block decision continues the session with the reason.
+      return blocks(error) ? { decision: 'block', reason: denial(error).reason } : {};
+    }
   });
   api.on('session_shutdown', async (event, ctx) => {
     ready = false; closed = true; clearContext(); observedResults.clear();
@@ -485,7 +483,7 @@ export default function requiredExtension(api: API) {
           return parsed.input;
         };
       }
-      return { ...loaded, bundle_dir: bundleDir };
+      return loaded;
     },
     async run(h, p, signal) {
       const path = resolve(loaded.source_root, h.script);

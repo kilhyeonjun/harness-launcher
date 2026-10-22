@@ -11,6 +11,7 @@ WORKLOADS = {
     "memory", "commit", "vision", "judge", "advisor",
 }
 SELECTORS = {"G": "openai-codex/gpt-6.1-sol", "O": "anthropic/claude-opus-5-5"}
+MODEL_KIND_ROLES = {"judge"}
 
 
 def require(condition, message):
@@ -65,7 +66,8 @@ def expand_model_mode(spec: dict, mode: str) -> dict:
             "agent intent must be reviewer or worker")
     g, o = SELECTORS["G"], SELECTORS["O"]
     return {
-        "modelRoles": {name: f"{models[intent]}:{effort}"
+        # Model-kind roles (judge) take no chat thinking suffix.
+        "modelRoles": {name: models[intent] if name in MODEL_KIND_ROLES else f"{models[intent]}:{effort}"
                        for name, (intent, effort) in spec["workloads"].items()},
         "task": {"agentModelOverrides": {agent: aliases[intent]
                                          for agent, intent in spec["named_agent_roles"].items()}},

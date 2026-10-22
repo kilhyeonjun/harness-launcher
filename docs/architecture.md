@@ -316,7 +316,11 @@ handle's single eligible session file. The native itself holds
 the launcher's lease alone would free a handle whose native outlived a killed
 launcher); RESUME refuses `OMP_CONTINUATION_BUSY` while it is held.
 herdr's bare `harness-exec <harness> omp --session-resume H --` names its own
-session; no caller cwd is injected. Origin matching ignores provenance that
+session; no caller cwd is injected. The installed Entry resumes a session with its
+bound runtime; `harness_omp_continuation.py --rebind-runtime <state> <source> W`,
+run from the current selected snapshot (verified via `current.json` and the
+manifest), rewrites `bindings/W.json` to that snapshot under the Entry's binding
+lock and the free workspace/native locks, for the same source only. Origin matching ignores provenance that
 changes across launcher releases and binary upgrades (runtime pin, manifest,
 binding bytes, binary and namespace marker SHA, lock size/times); a binding may
 name any launcher release under the same launcher-runtimes root. No automatic
@@ -354,11 +358,8 @@ The selection is schema 1 with `runtime_version` set to the enrolled upstream
 binary's release version and no fork contract fields. Release metadata is a
 shape check only; rows published for the retired fork stay readable so one
 stale row cannot block the shared enrollment state. No config repair is performed.
-The private `validate-required-prepared(source, consumer, workspace, B, N,
-bundle_manifest)` helper verb re-derives canonical expectations under real current
-selection and checks existing assets without writing or running native. Native
-must verify the managed launcher/current/helper/interpreter closure before it
-invokes that helper; a manifest-named executable or locator is not trusted by itself.
+The retired readonly `validate-required-prepared` helper verb had no production
+caller and is removed; a manifest-named executable or locator is not trusted by itself.
 
 Actual inventory admission belongs to the native producer: original resolver,
 full settings/filter/collision semantics, exact tuple multiset and actual raw byte
@@ -1553,12 +1554,12 @@ interpreter basename and exit status), retaining original child streams, status,
 fail-fast behavior, skip policy and success accounting. Metadata is emitted only
 after a child returns nonzero; external interruption or unavailable logs may still
 leave the actual internal failure unobserved. No guard or assertion is relaxed.
-Required-loading scopes this preparation PATH across its entry child, in-process
-readonly revalidation and CLI validator for the fixture lifetime. Cleanup restores
+Required-loading scopes this preparation PATH across its entry child and
+in-process checks for the fixture lifetime. Cleanup restores
 the caller environment; the validation assertions and production guards are unchanged.
 
 The standard ephemeral GitHub-hosted `macos-15` job has a CI-only prerequisite
-between Homebrew installation and the unchanged strict jq proof. The dedicated
+between Homebrew installation and the regression suites. The dedicated
 `test/omp-ci-owned-homebrew.py` requires consistent `GITHUB_ACTIONS=true`,
 `RUNNER_ENVIRONMENT=github-hosted` and `RUNNER_OS=macOS` fields inside that trusted
 job. These fields do not authenticate a local machine; this is never a personal
@@ -1583,67 +1584,17 @@ promised. Synthetic tests cover owned trees and injected uid/race/error
 observations; actual hosted prerequisite admission and remaining dependency
 ancestors still require new-source CI evidence. This adds no native/model proof.
 
-The portable `test/omp-real-jq-binding.py` derives its source root from its actual
-file location and reuses the admitted continuation fixture and unchanged
-production dependency preparation. Its ordinary mode accepts truthful system
-binding; its unchanged `--require-non-system` mode requires no jq in the
-unmodified `/usr/bin:/bin` search and a physical parent outside those directories.
-Both modes check whole jq bytes, all manifest bindings, a real synthetic query
-and native calls 0. A system host still strictly returns
-`REFUSED/NON_SYSTEM_JQ_REQUIRED`, exit 2; this is not a fallback PASS.
-
-CI's `test/omp-jq-ci-proof.py` checks a frozen, public-safe P1 evidence
-capsule at `test/fixtures/omp-jq-v2-p1-evidence.json` and nine whole source pins.
-Job 119376390928 at `6b23344f88c7cd4cdc948f618997c9ffed73c477` actually
-proved non-system selection/manifest/query/native0 on `macos-14`, with ordinary
-and strict calls to the unchanged inspector and identical source pins before
-and after both calls. This satisfies the historical actual-evidence condition
-for this exact source closure. The earlier P1 and actual093 capsules remain
-in Git history as evidence for their original sources; they cannot prove this
-changed source closure.
-
-The v2 capsule pins actual job/head, whole-log and observation-line digests.
-Its `source_receipt_sha256` hashes UTF-8 JSON of `{head, source_pins}` with sorted
-keys and compact separators. This is a source receipt, not the prior capsule's
-root approval receipt. Private preparation paths, dependency lists and raw
-logs/auth are excluded from the public capsule. Source changes fail historical
-reuse, not silently refresh it.
-
-To renew evidence after a source change, use a temporary evidence-only job in
-the existing workflow on the reviewed branch. Preserve all normal CI jobs.
-Run the original ordinary and strict inspector on an actual non-system host,
-require both passes and unchanged before/after source pins, and retain the actual
-job log before creating a new frozen capsule and exact verifier pins. Never
-remove or hide system jq, replace its locator, or relabel a system refusal as a
-non-system pass. A capture job proves only that observation, not whole-CI success;
-remove the temporary job and require the normal complete CI on the final source.
-
-After pure `test/test_omp_jq_ci_proof.py`, each current CI runs the original
-inspector ordinarily then strictly, without a shell or retry. Actual system
-binding requires strict exit2 with the exact refusal and is honestly reported
-`SYSTEM/REFUSAL_VERIFIED/current_non_system_physical_proof=false`. Actual
-non-system binding requires ordinary and strict exit0/PASS and is reported
-`NON_SYSTEM/FALLBACK_VERIFIED/true`. Every result retains exact types,
-selected/physical/hash/manifest/query/native0/copy=false/replacement=false checks;
-selected tool facts must be stable across calls. Historical and current host
-binary hashes need not equal. Ordinary failure short-circuits strict; all
-unexpected output, stderr, exceptions, timeout and mismatch fail closed.
-Only bounded statuses/digests are logged. Each stream has an 8192-byte
-accepted-output limit and each call a 60-second timeout, without a streaming
-memory or process-descendant containment claim. Source4, guards, native env,
-owned permissions, original syntax/docs/full suites and 20-minute job remain
-unchanged. No assertion or oracle is skipped. The old per-job fallback-host
-requirement is explicitly replaced by this historical-plus-current-branch
-contract; neither historical evidence nor pure tests prove a new whole-CI PASS.
-Root still requires normal actual CI before merge/release/install.
+The source-bound jq CI evidence pin (inspector, validator and frozen capsules)
+was retired with the local OMP fork on 2026-10-22 because it pinned fork-era
+sources. The runtime jq dependency checks remain.
 
 ## CI regression partition
 
 `./test/run-all.sh` without arguments still executes the full suite in its
 original order, with declared interpreters, source admission, environment,
 conditional skips and first-error status preserved. The current partition keeps
-all 143 existing suite invocations and adds the public-dispatch wrapper (144
-total). The four preservation suites count toward coverage even though the old
+every suite invocation in order (145 total, including the public-dispatch wrapper
+and the OMP continuation-recovery suite). The four preservation suites count toward coverage even though the old
 summary did not increment its passed counter for them.
 
 CI reuses that inventory and executor through
@@ -1660,7 +1611,7 @@ New default shell and Python entries remain covered by the same inventory; no
 independent CI allowlist may silently omit them. Each group runs serially on an
 independent `macos-15` job with its own checkout, home and temporary state and a
 20-minute limit. Every regression job retains the same pinned checkout, runtime
-bootstrap, owned Homebrew tests/preparation, source-bound jq tests/proof, shell
+bootstrap, owned Homebrew tests/preparation, shell
 syntax and documentation checks. No preparation result or fixture state is
 borrowed from another job. Existing guard, native environment and negative
 oracles remain unchanged.
@@ -1692,7 +1643,3 @@ source recipe SHA. Readonly validation rederives the saved selected ID, never a
 fresh default. Installed exec rejects old current closures lacking the mode
 protocol instead of silently bypassing the default. No native version gate,
 mode check or saved-session mode peek remains.
-All four CI jobs and aggregate, all 144 scheduled invocations, DevMap/APFS,
-required locator/resources and native capability services remain in force.
-Final projection freeze including MM4 precedes one genuine jq evidence renewal;
-SOURCE_CHANGED remains HOLD until actual hosted capture and final complete CI.

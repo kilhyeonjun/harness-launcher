@@ -8,6 +8,7 @@ Trusted same-UID kernel/config state remains the existing data TCB.
 """
 import copy
 import datetime
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -519,8 +520,74 @@ def operate(value):
         raise ContinuationError() from None
 
 
+def _exclusive(path, create=False):
+    """Nonblocking exclusive lock or OMP_CONTINUATION_BUSY; returns the fd to close."""
+    fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | (os.O_CREAT if create else 0), 0o600)
+    try:
+        meta = os.fstat(fd)
+        require(stat.S_ISREG(meta.st_mode) and meta.st_uid == os.getuid() and meta.st_nlink == 1)
+        try: (fcntl.flock if create else fcntl.lockf)(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError: raise ContinuationError('OMP_CONTINUATION_BUSY') from None
+        return fd
+    except BaseException:
+        os.close(fd); raise
+
+
+def rebind_runtime(state, source, w):
+    """Point an OMP continuation's session binding at the selected runtime.
+
+    The installed Entry resumes a session with its bound runtime. Only this
+    file's own snapshot, verified as the current selection, may claim it; the
+    source must match, and the binding, workspace and native locks must be free.
+    """
+    fds = []
+    try:
+        consumer = p.physical(Path(__file__).resolve().with_name('aliases.zsh'))
+        context = current_context(source, consumer)
+        state = p.physical(state); source = p.physical(source); workspace_id(w); h = w.replace('-', '').lower()
+        runtimes = consumer.parent.parent.parent
+        current = p.decode(p.read_file(runtimes/'current.json')[0])
+        keys(current, 'version revision path manifest_sha256')
+        require(current['path'] == str(consumer.parent.parent) and current['revision'] == context['snapshot_revision'])
+        # Verify first: load_record reopens runtime.lock, and closing any fd
+        # of a file drops this process's fcntl locks on it.
+        record, record_raw, row, _ = load_record(state, source, h, consumer)
+        require(row['kernel_origin']['launcher_session_id'] == w)
+        bindings = runtimes/'bindings'; owned_directory(bindings, True)
+        path = bindings/(w.lower()+'.json')
+        bound_raw = p.read_file(path, limit=LIMIT)[0]
+        owned_directory(runtimes/'binding-locks', True)
+        fds.append(_exclusive(runtimes/'binding-locks'/(w.lower()+'.lock'), create=True))
+        fds.append(_exclusive(state/'sessions'/w/'runtime.lock'))
+        native = Path(context['namespace_path'])/'launcher-continuations'/h/'native.lock'
+        if os.path.lexists(native): fds.append(_exclusive(native))
+        require(p.read_file(record, limit=LIMIT)[0] == record_raw and
+                p.read_file(path, limit=LIMIT)[0] == bound_raw, 'OMP_CONTINUATION_STALE')
+        bound = p.decode(bound_raw)
+        require(type(bound) is dict and bound.get('source_root') == str(source))
+        value = {'source_root': str(source), 'runtime': current}
+        if bound != value:
+            # Same bytes/mode as the Entry's binding store writer.
+            temp = bindings/('.'+uuid.uuid4().hex+'.tmp')
+            fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(json.dumps(value, sort_keys=True).encode()); stream.flush(); os.fsync(stream.fileno())
+                os.replace(temp, path); p.sync_directory(bindings)
+            finally: temp.unlink(missing_ok=True)
+        return current
+    except ContinuationError: raise
+    except p.ProjectionError as exc: raise ContinuationError(exc.label) from None
+    except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        raise ContinuationError() from None
+    finally:
+        for fd in fds: os.close(fd)
+
+
 def main(argv):
     try:
+        if len(argv) == 5 and argv[1] == '--rebind-runtime':
+            sys.stdout.buffer.write(p.canonical(rebind_runtime(*argv[2:]))+b'\n'); return 0
         require(len(argv) == 3 and argv[1] == '--input-fd' and re.fullmatch('[0-9]{1,3}', argv[2]))
         fd = int(argv[2]); raw = bytearray()
         while len(raw) <= LIMIT:

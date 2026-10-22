@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Upstream-OMP continuation recovery: drift-tolerant origin, any-state resume
 # admission, herdr's bare resume argv and live-handle refusal. Fake native only.
-# Kept apart from the jq-evidence-pinned test-omp-continuation.sh.
+# Kept apart from test-omp-continuation.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARNESS_TEST_OMP_SOURCE="$(python3 -I -S -B "$ROOT/test/omp-fixture-source.py")"
@@ -81,7 +81,7 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
         for name, value in [('source-root', str(self.profile)+'\n'), ('session-root', str(self.work)+'\n'),
                             ('lease-v1', '1\n'), ('runtime.lock', '')]:
             (self.record_dir/name).write_text(value); (self.record_dir/name).chmod(0o600)
-        (self.runtime/'bindings').mkdir(mode=0o700)
+        (self.runtime/'bindings').mkdir(mode=0o700); (self.runtime/'binding-locks').mkdir(mode=0o700)
         put(self.runtime/'bindings'/(W.lower()+'.json'), {'source_root':str(self.profile),
             'runtime':json.loads((self.runtime/'current.json').read_bytes())})
         row = self.m.initial_record(str(self.state), str(self.profile), W, str(self.consumer))
@@ -229,6 +229,53 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
         self.refused(lambda: self.op('MODE_PEEK'))
         self.assertFalse(hasattr(self.projection, 'validate_model_mode_peek'))
 
+    # --- explicit runtime rebind for the installed Entry ----------------------
+    def rebind(self, snapshot, source=None):
+        return subprocess.run([sys.executable, '-I', '-S', '-B', str(snapshot/'bin/harness_omp_continuation.py'),
+            '--rebind-runtime', str(self.state), str(source or self.profile), W],
+            env={'HOME': str(self.home), 'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}, capture_output=True, timeout=30)
+
+    def test_rebind_moves_session_to_the_current_runtime_only(self):
+        self.op('NEW_PREPARE'); self.native_file()
+        bound = self.runtime/'bindings'/(W.lower()+'.json'); before = bound.read_bytes()
+        old = self.snapshot
+        self.snapshot = self.install_snapshot('c'*40); self.consumer = self.snapshot/'bin/aliases.zsh'
+        self.publish()
+        # Only the currently selected snapshot may claim the session.
+        done = self.rebind(old); self.assertEqual(done.returncode, 2)
+        self.assertNotIn(b'BUSY', done.stderr); self.assertEqual(bound.read_bytes(), before)
+        other = self.base/'other'; other.mkdir(mode=0o700)
+        self.assertEqual(self.rebind(self.snapshot, other).returncode, 2); self.assertEqual(bound.read_bytes(), before)
+        import fcntl
+        for lock in (self.record_dir/'runtime.lock',):
+            fd = os.open(lock, os.O_RDWR)
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                done = self.rebind(self.snapshot)
+                self.assertEqual(done.returncode, 2); self.assertIn(b'OMP_CONTINUATION_BUSY', done.stderr)
+            finally: os.close(fd)
+        self.assertEqual(bound.read_bytes(), before)
+        done = self.rebind(self.snapshot)
+        self.assertEqual(done.returncode, 0, done.stderr.decode())
+        current = json.loads((self.runtime/'current.json').read_bytes())
+        self.assertEqual(json.loads(bound.read_bytes()), {'source_root': str(self.profile), 'runtime': current})
+        # The installed Entry's own encoding and private mode.
+        self.assertEqual(bound.read_bytes(), json.dumps({'source_root': str(self.profile), 'runtime': current}, sort_keys=True).encode())
+        self.assertEqual(bound.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.rebind(self.snapshot).returncode, 0)
+        # The installed Entry's helper calls against the newly bound runtime.
+        def load(name):
+            spec = importlib.util.spec_from_file_location('entry_'+name, self.snapshot/'bin'/name)
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); return module
+        cont, proj = load('harness_omp_continuation.py'), load('harness_omp_projection.py')
+        self.assertIsNotNone(cont.request(['omp', '--session-resume', H, '--']))
+        cont.current_context(self.profile, self.consumer)
+        row = cont.resolve(self.state, self.profile, H, self.consumer)
+        self.assertEqual((row['status'], row['launcher_session_id']), ('PENDING', W))
+        artifact, values, check = proj.model_mode_request(str(self.profile), ['--session-resume', H, '--'])
+        self.assertEqual((artifact, check), (None, False))
+        self.assertEqual(self.op('RESUME_ADMIT')['status'], 'IN_FLIGHT')
+
     # --- public herdr resume argv and live-handle refusal ---------------------
     def public_fixture(self):
         def source_file(name, body):
@@ -268,6 +315,52 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
 
     def native_calls(self):
         return [json.loads(x) for x in self.calls.read_text().splitlines()] if self.calls.exists() else []
+
+    def test_installed_entry_model_mode_plan_admits_new_explicit_and_resume(self):
+        # Verbatim body of the harness's installed Entry omp_model_mode_plan (core/scripts/herdr_launcher_entry.py);
+        # only the store and helper loader are stubbed to the snapshot under test.
+        self.public_fixture()
+        snapshot, test = self.snapshot, self
+        class OpsError(Exception): pass
+        class Store:
+            def verify(self, pin): return pin
+            def selected(self): return {'path': str(snapshot), 'revision': 'a'*40, 'version': '0.77.0'}
+        class Entry:
+            store = Store()
+            def runtime_helper(self, pin, name):
+                spec = importlib.util.spec_from_file_location('entry_helper', Path(pin['path'])/'bin'/name)
+                module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); return module
+            def omp_model_mode_plan(self,source,args,pin,env):
+                tail=list(args);offset=2 if tail[:1]==['--cwd'] else 0
+                if tail[offset:offset+1]==['--isolated-session']:offset+=2
+                elif tail[offset:offset+1] in (['--isolated'],['--no-isolated']):offset+=1
+                if tail[offset:offset+1]!=['omp']:return None
+                words=tail[offset+1:]
+                controls=words[:words.index('--')] if '--' in words else words
+                present=os.path.lexists(source/'.claude/source/omp-model-modes.json')
+                explicit=any(s.split('=',1)[0] in ('--model-mode','--model-mode-check') for s in controls)
+                if not present and not explicit:return None
+                if not explicit and words[:1] in (['--help'],['--version'],['login'],['models']):return None
+                try:
+                    pin=self.store.verify(pin) if pin is not None else self.store.selected()
+                    helper=self.runtime_helper(pin,'harness_omp_projection.py')
+                    artifact,_,check=helper.model_mode_request(str(source),words)
+                    if check:
+                        env.update(HARNESS_LAUNCHER_RUNTIME_REVISION=pin['revision'],
+                                   HARNESS_LAUNCHER_RUNTIME_VERSION=pin['version'])
+                        return {'legacy':False,'runtime':pin,'env':env,
+                                'argv':[str(Path(pin['path'])/'bin/harness-exec'),str(source),*args]}
+                    if artifact is not None:
+                        helper.model_mode_admit(str(source),str(Path(pin['path'])/'bin/aliases.zsh'),artifact)
+                except (OSError,ValueError,TypeError,KeyError,AttributeError) as exc:
+                    raise OpsError('OMP_MODEL_MODE_UNSUPPORTED: '+str(exc)) from None
+                return None
+        entry = Entry()
+        for args in (['omp'], ['omp', '--model-mode', 'gpt-only'], ['omp', '--session-resume', H, '--']):
+            with self.subTest(args=args):
+                self.assertIsNone(entry.omp_model_mode_plan(self.profile, args, None, {}))
+        with self.assertRaises(Exception):
+            entry.omp_model_mode_plan(self.profile, ['omp', '--model-mode', 'foreign'], None, {})
 
     def test_herdr_bare_resume_of_pending_record_uses_default_mode_overlay(self):
         self.public_fixture(); self.op('NEW_PREPARE'); native = self.native_file()

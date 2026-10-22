@@ -13,11 +13,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO = Path(sys.argv.pop(1))
-NATIVE_SOURCE = NATIVE_BUN = None
-if '--native-source' in sys.argv:
-    i = sys.argv.index('--native-source'); NATIVE_SOURCE = Path(sys.argv.pop(i+1)); sys.argv.pop(i)
-if '--native-bun' in sys.argv:
-    i = sys.argv.index('--native-bun'); NATIVE_BUN = Path(sys.argv.pop(i+1)); sys.argv.pop(i)
 def digest(p): return hashlib.sha256(p.read_bytes()).hexdigest()
 def encoded(v): return json.dumps(v, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
 def put(p, v, mode=0o600): p.write_bytes(encoded(v)); p.chmod(mode)
@@ -184,33 +179,6 @@ class ContinuationTests(unittest.TestCase):
         return path
 
 
-    def test_MM4_readonly_peek_selection_preserves_ready_record_and_native_bytes(self):
-        self.kernel();self.op('NEW_PREPARE');native=self.native_file();self.op('FINALIZE',0)
-        before=(self.record.read_bytes(),native.read_bytes(),self.record.stat().st_mtime_ns)
-        selected=self.op('MODE_PEEK')
-        self.assertEqual(selected['status'],'READY')
-        self.assertEqual(selected['native_path'],str(native))
-        self.assertEqual(before,(self.record.read_bytes(),native.read_bytes(),self.record.stat().st_mtime_ns))
-        self.assertFalse(self.calls.exists())
-
-    def test_MM4_peek_binding_mismatch_unknown_legacy_invalid_stop_without_mutation(self):
-        self.kernel();self.op('NEW_PREPARE');native=self.native_file();self.op('FINALIZE',0)
-        mode='gpt-only';recipe='b'*64
-        good={'schema':'omp.session-model-mode.peek.v1','status':'bound',
-              'binding':{'mode_id':mode,'recipe_sha256':recipe},'snapshot_sha256':digest(native)}
-        before=(self.record.read_bytes(),native.read_bytes())
-        self.projection.validate_model_mode_peek(encoded(good),mode,recipe)
-        for bad in ({**good,'status':'legacy','binding':None},
-                    {**good,'status':'invalid','binding':None},
-                    {**good,'binding':{'mode_id':'opus-only','recipe_sha256':recipe}},
-                    {**good,'binding':{'mode_id':mode,'recipe_sha256':'c'*64}},
-                    {**good,'snapshot_sha256':None},{**good,'extra':True}):
-            with self.subTest(bad=bad):
-                with self.assertRaises(self.projection.ProjectionError):
-                    self.projection.validate_model_mode_peek(encoded(bad),mode,recipe)
-                self.assertEqual(before,(self.record.read_bytes(),native.read_bytes()))
-                self.assertFalse(self.calls.exists())
-
     def test_MM4_mode_flags_in_continuation_are_lexical_and_duplicate_rejected(self):
         m=self.continuation()
         parsed=m.request(['omp','--model-mode','gpt-only','--session-new','--','--model-mode opus-only'])
@@ -284,11 +252,20 @@ class ContinuationTests(unittest.TestCase):
         with self.assertRaises(self.m.ContinuationError):self.op('FINALIZE',0)
         self.assertEqual(json.loads(self.record.read_bytes())['status'],'BLOCKED')
 
-    def test_C22_unknown_terminal_is_not_resumable_or_retried(self):
-        self.kernel();self.op('NEW_PREPARE');self.native_file();self.op('FINALIZE',0)
+    def test_C22_unknown_terminal_is_retained_and_resumable_only_without_a_live_native(self):
+        self.public_fixture();self.public_shell(['--session-new','--print','--','one'],0)
         self.op('RESUME_ADMIT');before=self.record.read_bytes()
         self.assertEqual(self.op('FINALIZE',None)['status'],'IN_FLIGHT');self.assertEqual(self.record.read_bytes(),before)
-        with self.assertRaises(self.m.ContinuationError):self.m.resolve(str(self.state),str(self.profile),self.h,str(self.consumer))
+        self.assertEqual(self.m.resolve(str(self.state),str(self.profile),self.h,str(self.consumer))['status'],'IN_FLIGHT')
+        # A live native holds its handle's native.lock: resume refuses before any transition.
+        fd=os.open(self.slot/'native.lock',os.O_RDWR)
+        try:
+            fcntl.lockf(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            done=self.public_shell(['--session-resume',self.h,'--print','--','two'],2)
+            self.assertIn(b'OMP_CONTINUATION_BUSY',done.stderr);self.assertEqual(self.record.read_bytes(),before)
+        finally:os.close(fd)
+        self.public_shell(['--session-resume',self.h,'--print','--','two'],0)
+        self.assertEqual(json.loads(self.record.read_bytes())['status'],'READY')
 
     def test_C12_C23_retired_workspace_not_recreated(self):
         self.kernel(); self.work.rmdir()
@@ -336,7 +313,11 @@ class ContinuationTests(unittest.TestCase):
             self.m.inspect_native(self.sessions,self.work)
 
     def test_C08_C09_changed_origin_binding_and_helper_cannot_be_admitted(self):
-        self.kernel();row=json.loads(self.record.read_bytes());row['kernel_origin']['binary_sha256']='0'*64;put(self.record,row)
+        # A binary upgrade is volatile provenance; a foreign origin marker is not.
+        self.kernel();good=self.record.read_bytes()
+        row=json.loads(good);row['kernel_origin']['binary_sha256']='0'*64;put(self.record,row)
+        self.m.load_record(str(self.state),str(self.profile),self.h,str(self.consumer))
+        row=json.loads(good);row['kernel_origin']['source_root_marker_sha256']='0'*64;put(self.record,row)
         with self.assertRaises(self.m.ContinuationError):self.op('NEW_PREPARE')
         helper=self.snapshot/'bin/harness_omp_continuation.py';helper.chmod(0o600)
         helper.write_text('raise RuntimeError("MUST_NOT_IMPORT")\n');helper.chmod(0o400)
@@ -368,7 +349,7 @@ _harness_launcher_run "$@"
         self.assertEqual(done.returncode,expected,done.stderr.decode())
         return done
 
-    def public_fixture(self, native_exit=0, native_body=None, mode_release=False):
+    def public_fixture(self, native_exit=0, native_body=None):
         self.tools=self.base/'tools';self.tools.mkdir();self.events=self.base/'events'
         # Match the real bridge's system-first resolution, then admit only the
         # selected real jq's physical directory from the normal test runner.
@@ -416,13 +397,10 @@ raise SystemExit(EXIT_CODE)
             self.binary.chmod(0o755); self.binary.write_text(native_body); self.binary.chmod(0o555)
         marker=json.loads((self.ns/'.owner.json').read_bytes());marker['asset_sha256']=digest(self.binary)
         put(self.ns/'.owner.json',marker)
-        # Mandatory paired W07 cascade: this normal alias fixture now needs a
-        # source-equal structural kernel and an explicitly fake amended release.
+        # This normal alias fixture needs a source-equal structural kernel and
+        # the enrolled upstream release.
         kernel=Path(os.environ['HARNESS_TEST_OMP_SOURCE'])
-        self.release={'version':'18.11.3-kh.w07.mm.1' if mode_release else '18.11.3-kh.w07.1','source_revision':'1'*40,
-            'contract_id':'w07.required-resolver-consumer.v1','upstream_base_version':'18.11.3',
-            'upstream_base_revision':'96894a6147d8cc64b7e00ad3a7d7178fd93b9531',
-            'source_patch_sha256':'2'*64,'build_provenance_sha256':'3'*64}
+        self.release={'version':'18.11.3','source_revision':'96894a6147d8cc64b7e00ad3a7d7178fd93b9531'}
         def source_file(name,body):
             path=self.profile/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(body);path.chmod(0o600)
         for name in ('runtime-contract.yaml','budgets.yaml','claude-md.yaml'):
@@ -431,108 +409,21 @@ raise SystemExit(EXIT_CODE)
         for kind in ('agents','commands','skills'):
             source_file('.claude/source/'+kind+'.yaml',kind+':\n  source: .claude/'+kind+'\n')
         source_file('.claude/source/settings.yaml',
-            (kernel/'.claude/source/settings.yaml').read_text().split('\nhooks:',1)[0]+
-            '\nhooks:\n  omp_required_contract: w07.required-resolver-consumer.v1\n  omp_upstream_base_version: "18.11.3"\n'
-            '  omp_upstream_base_revision: 96894a6147d8cc64b7e00ad3a7d7178fd93b9531\n  entries:\n')
-        for name in ('core/scripts/harness_compile.py','core/scripts/omp_required_extension.ts'):
+            (kernel/'.claude/source/settings.yaml').read_text().split('\nhooks:',1)[0]+'\nhooks:\n  entries:\n')
+        for name in ('core/scripts/harness_compile.py','core/scripts/omp_required_extension.ts','core/omp/policy-omp.md'):
             source_file(name,(kernel/name).read_text())
         (self.profile/'.claude/rules').mkdir()
         self.kernel()
         (self.snapshot/'bin').chmod(0o500);self.snapshot.chmod(0o500)
-
-    def actual_mode_fixture(self, mode):
-        native = NATIVE_SOURCE/'packages/coding-agent'
-        self.assertTrue((native/'src/session/session-model-mode.ts').is_file())
-        driver = self.base/'actual-mm3.ts'
-        driver.write_text('''
-import { parseArgs } from NATIVE_ARGS;
-import { createSessionManager, runRootCommand } from NATIVE_MAIN;
-import { bindModelMode } from NATIVE_MODE;
-import { Settings } from NATIVE_SETTINGS;
-import { serializeTitleSlot } from NATIVE_TITLE;
-import { journal } from NATIVE_FIXTURE;
-import * as path from 'node:path';
-const args = process.argv.slice(2);
-let provider = 0;
-globalThis.fetch = async () => { provider++; throw new Error('UNEXPECTED_PROVIDER_TRANSPORT'); };
-try {
-    if (args[0] === '--fixture-journal') {
-        const binding = JSON.parse(await Bun.file(args[2]).text());
-        await Bun.write(args[1], serializeTitleSlot({ title: 'owned', updatedAt: '2026-10-21T00:00:00Z' }) +
-            journal(process.cwd(), { mode_id: binding.selected_mode, recipe_sha256: binding.recipe_sha256 }));
-    } else if (args[0] === '--inspect-session-model-mode') {
-        await runRootCommand(parseArgs(args), args);
-    } else {
-        const standalone = args[0] === '--fixture-admit';
-        const bundle = standalone ? undefined : args.find(arg => arg.startsWith('--harness-required-bundle='));
-        if (!standalone && !bundle) throw new Error('MISSING_REAL_REQUIRED_BUNDLE');
-        const file = standalone ? args[2] : path.join(path.dirname(bundle!.split('=', 2)[1]), 'model-mode.json');
-        const artifact = JSON.parse(await Bun.file(file).text());
-        const actual = standalone ? ['--resume', args[1]] : args;
-        const manager = await createSessionManager(parseArgs(actual), process.cwd(), bindModelMode(Settings.isolated(), artifact));
-        if (!manager) throw new Error('MISSING_ACTUAL_MANAGER');
-        await manager.close();
-        if (standalone) console.log('MM3_STANDALONE_MATCHING_HEALTHY');
-    }
-    if (provider !== 0) throw new Error('PROVIDER_TRANSPORT_NONZERO');
-} catch (error) { console.error(String(error)); process.exitCode = 2; }
-'''.replace('NATIVE_ARGS',json.dumps(str(native/'src/cli/args.ts')))
-   .replace('NATIVE_MAIN',json.dumps(str(native/'src/main.ts')))
-   .replace('NATIVE_MODE',json.dumps(str(native/'src/config/model-mode.ts')))
-   .replace('NATIVE_SETTINGS',json.dumps(str(native/'src/config/settings.ts')))
-   .replace('NATIVE_TITLE',json.dumps(str(native/'src/session/session-title-slot.ts')))
-   .replace('NATIVE_FIXTURE',json.dumps(str(native/'test/helpers/model-mode-resume-fixture.ts'))))
-        body = '#!'+sys.executable+' -I\nimport os,sys\nos.execv('+repr(str(NATIVE_BUN))+','+repr([str(NATIVE_BUN),str(driver)])+'+sys.argv[1:])\n'
-        self.public_fixture(native_body=body, mode_release=True)
-        kernel = Path(os.environ['HARNESS_TEST_OMP_SOURCE'])
-        for name in ('core/omp/model_modes.py','.claude/source/omp-model-modes.json'):
-            dest = self.profile/name; dest.parent.mkdir(parents=True,exist_ok=True)
-            shutil.copyfile(kernel/name,dest); dest.chmod(0o600)
-        helper = self.profile/'core/omp/model_modes.py'
-        spec=importlib.util.spec_from_file_location('actual_canonical_modes',helper)
-        module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-        raw=(self.profile/'.claude/source/omp-model-modes.json').read_bytes()
-        artifact=module.expand_model_mode(module.parse_model_modes(raw.decode()),mode,hashlib.sha256(raw).hexdigest())
-        self.mode_artifact=self.base/'explicit-mode.json';put(self.mode_artifact,artifact)
-        self.op('NEW_PREPARE')
-        self.saved=self.sessions/'fixture_019ea530-0000-7000-0000-000000000001.jsonl'
-        def original(args):
-            return subprocess.run([str(NATIVE_BUN),str(driver),*args],cwd=self.work,
-                capture_output=True,text=True,timeout=30)
-        made=original(['--fixture-journal',str(self.saved),str(self.mode_artifact)])
-        self.assertEqual(made.returncode,0,made.stderr);self.saved.chmod(0o600)
-        before=self.saved.read_bytes()
-        peek=original(['--inspect-session-model-mode',str(self.saved),'--json'])
-        self.assertEqual(peek.returncode,0,peek.stderr)
-        value=json.loads(peek.stdout)
-        self.assertEqual(set(value),{'schema','status','binding','snapshot_sha256'})
-        self.assertEqual(value['binding'],{'mode_id':mode,'recipe_sha256':artifact['recipe_sha256']})
-        self.assertEqual(value['snapshot_sha256'],digest(self.saved))
-        healthy=original(['--fixture-admit',str(self.saved),str(self.mode_artifact)])
-        self.assertEqual(healthy.returncode,0,healthy.stderr)
-        self.assertIn('MM3_STANDALONE_MATCHING_HEALTHY',healthy.stdout)
-        self.assertEqual(self.saved.read_bytes(),before)
-        self.op('FINALIZE',0)
-
-    @unittest.skipUnless(NATIVE_SOURCE and NATIVE_BUN,'explicit accepted MM3 source/Bun integration input required')
-    def test_MM4_actual_cold_resume_refuses_before_ledger_transition(self):
-        self.actual_mode_fixture('gpt-only')
-        before=(self.record.read_bytes(),self.saved.read_bytes())
-        done=self.public_shell(['--session-resume',self.h,'--print','--','owned'],2)
-        self.assertTrue('OMP_MODEL_MODE_CONFLICT' in done.stderr.decode() or
-                        'OMP_MODEL_MODE_RESUME_EXPLICIT' in done.stderr.decode(),done.stderr.decode())
-        self.assertEqual((self.record.read_bytes(),self.saved.read_bytes()),before,
-                         'MM4_COLD_RESUME_LEDGER_EFFECT_BEFORE_SAVED_MODE_REFUSAL')
-        self.public_shell(['--model-mode','gpt-only','--session-resume',self.h,'--print','--','owned'],0)
 
     def test_C01_C03_C27_public_alias_layer_fake_only(self):
         self.public_fixture()
         prompt='literal --resume claude "quoted"\nline two'
         self.public_shell(['--session-new','--print','--',prompt],0)
         calls=[json.loads(x) for x in self.calls.read_text().splitlines()]
-        bundle=next((self.profile/'.harness/omp').iterdir())
+        bundle=next(p for p in (self.profile/'.harness/omp').iterdir() if p.is_dir())
         required=['--append-system-prompt='+str(bundle/'policy.md'),'--no-extensions',
-                  '--extension='+str(bundle/'required-extension.ts'),'--harness-required-bundle='+str(bundle/'selection.json')]
+                  '--trusted-extension='+str(bundle/'required-extension.ts')]
         self.assertEqual(len(calls),1);self.assertEqual(calls[0]['argv'],['--print',*required,'--session-dir',str(self.sessions),'--',prompt])
         self.assertEqual(calls[0]['cwd'],str(self.work));self.assertEqual(calls[0]['held'],[True,True])
         self.assertEqual(self.events.read_text(),'finish\n')
@@ -609,12 +500,17 @@ try {
         self.assertEqual(self.record.read_bytes(), before)
         self.op('NEW_PREPARE')  # the full operate path accepts it too
 
-    def test_D_each_origin_field_alone_accepts_dev_and_refuses_ino_uid_or_lock_times(self):
+    def test_D_each_origin_field_alone_accepts_dev_and_lock_times_refuses_ino_uid(self):
         self.kernel(); good = self.record.read_bytes()
         for field in self.ORIGIN_FIELDS:
             with self.subTest(field=field, case='dev'):
                 self.shift_origin(field); self.load(); self.record.write_bytes(good)
-            keys = ['ino', 'uid'] + (['mtime_ns', 'ctime_ns', 'size', 'gid', 'nlink', 'mode'] if field == 'runtime_lock_identity' else [])
+            keys = ['ino', 'uid'] + (['gid', 'nlink', 'mode'] if field == 'runtime_lock_identity' else [])
+            if field == 'runtime_lock_identity':
+                # Lock size/times change with ordinary use and are ignored.
+                for key in ('mtime_ns', 'ctime_ns', 'size'):
+                    with self.subTest(field=field, case='ignored '+key):
+                        self.shift_origin(field, key); self.shift_origin(field); self.load(); self.record.write_bytes(good)
             for key in keys:
                 with self.subTest(field=field, case=key):
                     self.shift_origin(field, key); self.refused_load(); self.record.write_bytes(good)

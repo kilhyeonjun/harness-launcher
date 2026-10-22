@@ -106,7 +106,7 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         spec = importlib.util.spec_from_file_location('projection', self.snapshot/'bin/harness_omp_projection.py')
         self.p = importlib.util.module_from_spec(spec); spec.loader.exec_module(self.p)
         self.assertTrue(callable(getattr(self.p,'prepare_required',None)), 'missing normal structural prepare')
-        self.assertTrue(callable(getattr(self.p,'validate_required_prepared',None)), 'missing readonly prepared validation')
+        self.assertFalse(hasattr(self.p,'validate_required_prepared'), 'retired readonly prepared validation')
         self.publisher = self.p.Publisher()
         provenance = {'binding_sha256':'1'*64,'review_sha256':'2'*64,'selection_sha256':'3'*64,'operation_sha256':'4'*64,
                       'controller':{'native':'fixture','pane':'fixture','managed':'fixture'},'scope':'OMP3_CONFIGURATION','ssot':None}
@@ -132,17 +132,22 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         for name in ('core/omp/model_modes.py','.claude/source/omp-model-modes.json'):
             put(self.profile/name,(Path(KERNEL)/name).read_text())
 
-    def overlay(self, mode):
+    def overlay(self, mode, selection=None):
         spec=json.loads((self.profile/'.claude/source/omp-model-modes.json').read_text())
         models={i:spec['modeled_selectors'][x] for i,x in spec['modes'][mode].items()}
         chains={'anthropic/claude-opus-5-5':['openai-codex/gpt-6.1-sol'],
                 'openai-codex/gpt-6.1-sol':['anthropic/claude-opus-5-5']}
-        return {'modelRoles':{w:models[i]+':'+e for w,(i,e) in spec['workloads'].items()},
+        # Model-kind roles (judge) carry no thinking suffix; bundle skills load
+        # through skills.customDirectories.
+        value = {'modelRoles':{w:models[i]+('' if w=='judge' else ':'+e) for w,(i,e) in spec['workloads'].items()},
                 'task':{'agentModelOverrides':{a:'@advisor' if i=='reviewer' else '@task'
                                                for a,i in spec['named_agent_roles'].items()}},
                 'retry':{'modelFallback':True,'fallbackOn':'usage-limit',
                          'fallbackRevertPolicy':'cooldown-expiry','fallbackChains':chains},
                 'contextPromotion':{'enabled':False}}
+        if selection is not None:
+            value['skills']={'customDirectories':[str(self.profile/'.harness/omp'/selection/'skills')]}
+        return value
 
     def public_exec(self,args):
         return subprocess.run(['/bin/zsh',str(self.snapshot/'bin/harness-exec'),str(self.profile),'omp',*args],
@@ -176,8 +181,8 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
                 args=[] if mode is None else ['--model-mode',mode]
                 self.run_entry(args)
                 loaded=json.loads(self.capture.read_text())
-                self.assertEqual(settings_yaml(loaded['mode']),self.overlay(mode or 'hybrid-opus-lead'))
-                wanted,_=self.p.model_mode_request(str(self.profile),args)
+                self.assertEqual(settings_yaml(loaded['mode']),self.overlay(mode or 'hybrid-opus-lead',loaded['selection']))
+                wanted,_,_=self.p.model_mode_request(str(self.profile),args)
                 self.assertEqual(wanted['selected_mode'],mode or 'hybrid-opus-lead')
                 self.assertFalse(any(a.startswith('--model-mode') for a in loaded['argv']))
                 bundle=self.profile/'.harness/omp'/loaded['selection']
@@ -185,23 +190,17 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
                 self.assertFalse((bundle/'model-mode.json').exists())
                 manifest=json.loads((bundle/'selection.json').read_text())
                 self.assertIn('model-mode:'+(mode or 'hybrid-opus-lead'),manifest['bundle_ids'])
-                prepared=self.p.validate_required_prepared(str(self.profile),
-                    str(self.snapshot/'bin/aliases.zsh'),str(self.ns/'cwd'),str(self.binary),
-                    str(self.ns),str(bundle/'selection.json'))
-                self.assertEqual(prepared['model_mode'],
-                                 {'mode_id':wanted['selected_mode'],'recipe_sha256':wanted['recipe_sha256']})
-                self.assertFalse(prepared['ready']);self.assertFalse(prepared['inventory_admitted'])
 
     def test_MM4_literal_values_and_double_dash_are_not_controls(self):
         self.install_mode_source()
         prompt='--model-mode opus-only\n--model-mode-check gpt-only'
-        artifact,argv=self.p.model_mode_request(str(self.profile),['--tools','Read','--',prompt])
+        artifact,argv,check=self.p.model_mode_request(str(self.profile),['--tools','Read','--',prompt])
         self.assertEqual(artifact['selected_mode'],'hybrid-opus-lead')
-        self.assertEqual(argv,['--tools','Read','--',prompt])
-        _,argv=self.p.model_mode_request(str(self.profile),['--model-mode=gpt-only','--','--model-mode-check'])
+        self.assertEqual(argv,['--tools','Read','--',prompt]);self.assertFalse(check)
+        _,argv,_=self.p.model_mode_request(str(self.profile),['--model-mode=gpt-only','--','--model-mode-check'])
         self.assertEqual(argv,['--','--model-mode-check'])
 
-    def test_MM4_malformed_override_stock_and_stale_source_stop_without_effects(self):
+    def test_MM4_malformed_override_and_stock_stop_without_effects(self):
         self.install_mode_source()
         before=self.file_state()
         bad=(['--model-mode'],['--model-mode','foreign'],
@@ -214,17 +213,6 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
                 self.assertEqual(result.returncode,2,result.stderr)
                 self.assertFalse(self.capture.exists())
                 self.assertEqual(before,self.file_state())
-        self.run_entry(['--model-mode','gpt-only'])
-        loaded=json.loads(self.capture.read_text())
-        bundle=self.profile/'.harness/omp'/loaded['selection']
-        source=self.profile/'.claude/source/omp-model-modes.json'
-        value=json.loads(source.read_text());value['default']='gpt-only'
-        source.write_text(json.dumps(value,indent=2)+'\n')
-        before=self.file_state()
-        with self.assertRaises(self.p.ProjectionError):
-            self.p.validate_required_prepared(str(self.profile),str(self.snapshot/'bin/aliases.zsh'),
-                str(self.ns/'cwd'),str(self.binary),str(self.ns),str(bundle/'selection.json'))
-        self.assertEqual(before,self.file_state())
 
     def test_MM4_public_entry_each_mode_same_fallback_chains(self):
         self.install_mode_source()
@@ -233,7 +221,7 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
                 result=self.public_exec(['--model-mode',mode])
                 self.assertEqual(result.returncode,0,result.stderr)
                 loaded=json.loads(self.capture.read_text())
-                self.assertEqual(settings_yaml(loaded['mode']),self.overlay(mode))
+                self.assertEqual(settings_yaml(loaded['mode']),self.overlay(mode,loaded['selection']))
                 self.assertEqual(settings_yaml(loaded['mode'])['retry']['fallbackChains'],
                                  self.overlay('gpt-only')['retry']['fallbackChains'])
                 self.capture.unlink()
@@ -261,24 +249,10 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         manifest = json.loads((bundle/'selection.json').read_text())
         workspace = manifest['workspace']
         self.assertEqual(workspace,str(self.ns/'cwd'))
-        before = {str(f):sha(f) for f in self.profile.rglob('*') if f.is_file()}
-        prepared = self.p.validate_required_prepared(str(self.profile),str(self.snapshot/'bin/aliases.zsh'),
-            workspace,str(self.binary),str(self.ns),str(bundle/'selection.json'))
-        self.assertFalse(prepared['ready']); self.assertFalse(prepared['inventory_admitted'])
-        self.assertEqual(prepared['expected_inventory'][0]['name'],'fixture-required')
+        self.assertIn('"'+str(bundle/'skills')+'"', (bundle/'omp-settings.yml').read_text())
         result = subprocess.run([sys.executable,'-I','-S','-B',str(self.snapshot/'bin/harness_omp_projection.py'),
-            'validate-required-prepared',str(self.profile),str(self.snapshot/'bin/aliases.zsh'),workspace,
-            str(self.binary),str(self.ns),str(bundle/'selection.json')],capture_output=True,timeout=10)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual(json.loads(result.stdout),prepared)
-        self.assertEqual(before,{str(f):sha(f) for f in self.profile.rglob('*') if f.is_file()})
-        with self.assertRaises(self.p.ProjectionError):
-            self.p.validate_required_prepared(str(self.profile),str(self.snapshot/'bin/aliases.zsh'),
-                workspace,str(self.binary),str(self.ns),str(self.root/'foreign/selection.json'))
-        (bundle/'policy.md').write_text('changed')
-        with self.assertRaises(self.p.ProjectionError):
-            self.p.validate_required_prepared(str(self.profile),str(self.snapshot/'bin/aliases.zsh'),
-                workspace,str(self.binary),str(self.ns),str(bundle/'selection.json'))
+            'validate-required-prepared',str(self.profile)],capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,2,result.stderr)
 
     def test_required_disabling_and_startup_operands_refuse_before_child(self):
         for args in (['--no-skills'],['--no-extensions'],['--skills=foreign'],['--','fixture prompt'],['--print'],['--harness-required-bundle=/foreign'],['--','--harness-required-bundle=/foreign'],['--trusted-extension=/foreign.ts'],['--trusted-extension','/foreign.ts']):

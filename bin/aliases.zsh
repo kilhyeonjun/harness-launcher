@@ -1568,7 +1568,9 @@ PYREQUEST
     # before any record transition. The workspace lease orders all launchers.
     local _harness_omp_native_lock="$HARNESS_OMP_ROOT/launcher-continuations/$continuation_h/native.lock" probe_fd=""
     if [[ -e "$_harness_omp_native_lock" || -L "$_harness_omp_native_lock" ]]; then
-      [[ -f "$_harness_omp_native_lock" && ! -L "$_harness_omp_native_lock" ]] || return 2
+      [[ -f "$_harness_omp_native_lock" && ! -L "$_harness_omp_native_lock" ]] || {
+        echo "harness-launcher: OMP continuation native lock is not a regular file: $_harness_omp_native_lock" >&2; return 2
+      }
       zsystem flock -t 0 -f probe_fd "$_harness_omp_native_lock" 2>/dev/null || {
         echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
       }
@@ -1617,9 +1619,12 @@ PYREQUEST
     native_rc=$?
     selected="$(_harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" "$native_rc")"
     metadata_rc=$?
-    # Every state resumes once the native has written its session file.
-    (( native_rc == 0 && metadata_rc == 0 )) ||
-      print -ru2 -- "harness-launcher: OMP continuation not finalized; resume with: ${HARNESS_PREFIX:-harness-exec} omp --session-resume $continuation_h --"
+    # A recorded session file resumes from any state; without one the handle cannot.
+    if (( metadata_rc != 0 )); then
+      print -ru2 -- "harness-launcher: OMP continuation $continuation_h has no single intact session file; start a new session"
+    elif (( native_rc != 0 )); then
+      print -ru2 -- "harness-launcher: OMP continuation not finalized; resume with: harness-exec ${config_root:A} omp --session-resume $continuation_h --"
+    fi
     (( native_rc == 0 )) || return "$native_rc"
     (( metadata_rc == 0 )) || return 2
     fields=("${(@f)selected}")

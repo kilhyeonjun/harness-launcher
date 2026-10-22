@@ -810,14 +810,22 @@ def validate_omp_launch(data: dict[str, Any]) -> None:
             raise HarnessCompileError(f"omp_launch.{key} must be boolean")
 
 
-def render_omp_launch_settings(data: dict[str, Any], mode_settings: dict[str, Any] | None = None) -> str | None:
-    """Bundle --config overlay: allowlisted omp_launch settings plus the selected model mode."""
+def render_omp_launch_settings(data: dict[str, Any], *extra: dict[str, Any]) -> str | None:
+    """Bundle --config overlay: allowlisted omp_launch settings plus compiler-owned settings (model mode, skills)."""
     validate_omp_launch(data)
     settings = nest_dotted({k: v for k, v in data.get("omp_launch", {}).items() if k not in {"tools", "extensions"}})
-    for key, value in (mode_settings or {}).items():
-        if key in settings:
-            raise HarnessCompileError(f"omp_launch {key} collides with model mode settings")
-        settings[key] = value
+
+    def merge(target: dict[str, Any], source: dict[str, Any]) -> None:
+        for key, value in source.items():
+            if isinstance(value, dict) and isinstance(target.get(key), dict):
+                merge(target[key], value)
+            elif key in target:
+                raise HarnessCompileError(f"omp_launch {key} collides with compiler-owned OMP settings")
+            else:
+                target[key] = value
+
+    for item in extra:
+        merge(settings, item)
     return render_omp_yaml(settings, OMP_LAUNCH_SETTINGS_HEADER) if settings else None
 
 
@@ -1587,9 +1595,6 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
             raise HarnessCompileError(str(exc)) from exc
     elif mode_ids:
         raise HarnessCompileError("OMP model mode source missing")
-    overlay = render_omp_launch_settings(data, mode_settings)
-    if overlay is not None:
-        files[OMP_LAUNCH_SETTINGS_ARTIFACT] = overlay
     launch = dict(launch_tools=data["omp_launch"]["tools"].split(",")) if "omp_launch" in data else {}
     launch_extensions = []
     for ext_name in omp_launch_extension_names(data):
@@ -1604,20 +1609,16 @@ def render_omp_bundle(root: Path, data: dict[str, Any], selection: dict[str, Any
                     bridge_total_timeout_ms=28000)
     effective = omp_digest(omp_json(manifest).encode())
     manifest["effective_selection_sha256"] = effective
+    # Upstream has no resources_discover emitter; bundle skills load only via skills.customDirectories.
+    # Not circular: artifact bytes are outside the effective selection hash.
+    skill_dirs = {"skills": {"customDirectories": [f"{root}/.harness/omp/{effective}/skills"]}} if skills else {}
+    overlay = render_omp_launch_settings(data, mode_settings or {}, skill_dirs)
+    if overlay is not None:
+        files[OMP_LAUNCH_SETTINGS_ARTIFACT] = overlay
     manifest["artifacts"] = [dict(relative_path=p, sha256=omp_digest(v.encode()), mode="0600")
                              for p, v in sorted(files.items())]
     files["selection.json"] = omp_json(manifest) + "\n"
     return f".harness/omp/{effective}", files
-
-
-def _validate_omp_skill_tuples(rows: list[dict[str, str]]) -> None:
-    if not isinstance(rows, list) or any(not isinstance(r, dict) or set(r) != {"name", "path", "sha256"}
-        or any(not isinstance(r[k], str) or not r[k] for k in r)
-        or not Path(r["path"]).is_absolute() or "\0" in r["path"]
-        or not re.fullmatch(r"[0-9a-f]{64}", r["sha256"]) for r in rows):
-        raise HarnessCompileError("OMP malformed skill inventory")
-    if len({omp_json(r) for r in rows}) != len(rows):
-        raise HarnessCompileError("OMP duplicate expected skill")
 
 
 def validate_omp_caller_argv(manifest: dict[str, Any], caller_argv: list[str]) -> None:
@@ -1670,9 +1671,6 @@ def prepare_omp_bundle(bundle: Path, expected: dict[str, Any], caller_argv: list
             raise HarnessCompileError("OMP artifact hash/mode mismatch")
     if not {"policy.md", "required-extension.ts"} <= artifacts.keys():
         raise HarnessCompileError("OMP required artifact missing")
-    wanted = [dict(name=s["name"], path=str(bundle / s["path"]), sha256=artifacts[s["path"]]["sha256"])
-              for s in actual["selected_skills"]]
-    _validate_omp_skill_tuples(wanted)  # Expected shape only; no actual inventory.
     validate_omp_caller_argv(actual, caller_argv)
     # Upstream refuses --trusted-extension mixed with --extension/-e/--hook; no ambient extensions load.
     required = [f"--append-system-prompt={bundle / 'policy.md'}", "--no-extensions",
@@ -1692,13 +1690,12 @@ def prepare_omp_bundle(bundle: Path, expected: dict[str, Any], caller_argv: list
     split = caller_argv.index("--") if "--" in caller_argv else len(caller_argv)
     prepared = dict(schema=actual["schema"], bundle_dir=str(bundle),
         selection_sha256=actual["effective_selection_sha256"], manifest_sha256=omp_digest(omp_read(bundle, "selection.json")),
-        expected_inventory=wanted,
         binding=dict(profile=actual["profile"], source_root=actual["source_root"], workspace=actual.get("workspace"),
             source_or_release_binding=actual["source_or_release_binding"],
             repo_workspace_identity=actual["repo_workspace_identity"],
             dependency_binding=actual.get("hook_dependencies", [])),
         canonical_closure_sha256=omp_digest(omp_json(actual["canonical_inputs"]).encode()),
-        artifact_closure_sha256=omp_digest(omp_json(actual["artifacts"]).encode()), ready=False, inventory_admitted=False)
+        artifact_closure_sha256=omp_digest(omp_json(actual["artifacts"]).encode()), ready=False)
     return prepared, caller_argv[:split] + required + caller_argv[split:]
 
 

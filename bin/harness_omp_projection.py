@@ -606,6 +606,8 @@ def model_mode_request(source, argv):
 
     The id is validated by the source's own parser; the compiler renders the
     mode into the bundle settings overlay. Absent a choice, the source default.
+    Returns (artifact, argv, check); check is always False since the fork-only
+    metadata check was retired, kept for the installed Entry's call shape.
     """
     source = physical(source)
     argv = list(argv)
@@ -642,7 +644,7 @@ def model_mode_request(source, argv):
     present = os.path.lexists(spec_path)
     if selected is None and (not present or argv[:1] in
                             (['--help'], ['--version'], ['login'], ['models'])):
-        return None, output
+        return None, output, False
     require(present, 'OMP_MODEL_MODE_SOURCE_MISSING')
     require(not overrides, 'OMP_MODEL_MODE_OVERRIDE')
     helper_path = source / 'core/omp/model_modes.py'
@@ -659,11 +661,19 @@ def model_mode_request(source, argv):
     require(selected in spec['modes'], 'OMP_MODEL_MODE_VALUE')
     require(read_file(helper_path, None, 32768)[0] == helper_raw and
             read_file(spec_path, None, 32768)[0] == spec_raw, BINDING)
-    return {'selected_mode': selected, 'recipe_sha256': digest(spec_raw)}, output
+    return {'selected_mode': selected, 'recipe_sha256': digest(spec_raw)}, output, False
+
+
+def model_mode_admit(source, consumer, artifact):
+    """Installed-Entry compatibility: the current selection must admit the source.
+
+    No native version gate remains; the compiler renders the mode for upstream.
+    """
+    return select_continuation_source(source, str(registry_dir()), source, consumer)
 
 
 def model_mode_early(source, target, argv):
-    artifact, _ = model_mode_request(source, argv)
+    artifact, _, _ = model_mode_request(source, argv)
     if artifact is None:
         return 0
     # The complete target closure was verified by dispatch_source. This marker
@@ -680,10 +690,10 @@ def model_mode_early(source, target, argv):
     return 0
 
 
-def required_preparation(source, consumer, workspace, binary, namespace, caller_argv, bundle_manifest=None, model_mode=None, recipe_sha256=None):
+def required_preparation(source, consumer, workspace, binary, namespace, caller_argv, model_mode=None, recipe_sha256=None):
     """Re-derive current canonical expectation, never an actual Skill inventory.
 
-    bundle_manifest selects read-only check mode. No native/helper subprocess,
+    No native/helper subprocess,
     publisher, lease acquisition, profile mutation or resolver occurs here.
     """
     source = physical(source); workspace = physical(workspace); directory(workspace)
@@ -718,12 +728,7 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
                 for e in data.get('hooks',{}).get('entries',[]) if e.get('omp_rewrite_script')],
             workspace=str(workspace), hook_dependencies=required_dependencies())
         if 'omp_model_modes' in data:
-            if bundle_manifest is not None:
-                saved = decode(read_file(bundle_manifest, None, 131072)[0])
-                modes = [s.split(':', 1)[1] for s in saved['bundle_ids'] if s.startswith('model-mode:')]
-                require(len(modes) == 1, BINDING)
-                model_mode = modes[0]
-            artifact, _ = model_mode_request(source, [] if model_mode is None else ['--model-mode', model_mode])
+            artifact, _, _ = model_mode_request(source, [] if model_mode is None else ['--model-mode', model_mode])
             require(recipe_sha256 is None or artifact['recipe_sha256'] == recipe_sha256, BINDING)
             model_mode = artifact['selected_mode']
             selection['bundle_ids'].append('model-mode:' + model_mode)
@@ -731,16 +736,10 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
             require(model_mode is None, 'OMP_MODEL_MODE_SOURCE_MISSING')
         relative, files = compiler.render_omp_bundle(source, data, selection)
         manifest = json.loads(files['selection.json']); bundle = source/relative
-        if bundle_manifest is not None:
-            require(physical(bundle_manifest) == bundle/'selection.json', BINDING)
-            compiler.write_omp_bundle(source, data, selection, check=True)
-        else:
-            # Refuse protected caller arguments before even compiler-owned writes.
-            compiler.validate_omp_caller_argv(manifest, caller_argv)
-            require(compiler.write_omp_bundle(source, data, selection) == relative, BINDING)
+        # Refuse protected caller arguments before even compiler-owned writes.
+        compiler.validate_omp_caller_argv(manifest, caller_argv)
+        require(compiler.write_omp_bundle(source, data, selection) == relative, BINDING)
         prepared, argv = compiler.prepare_omp_bundle(bundle, manifest, caller_argv)
-        if model_mode is not None:
-            prepared['model_mode'] = {'mode_id': model_mode, 'recipe_sha256': artifact['recipe_sha256']}
         require(read_file(compiler_path, None, 262144)[0] == compiler_raw, BINDING)
         fresh_current = select_continuation_source(str(source), str(registry_dir()), str(source), consumer)
         require(all(fresh_current.get(k) == v for k,v in expected.items()), BINDING)
@@ -752,10 +751,6 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
 
 def prepare_required(source, consumer, workspace, binary, namespace, caller_argv):
     return required_preparation(source, consumer, workspace, binary, namespace, caller_argv)[1]
-
-
-def validate_required_prepared(source, consumer, workspace, binary, namespace, bundle_manifest):
-    return required_preparation(source, consumer, workspace, binary, namespace, [], bundle_manifest)[0]
 
 
 def sync_directory(path):
@@ -1006,7 +1001,7 @@ def main(argv):
         if len(argv) >= 4 and argv[1] == 'model-mode-early':
             return model_mode_early(argv[2], argv[3], argv[4:])
         if len(argv) >= 4 and argv[1] == 'model-mode-request':
-            artifact, values = model_mode_request(argv[2], argv[4:])
+            artifact, values, _ = model_mode_request(argv[2], argv[4:])
             fields = ['MODEL_MODE', artifact['selected_mode'] if artifact else '-',
                       artifact['recipe_sha256'] if artifact else '-', *values, 'END']
             sys.stdout.buffer.write(b''.join(v.encode('utf-8') + b'\0' for v in fields))
@@ -1019,10 +1014,6 @@ def main(argv):
             return 0
         if len(argv) == 2 and argv[1] == 'dispatch-source':
             print(dispatch_source())
-            return 0
-        if len(argv) == 8 and argv[1] == 'validate-required-prepared':
-            value = validate_required_prepared(*argv[2:])
-            sys.stdout.buffer.write(canonical(value) + b'\n')
             return 0
         if len(argv) >= 7 and argv[1] == 'prepare-required':
             value = prepare_required(*argv[2:7], argv[7:])
