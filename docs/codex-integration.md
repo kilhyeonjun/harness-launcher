@@ -371,6 +371,41 @@ approved-file digest is audit metadata: new isolated paths necessarily change
 those bytes. Enforcement uses the versioned normalized complete hook set and
 per-script hashes verified against both approved and current Git base blobs.
 
+### Capturing the approval (operator)
+
+After the owner reviews and approves the hook set once in a native Codex session
+(decisions persist in the session's `$CODEX_HOME/<profile>.config.toml`, `base`
+for the default Native profile), an operator runs, from a shell outside that
+session and while it is still OPEN:
+
+```sh
+python3 "$(brew --prefix)/share/harness-launcher/codex-hook-trust.py" capture --session-id UUID --dry-run
+python3 "$(brew --prefix)/share/harness-launcher/codex-hook-trust.py" capture --session-id UUID [--profile base]
+```
+
+`--session-id` is mandatory: the session is never taken from the environment, and
+a Codex sandbox or inherited `HARNESS_SESSION_*` environment prints a warning that
+capture must be operator-run (an agent must never run it).
+
+The command invents no approval. It refuses (exit 1, nothing written) unless
+every hook has a trusted, enabled native decision whose hash equals the generated
+hook hash, each `core/hooks` script equals its snapshot Git blob, the session
+record binds the source (open, same inode and snapshot), and the launcher's own
+inheritance would carry at least one hook (the canonical home needs its matching
+decisions). `--dry-run` prints counts, names and digests only. The record is
+written atomically (0600, owner-only 0700 `hook-approvals/`, directory fsynced);
+the previous one is kept as `<name>.json.bak-<ns timestamp>` (newest five).
+`approval_receipt_sha256` is the digest of `approval_evidence` (native decisions,
+normalized hook set, Codex identity), which is stored for audit and not enforced
+on read. A Codex upgrade or any hook-set change invalidates the record; capture
+again after a new native review.
+
+Fail-closed cases: capture must run from the launcher package that prepared the
+session (the refusal names the expected package path); the `codex` on PATH or
+`HARNESS_CODEX_BIN` must be the approved binary, whose digest is checked before it
+is executed; an existing record or `hook-approvals/` that is a link, not 0600
+(file) or not 0700 (directory) is refused.
+
 Native `--profile rich` saves hook decisions in `rich.config.toml`. Preparation
 preserves exact profile hook-state blocks through cold publication and its CAS,
 and warm signatures exclude only those mutable blocks. Other profile content
