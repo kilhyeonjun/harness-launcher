@@ -175,9 +175,23 @@ The outgoing native environment contains exactly `HOME=<root>/home`,
 `XDG_{CACHE,CONFIG,STATE,DATA}_HOME` values under the matching root leaves,
 `PI_CODING_AGENT_DIR=<root>/agent`,
 `PI_CODING_AGENT_SESSION_DIR=<root>/history`,
-`PI_NATIVES_DIR=<root>/native-cache`, and `TERM=xterm-256color`. Ambient API
-keys, Node options, other runtime homes and harness identity variables are not
-forwarded. Native/platform startup may subsequently change its own process
+`PI_NATIVES_DIR=<root>/native-cache`, and `TERM=xterm-256color` (the 13 fixed
+fields), plus the v2 additions of decision 038:
+
+- `PI_AUTO_QA=0`, always. It is OMP's highest-priority source for
+  `dev.autoqa`; without it OMP pushes tool-issue reports to an external QA
+  service.
+- `HARNESS_SESSION_ID`, `HARNESS_SOURCE_ROOT`, `HARNESS_SESSION_ROOT` and
+  `HARNESS_RUN_DIR`, only as a whole and only when the outer runner set all
+  four and they are valid (a UUID and three absolute paths). The broker's
+  delivery and hook identity depend on them. Any missing or invalid member
+  drops all four; the launcher never synthesizes them.
+- `HERDR_ENV=1`, `HERDR_SOCKET_PATH` and `HERDR_PANE_ID`, only as a whole and
+  only when `HERDR_ENV` is `1`, the socket path is absolute and the pane id is
+  non-empty, so the herdr observer can attach to the pane.
+
+Ambient API keys, Node options, other runtime homes and any other caller
+variable are not forwarded. Native/platform startup may subsequently change its own process
 environment; that is distinct from the launcher's outgoing contract. No auth,
 settings or session history is copied or adopted from Claude, Codex or a prior
 native profile. A root-local kernel lease guards the native home: fresh and
@@ -315,7 +329,7 @@ selects registered source/profile, actual B/N/cwd and stable current provenance;
 the compiler alone emits immutable `.harness/omp/<selection-sha>/` assets. The
 structural API returns a non-ready prepared expectation and preserves argv value
 and terminator boundaries. Only the launcher inserts one reserved manifest
-locator. The original environment remains exactly13 fields. Continuation keeps
+locator. The original environment keeps the 13 fixed fields plus the v2 additions above. Continuation keeps
 its owned session-dir/resume flags, original literal prompt and terminal handling;
 its strict release validator shares the projection's amended-release schema.
 

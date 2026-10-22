@@ -2,6 +2,17 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+- Extend the OMP native environment (contract v2, decision 038): always set
+  `PI_AUTO_QA=0` so OMP stops pushing tool-issue reports to its QA service;
+  forward `HARNESS_SESSION_ID`/`HARNESS_SOURCE_ROOT`/`HARNESS_SESSION_ROOT`/
+  `HARNESS_RUN_DIR` only when the outer runner set all four validly, and
+  `HERDR_ENV`/`HERDR_SOCKET_PATH`/`HERDR_PANE_ID` only when all three are
+  valid. No other caller variable is forwarded.
+- Show title, model and effort of OMP panes in the herdr plugin from the
+  agent's session file under the OMP history directory.
+
 ## 0.75.0 — 2026-10-22
 
 - Let several OMP sessions share one prepared namespace. Fresh and continuation
