@@ -2,6 +2,13 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.77.5 — 2026-10-23
+
+- Preserve the fresh workspace selected by a pure Codex history resume when
+  default isolation is enabled. A retained original workspace no longer
+  replaces that selection; its journal, heartbeat and native history remain
+  unchanged.
+
 ## 0.77.4 — 2026-10-23
 
 - A shell `harness-exec <harness> omp --session-resume <handle>` whose session
