@@ -1955,7 +1955,7 @@ _harness_launcher_run() {
     shift
   elif [[ "${HARNESS_SESSION_ISOLATION-}" == 1 ]]; then
     isolated=true
-  elif [[ "$HARNESS_SESSION_ISOLATION_DEFAULT" == 1 ]]; then
+  elif ! $history_local_create && [[ "$HARNESS_SESSION_ISOLATION_DEFAULT" == 1 ]]; then
     local isolation_interactive=0
     harness_claude_stdio_is_tty && isolation_interactive=1
     isolation_route="$(harness_session_isolation_default_route "$isolation_interactive" "$@")" || return $?

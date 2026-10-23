@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# Resolve before changing HOME so a host version-manager shim is not reused
+# against the disposable account's empty trust/configuration store.
+test_python="$(python3 -c 'import sys; print(sys.executable)')"
+export PATH="${test_python:h}:$PATH"
+export HOME="$TMP/user-home"
+export XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache" XDG_DATA_HOME="$HOME/.local/share"
+mkdir -p "$HOME"
+unset -m 'HARNESS_LAUNCH_*' || true
 # Never depend on the host Codex app or ~/.codex plugin cache.
 export HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$TMP/no-marketplace"
 HARNESS="$TMP/harness"
@@ -16,25 +24,30 @@ mkdir -p "$HARNESS/config"
 git -C "$HARNESS" init -q -b main
 git -C "$HARNESS" config user.name fixture
 git -C "$HARNESS" config user.email fixture@example.invalid
-print -r -- 'HARNESS_NAME="fixture"' 'HARNESS_PREFIX="fixture"' "HARNESS_SESSION_STATE_HOME=\"$STATE\"" > "$HARNESS/config/launcher.env"
+print -r -- 'HARNESS_NAME="fixture"' 'HARNESS_PREFIX="fixture"' 'HARNESS_SESSION_ISOLATION_DEFAULT=1' "HARNESS_SESSION_STATE_HOME=\"$STATE\"" > "$HARNESS/config/launcher.env"
 print -r -- fixture > "$HARNESS/tracked"
 git -C "$HARNESS" add config/launcher.env tracked && git -C "$HARNESS" commit -qm fixture
 SOURCE="$(cd "$HARNESS" && pwd -P)"
 
-mkdir -p "$STATE/sessions/$ISOLATION_ID" "$STATE/worktrees/$ISOLATION_ID/.harness/codex/sessions/2026/10/10"
-print -r -- "$SOURCE" > "$STATE/sessions/$ISOLATION_ID/source-root"
-print -r -- "$STATE/worktrees/$ISOLATION_ID" > "$STATE/sessions/$ISOLATION_ID/session-root"
-stat -f '%d %i' "$STATE/worktrees/$ISOLATION_ID" > "$STATE/sessions/$ISOLATION_ID/root-inode"
+created="$(HARNESS_SESSION_STATE_HOME="$STATE" "$ROOT/bin/session-isolation.sh" create --local "$SOURCE")"
+ISOLATION_ID="$(print -r -- "$created" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+[[ -n "$ISOLATION_ID" ]] || { echo 'FAIL: original owner was not created'; exit 1; }
+mkdir -p "$STATE/worktrees/$ISOLATION_ID/.harness/codex/sessions/2026/10/10"
 HOME_OLD="$STATE/worktrees/$ISOLATION_ID/.harness/codex"
 ROLLOUT="$HOME_OLD/sessions/2026/10/10/rollout-2026-10-10T01-02-03-$NATIVE_ID.jsonl"
 print -r -- '{"type":"session_meta","payload":{"id":"'"$NATIVE_ID"'"}}' > "$ROLLOUT"
 print -r -- '{"token":"must-not-restore"}' > "$HOME_OLD/auth.json"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ROOT/bin/session-isolation.sh" exit "$ISOLATION_ID" >/dev/null
+print -r -- '2000-01-01T00:00:00Z' > "$STATE/sessions/$ISOLATION_ID/heartbeat"
+old_journal="$(<"$STATE/sessions/$ISOLATION_ID/journal")"
+old_heartbeat="$(<"$STATE/sessions/$ISOLATION_ID/heartbeat")"
+old_rollout="$(shasum -a 256 "$ROLLOUT")"
 
 python3 "$ROOT/bin/codex-history.py" snapshot --source "$HOME_OLD" --catalog "$STATE/native-history" \
   --receipt "$STATE/sessions/$ISOLATION_ID/native-history-snapshot.json" --source-root "$SOURCE" \
   --isolation-id "$ISOLATION_ID" --runtime-revision "$REVISION" >/dev/null
-rm -rf "$HOME_OLD"
-print -r -- 'state=DELIVERED' > "$STATE/sessions/$ISOLATION_ID/journal"
+# Retain the terminal original home, as a real resume does. Snapshot-only
+# fixtures below separately cover origins whose native home was retired.
 python3 "$ROOT/bin/codex-history.py" catalog --source-root "$SOURCE" --state-home "$STATE" > "$TMP/catalog.json"
 grep -Fq "$NATIVE_ID" "$TMP/catalog.json" || { echo 'FAIL: fixture snapshot is absent from local catalog'; cat "$TMP/catalog.json"; exit 1; }
 
@@ -49,14 +62,19 @@ chmod +x "$TMP/codex"
 (
   export PATH="$TMP:$PATH" XDG_STATE_HOME="$TMP/xdg" HARNESS_SESSION_STATE_HOME="$STATE" FAKE_CODEX_LOG="$TMP/codex.log" NATIVE_ID
   source "$ROOT/bin/aliases.zsh"
+  # Exercise the interactive default route without launching a real TUI.
+  harness_claude_stdio_is_tty() { return 0; }
   _harness_launcher_run "$HARNESS" codex resume "$NATIVE_ID"
 )
 
 grep -Fq "home=$STATE/worktrees/" "$TMP/codex.log" || { echo 'FAIL: historical resume did not use a fresh local isolation'; cat "$TMP/codex.log"; exit 1; }
+! grep -Fqx "home=$HOME_OLD" "$TMP/codex.log" || { echo 'FAIL: default isolation reused the original history owner'; exit 1; }
 grep -Fq "args=resume " "$TMP/codex.log" && grep -Fq "$NATIVE_ID" "$TMP/codex.log" || { echo 'FAIL: native Codex did not receive the original UUID'; cat "$TMP/codex.log"; exit 1; }
 grep -Fqx artifact=yes "$TMP/codex.log" || { echo 'FAIL: generated native home did not receive archived history'; exit 1; }
 grep -Fqx auth=excluded "$TMP/codex.log" || { echo 'FAIL: generated native home received archived authority'; exit 1; }
-[[ "$(<"$STATE/sessions/$ISOLATION_ID/journal")" == 'state=DELIVERED' ]] || { echo 'FAIL: historical journal was rewritten'; exit 1; }
+[[ "$(<"$STATE/sessions/$ISOLATION_ID/journal")" == "$old_journal" ]] || { echo 'FAIL: historical journal was rewritten'; exit 1; }
+[[ "$(<"$STATE/sessions/$ISOLATION_ID/heartbeat")" == "$old_heartbeat" ]] || { echo 'FAIL: historical heartbeat was rewritten'; exit 1; }
+[[ "$(shasum -a 256 "$ROLLOUT")" == "$old_rollout" ]] || { echo 'FAIL: historical rollout was rewritten'; exit 1; }
 find "$STATE/sessions" -name native-history-restore.json -type f | grep -q . || { echo 'FAIL: fresh session has no private restore receipt'; exit 1; }
 
 # The import carries the origin's grant, but only for a top-level launch and a

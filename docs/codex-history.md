@@ -9,6 +9,9 @@ rule, service or daemon.
 
 - Archives are host-local, source/profile-bound and owner-private (0700/0600).
 - Keep original native/isolation UUIDs, source home and runtime provenance.
+- A pure `codex resume <uuid>` keeps its fresh restore workspace even when
+  default isolation is enabled and the terminal original workspace remains.
+  The original journal, heartbeat and native history are preserved.
 - Never copy auth, generated config, hook trust, plugins or live process locks.
   The same holds for execpolicy `rules/` (command-approval authority), the exact
   Native app, daemon and tool state names `app-server-control`,
