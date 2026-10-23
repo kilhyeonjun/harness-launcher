@@ -213,6 +213,15 @@ class ContinuationTests(unittest.TestCase):
                       ['omp','--print','--session-new','--'] ]:
             with self.subTest(args=args),self.assertRaises(m.ContinuationError):m.request(args)
 
+    def test_print_mode_values_and_equals_are_text_json_only(self):
+        m=self.continuation()
+        for args in [['--mode','text'],['--mode=json']]:
+            parsed=m.request(['omp','--session-new',*args,'--','fixture'])
+            self.assertEqual(parsed['options'],args)
+        for args in [['--mode','rpc'],['--mode=rpc-ui'],['--mode','acp'],['--mode']]:
+            with self.subTest(args=args),self.assertRaises(m.ContinuationError):
+                m.request(['omp','--session-new',*args,'--','fixture'])
+
     def test_C03b_bare_resume_needs_no_trailing_separator(self):
         m=self.continuation(); h='12345678123442348234123456789abc'
         self.assertEqual(m.request(['omp','--session-resume',h]),{'mode':'RESUME','handle':h,'options':[],'prompt':[]})
@@ -404,6 +413,14 @@ import errno,fcntl,json,os,sys
 from pathlib import Path
 args=sys.argv[1:];sessions=Path(args[args.index('--session-dir')+1]);cwd=Path.cwd()
 native='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+if os.environ.get('HARNESS_OMP_PRINT_RECEIPT'):
+    receipt=Path(os.environ['HARNESS_OMP_PRINT_RECEIPT'])
+    row=json.loads(receipt.read_text())
+    assert row['nonce']==os.environ['HARNESS_OMP_PRINT_NONCE']
+    row.update(started=True,native_session=native,native_pid=os.getpid())
+    identity=receipt.with_name('identity.json')
+    identity.write_text(json.dumps({k:row[k] for k in ('nonce','native_session','native_pid')}));identity.chmod(0o600)
+    receipt.write_text(json.dumps(row))
 target=sessions/('fixture_'+native+'.jsonl')
 if '--resume' in args:
     assert args[args.index('--resume')+1]==str(target)
@@ -488,13 +505,20 @@ raise SystemExit(EXIT_CODE)
             # Env contract v2: the continuation forwards its own isolated-session
             # tuple from the W record; the run dir is the retained cwd.
             'HARNESS_SESSION_ID':self.w,'HARNESS_SOURCE_ROOT':str(self.profile),
-            'HARNESS_SESSION_ROOT':str(self.work),'HARNESS_RUN_DIR':str(self.work)}
+            'HARNESS_SESSION_ROOT':str(self.work),'HARNESS_RUN_DIR':str(self.work),
+            'HARNESS_SESSION_STATE_HOME':str(self.state)}
         for call in calls:
             self.assertEqual({k:call['env'].get(k) for k in expected_env},expected_env)
             # Darwin may add this Python-startup key after env -i. Production
             # still sends the v2 set (13 + PI_AUTO_QA=0 + PI_SHELL_PREFIX + the harness tuple + GH_TOKEN; the
             # fixture env carries no herdr triple); this is not a wider env grant.
-            self.assertLessEqual(set(call['env'])-set(expected_env),{'__CF_USER_TEXT_ENCODING'})
+            import re
+            self.assertTrue(re.fullmatch(r'[0-9A-Fa-f-]{36}',call['env']['HARNESS_OMP_PRINT_NONCE']))
+            receipt=Path(call['env']['HARNESS_OMP_PRINT_RECEIPT'])
+            self.assertEqual(receipt.parents[1],self.ns/'tmp')
+            self.assertFalse(receipt.exists())
+            self.assertLessEqual(set(call['env'])-set(expected_env),
+                {'__CF_USER_TEXT_ENCODING','HARNESS_OMP_PRINT_NONCE','HARNESS_OMP_PRINT_RECEIPT'})
 
     def test_C10_namespace_busy_no_native_or_receipt_transition(self):
         self.public_fixture();lock=self.ns/'.launcher.lock';lock.write_bytes(b'');lock.chmod(0o600)

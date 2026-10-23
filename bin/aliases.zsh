@@ -1270,6 +1270,10 @@ _harness_launcher_omp_check_args() {
         done
         return 0 ;;
       --harness-required-bundle|--harness-required-bundle=*|--trusted-extension|--trusted-extension=*) return 2 ;;
+      --mode)
+        [[ $# -ge 2 && "$2" == (text|json) ]] || return 2
+        shift 2 ;;
+      --mode=text|--mode=json) shift ;;
       --model|--smol|--slow|--plan|--provider|--models|--thinking|--service-tier|--tools|--skills|--max-time)
         [[ $# -ge 2 && "$2" != -* ]] || {
           echo 'harness-launcher: OMP option requires a literal value' >&2; return 2
@@ -1427,7 +1431,65 @@ _harness_launcher_omp_account_home() {
   print -r -- "$home"
 }
 
+# Stay parent only for policy-managed print. The inner native still execs
+# under continuation locks; caller environment never selects the receipt.
 _harness_launcher_omp_native() (
+  local run_dir="$1"; shift
+  local _harness_omp_print_receipt="" _harness_omp_print_nonce=""
+  local print=false arg previous=""
+  [[ -t 0 ]] || print=true
+  for arg in "$@"; do
+    [[ "$arg" == -- ]] && break
+    [[ "$arg" == (-p|--print|--mode=text|--mode=json) || "$previous" == --mode && "$arg" == (text|json) ]] && print=true
+    previous="$arg"
+  done
+  [[ "${1:-}" == (--help|--version|login|models) ]] && print=false
+  if [[ "$print" != true || "${omp_required_selected:-false}" != true ]]; then
+    _harness_launcher_omp_native_exec "$run_dir" "$@"
+    return $?
+  fi
+  local py helper="$_HARNESS_LAUNCHER_BIN/omp_print_receipt.py" private rc=0 receipt_rc=0
+  py="$(harness_python3_resolve)" || return 2
+  # zsh disconnects asynchronous jobs from terminal stdin; save it before forking.
+  local native_stdin_fd
+  exec {native_stdin_fd}<&0 || return 2
+  umask 077
+  private="$(/usr/bin/mktemp -d "$HARNESS_OMP_ROOT/tmp/print.XXXXXXXX")" || return 2
+  _harness_omp_print_receipt="$private/result.json"
+  _harness_omp_print_nonce="$(/usr/bin/uuidgen)"
+  # Continuation tuples are launcher locals, not necessarily exported.
+  local -a receipt_tuple=("HARNESS_SESSION_ID=${HARNESS_SESSION_ID-}"
+    "HARNESS_SOURCE_ROOT=${HARNESS_SOURCE_ROOT-}" "HARNESS_SESSION_ROOT=${HARNESS_SESSION_ROOT-}"
+    "HARNESS_RUN_DIR=${HARNESS_RUN_DIR-}")
+  /usr/bin/env "${receipt_tuple[@]}" "$py" -I -S -B "$helper" create "$_harness_omp_print_receipt" "$_harness_omp_print_nonce" || return 2
+  {
+    exec 0<&$native_stdin_fd
+    exec {native_stdin_fd}<&-
+    _harness_launcher_omp_native_exec "$run_dir" "$@"
+  } &
+  local native_pid=$! signal_interrupted=false
+  exec {native_stdin_fd}<&-
+  trap 'signal_interrupted=true; kill -INT "$native_pid" 2>/dev/null || true' INT
+  trap 'signal_interrupted=true; kill -TERM "$native_pid" 2>/dev/null || true' TERM
+  trap 'signal_interrupted=true; kill -HUP "$native_pid" 2>/dev/null || true' HUP
+  # A trapped signal interrupts wait before the native has finished shutdown.
+  while true; do
+    signal_interrupted=false
+    rc=0
+    wait "$native_pid" || rc=$?
+    [[ "$signal_interrupted" == true ]] || break
+  done
+  trap - INT TERM HUP
+  /usr/bin/env "${receipt_tuple[@]}" "$py" -I -S -B "$helper" collect "$_harness_omp_print_receipt" "$_harness_omp_print_nonce" "$native_pid" || receipt_rc=$?
+  /bin/rm -f -- "$_harness_omp_print_receipt" "$private/identity.json"
+  /bin/rmdir -- "$private"
+  (( receipt_rc == 0 )) || return 2
+  return "$rc"
+)
+
+# The caller already isolates this function in its wrapper/background child.
+# A second subshell here would make $! an intermediary instead of native.
+_harness_launcher_omp_native_exec() {
   local run_dir="$1" root="$HARNESS_OMP_ROOT" native_bin="$HARNESS_OMP_BIN"
   shift
   cd "$run_dir" || return 2
@@ -1463,6 +1525,19 @@ _harness_launcher_omp_native() (
     # An isolated session worktree lacks the gitignored per-machine config/.local
     # where team profiles keep github_user; read it from the source root.
     gh_dir="$src"
+  fi
+  if [[ -n "${HARNESS_SESSION_STATE_HOME-}" ]]; then
+    local state_python
+    state_python="$(harness_python3_resolve)" || return 2
+    "$state_python" -I -S -B "$_HARNESS_LAUNCHER_BIN/omp_print_receipt.py" state "$HARNESS_SESSION_STATE_HOME" || return 2
+    extra+=(HARNESS_SESSION_STATE_HOME="$HARNESS_SESSION_STATE_HOME")
+  else
+    # Empty is a no-authority sentinel, not a derived state path. Native Bun
+    # must not fill a missing launcher field from workspace .env files.
+    extra+=(HARNESS_SESSION_STATE_HOME="")
+  fi
+  if [[ "${(t)_harness_omp_print_receipt-}" == *local* && "${(t)_harness_omp_print_nonce-}" == *local* && "$_harness_omp_print_receipt" == /* && "$_harness_omp_print_nonce" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
+    extra+=(HARNESS_OMP_PRINT_RECEIPT="$_harness_omp_print_receipt" HARNESS_OMP_PRINT_NONCE="$_harness_omp_print_nonce")
   fi
   if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
     extra+=(HERDR_ENV=1 HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" HERDR_PANE_ID="$HERDR_PANE_ID")
@@ -1500,10 +1575,12 @@ _harness_launcher_omp_native() (
   [[ -z "${(k)parameters[(R)*export*]:#GH_TOKEN}" ]] || {
     echo 'harness-launcher: OMP_ENV_NOT_CLOSED' >&2; return 2
   }
-  # Become the native so the lock's owner is the native itself.
-  [[ -z "${native_lock_fd-}" ]] || exec /usr/bin/env -u _ "${native_env[@]}" "$native_bin" "$@"
+  # Become the native so the lock's owner (and print receipt pid) is native.
+  if [[ -n "${native_lock_fd-}" || ( "${(t)_harness_omp_print_receipt-}" == *local* && -n "$_harness_omp_print_receipt" ) ]]; then
+    exec /usr/bin/env -u _ "${native_env[@]}" "$native_bin" "$@"
+  fi
   /usr/bin/env -u _ "${native_env[@]}" "$native_bin" "$@"
-)
+}
 
 _harness_launcher_run_omp() (
   _harness_launcher_omp_validate || return 2

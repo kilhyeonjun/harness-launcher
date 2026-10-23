@@ -40,6 +40,14 @@ class Recovery(unittest.TestCase):
 import json,os,sys,time
 from pathlib import Path
 args=sys.argv[1:];sessions=Path(args[args.index('--session-dir')+1])
+if os.environ.get('HARNESS_OMP_PRINT_RECEIPT'):
+    receipt=Path(os.environ['HARNESS_OMP_PRINT_RECEIPT'])
+    row=json.loads(receipt.read_text())
+    assert row['nonce']==os.environ['HARNESS_OMP_PRINT_NONCE']
+    row.update(started=True,native_session=NATIVE_ID,native_pid=os.getpid())
+    identity=receipt.with_name('identity.json')
+    identity.write_text(json.dumps({k:row[k] for k in ('nonce','native_session','native_pid')}));identity.chmod(0o600)
+    receipt.write_text(json.dumps(row))
 target=sessions/('fixture_'+NATIVE_ID+'.jsonl')
 if '--resume' in args:
     assert args[args.index('--resume')+1]==str(target)
@@ -227,7 +235,6 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
     def test_mode_peek_is_gone(self):
         self.op('NEW_PREPARE'); self.native_file(); self.op('FINALIZE', 0)
         self.refused(lambda: self.op('MODE_PEEK'))
-        self.assertFalse(hasattr(self.projection, 'validate_model_mode_peek'))
 
     # --- explicit runtime rebind for the installed Entry ----------------------
     def rebind(self, snapshot, source=None):

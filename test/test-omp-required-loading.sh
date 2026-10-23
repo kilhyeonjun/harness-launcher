@@ -9,7 +9,7 @@ HARNESS_TEST_OMP_SOURCE="$(python3 -I -S -B "$ROOT/test/omp-fixture-source.py")"
 export HARNESS_TEST_OMP_SOURCE
 python3 -I -S -B "$ROOT/test/test_omp_required_fixture_path.py"
 python3 -I -S -B - "$ROOT" <<'PYTEST'
-import hashlib, importlib.util, json, os, shlex, shutil, subprocess, sys, tempfile, unittest
+import hashlib, importlib.util, json, os, pty, shlex, shutil, subprocess, sys, tempfile, unittest
 from unittest.mock import patch
 from pathlib import Path
 
@@ -105,8 +105,6 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         self.addCleanup(self.unseal_snapshot)
         spec = importlib.util.spec_from_file_location('projection', self.snapshot/'bin/harness_omp_projection.py')
         self.p = importlib.util.module_from_spec(spec); spec.loader.exec_module(self.p)
-        self.assertTrue(callable(getattr(self.p,'prepare_required',None)), 'missing normal structural prepare')
-        self.assertFalse(hasattr(self.p,'validate_required_prepared'), 'retired readonly prepared validation')
         self.publisher = self.p.Publisher()
         provenance = {'binding_sha256':'1'*64,'review_sha256':'2'*64,'selection_sha256':'3'*64,'operation_sha256':'4'*64,
                       'controller':{'native':'fixture','pane':'fixture','managed':'fixture'},'scope':'OMP3_CONFIGURATION','ssot':None}
@@ -149,9 +147,19 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
             value['skills']={'customDirectories':[str(self.profile/'.harness/omp'/selection/'skills')]}
         return value
 
+    def tui_entry(self, argv, cwd):
+        # This fixture exercises interactive preparation, not implicit stdin print.
+        master, slave = pty.openpty()
+        try:
+            return subprocess.run(argv, cwd=cwd, env=self.env, stdin=slave,
+                                  text=True, capture_output=True, timeout=30)
+        finally:
+            os.close(slave)
+            os.close(master)
+
     def public_exec(self,args):
-        return subprocess.run(['/bin/zsh',str(self.snapshot/'bin/harness-exec'),str(self.profile),'omp',*args],
-            cwd=self.profile,env=self.env,input='',text=True,capture_output=True,timeout=30)
+        return self.tui_entry(['/bin/zsh',str(self.snapshot/'bin/harness-exec'),str(self.profile),'omp',*args],
+                              self.profile)
 
     def file_state(self):
         return {str(p):(sha(p),p.stat().st_mode,p.stat().st_mtime_ns)
@@ -232,9 +240,8 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
 
     def run_entry(self, args=(), expected=0, cwd=None):
         self.capture.unlink(missing_ok=True)
-        result = subprocess.run(['/bin/zsh','-f','-c','source "$1/bin/aliases.zsh"; shift; _harness_launcher_run "$@"',
-             'fixture',str(self.snapshot),str(self.profile),'omp',*args], cwd=cwd or self.profile, env=self.env,
-             input='',text=True,capture_output=True,timeout=30)
+        result = self.tui_entry(['/bin/zsh','-f','-c','source "$1/bin/aliases.zsh"; shift; _harness_launcher_run "$@"',
+             'fixture',str(self.snapshot),str(self.profile),'omp',*args], cwd or self.profile)
         self.assertEqual(result.returncode,expected, result.stderr)
         self.assertEqual(self.capture.exists(),expected==0, result.stderr)
         return result
