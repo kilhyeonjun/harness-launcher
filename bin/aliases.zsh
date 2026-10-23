@@ -1626,6 +1626,12 @@ try:
 except Exception:
     print('harness-launcher: OMP_CONTINUATION_UNBOUND',file=sys.stderr);raise SystemExit(2)
 PYREQUEST
+  # A launcher activation leaves the binding on the previous runtime: move it to
+  # this current one first (rebind takes the workspace lock, so before the lease).
+  if [[ "$continuation_mode" == --session-resume ]]; then
+    "$continuation_python" -I -S -B "$continuation_helper" --rebind-stale \
+      "$continuation_state" "${config_root:A}" "$continuation_w" >/dev/null || return 2
+  fi
   local HARNESS_SESSION_LEASE_FD="" namespace_fd="" selected="" native_rc=2 metadata_rc=2
   local expected_sha="" own_nonce="" retained_c="" retained_s="" retained_p=""
   _harness_launcher_isolated_lease_acquire "$continuation_w" || return 2
@@ -1710,15 +1716,11 @@ PYREQUEST
     selected="$(_harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" "$native_rc")"
     metadata_rc=$?
     # A recorded session file resumes from any state; without one the handle cannot.
-    # A launcher upgrade during the run also fails here, and a rebind repairs it.
+    # A launcher upgrade during the run also fails here (this old runtime's code
+    # finalizes); the next resume rebinds the session to the current runtime.
     if (( metadata_rc != 0 )); then
       print -ru2 -- "harness-launcher: OMP continuation $continuation_h not finalized (see the error above); OMP_CONTINUATION_NOT_PERSISTED or OMP_CONTINUATION_NATIVE_FORK means start a new session"
-      local _harness_omp_rebind
-      _harness_omp_rebind="$("$continuation_python" -I -S -B -c \
-        'import json,sys;print(json.load(open(sys.argv[1]))["path"]+"/bin/harness_omp_continuation.py")' \
-        "${continuation_helper:A:h:h:h}/current.json" 2>/dev/null)" &&
-        print -ru2 -- "harness-launcher: if the launcher was upgraded, run: $continuation_python -I -S -B $_harness_omp_rebind --rebind-runtime $continuation_state ${config_root:A} $continuation_w"
-      print -ru2 -- "harness-launcher: then resume with: harness-exec ${config_root:A} omp --session-resume $continuation_h --"
+      print -ru2 -- "harness-launcher: otherwise (also after a launcher upgrade) resume with: harness-exec ${config_root:A} omp --session-resume $continuation_h --"
     elif (( native_rc != 0 )); then
       print -ru2 -- "harness-launcher: OMP continuation not finalized; resume with: harness-exec ${config_root:A} omp --session-resume $continuation_h --"
     fi

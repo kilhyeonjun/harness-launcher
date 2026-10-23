@@ -350,7 +350,12 @@ session; no caller cwd is injected. The installed Entry resumes a session with i
 bound runtime; `harness_omp_continuation.py --rebind-runtime <state> <source> W`,
 run from the current selected snapshot (verified via `current.json` and the
 manifest), rewrites `bindings/W.json` to that snapshot under the Entry's binding
-lock and the free workspace/native locks, for the same source only. Origin matching ignores provenance that
+lock and the free workspace/native locks, for the same source only. A shell
+`--session-resume` runs that rebind itself (`--rebind-stale`, before the
+workspace lease) when the binding names a runtime other than `current.json`;
+its failure stops the resume with no state change. An exit-time FINALIZE
+failure of a session started on an older runtime (whose code finalizes) is
+recovered by a plain resume. Origin matching ignores provenance that
 changes across launcher releases and binary upgrades (runtime pin, manifest,
 binding bytes, binary and namespace marker SHA, lock size/times); a binding may
 name any launcher release under the same launcher-runtimes root. No automatic

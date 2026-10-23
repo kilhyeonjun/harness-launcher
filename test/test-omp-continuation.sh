@@ -522,6 +522,14 @@ raise SystemExit(EXIT_CODE)
         row=json.loads(self.record.read_bytes());self.assertEqual(row['status'],'BLOCKED')
         self.assertEqual(row['last_terminal_status'],7);self.assertEqual(self.events.read_text(),'finish\n')
 
+    def test_C17b_unfinalized_exit_hints_a_plain_resume_not_a_rebind(self):
+        # The hint after any FINALIZE failure, including an old runtime finalizing after an upgrade.
+        self.public_fixture(native_body='#!'+sys.executable+' -I\nraise SystemExit(0)\n')
+        done=self.public_shell(['--session-new','--'],2)
+        self.assertIn(b'also after a launcher upgrade) resume with: harness-exec '+str(self.profile).encode()+
+                      b' omp --session-resume '+self.h.encode()+b' --',done.stderr)
+        self.assertNotIn(b'--rebind-runtime',done.stderr)
+
     # --- D: device renumbering tolerance (APFS renumbers st_dev at reboot) ---
     ORIGIN_FIELDS = ('workspace_identity', 'runtime_lock_identity', 'namespace_identity')
 
