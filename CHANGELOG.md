@@ -1159,6 +1159,13 @@ Routing changes apply only to profiles with `HARNESS_SESSION_ISOLATION_DEFAULT=1
   concurrent children before cleanup while preserving their failure statuses.
   Headless TOML assertions use the fixture's launcher-resolved supported Python
   rather than an incompatible host shim.
+- Classify Codex `mcp-server` as rejecting `--profile`, matching Codex
+  0.144.1. The launcher still blocks this server entry point; `mcp` remains
+  profile-capable. Cover classification even when Codex is not installed.
+- Cover fresh OMP TUI selection of the canonical recommended mode, including
+  recipes that list `gpt-only` before the default. Explicit Codex-only selection
+  and history replay remain covered. Document that the profile's canonical
+  model-mode source, not a launcher-specific model preference, owns the default.
 - `docs/orca-integration.md` no longer recommends one Orca profile per trust
   boundary. Orca profiles share one PTY daemon and readable terminal history on
   a macOS account, so they are not a security boundary. The guide now documents

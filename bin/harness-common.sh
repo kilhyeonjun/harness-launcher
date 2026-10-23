@@ -347,7 +347,7 @@ harness_codex_subcommand() {
 harness_codex_subcommand_rejects_profile() {
   case "${1:-}" in
     'debug prompt-input') return 1 ;;
-    agents|login|logout|plugin|app-server|remote-control|app|completion|update|doctor|apply|a|migrate-rollouts|cloud|exec-server|features|help|debug|debug\ *)
+    agents|login|logout|plugin|app-server|remote-control|app|completion|update|doctor|apply|a|migrate-rollouts|cloud|exec-server|mcp-server|features|help|debug|debug\ *)
       return 0 ;;
   esac
   return 1
