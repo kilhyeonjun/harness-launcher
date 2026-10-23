@@ -2,6 +2,12 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+- Classify Codex `mcp-server` as rejecting `--profile`, matching Codex
+  0.144.1. The launcher still blocks this server entry point; `mcp` remains
+  profile-capable. Cover classification even when Codex is not installed.
+
 ## 0.77.6 — 2026-10-23
 
 - Isolated sessions now load the per-profile `GH_TOKEN` from the harness
