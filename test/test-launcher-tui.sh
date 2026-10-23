@@ -855,8 +855,13 @@ cat > "$TEST_HARNESS/.claude/source/omp-model-modes.json" <<'JSON'
 JSON
 HANDOFF="$TEST_TEMP/omp-handoff"
 OUT="$TEST_TEMP/omp.out"; STUB="$TEST_TEMP/omp.stub"
+# The canonical default wins even when gpt-only appears first in the JSON.
+run_tui $'2\n1\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+[ "$(cat "$HANDOFF")" = $'omp\n--model-mode\nhybrid-opus-lead' ] || fail 'fresh OMP default must hand off the recommended mode' "$HANDOFF"
+[ ! -e "$STUB" ] || fail 'fresh OMP default must not execute another runtime' "$STUB"
+rm -f "$HANDOFF"; reset_plan
+# An explicit Codex-only choice remains selectable and replayable.
 run_tui $'2\n2\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
-grep -Fq 'hybrid-opus-lead (기본) — leader claude-opus-5-5' "$OUT" || fail 'OMP default mode must be listed first' "$OUT"
 [ "$(cat "$HANDOFF")" = $'omp\n--model-mode\ngpt-only' ] || fail 'OMP mode handoff argv' "$HANDOFF"
 [ ! -e "$STUB" ] || fail 'OMP choice must not execute another runtime' "$STUB"
 rm -f "$HANDOFF"

@@ -903,8 +903,12 @@ checks above remain.
 
 OMP model modes are launcher controls: `ex omp --model-mode <id>` selects
 `gpt-only`, `opus-only`, `hybrid-gpt-lead`, or `hybrid-opus-lead`; a fresh mode
-source defaults to its canonical `hybrid-opus-lead` recipe. Tokens after `--`
-remain data. Direct model/provider/effort overrides conflict with a mode.
+source defaults to its canonical `hybrid-opus-lead` recipe. The fresh TUI lists
+that source's `.claude/source/omp-model-modes.json` `default` first and marks it
+`(기본)`; the launcher does not hardcode a separate recommended model. A source
+that still declares `gpt-only` must update its canonical recipe to change that
+default. Explicit mode choices and saved TUI history keep their selected mode.
+Tokens after `--` remain data. Direct model/provider/effort overrides conflict with a mode.
 The id is validated by the source's own parser; the compiler renders the mode
 into the bundle's `omp-settings.yml` overlay (model roles, agent overrides and
 cross-provider fallback chains). Resume uses `--model-mode` when given, else the

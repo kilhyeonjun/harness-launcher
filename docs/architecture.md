@@ -885,8 +885,9 @@ options behaves exactly as before.
   a per-harness `GH_TOKEN`, and passes no `--mcp-config`.
 - **Session.** It calls `harness-exec <harness> --isolated --passthrough ...`,
   so the launcher creates the journal and lease itself and the run directory
-  is the session root. The headless clone uses `git clone --no-hardlinks`,
-  copies `.mcp.local.json`, `mcp.local.json` and `.claude/settings.local.json`
+  is the session root. Every session and broker snapshot uses
+  `git clone --no-local` (Git transport, without hardlinks or shared object stores).
+  The headless clone copies `.mcp.local.json`, `mcp.local.json` and `.claude/settings.local.json`
   (without its `env` block) instead of linking them, never links `projects/`,
   and refuses a symlink on any of those paths. Before the agent starts it
   writes a `headless` marker and a launcher-owned bare git dir
