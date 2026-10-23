@@ -405,6 +405,61 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
         self.assertEqual(self.herdr().returncode, 0)
         self.assertEqual(self.row()['status'], 'READY')
 
+    def activate(self):
+        # A launcher activation: a new current snapshot; the session stays bound to the old one.
+        old = self.snapshot
+        self.snapshot = self.install_snapshot('c'*40); self.consumer = self.snapshot/'bin/aliases.zsh'
+        self.publish(); return old
+
+    def bound(self): return self.runtime/'bindings'/(W.lower()+'.json')
+
+    def resumed_after_activation(self, finalize):
+        self.op('NEW_PREPARE'); self.native_file()
+        if finalize: self.op('FINALIZE', 0)
+        old = self.activate(); self.public_fixture()
+        self.assertEqual(json.loads(self.bound().read_bytes())['runtime']['path'], str(old))
+        done = self.herdr()
+        self.assertEqual(done.returncode, 0, done.stderr.decode())
+        self.assertEqual(len(self.native_calls()), 1); self.assertEqual(self.row()['status'], 'READY')
+        current = json.loads((self.runtime/'current.json').read_bytes())
+        self.assertEqual(self.bound().read_bytes(),
+                         json.dumps({'source_root': str(self.profile), 'runtime': current}, sort_keys=True).encode())
+
+    def test_shell_resume_after_activation_rebinds_and_launches(self):
+        self.resumed_after_activation(finalize=True)
+
+    def test_shell_resume_after_activation_rebinds_a_pending_record(self):
+        self.resumed_after_activation(finalize=False)
+
+    def test_shell_resume_after_activation_refuses_another_source(self):
+        self.op('NEW_PREPARE'); self.native_file(); self.op('FINALIZE', 0)
+        self.activate(); self.public_fixture()
+        value = json.loads(self.bound().read_bytes()); value['source_root'] = str(self.base/'other'); put(self.bound(), value)
+        before = (self.bound().read_bytes(), self.record.read_bytes())
+        done = self.herdr()
+        self.assertEqual(done.returncode, 2); self.assertIn(b'OMP_CONTINUATION_UNBOUND', done.stderr)
+        self.assertEqual((self.bound().read_bytes(), self.record.read_bytes()), before)
+        self.assertEqual(self.native_calls(), [])
+
+    def test_shell_resume_after_activation_with_a_held_lock_is_busy_without_change(self):
+        import fcntl
+        self.op('NEW_PREPARE'); self.native_file(); self.op('FINALIZE', 0)
+        self.activate(); self.public_fixture()
+        binding_lock = self.runtime/'binding-locks'/(W.lower()+'.lock'); binding_lock.write_bytes(b''); binding_lock.chmod(0o600)
+        native_lock = self.slot/'native.lock'; native_lock.write_bytes(b''); native_lock.chmod(0o600)
+        before = (self.bound().read_bytes(), self.record.read_bytes())
+        for lock, take in ((binding_lock, fcntl.flock), (self.record_dir/'runtime.lock', fcntl.lockf), (native_lock, fcntl.lockf)):
+            fd = os.open(lock, os.O_RDWR)
+            try:
+                take(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                done = self.herdr()
+                with self.subTest(lock=lock.name):
+                    self.assertEqual(done.returncode, 2); self.assertIn(b'OMP_CONTINUATION_BUSY', done.stderr)
+                    self.assertEqual((self.bound().read_bytes(), self.record.read_bytes()), before)
+            finally: os.close(fd)
+        self.assertEqual(self.native_calls(), [])
+        self.assertEqual(self.herdr().returncode, 0)
+
     def test_bare_resume_refuses_unknown_handle_and_bare_new(self):
         self.public_fixture()
         bad = 'f'*32

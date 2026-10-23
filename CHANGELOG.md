@@ -2,6 +2,21 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased — OMP shell resume rebinds after activation
+
+- A shell `harness-exec <harness> omp --session-resume <handle>` whose session
+  binding still names an older launcher runtime (left by an activation) now
+  runs `harness_omp_continuation.py --rebind-stale` before taking the workspace
+  lease. It calls the existing `rebind_runtime` (same source, current selection,
+  free binding/workspace/native locks, byte re-read) only when the binding is
+  readable and its runtime differs from `current.json`; otherwise the resume
+  continues with its existing checks and errors. A failed rebind leaves the
+  binding and record unchanged and surfaces its own label (for example
+  `OMP_CONTINUATION_BUSY`).
+- The hint after an exit-time FINALIZE failure no longer prints a
+  `--rebind-runtime` command; after a launcher upgrade a plain
+  `omp --session-resume <handle>` is enough.
+
 ## 0.77.3 — 2026-10-23
 
 - An enrolled OMP projection row stays valid across launcher activation.

@@ -585,10 +585,27 @@ def rebind_runtime(state, source, w):
         for fd in fds: os.close(fd)
 
 
+def rebind_stale(state, source, w):
+    """Shell resume: rebind only a readable binding naming a runtime other than current.json.
+
+    Every check (source, record identity, selection, locks) is rebind_runtime's.
+    An unreadable or current binding is left to RESUME_ADMIT and its own errors.
+    """
+    runtimes = Path(__file__).resolve().parent.parent.parent
+    try:
+        current = p.decode(p.read_file(runtimes/'current.json')[0])
+        bound = p.decode(p.read_file(runtimes/'bindings'/(workspace_id(w).lower()+'.json'), limit=LIMIT)[0])
+        stale = type(bound) is dict and bound.get('runtime') != current
+    except (p.ProjectionError, OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        stale = False
+    return rebind_runtime(state, source, w) if stale else None
+
+
 def main(argv):
     try:
-        if len(argv) == 5 and argv[1] == '--rebind-runtime':
-            sys.stdout.buffer.write(p.canonical(rebind_runtime(*argv[2:]))+b'\n'); return 0
+        if len(argv) == 5 and argv[1] in ('--rebind-runtime', '--rebind-stale'):
+            rebind = rebind_runtime if argv[1] == '--rebind-runtime' else rebind_stale
+            sys.stdout.buffer.write(p.canonical(rebind(*argv[2:]))+b'\n'); return 0
         require(len(argv) == 3 and argv[1] == '--input-fd' and re.fullmatch('[0-9]{1,3}', argv[2]))
         fd = int(argv[2]); raw = bytearray()
         while len(raw) <= LIMIT:
