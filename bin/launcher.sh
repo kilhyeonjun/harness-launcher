@@ -1000,7 +1000,8 @@ launch_claude() {
   local HARNESS_OTLP_HTTP_ENDPOINT obs_rc
   # Per-harness GitHub identity: fail-open, never overrides with an empty token.
   local GH_TOKEN HARNESS_GH_USER
-  harness_gh_token_load "$HARNESS_DIR" || true
+  # The session worktree lacks the gitignored config/.local (team github_user).
+  harness_gh_token_load "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || true
   if harness_observability_load "$HARNESS_DIR"; then
     local CLAUDE_CODE_ENABLE_TELEMETRY=1
     local OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none
