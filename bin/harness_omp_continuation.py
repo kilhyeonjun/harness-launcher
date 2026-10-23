@@ -43,7 +43,7 @@ NATIVE_KEYS = 'id path cwd version timestamp header_sha256 file_identity'
 FILE_KEYS = 'dev ino uid gid nlink mode size mtime_ns ctime_ns'
 STABLE = ('dev', 'ino', 'uid', 'gid', 'nlink', 'mode')
 OPTIONS = frozenset(('--model --smol --slow --plan --provider --models --thinking '
-                     '--service-tier --tools --skills --max-time').split())
+                     '--service-tier --tools --skills --max-time --mode').split())
 SWITCHES = frozenset(('-p --print --no-tools --no-lsp --no-pty --no-extensions --no-skills '
                       '--no-rules --no-title --hide-thinking --no-prewalk').split())
 
@@ -135,12 +135,14 @@ def request(args):
             require(bool(tail) and not tail[0].startswith('-'))
             literal = tail.pop(0)
             require('\0' not in literal and len(literal.encode('utf-8')) <= 65536)
+            require(value != '--mode' or literal in ('text', 'json'))
             options += [value, literal]
         elif value in SWITCHES:
             options.append(value)
         else:
             flag, sep, literal = value.partition('=')
             require(sep == '=' and flag in OPTIONS and bool(literal))
+            require(flag != '--mode' or literal in ('text', 'json'))
             options.append(value)
         require(len(options) <= 128)
     # Bare `--session-new|--session-resume <h>` is a prompt-less launch; any prompt follows `--`.

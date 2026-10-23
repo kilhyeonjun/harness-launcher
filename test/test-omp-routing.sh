@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     for name in ['claude','codex','gum']:
         p=tools/name;p.write_text('#!/bin/sh\nexit 97\n');p.chmod(0o700)
     env={'HOME':str(home),'PATH':str(tools)+':/opt/homebrew/bin:/usr/bin:/bin','LC_ALL':'C','TERM':'dumb','TMPDIR':str(root),'HARNESS_CLAUDE_PLUGIN_MIRROR':'0','PYTHONDONTWRITEBYTECODE':'1','OPENAI_API_KEY':'fixture-secret-must-not-leak','ANTHROPIC_API_KEY':'fixture-secret-must-not-leak','NODE_OPTIONS':'fixture-must-not-leak','HARNESS_SESSION_HEARTBEAT_SECONDS':'0.05','HARNESS_POST_EDIT_CODEX_SYNC':'0','HARNESS_POST_COMMIT_CODEX_SYNC':'0','HARNESS_KIRO_BIN':str(tools/'absent-kiro')}
-    state=root/'sessions';env['HARNESS_SESSION_STATE_HOME']=str(state)
+    state=root/'sessions';state.mkdir(mode=0o700);env['HARNESS_SESSION_STATE_HOME']=str(state)
     # The new selector is activated only after first-rollout preparation. Keep
     # this legacy-routing fixture explicitly never-enrolled in its own HOME.
     import importlib.util
@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
         'manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
     }))
     current.chmod(0o600)
-    expected_env={'HOME':str(ns/'home'),'PATH':omp_native_path(),'LANG':'C','LC_ALL':'C','TMPDIR':str(ns/'tmp'),'XDG_CACHE_HOME':str(ns/'cache'),'XDG_CONFIG_HOME':str(ns/'config'),'XDG_STATE_HOME':str(ns/'state'),'XDG_DATA_HOME':str(ns/'data'),'PI_CODING_AGENT_DIR':str(ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(ns/'history'),'PI_NATIVES_DIR':str(ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0','PI_SHELL_PREFIX':shell_prefix(account_home)}
+    expected_env={'HOME':str(ns/'home'),'PATH':omp_native_path(),'LANG':'C','LC_ALL':'C','TMPDIR':str(ns/'tmp'),'XDG_CACHE_HOME':str(ns/'cache'),'XDG_CONFIG_HOME':str(ns/'config'),'XDG_STATE_HOME':str(ns/'state'),'XDG_DATA_HOME':str(ns/'data'),'PI_CODING_AGENT_DIR':str(ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(ns/'history'),'PI_NATIVES_DIR':str(ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0','PI_SHELL_PREFIX':shell_prefix(account_home),'HARNESS_SESSION_STATE_HOME':str(state)}
     # Calibrate only the fake interpreter startup, not the OMP contract. macOS
     # adds this nonsecret field even to a directly launched empty-env Python.
     baseline=subprocess.run([sys.executable,'-c','import os,json;print(json.dumps(dict(os.environ)))'],env=expected_env,text=True,capture_output=True,check=True)
@@ -131,7 +131,9 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
             assert got['env']=={**fake_env,**extra},(args,got['env'])
             if not entry:
                 outgoing=wire.read_bytes().split(b'\0')[:-1]
-                assert [x.decode() for x in outgoing]==['-u','_',*[k+'='+v for k,v in {**expected_env,**(extra or {})}.items()],str(binary),*tail],(args,outgoing)
+                decoded=[x.decode() for x in outgoing]
+                assert decoded[:2]==['-u','_'] and decoded[-len(tail)-1:]==[str(binary),*tail],(args,outgoing)
+                assert sorted(decoded[2:-len(tail)-1])==sorted(k+'='+v for k,v in {**expected_env,**(extra or {})}.items()),(args,outgoing)
         observations.append({'input':args,'exit':result.returncode,'entry':entry,'native':json.loads(capture.read_text()) if capture.exists() else None,'outgoing':wire.read_bytes().split(b'\0')[:-1] if wire.exists() else None})
         passed+=1
     # Break caught: OMP falls through into the Claude route rather than native.

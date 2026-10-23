@@ -1151,6 +1151,15 @@ Routing changes apply only to profiles with `HARNESS_SESSION_ISOLATION_DEFAULT=1
 
 ## Unreleased
 
+- Collect policy-managed OMP print denials through launcher-owned private
+  nonce/tuple/native-process/session receipts and return exit 2 for denied or
+  invalid results. Cover explicit text/JSON and implicit non-TTY print without
+  weakening native exec or continuation lock ownership. Forward each received
+  signal unchanged and reap native shutdown before receipt collection/finalize.
+  Caller receipt variables never enter the closed native environment.
+- Forward an actual incoming `HARNESS_SESSION_STATE_HOME` to OMP only after
+  validating an absolute existing non-symlink real directory; never synthesize it.
+  The paired required bridge forwards the validated directory to hook children.
 - `docs/orca-integration.md` no longer recommends one Orca profile per trust
   boundary. Orca profiles share one PTY daemon and readable terminal history on
   a macOS account, so they are not a security boundary. The guide now documents

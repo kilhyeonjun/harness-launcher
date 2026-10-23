@@ -293,6 +293,32 @@ command proves a model response. Other native management, direct native
 restore/resume/fork flags and unbound native flags remain refused; this is
 bounded support, not complete OMP CLI compatibility.
 
+Policy-managed OMP print accepts `-p`/`--print` and `--mode text|json`
+(including `--mode=value`). Positional and `@file` startup prompts require an
+explicit print form; piped/non-TTY stdin is still protected when native OMP
+selects print implicitly. RPC, RPC-UI and ACP remain unsupported. Caller
+`--config`, tools and extension overrides remain refused.
+
+The required main-session extension checks the exact expanded model text before
+provider dispatch. Markdown commands/templates are checked after expansion, not
+as their typed command names; custom extension commands remain disabled. Images
+and unsupported prompt shapes are refused before hooks. A canonical deny, ask,
+exit 2, readiness/binding failure or whole-gate timeout aborts dispatch and latches
+later print prompts denied. Per-hook nonblocking failures retain Claude parity.
+The whole prompt gate has a 25-second cap below the native 30-second handler
+timeout. Preparation retries reuse one verdict; sequential identical prompts
+are independent submissions. TUI and child/advisor prompt semantics are unchanged.
+
+Headless denials emit only a sanitized stderr code. A launcher-owned private
+receipt, bound to a fresh nonce, launcher tuple and native process/session,
+maps denied, missing or invalid results to exit 2 rather than an empty success.
+Caller receipt variables are not forwarded. The parent collects the result while
+native exec and continuation FD locks remain native-owned. Only an incoming,
+absolute, existing non-symlink real `HARNESS_SESSION_STATE_HOME` directory is
+forwarded into native and hook-child environments; no state location is invented.
+When absent, native receives an empty no-authority sentinel so workspace `.env`
+cannot invent a state directory; hook children do not receive that empty field.
+
 The paired normal kernel entry and an explicitly enrolled profile also support
 opt-in continuation:
 
