@@ -2,6 +2,13 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+- Cover fresh OMP TUI selection of the canonical recommended mode, including
+  recipes that list `gpt-only` before the default. Explicit Codex-only selection
+  and history replay remain covered. Document that the profile's canonical
+  model-mode source, not a launcher-specific model preference, owns the default.
+
 ## 0.77.6 — 2026-10-23
 
 - Isolated sessions now load the per-profile `GH_TOKEN` from the harness
