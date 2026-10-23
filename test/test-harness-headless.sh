@@ -1576,7 +1576,7 @@ grep -qxF "FAKE-CODEX-ENV HARNESS_COMMIT_MESSAGE_FILE=$run_tmp/commit-message" "
 [[ "$(sed -n 's/^FAKE-CODEX-HOME //p' "$log" | sort | tr '\n' ' ')" == 'AGENTS.md config.toml ' ]] || fail 'CODEX_HOME must hold exactly config.toml and AGENTS.md'
 grep -qx 'FAKE-CODEX-HOME-MODE 700' "$log" || fail 'CODEX_HOME must be 0700'
 sed -n 's/^FAKE-CODEX-CONFIG //p' "$log" > "$TMP/codex-config.toml"
-python3 - "$TMP/codex-config.toml" "$UP_PORT" <<'PY' || fail 'codex config.toml contract'
+"$FIXTURE_PYTHON" - "$TMP/codex-config.toml" "$UP_PORT" <<'PY' || fail 'codex config.toml contract'
 import re, sys, tomllib
 text = open(sys.argv[1]).read()
 c = tomllib.loads(text)

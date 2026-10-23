@@ -1151,6 +1151,14 @@ Routing changes apply only to profiles with `HARNESS_SESSION_ISOLATION_DEFAULT=1
 
 ## Unreleased
 
+- Clone isolated-session and broker snapshots through Git's transport even
+  for local repositories, avoiding filesystem-copy races with transient Git
+  maintenance files. Explicitly fetch the selected creation commit, including
+  commits reachable only from the source's remote-tracking refs.
+  Session-isolation regression fixtures use the same snapshot semantics and join
+  concurrent children before cleanup while preserving their failure statuses.
+  Headless TOML assertions use the fixture's launcher-resolved supported Python
+  rather than an incompatible host shim.
 - `docs/orca-integration.md` no longer recommends one Orca profile per trust
   boundary. Orca profiles share one PTY daemon and readable terminal history on
   a macOS account, so they are not a security boundary. The guide now documents

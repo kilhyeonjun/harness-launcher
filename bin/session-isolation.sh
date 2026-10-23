@@ -308,9 +308,12 @@ create() {
     id="$(new_id)"; dir="$state/sessions/$id"; root="$state/worktrees/$id"
     mkdir -p "$dir"
   fi
-  local -a clone_flags=(-q --no-checkout)
-  [[ "${HARNESS_HEADLESS:-0}" != 1 ]] || clone_flags+=(--no-hardlinks)
-  git clone "${clone_flags[@]}" "$source" "$root"
+  # Local filesystem copies race Git maintenance (including transient MIDX
+  # locks). The transport reads an object snapshot and never shares hardlinks.
+  git clone -q --no-local --no-checkout "$source" "$root"
+  # The selected origin/main may be newer than every local source branch.
+  # A transport clone does not fetch remote-tracking-only commits by default.
+  git -C "$root" fetch -q --no-tags origin "$sha"
   git -C "$root" remote remove origin
   git -C "$root" checkout -q --detach "$sha"
   rm -rf "$root/config/.local"
@@ -818,7 +821,7 @@ recover_unlocked() {
       pending="$(<"$dir/pending-sha")"
       if [[ ! -f "$dir/push-ack" || "$(<"$dir/push-ack")" == "$pending" ]]; then
         readback="$(mktemp -d "$(state_home)/recover-readback.XXXXXX")"
-        git clone -q "$remote" "$readback"
+        git clone -q --no-local "$remote" "$readback"
         git -C "$readback" merge-base --is-ancestor "$pending" HEAD || { rm -rf "$readback"; transition "$id" SUBMITTED "$(field "$dir/journal" identity)"; printf 'HARNESS_SESSION_ROOT=%s\nstate=SUBMITTED\n' "$(<"$dir/session-root")"; return 0; }
         while IFS= read -r -d '' kind && IFS= read -r -d '' mode && IFS= read -r -d '' hash && IFS= read -r -d '' path; do
           if [[ "$kind" == D ]]; then git -C "$readback" cat-file -e "$pending:$path" 2>/dev/null && { rm -rf "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }; continue; fi
@@ -1130,7 +1133,7 @@ run_repository_verifier() {
   local candidate="$1" id="$2" remote="$3" baseline="$4" trusted verifier help_output
   local -a verifier_args
   trusted="$(mktemp -d "$(state_home)/verifier.XXXXXX")" || return 2
-  { git clone -q "$remote" "$trusted" && git -C "$trusted" checkout -q --detach "$baseline"; } || { rm -rf "$trusted"; return 2; }
+  { git clone -q --no-local "$remote" "$trusted" && git -C "$trusted" checkout -q --detach "$baseline"; } || { rm -rf "$trusted"; return 2; }
   verifier="$trusted/core/bin/auto-deliver.sh"
   [[ -f "$verifier" ]] || { echo 'ERROR: repository-owned core/bin/auto-deliver.sh verifier is required' >&2; rm -rf "$trusted"; return 2; }
   verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push)
@@ -1228,7 +1231,7 @@ integrate_unlocked() {
   for attempt in 1 2; do
     integration_phase preparing || return $?
     candidate="$(mktemp -d "$(state_home)/candidate.XXXXXX")"
-    git clone -q "$remote" "$candidate"
+    git clone -q --no-local "$remote" "$candidate"
     git -C "$candidate" checkout -q main
     current="$(git -C "$candidate" rev-parse HEAD)"
     if ! git -C "$candidate" apply --3way --index "$input/submission.patch"; then rm -rf "$candidate"; transition "$id" CONFLICT; return 3; fi
@@ -1278,7 +1281,7 @@ integrate_unlocked() {
       [[ "${HARNESS_SESSION_TEST_READBACK_FAIL:-0}" == 1 ]] && { rm -rf "$candidate"; return 4; }
       readback="$(mktemp -d "$(state_home)/readback.XXXXXX")"
       integration_phase readback || return $?
-      git clone -q "$remote" "$readback"
+      git clone -q --no-local "$remote" "$readback"
       git -C "$readback" merge-base --is-ancestor "$delivered" HEAD || { rm -rf "$candidate" "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }
       while IFS= read -r -d '' kind && IFS= read -r -d '' mode && IFS= read -r -d '' hash && IFS= read -r -d '' path; do
         if [[ "$kind" == D ]]; then git -C "$readback" cat-file -e "$delivered:$path" 2>/dev/null && { rm -rf "$candidate" "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }; continue; fi
