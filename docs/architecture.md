@@ -220,8 +220,10 @@ fields), plus the v2 additions of decision 038:
   continuation caller sets it; a caller's own value is never forwarded, and the
   always-present empty value keeps a workspace `.env` from supplying one.
 - `GH_TOKEN`, only when `harness_gh_token_load` succeeds for the profile, as
-  for Claude and Codex launches (fail-open: no token, never an empty one). A
-  caller's `GH_TOKEN` is never forwarded. Because `argv` is visible to every
+  for Claude and Codex launches (fail-open: no token, never an empty one). With
+  the validated harness tuple, the loader reads `HARNESS_SOURCE_ROOT`, because an
+  isolated session worktree lacks the gitignored `config/.local` where team
+  profiles keep `github_user`. A caller's `GH_TOKEN` is never forwarded. Because `argv` is visible to every
   local user, the launch does not use `env -i`: it unsets every export of its
   own subshell except that token, then runs
   `/usr/bin/env -u _ <fields> <binary>`, so the token travels only in the

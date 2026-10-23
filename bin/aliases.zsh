@@ -1457,8 +1457,12 @@ _harness_launcher_omp_native() (
   }
   local -a extra=(PI_AUTO_QA=0 "PI_SHELL_PREFIX=export HOME='$account_home'; unset XDG_CONFIG_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_DATA_HOME;")
   local sid="${HARNESS_SESSION_ID-}" src="${HARNESS_SOURCE_ROOT-}" sroot="${HARNESS_SESSION_ROOT-}" rdir="${HARNESS_RUN_DIR-}"
+  local gh_dir="${HARNESS_DIR-}"
   if [[ "$sid" =~ $_HARNESS_LAUNCHER_UUID_RE && "$src" == /* && "$sroot" == /* && "$rdir" == /* ]]; then
     extra+=(HARNESS_SESSION_ID="$sid" HARNESS_SOURCE_ROOT="$src" HARNESS_SESSION_ROOT="$sroot" HARNESS_RUN_DIR="$rdir")
+    # An isolated session worktree lacks the gitignored per-machine config/.local
+    # where team profiles keep github_user; read it from the source root.
+    gh_dir="$src"
   fi
   if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
     extra+=(HERDR_ENV=1 HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" HERDR_PANE_ID="$HERDR_PANE_ID")
@@ -1473,7 +1477,7 @@ _harness_launcher_omp_native() (
   # Per-harness GitHub identity as for Claude/Codex: only the loader's own
   # result, never the caller's value or an empty token (this is a subshell).
   local HARNESS_GH_USER=""
-  [[ -n "${HARNESS_DIR-}" ]] && harness_gh_token_load "$HARNESS_DIR" >/dev/null 2>&1 || unset GH_TOKEN
+  [[ -n "$gh_dir" ]] && harness_gh_token_load "$gh_dir" >/dev/null 2>&1 || unset GH_TOKEN
   local native_path
   native_path="$(_harness_launcher_omp_native_path)" || return 2
   local -a native_env=(HOME="$root/home" PATH="$native_path" LANG=C LC_ALL=C
@@ -2302,7 +2306,8 @@ _harness_launcher_run_session() {
     local ${=HARNESS_AGENT_USAGE_DISCARD_VARS}
     # Per-harness GitHub identity: fail-open, never overrides with an empty token.
     local GH_TOKEN HARNESS_GH_USER
-    harness_gh_token_load "$HARNESS_DIR" || true
+    # The session worktree lacks the gitignored config/.local (team github_user).
+    harness_gh_token_load "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || true
     if harness_observability_load "$HARNESS_DIR"; then
       local CLAUDE_CODE_ENABLE_TELEMETRY=1
       local OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none
@@ -2821,7 +2826,8 @@ _harness_launcher_run_codex_cli() {
   local ${=HARNESS_AGENT_USAGE_DISCARD_VARS}
   # Per-harness GitHub identity: fail-open, never overrides with an empty token.
   local GH_TOKEN HARNESS_GH_USER
-  harness_gh_token_load "$HARNESS_DIR" || true
+  # The session worktree lacks the gitignored config/.local (team github_user).
+  harness_gh_token_load "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || true
   if harness_observability_load "$HARNESS_DIR"; then
     OTEL_RESOURCE_ATTRIBUTES="service.name=codex_exec,obs.runtime=codex,obs.profile=$HARNESS_OBSERVABILITY_PROFILE"
     export OTEL_RESOURCE_ATTRIBUTES

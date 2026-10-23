@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.77.6 — 2026-10-23
+
+- Isolated sessions now load the per-profile `GH_TOKEN` from the harness
+  source root instead of the session worktree, for OMP, Claude and Codex
+  launches alike. Team profiles keep `github_user` in gitignored
+  `config/.local`, which a worktree does not have, so team-profile sessions ran
+  without a token and `gh` used the host's global account.
+
 ## 0.77.5 — 2026-10-23
 
 - Preserve the fresh workspace selected by a pure Codex history resume when

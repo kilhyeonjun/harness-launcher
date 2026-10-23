@@ -226,6 +226,16 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
         assert wire.read_bytes().split(b'\0')[:2]==[b'-u',b'_'] and token.encode() not in wire.read_bytes()
         assert token.encode() not in done.stdout+done.stderr
         passed+=1
+    # Isolated session: HARNESS_DIR is the session worktree, which lacks the
+    # gitignored config/.local where team profiles keep github_user, so the
+    # token comes from HARNESS_SOURCE_ROOT. Break caught: team-profile OMP launched
+    # without GH_TOKEN and gh resolved the host's global account.
+    (ghdir/'mode').write_text('');(ghprofile/'config/config.yaml').write_text('github_user: fixture-user\n')
+    worktree=root/'gh worktree';worktree.mkdir()
+    sess={**tuple_env,'HARNESS_SOURCE_ROOT':str(ghprofile)}
+    got=native_env(assign(sess)+'; HARNESS_DIR='+shlex.quote(str(worktree)),path=ghpath)
+    assert got=={**fake_env,**sess,'GH_TOKEN':token},got
+    passed+=1
     # An empty profile dir never reaches the loader (no /config lookup): a
     # loader stub that would hand out a token must not be called.
     stub='harness_gh_token_load(){ export GH_TOKEN=stub-token; }; '
