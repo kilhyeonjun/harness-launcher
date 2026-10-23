@@ -5,7 +5,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ISOLATION="$ROOT/bin/session-isolation.sh"
 TMP="$(mktemp -d)"
-trap '[[ ! -d "$TMP/csmnt" ]] || hdiutil detach -quiet -force "$TMP/csmnt" 2>/dev/null; chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  # A failed concurrent child must not delete fixtures under its sibling.
+  # Cleanup is best-effort, but must retain the original assertion/tool status.
+  set +e
+  wait
+  [[ ! -d "$TMP/csmnt" ]] || hdiutil detach -quiet -force "$TMP/csmnt" 2>/dev/null
+  chmod -R u+w "$TMP" 2>/dev/null
+  rm -rf "$TMP"
+  exit "$rc"
+}
+trap cleanup EXIT
 
 SOURCE="$TMP/source"
 STATE="$TMP/state"
@@ -33,8 +45,13 @@ create() {
   HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE"
 }
 
+# Git maintenance metadata is not an object. A dangling transient entry makes
+# filesystem-copy clones fail deterministically without racing a real GC.
+# Creation must obtain reachable objects through Git's transport instead.
+ln -s "$TMP/vanished-midx-lock" "$SOURCE/.git/objects/pack/multi-pack-index.lock"
 first="$(create)"
 second="$(create)"
+rm "$SOURCE/.git/objects/pack/multi-pack-index.lock"
 first_root="$(printf '%s\n' "$first" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
 second_root="$(printf '%s\n' "$second" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
 first_id="$(printf '%s\n' "$first" | sed -n 's/^HARNESS_SESSION_ID=//p')"
@@ -161,7 +178,7 @@ sed -i '' 's/^heartbeat=.*/heartbeat=2999-01-01T00:00:00Z/' "$STATE/sessions/$fu
 HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
 [[ -d "$future_root" ]] || { echo 'FAIL: GC must retain future-dated terminal journals'; exit 1; }
 ADVANCE_CLONE="$TMP/create-advance"
-git clone -q "$REMOTE" "$ADVANCE_CLONE"
+git clone -q --no-local "$REMOTE" "$ADVANCE_CLONE"
 git -C "$ADVANCE_CLONE" config user.email test@example.invalid
 git -C "$ADVANCE_CLONE" config user.name test
 printf '%s\n' remote-latest > "$ADVANCE_CLONE/remote-latest.txt"
@@ -253,13 +270,16 @@ cat > "$VERIFY" <<'EOF'
 #!/usr/bin/env bash
 n=0; [[ -f "$COUNT" ]] && n="$(<"$COUNT")"; n=$((n + 1)); printf '%s\n' "$n" > "$COUNT"
 if [[ "$n" == 1 ]]; then
-  d="$(mktemp -d)"; git clone -q "$REMOTE" "$d"; git -C "$d" config user.email test@example.invalid; git -C "$d" config user.name test; printf '%s\n' advance > "$d/advance.txt"; git -C "$d" add advance.txt; git -C "$d" commit -qm advance; git -C "$d" push -q origin HEAD:main; rm -rf "$d"
+  d="$(mktemp -d)"; git clone -q --no-local "$REMOTE" "$d"; git -C "$d" config user.email test@example.invalid; git -C "$d" config user.name test; printf '%s\n' advance > "$d/advance.txt"; git -C "$d" add advance.txt; git -C "$d" commit -qm advance; git -C "$d" push -q origin HEAD:main; rm -rf "$d"
 fi
 EOF
 chmod +x "$VERIFY"
 COUNT="$COUNT" REMOTE="$REMOTE" HARNESS_TEST_VERIFIER="$VERIFY" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$advance_id"
 [[ "$(<"$COUNT")" -ge 2 ]] || { echo 'FAIL: remote advance must force verifier re-run'; exit 1; }
 
+# The same non-object metadata must not enter candidate, verifier, normal
+# readback or recovery clones, including concurrent integrations below.
+ln -s "$TMP/vanished-remote-midx-lock" "$REMOTE/objects/pack/multi-pack-index.lock"
 readback="$(create)"; readback_root="$(printf '%s\n' "$readback" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; readback_id="$(printf '%s\n' "$readback" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 printf '%s\n' readback > "$readback_root/readback.txt"; git -C "$readback_root" add readback.txt; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$readback_id"
 if HARNESS_SESSION_TEST_READBACK_FAIL=1 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$readback_id"; then echo 'FAIL: readback outage must defer delivery'; exit 1; fi
@@ -269,8 +289,15 @@ HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$readback_id" | grep -
 disjoint_a="$(create)"; disjoint_b="$(create)"; da_root="$(printf '%s\n' "$disjoint_a" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; db_root="$(printf '%s\n' "$disjoint_b" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; da_id="$(printf '%s\n' "$disjoint_a" | sed -n 's/^HARNESS_SESSION_ID=//p')"; db_id="$(printf '%s\n' "$disjoint_b" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 printf a > "$da_root/disjoint-a"; printf b > "$db_root/disjoint-b"; git -C "$da_root" add disjoint-a; git -C "$db_root" add disjoint-b
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$da_id"; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$db_id"
-HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$da_id" & pa=$!; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$db_id" & pb=$!; wait "$pa"; wait "$pb"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$da_id" & pa=$!
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$db_id" & pb=$!
+a_rc=0; b_rc=0
+wait "$pa" || a_rc=$?
+wait "$pb" || b_rc=$?
+[[ "$a_rc" == 0 && "$b_rc" == 0 ]] || { echo "FAIL: concurrent integrations exited $a_rc/$b_rc"; exit 1; }
+rm "$REMOTE/objects/pack/multi-pack-index.lock"
 git --git-dir="$REMOTE" show main:disjoint-a >/dev/null && git --git-dir="$REMOTE" show main:disjoint-b >/dev/null || { echo 'FAIL: disjoint concurrent submissions must both deliver'; exit 1; }
+echo 'PASS: creation and broker snapshots ignore transient non-object maintenance entries'
 
 git -C "$SOURCE" fetch -q origin main:refs/remotes/origin/main
 paths="$(create)"; paths_root="$(printf '%s\n' "$paths" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; paths_id="$(printf '%s\n' "$paths" | sed -n 's/^HARNESS_SESSION_ID=//p')"
@@ -316,7 +343,7 @@ RETRY_COUNT="$TMP/retry-count"; RETRY_VERIFY="$TMP/retry-advance.sh"
 cat > "$RETRY_VERIFY" <<'EOF'
 #!/usr/bin/env bash
 n=0; [[ -f "$RETRY_COUNT" ]] && n="$(<"$RETRY_COUNT")"; n=$((n + 1)); printf '%s\n' "$n" > "$RETRY_COUNT"
-d="$(mktemp -d)"; git clone -q "$REMOTE" "$d"; git -C "$d" config user.email test@example.invalid; git -C "$d" config user.name test
+d="$(mktemp -d)"; git clone -q --no-local "$REMOTE" "$d"; git -C "$d" config user.email test@example.invalid; git -C "$d" config user.name test
 touch "$d/remote-advance-$n"; git -C "$d" add .; git -C "$d" commit -qm "advance $n"; git -C "$d" push -q origin HEAD:main; rm -rf "$d"
 EOF
 chmod +x "$RETRY_VERIFY"
@@ -358,7 +385,7 @@ HARNESS_SESSION_TEST_POST_PUSH_DELAY=2 HARNESS_SESSION_STATE_HOME="$STATE" "$ISO
 # acknowledgement itself within a bounded minute, rather than racing startup.
 for _ in {1..1200}; do [[ -f "$STATE/sessions/$postpush_race_id/push-ack" ]] && break; sleep 0.05; done
 [[ -f "$STATE/sessions/$postpush_race_id/push-ack" ]] || { echo 'FAIL: successful push must persist an acknowledgement before readback'; exit 1; }
-race_advance="$TMP/postpush-race-advance"; git clone -q "$REMOTE" "$race_advance"; git -C "$race_advance" config user.email test@example.invalid; git -C "$race_advance" config user.name test
+race_advance="$TMP/postpush-race-advance"; git clone -q --no-local "$REMOTE" "$race_advance"; git -C "$race_advance" config user.email test@example.invalid; git -C "$race_advance" config user.name test
 printf advanced > "$race_advance/after-race"; git -C "$race_advance" add after-race; git -C "$race_advance" commit -qm after-race; git -C "$race_advance" push -q origin HEAD:main
 wait "$race_pid"
 grep -qx state=DELIVERED "$STATE/sessions/$postpush_race_id/journal" || { echo 'FAIL: a later remote descendant must not invalidate an acknowledged delivery'; exit 1; }
@@ -625,7 +652,7 @@ HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ok_id"
 git --git-dir="$REMOTE" show main:committed-normal.txt >/dev/null || { echo 'FAIL: committed normal paths must be delivered'; exit 1; }
 
 # Interactive close when the harness .gitignore ignores the machine-local links.
-git clone -q "$REMOTE" "$TMP/ignore-clone"
+git clone -q --no-local "$REMOTE" "$TMP/ignore-clone"
 printf '%s\n' '.claude/settings.local.json' 'mcp.local.json' '/projects' > "$TMP/ignore-clone/.gitignore"
 git -C "$TMP/ignore-clone" add .gitignore
 git -C "$TMP/ignore-clone" -c user.name=t -c user.email=t@example.invalid commit -qm ignore-local
@@ -785,7 +812,7 @@ fi
 
 # Headless verifiers run in a sandbox with a minimal environment; the
 # interactive verifier is unchanged.
-git clone -q "$REMOTE" "$TMP/vfix"
+git clone -q --no-local "$REMOTE" "$TMP/vfix"
 cat >> "$TMP/vfix/core/bin/auto-deliver.sh" <<'EOF'
 if [[ -e verifier-env-probe ]]; then
   env | sed 's/^/VERIFIER-ENV /'
@@ -883,7 +910,7 @@ for mode in headless interactive; do
   [[ "$(jfield "$d_id" state)" == DISCARDED && -z "$(jfield "$d_id" identity)" ]] || { echo "FAIL: $mode discard must end DISCARDED"; exit 1; }
   [[ -f "$d_dir/discarded.patch" && ! -L "$d_dir/discarded.patch" && -s "$d_dir/discarded.patch" ]] || { echo "FAIL: $mode discard must keep the patch"; exit 1; }
   grep -Eqx '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' "$d_dir/discarded-at" || { echo "FAIL: $mode discard must record discarded-at"; exit 1; }
-  fresh="$TMP/discard-fresh-$mode"; git clone -q "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$d_dir/base-sha")"
+  fresh="$TMP/discard-fresh-$mode"; git clone -q --no-local "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$d_dir/base-sha")"
   git -C "$fresh" apply --check "$d_dir/discarded.patch" && git -C "$fresh" apply "$d_dir/discarded.patch" || { echo "FAIL: $mode patch must apply at base"; exit 1; }
   for f in merge.txt discard-committed.txt discard-untracked.txt discard.bin; do
     cmp -s "$fresh/$f" "$d_root/$f" || { echo "FAIL: $mode patch must reproduce $f"; exit 1; }
@@ -932,7 +959,7 @@ git -C "$ix_root" -c user.name=t -c user.email=t@example.invalid commit -qm inde
 ix_index_before="$(shasum "$(git -C "$ix_root" rev-parse --absolute-git-dir)/index")"
 iso exit "$ix_id"; iso discard "$ix_id" || { echo 'FAIL: index-seeded discard must succeed'; exit 1; }
 [[ "$(shasum "$(git -C "$ix_root" rev-parse --absolute-git-dir)/index")" == "$ix_index_before" ]] || { echo 'FAIL: discard must not write the session index'; exit 1; }
-fresh="$TMP/discard-fresh-index"; git clone -q "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$STATE/sessions/$ix_id/base-sha")"
+fresh="$TMP/discard-fresh-index"; git clone -q --no-local "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$STATE/sessions/$ix_id/base-sha")"
 git -C "$fresh" apply "$STATE/sessions/$ix_id/discarded.patch" || { echo 'FAIL: index-seeded patch must apply at base'; exit 1; }
 [[ "$(<"$fresh/ign/x")" == forced ]] || { echo 'FAIL: a force-added ignored file must be kept in the patch'; exit 1; }
 [[ ! -e "$fresh/merge.txt" ]] || { echo 'FAIL: a git rm --cached file must stay deleted in the patch'; exit 1; }

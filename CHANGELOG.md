@@ -1151,6 +1151,14 @@ Routing changes apply only to profiles with `HARNESS_SESSION_ISOLATION_DEFAULT=1
 
 ## Unreleased
 
+- Clone isolated-session and broker snapshots through Git's transport even
+  for local repositories, avoiding filesystem-copy races with transient Git
+  maintenance files. Explicitly fetch the selected creation commit, including
+  commits reachable only from the source's remote-tracking refs.
+  Session-isolation regression fixtures use the same snapshot semantics and join
+  concurrent children before cleanup while preserving their failure statuses.
+  Headless TOML assertions use the fixture's launcher-resolved supported Python
+  rather than an incompatible host shim.
 - Classify Codex `mcp-server` as rejecting `--profile`, matching Codex
   0.144.1. The launcher still blocks this server entry point; `mcp` remains
   profile-capable. Cover classification even when Codex is not installed.
