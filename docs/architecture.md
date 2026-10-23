@@ -189,6 +189,17 @@ fields), plus the v2 additions of decision 038:
 - `PI_AUTO_QA=0`, always. It is OMP's highest-priority source for
   `dev.autoqa`; without it OMP pushes tool-issue reports to an external QA
   service.
+- `PI_SHELL_PREFIX`, always:
+  `export HOME='<account home>'; unset XDG_CONFIG_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_DATA_HOME;`.
+  OMP's bash tool runs `<prefix> <command>` through a login shell that
+  inherits the namespace `HOME`, so without it the model's commands lose the
+  account's `gh` keyring, `~/.gitconfig` (identity `includeIf`, credential
+  helper) and `~/.local/state`. OMP itself keeps the namespace `HOME` and XDG
+  roots; `TMPDIR` is unchanged. The account home is the passwd home
+  (`/usr/bin/id -P`, second-to-last field), never the caller's `$HOME`. It must
+  be an existing absolute directory made only of letters, digits, space and
+  `._/+@,%-`, so the single quotes cannot be escaped; otherwise the launch is
+  refused with `OMP_ACCOUNT_HOME_INVALID`.
 - `HARNESS_SESSION_ID`, `HARNESS_SOURCE_ROOT`, `HARNESS_SESSION_ROOT` and
   `HARNESS_RUN_DIR`, only as a whole and only when the runner set all four and
   they are valid (a UUID and three absolute paths). The broker's delivery and
@@ -208,6 +219,14 @@ fields), plus the v2 additions of decision 038:
   launcher instead of a bare `omp --resume`. Otherwise it is empty. Only the
   continuation caller sets it; a caller's own value is never forwarded, and the
   always-present empty value keeps a workspace `.env` from supplying one.
+- `GH_TOKEN`, only when `harness_gh_token_load` succeeds for the profile, as
+  for Claude and Codex launches (fail-open: no token, never an empty one). A
+  caller's `GH_TOKEN` is never forwarded. Because `argv` is visible to every
+  local user, the launch does not use `env -i`: it unsets every export of its
+  own subshell except that token, then runs
+  `/usr/bin/env -u _ <fields> <binary>`, so the token travels only in the
+  environment. An export it cannot clear (readonly) refuses the launch with
+  `OMP_ENV_NOT_CLOSED`.
 
 Ambient API keys, Node options, other runtime homes and any other caller
 variable are not forwarded. Native/platform startup may subsequently change its own process
@@ -422,11 +441,21 @@ An active selected row joins payload generation, enrollment generation,
 canonical row SHA-256 and operation provenance. Its host includes installation
 locator, OS hostname/system/architecture/UID and registry-directory identity.
 Its profile includes root/registry identities and registry hash. The row pins
-current managed selection hash/revision/manifest and consumer source hash,
 the exact physical `0555` executable/full hash/size/UID/release, and the `0700`
 prepared namespace/physical identity/`0600` owner-marker hash and owner
-binding. The selected snapshot manifest must contain and hash both consumer
-and helper; the stager already packages all tracked `bin` files. A fresh-shell
+binding. It also records the managed selection hash/revision/manifest and
+consumer source hash, but only as publish-time provenance: the publisher
+requires them to equal the live values when it writes the row, and readers do
+not compare them. Each read instead requires the consumer to be the current
+`current.json` snapshot's `bin/aliases.zsh` and the snapshot manifest to match
+and hash both consumer and helper; the stager already packages all tracked
+`bin` files. Activation is itself the reviewed release step. Pinning the row
+to one launcher revision made every activation fail every row with
+`OMP_BINDING_MISMATCH` until the operator republished identical receipts,
+which attested nothing new. The publisher compares a re-published profile
+binding through the same device remapping readers use, so a reboot that
+renumbers APFS devices does not block republication; a different root or
+registry hash still does. A fresh-shell
 snapshot test verifies helper availability rather than assuming a fixed
 release file count. The index is re-read with unchanged bytes and file
 identity after selection (I1/I2); disagreement stops without retry. Only then

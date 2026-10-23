@@ -2,6 +2,35 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.77.3 — 2026-10-23
+
+- An enrolled OMP projection row stays valid across launcher activation.
+  Readers still require the consumer to be the current snapshot's
+  `aliases.zsh` with matching manifest hashes, but no longer compare the row's
+  stored launcher revision/hashes to the live ones. Those values remain
+  publish-time provenance, and the publisher still requires them to be true
+  when it writes the row. Profile, binary, namespace and selection checks are
+  unchanged.
+- The publisher matches a re-published profile binding through the same device
+  remapping as readers, so republishing works after a reboot renumbers APFS
+  devices. A different root still fails with `OMP_BINDING_MISMATCH`.
+- Rolling back to a launcher snapshot that predates this change still fails
+  every row with `OMP_BINDING_MISMATCH` until the row is republished.
+- `omp --session-resume <handle>` (and `--session-new`) without a trailing `--`
+  is accepted as a prompt-less launch. A prompt still has to follow `--`.
+- Native OMP's bash tool now runs the model's commands with the account home.
+  The launcher adds `PI_SHELL_PREFIX` (`export HOME='<passwd home>'; unset
+  XDG_CONFIG_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_DATA_HOME;`), so `gh auth`,
+  `~/.gitconfig` identities and credential helper, and `~/.local/state` work in
+  OMP sessions again. OMP itself keeps its namespace `HOME`. The home comes from
+  `/usr/bin/id -P`, never the caller's `$HOME`; an unsafe or missing one refuses
+  the launch with `OMP_ACCOUNT_HOME_INVALID`.
+- Native OMP launches (plain, `--session-new`, `--session-resume`) get the
+  profile's `GH_TOKEN` from `harness_gh_token_load`, like Claude and Codex
+  (fail-open, never the caller's token). The launch now clears its own exports
+  and runs `/usr/bin/env -u _` instead of `env -i`, so the token never appears
+  in `argv`.
+
 ## 0.77.2 — 2026-10-23
 
 - Add the operator command `codex-hook-trust.py capture --session-id UUID [--profile]

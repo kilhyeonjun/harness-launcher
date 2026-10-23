@@ -7,6 +7,11 @@ from pathlib import Path
 import hashlib, json, os, shlex, signal, subprocess, sys, tempfile, time
 
 repo=Path(sys.argv[1]); passed=0; observations=[]
+import pwd
+# The account (passwd) home, never the caller's $HOME, and its exact OMP bash prefix.
+account_home=pwd.getpwuid(os.getuid()).pw_dir
+def shell_prefix(home):
+    return "export HOME='"+home+"'; unset XDG_CONFIG_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_DATA_HOME;"
 def omp_native_path():
     """Env contract v2 PATH: /usr/bin:/bin plus the CPU's Homebrew bin when it
     is a real user/root-owned directory without other-write (group write only
@@ -86,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
         'manifest_sha256': hashlib.sha256(manifest.read_bytes()).hexdigest(),
     }))
     current.chmod(0o600)
-    expected_env={'HOME':str(ns/'home'),'PATH':omp_native_path(),'LANG':'C','LC_ALL':'C','TMPDIR':str(ns/'tmp'),'XDG_CACHE_HOME':str(ns/'cache'),'XDG_CONFIG_HOME':str(ns/'config'),'XDG_STATE_HOME':str(ns/'state'),'XDG_DATA_HOME':str(ns/'data'),'PI_CODING_AGENT_DIR':str(ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(ns/'history'),'PI_NATIVES_DIR':str(ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0'}
+    expected_env={'HOME':str(ns/'home'),'PATH':omp_native_path(),'LANG':'C','LC_ALL':'C','TMPDIR':str(ns/'tmp'),'XDG_CACHE_HOME':str(ns/'cache'),'XDG_CONFIG_HOME':str(ns/'config'),'XDG_STATE_HOME':str(ns/'state'),'XDG_DATA_HOME':str(ns/'data'),'PI_CODING_AGENT_DIR':str(ns/'agent'),'PI_CODING_AGENT_SESSION_DIR':str(ns/'history'),'PI_NATIVES_DIR':str(ns/'native-cache'),'TERM':'xterm-256color','PI_AUTO_QA':'0','PI_SHELL_PREFIX':shell_prefix(account_home)}
     # Calibrate only the fake interpreter startup, not the OMP contract. macOS
     # adds this nonsecret field even to a directly launched empty-env Python.
     baseline=subprocess.run([sys.executable,'-c','import os,json;print(json.dumps(dict(os.environ)))'],env=expected_env,text=True,capture_output=True,check=True)
@@ -126,7 +131,7 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
             assert got['env']=={**fake_env,**extra},(args,got['env'])
             if not entry:
                 outgoing=wire.read_bytes().split(b'\0')[:-1]
-                assert [x.decode() for x in outgoing]==['-i',*[k+'='+v for k,v in {**expected_env,**(extra or {})}.items()],str(binary),*tail],(args,outgoing)
+                assert [x.decode() for x in outgoing]==['-u','_',*[k+'='+v for k,v in {**expected_env,**(extra or {})}.items()],str(binary),*tail],(args,outgoing)
         observations.append({'input':args,'exit':result.returncode,'entry':entry,'native':json.loads(capture.read_text()) if capture.exists() else None,'outgoing':wire.read_bytes().split(b'\0')[:-1] if wire.exists() else None})
         passed+=1
     # Break caught: OMP falls through into the Claude route rather than native.
@@ -138,19 +143,25 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
     uid='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     tuple_env={'HARNESS_SESSION_ID':uid,'HARNESS_SOURCE_ROOT':'/src','HARNESS_SESSION_ROOT':'/sess','HARNESS_RUN_DIR':'/run'}
     herdr_env={'HERDR_ENV':'1','HERDR_SOCKET_PATH':'/tmp/herdr.sock','HERDR_PANE_ID':'p_1'}
-    leak={'HERDR_PANE_ID_X':'x','HARNESS_PREFIX':'leak','CODEX_THREAD_ID':'leak','PI_CODING_AGENT_DIR':'/leak','PI_AUTO_QA':'1'}
+    leak={'HERDR_PANE_ID_X':'x','HARNESS_PREFIX':'leak','CODEX_THREAD_ID':'leak','PI_CODING_AGENT_DIR':'/leak','PI_AUTO_QA':'1',
+          'GH_TOKEN':'caller-token-must-not-leak','XDG_CONFIG_HOME':'/leak-xdg','PI_SHELL_PREFIX':'leak;',
+          'BASH_FUNC_x%%':'() { :; }','a-b':'1'}
     # Through the public dispatcher the runner discards the caller's own session
     # tuple and the runtime filter drops a herdr pane without a live socket, so
     # nothing optional (and nothing from `leak`) reaches the native.
     for caller in [{},{**tuple_env,**herdr_env,**leak}]:
         run(['omp','--version'],tail=['--version'],caller=caller,extra={})
     # Direct call of the env builder: the tuple is what the outer runner set.
-    def native_env(setup):
+    def native_env(setup,expected=0,path=None,full=False):
         capture.unlink(missing_ok=True)
         script='source "$1/bin/aliases.zsh"; HARNESS_OMP_ROOT="$2" HARNESS_OMP_BIN="$3"; '+setup+'; _harness_launcher_omp_native "$2/cwd" --version'
-        done=subprocess.run(['/bin/zsh','-f','-c',script,'test',str(repo),str(ns),str(binary)],cwd=profile,env={**env,**leak},capture_output=True,timeout=20)
-        assert done.returncode==0,(setup,done.stderr.decode())
-        return json.loads(capture.read_text())['env']
+        done=subprocess.run(['/bin/zsh','-f','-c',script,'test',str(repo),str(ns),str(binary)],cwd=profile,env={**env,**leak,**({'PATH':path} if path else {})},capture_output=True,timeout=20)
+        assert done.returncode==expected,(setup,done.returncode,done.stderr.decode())
+        if expected:
+            assert not capture.exists(),('refusal launched native',setup)
+            return done
+        got=json.loads(capture.read_text())['env']
+        return (got,done) if full else got
     def assign(values):return '; '.join(k+'='+shlex.quote(v) for k,v in values.items())
     for values,extra in [
         (tuple_env,tuple_env),
@@ -171,6 +182,61 @@ with tempfile.TemporaryDirectory(prefix='omp-routing-') as tmp:
         got=native_env(assign(values))
         assert got=={**fake_env,**extra},(values,got)
         passed+=1
+    # OMP bash tool account shell: PI_SHELL_PREFIX restores the passwd home
+    # (never the caller's $HOME) and drops the namespace XDG roots for the
+    # model's commands only. Breaks caught: caller HOME, unquoted or missing
+    # prefix, admitting a relative/missing/shell-special home.
+    def passwd(home):
+        return "_harness_launcher_passwd_record(){ print -r -- "+shlex.quote('u:*:501:20::0:0:G:E:C:O:S:'+home+':/bin/zsh')+"; }"
+    spaced=root/'account home'
+    spaced.mkdir()
+    got=native_env(passwd(str(spaced)))
+    assert got=={**fake_env,'PI_SHELL_PREFIX':shell_prefix(str(spaced))},got
+    shell=subprocess.run(['/bin/sh','-c',got['PI_SHELL_PREFIX']+' printf "%s|%s" "$HOME" "${XDG_CONFIG_HOME-unset}"'],
+                         env={'HOME':'/wrong','XDG_CONFIG_HOME':'/wrong'},capture_output=True,text=True,check=True)
+    assert shell.stdout==str(spaced)+'|unset',shell.stdout
+    passed+=1
+    for bad in ['relative/home','',str(root/'missing'),str(marker),str(root)+"/it's",str(root)+'/$(touch x)',str(root)+'/a`b',str(root)+'/a;b']:
+        if bad.startswith(str(root)+'/') and not bad.endswith(('missing','.json')):Path(bad).mkdir(exist_ok=True)
+        done=native_env(passwd(bad),expected=2)
+        assert b'OMP_ACCOUNT_HOME_INVALID' in done.stderr,(bad,done.stderr)
+        passed+=1
+    done=native_env('_harness_launcher_passwd_record(){ return 1; }',expected=2)
+    assert b'OMP_ACCOUNT_HOME_INVALID' in done.stderr,done.stderr
+    passed+=1
+    # Per-harness GH_TOKEN: forwarded only when harness_gh_token_load succeeds
+    # for this profile, never the caller's value, never empty, never printed.
+    ghdir=root/'gh-stub';ghdir.mkdir()
+    token='ghs_fixture_token_value_never_printed'
+    gh=ghdir/'gh';gh.write_text('#!/bin/sh\n[ "$1 $2 $3 $4" = "auth token --user fixture-user" ] || exit 9\nmode=$(cat '+shlex.quote(str(ghdir/'mode'))+' 2>/dev/null)\n[ "$mode" = fail ] && exit 1\n[ "$mode" = empty ] && exit 0\nprintf "%s\\n" '+token+'\n');gh.chmod(0o700)
+    ghprofile=root/'gh profile';(ghprofile/'config').mkdir(parents=True)
+    ghpath=str(ghdir)+':/usr/bin:/bin'
+    for mode,ghconfig,setup,forwarded in [
+        ('','github_user: fixture-user\n','',True),
+        ('fail','github_user: fixture-user\n','',False),
+        ('empty','github_user: fixture-user\n','',False),
+        ('','other: x\n','',False),
+        ('','github_user: fixture-user\n','HARNESS_HEADLESS=1; ',False),
+    ]:
+        (ghdir/'mode').write_text(mode);(ghprofile/'config/config.yaml').write_text(ghconfig)
+        wire.unlink(missing_ok=True)
+        got,done=native_env(spy+setup+'HARNESS_DIR='+shlex.quote(str(ghprofile)),path=ghpath,full=True)
+        assert got=={**fake_env,**({'GH_TOKEN':token} if forwarded else {})},(mode,ghconfig,setup,got)
+        # The token travels in environ only: never in env's argv or any output.
+        assert wire.read_bytes().split(b'\0')[:2]==[b'-u',b'_'] and token.encode() not in wire.read_bytes()
+        assert token.encode() not in done.stdout+done.stderr
+        passed+=1
+    # An empty profile dir never reaches the loader (no /config lookup): a
+    # loader stub that would hand out a token must not be called.
+    stub='harness_gh_token_load(){ export GH_TOKEN=stub-token; }; '
+    for setup in ['HARNESS_DIR=','unset HARNESS_DIR']:
+        got=native_env(stub+setup)
+        assert got==fake_env,(setup,got)
+        passed+=1
+    # An export the launcher cannot clear refuses instead of leaking.
+    done=native_env('typeset -rx READONLY_CALLER_VAR=leak',expected=2)
+    assert b'OMP_ENV_NOT_CLOSED' in done.stderr,done.stderr
+    passed+=1
     # Launcher tool dirs (A2): appended after /usr/bin:/bin in candidate order,
     # only for a real directory owned by the user/root with no other-write;
     # group write only for the Darwin admin group (gid 80). Breaks caught:
