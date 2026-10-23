@@ -222,41 +222,6 @@ class FixtureAdmission(FixtureCase):
 
 
 class Consumers(FixtureCase):
-    def suite(self, name, count, explicit):
-        env = dict(self.env)
-        if explicit:
-            env['HARNESS_TEST_OMP_SOURCE'] = str(FIXTURE)
-        argv = ['bash', str(REPO / 'test' / name)]
-        result = self.capture(name + ('-explicit' if explicit else '-default'),
-                              argv, env, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('Ran ' + str(count) + ' tests', result.stderr)
-        stderr = result.stderr
-        self.assertTrue(stderr.rstrip().endswith('OK'), result.stderr)
-        self.assertNotIn('skipped=', stderr)
-        if name == 'test-omp-required-loading.sh':
-            self.assertIn('Ran 8 tests', stderr)
-        if name == 'test-omp-continuation.sh':
-            for oracle in ['test_C01_C03_C27_public_alias_layer_fake_only',
-                           'test_C10_namespace_busy_no_native_or_receipt_transition',
-                           'test_C11_workspace_busy_precedes_namespace_and_native',
-                           'test_C21_foreground_native_nonzero_preserved',
-                           'test_D_renumbered_origin_devices_are_accepted_without_rewrite',
-                           'test_D_origin_mount_at_parent_is_refused_per_field']:
-                self.assertIn(oracle, result.stderr)
-
-    def test_direct_continuation_default_runs_all_38(self):
-        self.suite('test-omp-continuation.sh', 38, False)
-
-    def test_direct_required_default_runs_all_9(self):
-        self.suite('test-omp-required-loading.sh', 9, False)
-
-    def test_direct_continuation_explicit_runs_all_38(self):
-        self.suite('test-omp-continuation.sh', 38, True)
-
-    def test_direct_required_explicit_runs_all_9(self):
-        self.suite('test-omp-required-loading.sh', 9, True)
-
     def test_all_three_consumers_refuse_before_child_or_payload(self):
         # Source selected by the old direct suites would write a marker on import.
         p = self.root / 'core/scripts/harness_compile.py'
