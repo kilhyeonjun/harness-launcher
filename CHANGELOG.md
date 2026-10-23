@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — OMP shell resume rebinds after activation
+## 0.77.4 — 2026-10-23
 
 - A shell `harness-exec <harness> omp --session-resume <handle>` whose session
   binding still names an older launcher runtime (left by an activation) now
