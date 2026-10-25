@@ -18,6 +18,8 @@
 
 HARNESS_DIR="${HARNESS_DIR:?HARNESS_DIR required}"
 HARNESS_NAME="${HARNESS_NAME:?HARNESS_NAME required}"
+# Human menu time is not part of the completed broker operation's budget.
+unset HARNESS_RELEASE_OPERATION_ROOT
 
 # Bind the config owner before evaluating any isolated launcher configuration.
 LAUNCHER_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1153,11 +1155,28 @@ launch_codex() {
   fi
   prepare_codex_global_mcp_allowlist || return $?
   prepare_codex_apps_allowlist || return $?
+  local release_client="$LAUNCHER_BIN_DIR/harness-release-client.sh"
+  local release_root runtime_home="$HARNESS_DIR/.harness/codex" prepare_rc=0
+  local -a prepare_args=("$HARNESS_DIR")
+  # Keep the operation's exact verified export and stable native home together.
+  release_root="$("$release_client" runtime-source "$HARNESS_DIR")" || return $?
+  if [ -n "$release_root" ]; then
+    runtime_home="$("$release_client" runtime-home "$release_root")" || {
+      prepare_rc=$?
+      "$release_client" runtime-cleanup "$release_root"
+      return "$prepare_rc"
+    }
+    prepare_args+=(--release-root "$release_root" --runtime-home "$runtime_home")
+  fi
   if [ -x "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" ]; then
     echo "⏳ Codex 홈 준비 중…" >&2
-    "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" "$HARNESS_DIR" || return $?
+    "$release_client" runtime-run "$release_root" "$LAUNCHER_BIN_DIR/codex-home-prepare.sh" "${prepare_args[@]}" || prepare_rc=$?
   fi
-  export CODEX_HOME="$HARNESS_DIR/.harness/codex"
+  if [ -n "$release_root" ]; then
+    "$release_client" runtime-cleanup "$release_root" || return $?
+  fi
+  [ "$prepare_rc" -eq 0 ] || return "$prepare_rc"
+  export CODEX_HOME="$runtime_home"
   harness_export_local_env "$HARNESS_DIR"
 
   # The launch record's source root, resolved before any cd.

@@ -17,7 +17,7 @@ mkdir -p "$HARNESS/config" "$BIN" "$HARNESS/.harness/codex/sessions/2026/09/30"
 print -r -- 'HARNESS_NAME="test"' 'HARNESS_PREFIX="test"' > "$HARNESS/config/launcher.env"
 PY="$(source "$LAUNCHER_DIR/bin/harness-common.sh"; harness_python3_resolve)"
 REAL_CODEX="$(command -v codex 2>/dev/null || true)"
-cp "$LAUNCHER_DIR/bin/harness-restore-probe" "$LAUNCHER_DIR/bin/harness-launch-record" "$LAUNCHER_DIR/bin/harness_launch_plan.py" "$BIN/"
+cp "$LAUNCHER_DIR/bin/harness-restore-probe" "$LAUNCHER_DIR/bin/harness-launch-record" "$LAUNCHER_DIR/bin/harness_launch_plan.py" "$LAUNCHER_DIR/bin/harness-release-client.sh" "$LAUNCHER_DIR/bin/harness_release_client.py" "$LAUNCHER_DIR/bin/harness-common.sh" "$BIN/"
 
 cat > "$BIN/codex" <<'STUB'
 #!/usr/bin/env bash

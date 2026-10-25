@@ -41,6 +41,7 @@ unset _excluded
 # truth for Unicode folding, literal pathspecs and the fixed argv cap.
 OVERLAY_PATH_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/harness-overlay-paths.py"
 OVERLAY_PATHS_FILE=""
+RELEASE_CLIENT="$(dirname "$OVERLAY_PATH_HELPER")/harness-release-client.sh"
 delivery_exclusions_file() {
   local output="$1" path
   : > "$output"
@@ -310,13 +311,14 @@ headless_local_files() {
   done
 }
 create() {
-  local source="$1" local_only="${2:-0}" root state id base sha dir local_file has_origin=0
+  local source="$1" local_only="${2:-0}" root state id base sha dir local_file has_origin=0 deadline
+  deadline="$(( $(date +%s) + 120 ))"
   source="$(cd "$source" && pwd -P)"
   git -C "$source" rev-parse --is-inside-work-tree >/dev/null
   state="$(state_home)"; mkdir -p "$state/sessions" "$state/worktrees"
   if git -C "$source" remote get-url origin >/dev/null 2>&1; then
     has_origin=1
-    [[ "$local_only" == 1 ]] || git -C "$source" fetch -q origin main:refs/remotes/origin/main
+    [[ "$local_only" == 1 ]] || "$RELEASE_CLIENT" budget "$deadline" git -C "$source" fetch -q origin main:refs/remotes/origin/main
   fi
   if [[ "$local_only" == 1 && "$has_origin" == 1 ]]; then
     base="$(git -C "$source" rev-parse --verify -q refs/remotes/origin/main)" || {
@@ -329,12 +331,14 @@ create() {
   fi
   sha="$(git -C "$source" rev-parse "$base^{commit}")"
   id="$(new_id)"; dir="$state/sessions/$id"; root="$state/worktrees/$id"
-  mkdir -p "$dir"
+  (umask 077; mkdir -p "$dir")
+  "$RELEASE_CLIENT" select "$source" "$sha" "$dir" "$deadline" || { local rc=$?; rm -rf "$dir"; return "$rc"; }
   local -a clone_flags=(-q --no-checkout)
   [[ "${HARNESS_HEADLESS:-0}" != 1 ]] || clone_flags+=(--no-hardlinks)
-  git clone "${clone_flags[@]}" "$source" "$root"
-  git -C "$root" remote remove origin
-  git -C "$root" checkout -q --detach "$sha"
+  "$RELEASE_CLIENT" run "$dir" git clone "${clone_flags[@]}" "$source" "$root" \
+    && "$RELEASE_CLIENT" run "$dir" git -C "$root" remote remove origin \
+    && "$RELEASE_CLIENT" run "$dir" git -C "$root" checkout -q --detach "$sha" \
+    || { local rc=$?; rm -rf "$root" "$dir"; return "$rc"; }
   rm -rf "$root/config/.local"
   if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
     headless_local_files "$source" "$root" || { rm -rf "$root" "$dir"; return 2; }
@@ -371,6 +375,7 @@ create() {
     printf '/%s\n' "${EXCLUDED_PATHS[@]}" >> "$dir/trusted.git/info/exclude"
     : > "$dir/headless"
   fi
+  "$RELEASE_CLIENT" materialize "$dir" "$root" || { local rc=$?; rm -rf "$root" "$dir"; return "$rc"; }
   printf '1\n' > "$dir/lease-v1"
   : > "$dir/runtime.lock"
   write_journal "$dir" OPEN ""
@@ -664,6 +669,8 @@ resume_session() {
     return 2
   }
   journal_valid "$dir/journal" || { echo "cannot resume $id: invalid session journal" >&2; return 2; }
+  "$RELEASE_CLIENT" resume "$dir" || return $?
+  "$RELEASE_CLIENT" check "$dir" || echo 'harness-session: release overlay changed; resume does not repair it' >&2
   state="$(field "$dir/journal" state)"
   case "$state" in
     OPEN)
@@ -873,6 +880,10 @@ submit() {
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; base="$(<"$dir/base-sha")"; state="$(field "$dir/journal" state)"
   [[ "$state" == SUBMITTED ]] && return 0
   [[ "$state" == OPEN ]] || { echo "cannot submit $state session" >&2; return 2; }
+  if ! "$RELEASE_CLIENT" check "$dir"; then
+    [[ ! -e "$dir/headless" ]] || return 12
+    echo 'harness-session: warning: release overlay changed; no repair performed' >&2
+  fi
   use_session_git "$id" || return $?
   stage_worktree "$root" "$base"
   if [[ -z "$ROOT_GIT_DIR" ]]; then
@@ -989,6 +1000,11 @@ verifier_sandbox_profile() {
   copy="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; trusted="$(phys "$5")"; state="$(phys "$(state_home)")"
   local -a read=("${SANDBOX_SYSTEM_READ[@]}" "${SANDBOX_ETC_READ[@]}" "$copy" "$tmp" "$trusted"
     "$home/.config/mise/config.toml" "$home/.local/share/mise" "$home/.cache/mise" "$home/.CFUserTextEncoding")
+  local release_prefix="${6:-}"
+  if [[ "$release_prefix" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+    # Exact physical export only: never authorize ancestor data or siblings.
+    read+=("$home/.local/state/harness-service/$release_prefix-dev/release-export")
+  fi
   local -a exec=("${SANDBOX_SYSTEM_EXEC[@]}" "$copy" "$tmp" "$trusted" "$home/.local/share/mise") deny=() etc_allow=()
   for prefix in "${SANDBOX_TOOL_PREFIXES[@]}"; do
     [[ -d "$prefix" ]] || continue
@@ -1114,7 +1130,7 @@ run_repository_verifier() {
   [[ -f "$verifier" ]] || { echo 'ERROR: repository-owned core/bin/auto-deliver.sh verifier is required' >&2; rm -rf "$trusted"; return 2; }
   verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push)
   if [[ -e "$(session_dir "$id")/headless" ]]; then
-    run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "${verifier_args[@]}"
+    run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "$baseline" "${verifier_args[@]}"
     return
   fi
   help_output="$(bash "$verifier" --help 2>/dev/null || true)"
@@ -1153,18 +1169,28 @@ write_verifier_gitconfig() {
     printf '[core]\n\texcludesFile = /dev/null\n\tattributesFile = /dev/null\n'; } > "$1"
 }
 run_sandboxed_verifier() {
-  local candidate="$1" id="$2" trusted="$3" verifier="$4" source vtmp vcopy profile help_output name rc=0
-  shift 4
+  local candidate="$1" id="$2" trusted="$3" verifier="$4" baseline="$5" source vtmp vcopy profile help_output name rc=0 release_prefix
+  shift 5
   local -a args=("$@") venv=()
+  release_prefix="$("$RELEASE_CLIENT" host-profile "$trusted" "$baseline")" || { echo verifier_policy_unavailable >&2; rm -rf "$trusted"; return 17; }
+  if [[ -n "$release_prefix" ]]; then
+    session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" || { rm -rf "$trusted"; return 17; }
+    if ! (unset HARNESS_AUTHORITY_NO_REFRESH HARNESS_SESSION_ID; PATH="$HOME/.local/share/harness-service/bin:/usr/bin:/bin" \
+      python3 -I "$trusted/core/scripts/authority_fence.py" surface --repo "$trusted" --profile "$release_prefix" --path core/config/auto-delivery-policy.yaml); then
+      echo 'verifier_policy_unavailable' >&2
+      rm -rf "$trusted"
+      return 17
+    fi
+  fi
   [[ -x "$SANDBOX_EXEC" ]] || { echo "harness-session: refused: $SANDBOX_EXEC is required to verify a headless session" >&2; rm -rf "$trusted"; return 2; }
   source="$(<"$(session_dir "$id")/source-root")" || { rm -rf "$trusted"; return 2; }
   vtmp="$(mktemp -d /private/tmp/verifier-tmp.XXXXXX)" || { rm -rf "$trusted"; return 2; }
   vcopy="$(mktemp -d "$(state_home)/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
   { vtmp="$(phys "$vtmp")" && vcopy="$(phys "$vcopy")" && cp -R "$candidate/." "$vcopy/" \
-      && scrub_remotes "$vcopy" && scrub_remotes "$trusted" && write_verifier_gitconfig "$vtmp/gitconfig" \
-      && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted")"; } \
+      && scrub_remotes "$vcopy" && session_git -C "$vcopy" update-ref refs/remotes/origin/main "$baseline" && scrub_remotes "$trusted" && session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" && write_verifier_gitconfig "$vtmp/gitconfig" \
+      && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted" "$release_prefix")"; } \
     || { rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
-  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig")
+  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" HARNESS_AUTHORITY_NO_REFRESH=1)
   [[ -z "${LANG:-}" ]] || venv+=(LANG="$LANG")
   for name in $(compgen -e); do [[ "$name" != LC_* ]] || venv+=("$name=${!name}"); done
   help_output="$(cd "$vcopy" && env -i "${venv[@]}" "$SANDBOX_EXEC" -p "$profile" bash "$verifier" --help 2>/dev/null || true)"
@@ -1216,8 +1242,14 @@ integrate_unlocked() {
     write_index_pathset "$candidate" "$current" "$dir/.candidate-pathset"
     cmp -s "$dir/.submitted-pathset" "$dir/.candidate-pathset" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
     run_repository_verifier "$candidate" "$id" "$remote" "$current" || {
-      rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"
-      # Headless: exit 9, the verifier rejected the candidate (not a merge conflict).
+      local verifier_rc=$?
+      rm -rf "$candidate"
+      if [[ "$verifier_rc" == 17 ]]; then
+        transition "$id" SUBMITTED "$(field "$dir/journal" identity)"
+        echo verifier_policy_unavailable >&2
+        return 17
+      fi
+      transition "$id" CONFLICT "$(field "$dir/journal" identity)"
       if [[ -e "$dir/headless" ]]; then return 9; fi
       return 3
     }
@@ -1379,7 +1411,7 @@ case "${1:-}" in
   release-hold) shift; [[ $# -eq 2 ]] || exit 2; release_hold "$@" ;;
   sandbox-check) shift; [[ $# -eq 1 ]] || exit 2; sandbox_check "$1" ;;
   codex-sandbox-profile) shift; [[ $# -eq 8 ]] || exit 2; codex_sandbox_profile "$@" ;;
-  verifier-sandbox-profile) shift; [[ $# -eq 5 ]] || exit 2; verifier_sandbox_profile "$@" ;;
+  verifier-sandbox-profile) shift; [[ $# -eq 5 || $# -eq 6 ]] || exit 2; verifier_sandbox_profile "$@" ;;
   submit) shift; submit "$1" ;;
   integrate) shift; [[ $# -eq 1 ]] || exit 2; integrate "$1" ;;
   close) shift; [[ $# -eq 1 ]] || exit 2; close_session "$1" ;;

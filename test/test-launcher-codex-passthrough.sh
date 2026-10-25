@@ -25,6 +25,7 @@ TEST_OUTSIDE="$TEST_TEMP/elsewhere"
 TEST_BIN="$TEST_TEMP/bin"
 TEST_PROFILE_HOME="$TEST_TEMP/profile-home"
 mkdir -p "$TEST_HARNESS/config" "$TEST_INSIDE" "$TEST_OUTSIDE" "$TEST_BIN" "$TEST_PROFILE_HOME/profiles"
+cp "$LAUNCHER_DIR/bin/harness-release-client.sh" "$LAUNCHER_DIR/bin/harness_release_client.py" "$LAUNCHER_DIR/bin/harness-common.sh" "$TEST_BIN/"
 cat > "$TEST_HARNESS/config/launcher.env" <<'EOF'
 HARNESS_NAME="test harness"
 HARNESS_PREFIX="test"

@@ -524,12 +524,20 @@ def deliver(sid, state, env, cwd, log, message=None):
 
 def _deliver(sid, state, env, cwd, log, message):
     iso = str(BIN / 'session-isolation.sh')
+    close_stderr = ''
 
     def session(*args):
+        nonlocal close_stderr
         # A new session: the repository verifier the broker runs has no
         # controlling terminal, so /dev/tty never reaches the operator's.
-        return subprocess.run([iso, *args, sid], env=env, cwd=cwd, stdin=subprocess.DEVNULL,
-                              stdout=log, stderr=log, start_new_session=True).returncode
+        closing = args == ('close',)
+        completed = subprocess.run([iso, *args, sid], env=env, cwd=cwd, stdin=subprocess.DEVNULL,
+                                   stdout=log, stderr=subprocess.PIPE if closing else log,
+                                   text=True, start_new_session=True)
+        if closing:
+            close_stderr = getattr(completed, 'stderr', '') or ''
+            print(close_stderr, end='', file=log if log is not None else sys.stderr, flush=True)
+        return completed.returncode
 
     def delivered():
         sha = (state / 'sessions' / sid / 'delivered-sha').read_text().strip()
@@ -544,6 +552,18 @@ def _deliver(sid, state, env, cwd, log, message):
     reason = record_commit_message(state, sid, message) if message else 'no usable message file'
     print(f'harness-headless: commit message: {"agent" if not reason else f"generic ({reason})"}', file=log, flush=True)
     rc = session('close')
+    if rc == 12:
+        for line in close_stderr.splitlines():
+            try:
+                payload = json.loads(line.removeprefix('overlay_drift ').strip())
+            except ValueError:
+                continue
+            paths = payload.get('drift_paths') if isinstance(payload, dict) else None
+            if isinstance(paths, list) and paths and all(isinstance(path, str) for path in paths):
+                return 'failed', None, 'overlay_drift ' + json.dumps({'drift_paths': paths})
+        return 'failed', None, 'overlay_drift'
+    if rc == 17:
+        return 'failed', None, 'verifier_policy_unavailable'
     after = journal_state(state, sid)
     if after == 'INTEGRATING':
         # Indeterminate integration (readback outage, exit 4 or a git 128):

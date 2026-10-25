@@ -748,6 +748,76 @@ out.mkdir(parents=True, exist_ok=True)
         self.assertEqual(result.returncode, expect, result.stderr)
         return result
 
+    def test_release_prepare_reads_export_and_never_compiles_or_writes_worktree(self):
+        release = self.tmp / "export"
+        (release / "config").mkdir(parents=True)
+        (release / "config/codex-surface.json").write_bytes(self.manifest_path.read_bytes())
+        (release / "config/ssot-session-hooks.json").write_text('{"enabled":true}')
+        (release / ".harness/codex").mkdir(parents=True)
+        (release / ".harness/codex/AGENTS.md").write_text("verified instructions")
+        self.manifest_path.write_text("invalid worktree manifest")
+        self.set_launcher_env('HARNESS_PREFIX="fixture"')
+        (self.repo / ".codex").mkdir()
+        (self.repo / ".codex/native-state").write_text("retain")
+        before = self.snapshot_tree(self.repo)
+        inodes = {str(p.relative_to(self.repo)): p.lstat().st_ino for p in self.repo.rglob("*")}
+        runtime = self.tmp / "session/runtime/codex"
+        for attempt in range(2):
+            result = subprocess.run(["bash", str(PREPARE), str(self.repo), "--release-root", str(release),
+                                     "--runtime-home", str(runtime)], env=self.environment(),
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.compiler_calls(), 0)
+            self.assertEqual((runtime / "AGENTS.md").read_text(), "verified instructions")
+            self.assertIn("harness-session-hook", (runtime / "hooks.json").read_text())
+            self.assertEqual(self.snapshot_tree(self.repo), before)
+            self.assertEqual({str(p.relative_to(self.repo)): p.lstat().st_ino
+                              for p in self.repo.rglob("*")}, inodes)
+            auth = runtime / "auth.json"
+            plugin = runtime / "plugins/cache/native-plugin/1.0/payload"
+            config = runtime / "config.toml"
+            if attempt == 0:
+                auth.write_text('{"native":"auth"}')
+                plugin.parent.mkdir(parents=True)
+                plugin.write_text("native plugin")
+                with config.open("a") as stream:
+                    stream.write('\n[projects."/native-project"]\ntrust_level = "untrusted"\n'
+                                 '\n[hooks.state.native]\napproval = "approved"\n')
+            else:
+                self.assertEqual(auth.read_text(), '{"native":"auth"}')
+                self.assertEqual(plugin.read_text(), "native plugin")
+                state = tomllib.loads(config.read_text())
+                self.assertEqual(state["projects"]["/native-project"]["trust_level"], "untrusted")
+                self.assertEqual(state["hooks"]["state"]["native"]["approval"], "approved")
+        (release / "config/ssot-session-hooks.json").unlink()
+        (self.repo / "config/ssot-session-hooks.json").write_text('{"enabled":true}')
+        result = subprocess.run(["bash", str(PREPARE), str(self.repo), "--release-root", str(release),
+                                 "--runtime-home", str(runtime)], env=self.environment(),
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("harness-session-hook", (runtime / "hooks.json").read_text())
+        self.assertEqual(self.compiler_calls(), 0)
+
+    def test_release_rejects_runtime_destination_in_worktree_or_export(self):
+        release = self.tmp / "export"
+        (release / "config").mkdir(parents=True)
+        (release / "config/codex-surface.json").write_bytes(self.manifest_path.read_bytes())
+        (release / ".harness/codex").mkdir(parents=True)
+        (release / ".harness/codex/AGENTS.md").write_text("verified")
+        alias = self.tmp / "source-alias"
+        alias.symlink_to(self.repo, target_is_directory=True)
+        for runtime in (self.codex_home, release / "runtime/codex", alias / "runtime/codex"):
+            with self.subTest(runtime=runtime):
+                result = subprocess.run(
+                    ["bash", str(PREPARE), str(self.repo), "--release-root", str(release),
+                     "--runtime-home", str(runtime)], env=self.environment(),
+                    text=True, capture_output=True,
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("outside the worktree and export", result.stderr)
+                self.assertFalse(runtime.exists())
+        self.assertEqual(self.compiler_calls(), 0)
+
     def test_default_fixture_context_is_independent_of_parent_but_explicit_context_is_honored(self):
         with mock.patch.dict(os.environ, {"HARNESS_CODEX_CONTEXT": "1m"}):
             self.prepare()
@@ -3204,6 +3274,21 @@ class RuntimeHooksOptinTests(unittest.TestCase):
         self.assertEqual(self.runtime.resolve(str(self.tmp)), {"orca": True, "herdr": True, "launch_record": False, "ssot": False})
         self.launcher_env("HARNESS_LAUNCH_RECORD_HOOKS=1")
         self.assertEqual(self.runtime.resolve(str(self.tmp)), {"orca": False, "herdr": False, "launch_record": True, "ssot": False})
+
+    def test_explicit_ssot_file_never_falls_back_to_worktree(self):
+        self.launcher_env("HARNESS_HERDR_AGENT_HOOKS=1")
+        (self.tmp / "config/ssot-session-hooks.json").write_text('{"enabled":true}')
+        selected = self.tmp / "release-optin.json"
+        for contents, expected in ((None, False), ('{"enabled":false}', False),
+                                   ('broken', False), ('{"enabled":true}', True)):
+            if contents is not None:
+                selected.write_text(contents)
+            resolved = self.runtime.resolve(str(self.tmp), ssot_file=selected)
+            self.assertEqual(resolved["ssot"], expected)
+            self.assertTrue(resolved["herdr"])
+            result = self.cli("runtime_hooks_optin.py", str(self.tmp), "--ssot-file", str(selected))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, self.runtime.render(resolved) + "\n")
 
     def test_ssot_optin_requires_strict_profile_json(self):
         self.launcher_env('HARNESS_SSOT_SESSION_HOOKS=1')

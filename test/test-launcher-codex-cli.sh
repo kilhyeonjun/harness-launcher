@@ -24,6 +24,7 @@ TEST_HARNESS="$TEST_TEMP/fake-harness"
 TEST_BIN="$TEST_TEMP/bin"
 TEST_BROKEN_BIN="$TEST_TEMP/broken-bin"
 mkdir -p "$TEST_HARNESS/config/.local" "$TEST_BIN" "$TEST_BROKEN_BIN"
+cp "$LAUNCHER_DIR/bin/harness-release-client.sh" "$LAUNCHER_DIR/bin/harness_release_client.py" "$LAUNCHER_DIR/bin/harness-common.sh" "$TEST_BIN/"
 
 source "$LAUNCHER_DIR/bin/harness-common.sh"
 TEST_PYTHON_FIXTURE="$(harness_python3_resolve)" || exit $?
@@ -886,6 +887,20 @@ if grep -q "^HAPPY_ARGV:" "$STUB_HAPPY_RESUME"; then
   exit 1
 fi
 echo "PASS: codex CLI happy continue blocked (Happy Codex cannot map codex resume --last)"
+
+# An unavailable release boundary must stop before prepare or native launch,
+# even when a legacy Git launch would otherwise be allowed.
+missing_bridge_stub="$TEST_TEMP/output-codex-cli-failure-stub.txt"
+: > "$missing_bridge_stub"
+chmod -x "$TEST_BIN/harness-release-client.sh"
+if run_codex_failure "$TEST_TEMP/missing-release-bridge.err" base; then
+  echo 'FAIL: Codex launched without its release boundary'; exit 1
+fi
+chmod +x "$TEST_BIN/harness-release-client.sh"
+[[ ! -s "$missing_bridge_stub" ]] || {
+  echo 'FAIL: release boundary failure reached prepare or native Codex'; exit 1
+}
+echo 'PASS: missing release boundary refuses before prepare and Codex'
 
 echo "✓ All codex CLI native tests passed"
 

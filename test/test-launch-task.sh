@@ -11,6 +11,7 @@ TEST_TEMP="$(mktemp -d)"; TEST_TEMP="${TEST_TEMP:A}"
 TEST_HARNESS="$TEST_TEMP/fake-harness"; TEST_BIN="$TEST_TEMP/bin"
 TEST_PROFILE_HOME="$TEST_TEMP/profile-home"
 mkdir -p "$TEST_HARNESS/config" "$TEST_BIN" "$TEST_PROFILE_HOME/profiles" "$TEST_HARNESS/.claude"
+cp "$LAUNCHER_DIR/bin/"{harness-release-client.sh,harness_release_client.py,harness-common.sh} "$TEST_BIN/"
 printf 'HARNESS_NAME="t"\nHARNESS_PREFIX="test"\n' > "$TEST_HARNESS/config/launcher.env"
 print -r -- "$TEST_HARNESS" > "$TEST_PROFILE_HOME/profiles/test"
 cat > "$TEST_BIN/claude" <<'SH'

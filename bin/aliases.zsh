@@ -50,6 +50,7 @@ _harness_launcher_isolated_session_create() {
       HARNESS_SESSION_ID|HARNESS_SOURCE_ROOT|HARNESS_SESSION_ROOT) export "$key=$value" ;;
     esac
   done <<< "$output"
+  export HARNESS_RELEASE_OPERATION_ROOT="$HARNESS_SESSION_ROOT"
 }
 
 # _harness_launcher_session_is_current <session-dir> <source-root>
@@ -902,13 +903,28 @@ _harness_launcher_passthrough_reconcile() {
 _harness_launcher_export_codex_runtime_env() {
   local HARNESS_DIR="$1"
   local prepare="$_HARNESS_LAUNCHER_BIN/codex-home-prepare.sh"
+  local release_client="$_HARNESS_LAUNCHER_BIN/harness-release-client.sh"
+  local release_root runtime_home="$HARNESS_DIR/.harness/codex"
+  local -a prepare_args=("$HARNESS_DIR")
+  # Selection/resume and verified export must finish before runtime preparation.
+  release_root="$("$release_client" runtime-source "$HARNESS_DIR")" || return $?
+  if [[ -n "$release_root" ]]; then
+    runtime_home="$("$release_client" runtime-home "$release_root")" || return $?
+    prepare_args+=(--release-root "$release_root" --runtime-home "$runtime_home")
+  fi
   _harness_launcher_prepare_codex_global_mcp_allowlist || return $?
   _harness_launcher_prepare_codex_apps_allowlist || return $?
+  local prepare_rc=0
   if [[ -x "$prepare" ]]; then
-    "$prepare" "$HARNESS_DIR" || return $?
+    "$release_client" runtime-run "$release_root" "$prepare" "${prepare_args[@]}" || prepare_rc=$?
   fi
+  if [[ -n "$release_root" ]]; then
+    "$release_client" runtime-cleanup "$release_root" || return $?
+  fi
+  (( prepare_rc == 0 )) || return "$prepare_rc"
+  HARNESS_RELEASE_OPERATION_ROOT=""
 
-  export CODEX_HOME="$HARNESS_DIR/.harness/codex"
+  export CODEX_HOME="$runtime_home"
 
   # MCP secrets from settings.local.json env so codex streamable_http
   # bearer_token_env_var resolves (native codex inherits no other harness env).
@@ -1020,6 +1036,7 @@ _harness_launcher_auto_claude() {
 }
 
 codex() {
+  local -x HARNESS_RELEASE_OPERATION_ROOT=""
   if (( _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED )); then
     _harness_launcher_auto_runtime codex "$@"
     return $?
@@ -1222,6 +1239,7 @@ _harness_launcher_run() {
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
   local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
+  local -x HARNESS_RELEASE_OPERATION_ROOT=""
   local HARNESS_NATIVE_HISTORY_LEASE_FD=""
   local HARNESS_NATIVE_HISTORY_LEASE_ADOPTED=0
   {
@@ -1508,6 +1526,7 @@ _harness_launcher_run() {
 #   Launch body of _harness_launcher_run after isolation is settled. Reads the
 #   caller's locals (zsh dynamic scope) and sets its isolated_heartbeat_pid.
 _harness_launcher_run_session() {
+  [[ "${1:-}" == codex ]] || HARNESS_RELEASE_OPERATION_ROOT=""
   local -a claude_args=() claude_passthrough_args=() claude_passthrough_opts=() claude_prompt_args=()
   local session_flag="" skip_tui=false env_effort="" provider_url="" gateway_api_key="" provider_name="" launch_task=""
   local mode_applied=false mcp_surface="full" passthrough=false passthrough_force_thinking=false

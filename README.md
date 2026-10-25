@@ -171,6 +171,56 @@ remain on the legacy path. Claude continuation and fork commands require the exa
 UUID shown at session start, or explicit `--no-isolated` for canonical history. This
 profile setting is a bounded canary switch; it does not change other profiles.
 
+For release-backed sessions, the launcher parses `HARNESS_PREFIX` from the
+selected committed base's `config/launcher.env`; it does not source that file
+to select a release profile. Without a host release profile, sessions retain the
+legacy Git path without invoking a release client. A present but invalid host
+profile, or an unavailable/invalid installed client, refuses the launch rather
+than silently falling back to Git. A product-selected `git_fallback` remains a
+separate, explicit selection result.
+
+The sole product entry is
+`$HOME/.local/share/harness-service/bin/harness-service`: an executable regular
+file owned by the current user and not group/other writable. Calls use only
+`HOME`, `PATH=/usr/bin:/bin`, and `LC_ALL=C`, with stdin closed. No product
+checkout imports, `uv`, or inherited `PYTHONPATH` are used. The source-stage
+product installer measures an exact committed source and locked environment;
+its installation receipt does not approve a host profile or publish a release.
+
+Selection precedes cloning under one 120-second budget. A verified export is
+required before copying release outputs. DB overlays remove nonmember selector
+files and protect release-owned paths in both the clone and headless trusted
+indexes. Resume retains the exact release pin: it neither substitutes current
+nor repairs tracked source, indexes, overlay-paths, or worktree `.harness`.
+Interactive overlay drift warns without repair; headless submission refuses
+with exit 12. Release Codex preparation writes only to the outside-worktree
+session `runtime/codex` home, using verified export declarations. Shared roots
+with host release profiles likewise keep a stable per-root
+`release-runtime/<root-hash>/runtime/codex` home, so selection/export cleanup
+never deletes native state. They retain release-first selection; the shared-root
+overlay notice is not a launch prohibition. Git and explicit Git fallback keep
+the compiler path.
+
+The internal wrapper interface is `runtime-source ROOT` → verified export path
+(or empty for Git), then `runtime-home EXPORT`, `runtime-run EXPORT COMMAND...`,
+and `runtime-cleanup EXPORT`. An empty export handle runs legacy preparation
+without a release deadline. Each nonempty export binds one private operation,
+its original 120-second budget and stable home; overlapping launches never
+consult a mutable active-operation pointer. Cleanup removes only that operation,
+not the stable home. Recorded `worktrees/<uuid>` are matched to their private
+`sessions/<uuid>/session-root` without requiring `HARNESS_SESSION_ID`; an old
+record without release state stays Git with no new selection or writes.
+
+Integration refreshes authority policy outside the sandbox before scrubbing
+trusted repository configuration. The sandbox reads only the exact physical
+`$HOME/.local/state/harness-service/<prefix>-dev/release-export` subtree, not
+its parent or siblings, and uses `HARNESS_AUTHORITY_NO_REFRESH=1` to prohibit
+refresh inside it. Failed outside refresh or verifier exit 17 preserves the
+submission identity and returns `INTEGRATING` to `SUBMITTED`, without integration
+or push. These source contracts do not identify a published launcher tag or
+prove that an installed launcher has been activated. See
+[Codex integration](docs/codex-integration.md#generated-layout) for runtime roots.
+
 Codex history is discovered locally across source-bound canonical, isolated and
 archived homes. `ex codex resume --list` returns metadata JSON without a model
 or network call; `ex codex resume <native-uuid>` restores history into a fresh
