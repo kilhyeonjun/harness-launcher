@@ -1,4 +1,4 @@
-"""UNRUN test draft for an owned checkout AFTER independent design approval.
+"""Owned public-entry, immutable-consumer and menu-lifecycle regressions.
 
 All namespaces, profile/provenance labels, registry files and binary are synthetic
 inside TemporaryDirectory. This never imports production configuration or auth.
@@ -8,6 +8,12 @@ import hashlib
 import importlib.util
 import json
 import os
+import fcntl
+import pty
+import re
+import select
+import termios
+import time
 from pathlib import Path
 import shutil
 import stat
@@ -67,7 +73,8 @@ class PublicOmpDispatch(unittest.TestCase):
         self.old_public.parent.mkdir()
         self.old_public.symlink_to(self.old_package / 'harness-profile')
         self.snapshot = self.runtime / OLD_REVISION
-        if self._testMethodName == 'test_repaired_current_snapshot_entry_does_not_reexec_forever':
+        if (self._testMethodName == 'test_repaired_current_snapshot_entry_does_not_reexec_forever'
+                or self._testMethodName.startswith('test_current_menu_')):
             self.snapshot = self.runtime / ('a' * 40)
             (self.snapshot / 'bin').mkdir(parents=True)
             inventory = {}
@@ -122,6 +129,8 @@ class PublicOmpDispatch(unittest.TestCase):
                       'selection_sha256': '3' * 64, 'operation_sha256': '4' * 64,
                       'controller': {'native': 'synthetic', 'pane': 'synthetic', 'managed': 'synthetic'},
                       'scope': 'OMP3_CONFIGURATION', 'ssot': None}
+        if self._testMethodName.startswith('test_current_menu_'):
+            self.prepare_menu_source()
         with mock.patch.object(self.module.Path, 'home', return_value=self.home):
             publisher = self.module.Publisher()
             publisher.prepare(provenance)
@@ -136,13 +145,101 @@ class PublicOmpDispatch(unittest.TestCase):
                                 for p in self.snapshot.rglob('*') if p.is_file()}
         (self.home / 'tmp').mkdir()
         self.nested = self.harness / 'nested work/child with spaces'
+        self.nested.mkdir(parents=True, exist_ok=True)
+
+    def prepare_menu_source(self):
+        fixture = ROOT / 'test/fixtures/w07-source/.claude/source/omp-model-modes.json'
+        target = self.harness / '.claude/source/omp-model-modes.json'
+        target.parent.mkdir(parents=True)
+        target.write_bytes(fixture.read_bytes())
+        spec = json.loads(target.read_bytes())
+        self.default_mode = spec['default']
+        self.mode_count = len(spec['modes'])
+        self.nested = self.harness / 'nested work/child with spaces'
         self.nested.mkdir(parents=True)
+        (self.nested / 'owned-source').write_text('unchanged\n')
+        (self.harness / '.gitignore').write_text('.harness/\n')
+        self.menu_source_before = {str(path.relative_to(self.harness)): path.read_bytes()
+                                   for path in self.harness.rglob('*') if path.is_file()}
+        for args in (['init', '-q', '-b', 'main'], ['config', 'user.name', 'synthetic'],
+                     ['config', 'user.email', 'synthetic@example.invalid'],
+                     ['add', '.'], ['commit', '-qm', 'owned menu fixture']):
+            subprocess.run(['git', '-C', str(self.harness), *args], check=True,
+                           env=self.child_env(), capture_output=True, timeout=10)
+        self.legacy_bin = self.home / 'legacy-bin'
+        self.legacy_bin.mkdir()
+        for name in ('claude', 'codex'):
+            self.write(self.legacy_bin / name, b'#!/bin/sh\nexit 99\n', 0o500)
+
+    def run_menu(self, args, observe_mode=True):
+        master, slave = pty.openpty()
+        def own_terminal():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        child = subprocess.Popen([str(self.public), *args], cwd=self.nested,
+                                 env=self.child_env(), stdin=slave, stdout=slave,
+                                 stderr=slave, preexec_fn=own_terminal)
+        os.close(slave)
+        output = b''
+        workspace = composer = cancelled = observed = False
+        deadline = time.monotonic() + 60
+        try:
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select([master], [], [], .1)
+                if readable:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno != 5:
+                            raise
+                        break
+                    if not chunk:
+                        break
+                    output += chunk
+                    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output.decode('utf-8', 'replace'))
+                    if cancelled:
+                        continue
+                    if not workspace and 'Choose [1]:' in text:
+                        os.write(master, b'2\n')
+                        workspace = True
+                    if observe_mode and 'Model mode' in text:
+                        modes = re.findall(r'^\s*(\d+)\)\s*(.*)$', text.rsplit('Model mode', 1)[1], re.M)
+                        if len(modes) >= self.mode_count:
+                            self.assertEqual('1', modes[0][0], text)
+                            self.assertEqual(self.default_mode, modes[0][1].split()[0], text)
+                            observed = True
+                            os.write(master, b'q\nq\n')
+                            cancelled = True
+                    if not composer:
+                        match = re.search(r'^\s*(\d+)\)\s*[^\n]*New — OMP 구성', text, re.M)
+                        if observe_mode and match:
+                            os.write(master, (match.group(1) + '\n').encode())
+                            composer = True
+                        elif not observe_mode and re.search(r'^\s*\d+\)\s*[^\n]*New — Claude Code 구성', text, re.M):
+                            observed = True
+                            os.write(master, b'q\n')
+                            cancelled = True
+                if child.poll() is not None:
+                    break
+            self.assertTrue(observed and cancelled, output.decode('utf-8', 'replace'))
+            code = child.wait(timeout=10)
+            self.assertEqual(0, code, output.decode('utf-8', 'replace'))
+        finally:
+            # Closing this fixture's PTY delivers normal hangup; do not signal
+            # process groups or leave the terminal open while waiting for exit.
+            os.close(master)
+            child.wait(timeout=10)
+        self.assertEqual([], self.calls(), 'Canceling a menu must not start Native OMP')
+        self.assertEqual(self.menu_source_before, {
+            path: (self.harness / path).read_bytes() for path in self.menu_source_before})
+        return output
 
     def child_env(self):
         # Deliberate test-only allowlist, including every consulted registry override.
         # No inherited launcher/history/auth/shell/Python configuration is forwarded.
-        return {
-            'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+        env = {
+            'HOME': str(self.home), 'PATH': str(self.home / 'legacy-bin') + ':/usr/bin:/bin:/usr/sbin:/sbin',
+            'TERM': 'dumb',
             'HARNESS_PYTHON_BIN': sys.executable, 'LC_ALL': 'C',
             'HARNESS_PROFILE_HOME': str(self.registry.parent),
             'HARNESS_PROFILE_BIN_DIR': str(self.public.parent),
@@ -151,6 +248,10 @@ class PublicOmpDispatch(unittest.TestCase):
             'XDG_DATA_HOME': str(self.home / '.local/share'),
             'XDG_CACHE_HOME': str(self.home / '.cache'), 'TMPDIR': str(self.home / 'tmp'),
         }
+        if self._testMethodName.startswith('test_current_menu_'):
+            env['HARNESS_SESSION_STATE_HOME'] = str(self.home / 'menu-state')
+            env['HARNESS_SESSION_HEARTBEAT_SECONDS'] = '0.1'
+        return env
 
     @staticmethod
     def encode(value):
@@ -348,6 +449,72 @@ class PublicOmpDispatch(unittest.TestCase):
         result = self.run_entry([str(self.public), 'omp', '--help'])
         self.assertNotEqual(0, result.returncode)
         self.assertEqual(b'', result.stdout)
+        self.assert_preserved()
+
+    def test_current_menu_public_controls_reach_default_without_native(self):
+        self.run_menu(['--isolated'])
+        sessions = sorted((self.home / 'menu-state/sessions').iterdir())
+        self.assertEqual(1, len(sessions))
+        session = sessions[0]
+        self.assertTrue((session / 'journal').read_text().startswith('state=CLOSED\n'))
+        for args in ([], ['--no-isolated'], ['--cwd', str(self.nested), '--no-isolated'],
+                     ['--isolated-session', session.name]):
+            with self.subTest(args=args):
+                self.run_menu(args)
+                self.assertTrue((session / 'journal').read_text().startswith('state=CLOSED\n'))
+        self.assert_snapshot_preserved()
+        self.assert_preserved()
+
+    def test_current_menu_missing_closure_fails_before_allocation(self):
+        current = self.runtime / 'current.json'
+        current.unlink()
+        result = self.run_entry([str(self.public), '--isolated'])
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn(b'OMP_', result.stderr)
+        self.assertFalse((self.home / 'menu-state').exists())
+        self.assertFalse(current.exists())
+        self.assertEqual([], self.calls())
+        self.assert_preserved()
+
+    def test_current_menu_tampered_closure_fails_before_allocation(self):
+        dependency = self.snapshot / 'bin/harness-common.sh'
+        original_mode = stat.S_IMODE(dependency.stat().st_mode)
+        dependency.chmod(0o600)
+        dependency.write_bytes(dependency.read_bytes() + b'\n# fixture tamper\n')
+        dependency.chmod(original_mode)
+        expected = dependency.read_bytes()
+        result = self.run_entry([str(self.public), '--cwd', str(self.nested), '--isolated'])
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn(b'OMP_BINDING_MISMATCH', result.stderr)
+        self.assertFalse((self.home / 'menu-state').exists())
+        self.assertEqual(expected, dependency.read_bytes())
+        self.assertEqual(self.current_before, (self.runtime / 'current.json').read_bytes())
+        self.assertEqual([], self.calls())
+        self.assert_preserved()
+
+    def test_current_menu_no_enrollment_keeps_legacy_without_closure(self):
+        index = self.config_root / 'enrollment.json'
+        retained = index.with_name('retained-enrollment')
+        index.rename(retained)
+        (self.runtime / 'current.json').unlink()
+        self.run_menu(['--no-isolated'], observe_mode=False)
+        self.assertFalse(index.exists())
+        self.assertEqual(self.before['enrollment.json'], retained.read_bytes())
+        self.assertEqual(self.before['state.json'], (self.config_root / 'state.json').read_bytes())
+        self.assertFalse((self.runtime / 'current.json').exists())
+
+    def test_current_menu_incomplete_controls_are_not_empty_entries(self):
+        (self.runtime / 'current.json').unlink()
+        for args in (['--cwd'], ['--isolated-session']):
+            with self.subTest(args=args):
+                result = self.run_entry([str(self.public), *args])
+                self.assertEqual(2, result.returncode, result.stderr)
+                self.assertNotIn(b'OMP_', result.stderr, 'Malformed controls must not enter OMP projection')
+                self.assertFalse((self.home / 'menu-state').exists())
+        # An explicit empty argument is opaque, not argument exhaustion: it
+        # reaches the existing menu with unavailable OMP instead of dispatching.
+        self.run_menu([''], observe_mode=False)
+        self.assertEqual([], self.calls())
         self.assert_preserved()
 
     def test_repaired_current_snapshot_entry_does_not_reexec_forever(self):
