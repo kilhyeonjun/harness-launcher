@@ -2,6 +2,19 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.77.8 — 2026-10-25
+
+- Open an enrolled host's bare runtime menu from the verified sealed launcher,
+  like explicit OMP entry. Previously the Homebrew consumer failed the OMP
+  binding check, so the menu incorrectly marked OMP unavailable. Profile commands,
+  cwd and isolation controls share this entry; source-declared model defaults
+  and explicit non-OMP routes are unchanged. A missing or invalid closure stops
+  the enrolled bare menu before allocation. Hosts without an enrollment index
+  retain the legacy menu without a new snapshot requirement.
+- Exercise actual menu selection and cancellation in owned terminal fixtures,
+  including default ordering, resumed isolation, no Native OMP invocation, and
+  preservation of source, enrollment and sealed snapshot data.
+
 ## 0.77.6 — 2026-10-23
 
 - Isolated sessions now load the per-profile `GH_TOKEN` from the harness

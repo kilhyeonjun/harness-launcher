@@ -112,8 +112,17 @@ This order matters on macOS because an app-bundled CLI or a version-manager shim
 
 ## OMP entry and prepared namespace
 
-Before sourcing aliases, an exact OMP discriminator invokes the installed
-fixed sibling helper's read-only `dispatch-source`. It verifies owner-only,
+Before sourcing aliases or allocating a workspace, an exact OMP discriminator
+invokes the installed fixed sibling helper's read-only `dispatch-source`.
+A bare menu uses the same bootstrap when no discriminator argument remains and
+the host has an OMP enrollment index. This includes the optional cwd and
+isolation controls; a literal empty argument is not argument exhaustion.
+Without an enrollment index, the legacy menu gains no new Python or snapshot
+requirement. With an index present, an invalid or missing closure blocks the
+whole bare menu, even for profiles absent from that index; explicit non-OMP
+routes remain unchanged.
+
+The bootstrap verifies owner-only,
 non-symlink current selection, revision/path, manifest digest and the complete
 sealed inventory, then returns the actual execution directory. The entry execs
 `/bin/zsh <snapshot>/bin/harness-exec` with the same harness root, cwd, argv and
