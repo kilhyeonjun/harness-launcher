@@ -32,7 +32,13 @@ printf '%s\n' rename-me > "$SOURCE/rename-old.txt"
 printf '%s\n' 'secret' > "$SOURCE/config/.local/secret.env"
 cat > "$SOURCE/core/bin/auto-deliver.sh" <<'EOF'
 #!/usr/bin/env bash
-[[ " $* " == *' --staged-only '* && " $* " == *' --dry-run '* && " $* " == *' --no-push '* ]] || exit 91
+if [[ "${1:-}" == --help ]]; then echo '--verify-candidate --contract-checked'; exit 0; fi
+[[ "${2:-}" == --staged-only && "${3:-}" == --dry-run && "${4:-}" == --no-push && "${5:-}" == --verify-candidate ]] || exit 91
+[[ "${6:-}" == "$(git rev-parse HEAD)" && "${7:-}" == "$(git write-tree)" ]] || exit 94
+[[ "$(git cat-file -t "$6")" == commit && "$(git cat-file -t "$7")" == tree ]] || exit 95
+[[ "${8:-}" == --contract-checked && "${9:-}" == 'broker candidate cascade verified' ]] || exit 96
+[[ -z "${BINDING_LOG:-}" ]] || printf '%s %s\n' "$6" "$7" >> "$BINDING_LOG"
+printf 'VERIFIER-BOUND %s %s\n' "$6" "$7"
 [[ "${HARNESS_SESSION_TEST_VERIFY_FAIL:-0}" != 1 ]] || exit 92
 [[ -z "${HARNESS_TEST_VERIFIER:-}" ]] || "$HARNESS_TEST_VERIFIER"
 EOF
@@ -253,7 +259,9 @@ line_a_id="$(printf '%s\n' "$line_a" | sed -n 's/^HARNESS_SESSION_ID=//p')"; lin
 printf '%s\n' ONE two three > "$line_a_root/merge.txt"; printf '%s\n' one two THREE > "$line_b_root/merge.txt"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$line_a_id"; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$line_b_id"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$line_a_id"
-HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$line_b_id"
+merged_base="$(git --git-dir="$REMOTE" rev-parse main)"
+BINDING_LOG="$TMP/merged-binding" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$line_b_id"
+[[ "$(<"$TMP/merged-binding")" == "$merged_base $(git --git-dir="$REMOTE" rev-parse 'main^{tree}')" ]] || { echo 'FAIL: verifier must bind the complete committed three-way merged tree'; exit 1; }
 [[ "$(git --git-dir="$REMOTE" show main:merge.txt)" == $'ONE\ntwo\nTHREE' ]] || { echo 'FAIL: 3-way integration must preserve disjoint line edits'; exit 1; }
 
 renamed="$(create)"; renamed_root="$(printf '%s\n' "$renamed" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; renamed_id="$(printf '%s\n' "$renamed" | sed -n 's/^HARNESS_SESSION_ID=//p')"
@@ -274,8 +282,12 @@ if [[ "$n" == 1 ]]; then
 fi
 EOF
 chmod +x "$VERIFY"
-COUNT="$COUNT" REMOTE="$REMOTE" HARNESS_TEST_VERIFIER="$VERIFY" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$advance_id"
+BINDING_LOG="$TMP/retry-bindings" COUNT="$COUNT" REMOTE="$REMOTE" HARNESS_TEST_VERIFIER="$VERIFY" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$advance_id"
 [[ "$(<"$COUNT")" -ge 2 ]] || { echo 'FAIL: remote advance must force verifier re-run'; exit 1; }
+read -r retry_base_one retry_tree_one < "$TMP/retry-bindings"
+while read -r retry_base retry_tree; do retry_base_two="$retry_base"; retry_tree_two="$retry_tree"; done < "$TMP/retry-bindings"
+[[ "$retry_base_one" != "$retry_base_two" && "$retry_tree_one" != "$retry_tree_two" ]] || { echo 'FAIL: remote retry must rebind both fresh baseline and complete tree'; exit 1; }
+[[ "$retry_tree_two" == "$(git --git-dir="$REMOTE" rev-parse 'main^{tree}')" ]] || { echo 'FAIL: retried verification must describe the published tree'; exit 1; }
 
 # The same non-object metadata must not enter candidate, verifier, normal
 # readback or recovery clones, including concurrent integrations below.
@@ -815,6 +827,12 @@ fi
 git clone -q --no-local "$REMOTE" "$TMP/vfix"
 cat >> "$TMP/vfix/core/bin/auto-deliver.sh" <<'EOF'
 if [[ -e verifier-env-probe ]]; then
+  if [[ -z "$(git remote)" ]]; then
+    [[ "${HARNESS_AUTHORITY_NO_REFRESH:-}" == 1 ]] || exit 97
+    [[ "$(git rev-parse --verify 'refs/remotes/origin/main^{commit}')" == "$6" ]] || exit 98
+    if cat "$HOME/forbidden-system-gitconfig" >/dev/null 2>&1; then exit 96; fi
+    GIT_CONFIG_SYSTEM="$HOME/forbidden-system-gitconfig" git cat-file -e refs/remotes/origin/main:merge.txt || exit 99
+  fi
   env | sed 's/^/VERIFIER-ENV /'
   if ( : > "$HOME/verifier-wrote-home" ) 2>/dev/null; then echo VERIFIER-WROTE-HOME; fi
   # Test suites use multiprocessing (POSIX semaphores named /mp-*).
@@ -825,6 +843,7 @@ EOF
 git -C "$TMP/vfix" -c user.name=t -c user.email=t@example.invalid commit -qam verifier-env-probe
 git -C "$TMP/vfix" push -q origin HEAD:main
 VHOME="$TMP/vhome"; mkdir -p "$VHOME"
+printf '[core]\n  pager = false\n' > "$VHOME/forbidden-system-gitconfig"
 for mode in headless interactive; do
   if [[ "$mode" == headless ]]; then out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"; else out="$(create)"; fi
   v_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; v_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
@@ -836,17 +855,20 @@ for mode in headless interactive; do
   rm -f "$VHOME/verifier-wrote-home"
   PATH="${PY_ABS%/*}:$PATH" HOME="$VHOME" SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=leak-gh GITHUB_TOKEN=leak-github NPM_TOKEN=leak-npm LANG=en_US.UTF-8 \
     GIT_ASKPASS=/tmp/askpass HOMEBREW_GITHUB_API_TOKEN=leak-brew ANTHROPIC_API_KEY=leak-anthropic OPENAI_API_KEY=leak-openai \
-    CLAUDE_CODE_OAUTH_TOKEN=leak-claude \
+    CLAUDE_CODE_OAUTH_TOKEN=leak-claude HARNESS_AUTHORITY_NO_REFRESH=forged GIT_CONFIG_NOSYSTEM=0 \
     HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$v_id" > "$TMP/venv-$mode.out" || { echo "FAIL: $mode verifier-env close"; exit 1; }
   grep -qx state=DELIVERED "$STATE/sessions/$v_id/journal" || { echo "FAIL: $mode verifier-env session must be delivered"; exit 1; }
+  v_delivered="$(<"$STATE/sessions/$v_id/delivered-sha")"
+  grep -qx "VERIFIER-BOUND $(git --git-dir="$REMOTE" rev-parse "$v_delivered^") $(git --git-dir="$REMOTE" rev-parse "$v_delivered^{tree}")" "$TMP/venv-$mode.out" || { echo "FAIL: $mode must publish exactly its verified baseline/tree binding"; exit 1; }
   if [[ "$mode" == headless ]]; then
     keys="$(sed -n 's/^VERIFIER-ENV \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$TMP/venv-$mode.out" | sort -u | tr '\n' ' ')"
     for key in $keys; do
       case "$key" in
-        HOME|PATH|LANG|LC_*|TMPDIR|GIT_CONFIG_GLOBAL|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
+        HOME|PATH|LANG|LC_*|TMPDIR|GIT_CONFIG_GLOBAL|GIT_CONFIG_NOSYSTEM|HARNESS_AUTHORITY_NO_REFRESH|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
         *) echo "FAIL: the headless verifier environment carries $key"; exit 1 ;;
       esac
     done
+    grep -qx 'VERIFIER-ENV GIT_CONFIG_NOSYSTEM=1' "$TMP/venv-$mode.out" || { echo 'FAIL: sandbox must suppress caller/system Git configuration'; exit 1; }
     grep -qx 'VERIFIER-ENV LANG=en_US.UTF-8' "$TMP/venv-$mode.out" || { echo 'FAIL: the headless verifier keeps LANG'; exit 1; }
     v_tmp="$(sed -n 's/^VERIFIER-ENV TMPDIR=//p' "$TMP/venv-$mode.out")"
     [[ "$v_tmp" == */verifier-tmp.* && ! -e "$v_tmp" ]] || { echo "FAIL: the headless verifier needs its own removed temp dir (got '$v_tmp')"; exit 1; }
@@ -854,6 +876,7 @@ for mode in headless interactive; do
     grep -qx 'VERIFIER-MP VERIFIER-MP-OK' "$TMP/venv-$mode.out" \
       || { echo 'FAIL: the headless verifier must allow multiprocessing semaphores'; grep '^VERIFIER-MP' "$TMP/venv-$mode.out"; exit 1; }
   else
+    grep -qx 'VERIFIER-ENV GIT_CONFIG_NOSYSTEM=0' "$TMP/venv-$mode.out" || { echo 'FAIL: interactive Git configuration changed'; exit 1; }
     grep -qx 'VERIFIER-ENV GH_TOKEN=leak-gh' "$TMP/venv-$mode.out" && grep -q VERIFIER-WROTE-HOME "$TMP/venv-$mode.out" \
       || { echo 'FAIL: the interactive verifier must run as before'; exit 1; }
   fi

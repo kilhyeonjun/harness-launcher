@@ -1215,14 +1215,17 @@ options behaves exactly as before.
   `~/.aws`, `~/.claude`, `~/Library/Keychains`, `~/.git-credentials`,
   `~/.netrc`, `~/.config/git` or the source checkout.
   User git config is not readable; the verifier gets a generated global git
-  config (`GIT_CONFIG_GLOBAL`, identity only), and neither the copy nor the
+  config (`GIT_CONFIG_GLOBAL`, identity only). System Git configuration is
+  disabled with literal `GIT_CONFIG_NOSYSTEM=1`, including compiled-in Xcode
+  paths; caller overrides cannot restore it. Neither the copy nor the
   trusted clone keeps a remote, so no remote URL with credentials is
   readable. No mach services
   except user and group lookup and logging (so no keychain, launchd job
   submission, LaunchServices `open`, XPC services or AppleEvents); signals
   and process inspection only within the sandbox. A nested `sandbox-exec`
   fails. The environment is `HOME`, `PATH`, `LANG`, `LC_*`, `TMPDIR` and the
-  verifier's own switches plus `GIT_CONFIG_GLOBAL`; agent sockets, askpass
+  verifier's own switches plus `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`;
+  agent sockets, askpass
   helpers, `GH_*`, `GITHUB_*`, `ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*` and
   tokens are not passed. Interactive sessions run the verifier as before.
 - **Result.** Written atomically (temp file and rename) to `R`, always with

@@ -229,6 +229,15 @@ an `ABANDONED` or `CONFLICT` session whose work will not be delivered: it keeps
 the work as `discarded.patch` in the session record, then marks it terminal
 `DISCARDED`.
 
+Delivery requires the trusted remote baseline verifier's
+[`--verify-candidate BASE_OID TREE_OID` capability](docs/session-integration-queue.md#bound-candidate-verification).
+The verification-only call is bound to the complete merged candidate; the broker
+independently rechecks it before publication. Unsupported baselines refuse without
+fallback. Add baseline support through authorized repository maintenance before
+upgrading the delivery runtime; this is not a maintenance grant. The
+[rollout plan and execution record](docs/plans/2026-10-26-bound-candidate-verification.md)
+preserve the baseline prerequisites, review evidence and activation boundary.
+
 An operator can explicitly enable the [durable integration queue](docs/session-integration-queue.md)
 after enrolling all affected old and profile pools. Then `close --enqueue <uuid>`
 returns a persisted job identifier without waiting for tests, and `wait <job-id>`

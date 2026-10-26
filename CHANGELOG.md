@@ -2,6 +2,21 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.78.1 — 2026-10-26
+
+- Bind repository verification to the exact fresh baseline and complete merged
+  candidate tree in both interactive and headless broker paths. Recheck the
+  submission, HEAD, parent, committed tree and index before publication; remote
+  retries rebuild and reverify their bindings. Scrubbed headless copies retain
+  only the fresh bound baseline ref and use cache-only authority reads, without
+  restoring remote URLs, credentials or network refresh. Force system Git
+  configuration off in the scrubbed verifier while retaining its generated
+  global config; Xcode host configuration is not a sandbox prerequisite.
+- Require trusted baseline support for verification-only `--verify-candidate`.
+  Unsupported repositories fail closed, with no submitted-verifier or path-filter
+  fallback. Baseline support must be installed through authorized maintenance
+  before adopting this launcher. Sandbox isolation and delivery recovery remain.
+
 ## 0.78.0 — Unreleased
 
 - Add `harness-canonical-update --profile <registered-profile> --expected-base
