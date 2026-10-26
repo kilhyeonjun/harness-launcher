@@ -83,6 +83,8 @@ add_test test_session_maintenance.py resolved 1
 add_test test_integration_queue.py resolved 1
 add_test test_omp_print_receipt.py resolved 1
 add_test test_omp_fixture_source.py isolated 1
+add_test test_canonical_bootstrap.py isolated 1
+add_test test_omp_canonical_bootstrap.mjs node 1
 add_test test_run_all_partition.py isolated 1
 # End inventory.
 
@@ -104,8 +106,8 @@ def main():
     groups=('headless','shell','preservation','python')
     entries=[row.split('|') for row in rows]
     require(entries and all(len(row)==5 for row in entries))
-    require(all(re.fullmatch(r'test[-_A-Za-z0-9]+\.(sh|py)',row[0]) and row[1] in groups
-                and row[2] in ('shell','profile','resolved','isolated') and row[3] in ('0','1')
+    require(all(re.fullmatch(r'test[-_A-Za-z0-9]+\.(sh|py|mjs)',row[0]) and row[1] in groups
+                and row[2] in ('shell','profile','resolved','isolated','node') and row[3] in ('0','1')
                 and row[4] in ('0','1') for row in entries))
     ids=[row[0] for row in entries]
     require(len(ids)==len(set(ids)))
@@ -235,6 +237,14 @@ for entry in "${inventory[@]}"; do
       if [[ "$first_line" == *zsh* ]]; then interpreter="$ZSH_BIN"; else interpreter="$BASH_BIN"; fi
       printf '==> %s (%s)\n' "$test_name" "$interpreter"
       command_argv=("$interpreter" "$test_file")
+      ;;
+    node)
+      interpreter="$(command -v node)" || {
+        printf 'REGRESSION_RUNTIME_MISSING suite=%s runtime=node\n' "$test_name" >&2
+        exit 127
+      }
+      printf '==> %s (%s)\n' "$test_name" "$interpreter"
+      command_argv=("$interpreter" --test "$test_file")
       ;;
     profile)
       printf '==> test_profile_resolver.py (python3)\n'
