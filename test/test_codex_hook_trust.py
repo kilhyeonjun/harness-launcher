@@ -66,7 +66,12 @@ class IsolatedTrustIntegrationTests(unittest.TestCase):
         subprocess.run(['git','-C',str(source),'-c','core.hooksPath=/dev/null','commit','-qm','fixture'],env=env,check=True)
         sid='11111111-1111-4111-8111-111111111111'
         state=fixture.tmp.resolve()/'launcher-state'; target=state/'worktrees'/sid; record=state/'sessions'/sid
-        shutil.copytree(source,target,ignore=shutil.ignore_patterns('.harness'))
+        # Git owns concurrent object maintenance; copying a live .git can race
+        # transient maintenance.lock files. A real detached worktree has the
+        # same committed fixture bytes without copying mutable repository state.
+        target.parent.mkdir(parents=True)
+        subprocess.run(['git','-C',str(source),'worktree','add','--detach',str(target),'HEAD'],
+                       env=env,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         record.mkdir(parents=True)
         for name,value in {'source-root':str(source),'session-root':str(target),'base-sha':subprocess.check_output(['git','-C',str(target),'rev-parse','HEAD'],text=True).strip(),'root-inode':f'{target.stat().st_dev} {target.stat().st_ino}','journal':'state=OPEN'}.items():
             (record/name).write_text(value+'\n')
