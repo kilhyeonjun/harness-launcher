@@ -16,6 +16,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
   private code closure. The trusted installer can stage that pair before a
   canonical update, preserving existing sessions and the legacy Homebrew keg;
   compatible frozen verifier code does not come from the mutable target checkout.
+- Materialize the observer regression fixture's private operation ancestry
+  independently of the runner umask, preserving real directory and lease checks
+  and retaining the observer refusal category in assertion diagnostics.
 - Observe inherited FIFO EOF in the native file stream and release the reader
   after the drained result, before waiting for exit; do not rely on Bun's socket
   wrapper to observe anonymous-pipe closure.

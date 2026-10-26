@@ -431,7 +431,9 @@ class NonholderObserverAdmission(Disposable):
         runtime = {'version': '0.0.0', 'revision': '3' * 40, 'path': str(directory.parent), 'manifest_sha256': '4' * 64}
         self.put(self.home / b.STATE / 'current.json', b.canonical(runtime))
         operation, nonce = uuid.uuid4().hex, uuid.uuid4().hex
-        control = self.home / b.STATE / 'canonical-bootstrap/operations' / operation
+        operations = self.home / b.STATE / 'canonical-bootstrap/operations'
+        operations.mkdir(parents=True, mode=0o700)
+        control = operations / operation
         for name in ('history', 'cwd'):
             (control / name).mkdir(parents=True, mode=0o700)
         control.chmod(0o700)
@@ -479,7 +481,7 @@ class NonholderObserverAdmission(Disposable):
 
     def test_actual_observer_accepts_only_nonholder_proof_of_live_parent_lock(self):
         status, reply = self.observe_case()
-        self.assertEqual(status, 0)
+        self.assertEqual(status, 0, reply)
         self.assertEqual(reply, {'ok': True})
 
     def test_observer_rejects_unlock_replacement_expiry_record_and_caller_change(self):
