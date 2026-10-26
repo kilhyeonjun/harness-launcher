@@ -36,6 +36,7 @@ BIN = Path(__file__).resolve().parent
 sys.path.insert(0, str(BIN))
 import harness_target  # noqa: E402
 from harness_target import Refused  # noqa: E402
+from verification_storage import VerificationStorageError, configured_root, nested_lifetimes_settled  # noqa: E402
 UUID = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
 SESSION_LINE = re.compile(r'^harness-launcher: isolated session (' + UUID + r');', re.M)
 # Caller environment kept for the launcher and Claude. Everything else
@@ -1631,13 +1632,18 @@ def run_target_verifier(session, candidate, log, env):
     """test.run (argv[0] is the env python) on a copy of the candidate under
     the verifier profile plus the read-only env; True when it exits 0."""
     test = session.target['entry']['test']
-    vcopy = tempfile.mkdtemp(prefix='verifier-copy.', dir=session.run_dir)
-    vtmp = os.path.realpath(tempfile.mkdtemp(prefix='verifier-tmp.', dir='/private/tmp'))
     try:
+        storage_root = configured_root()
+    except VerificationStorageError as exc:
+        raise Refused(f'verification storage unavailable: {exc}') from exc
+    vcopy = vtmp = None
+    try:
+        vcopy = tempfile.mkdtemp(prefix='verifier-copy.', dir=storage_root or session.run_dir)
+        vtmp = os.path.realpath(tempfile.mkdtemp(prefix='verifier-tmp.', dir=storage_root or '/private/tmp'))
         shutil.copytree(candidate, vcopy, symlinks=True, dirs_exist_ok=True)
         profile = verifier_profile(session, vcopy, vtmp, env)
         venv = {k: v for k, v in env.items() if k in ('HOME', 'LANG') or k.startswith('LC_')}
-        venv.update(PATH='/usr/bin:/bin', TMPDIR=vtmp)
+        venv.update(PATH='/usr/bin:/bin', TMPDIR=vtmp, HARNESS_VERIFICATION_TMPDIR=vtmp)
         print(f'harness-headless: verifier: {shlex.join(test["run"])} (timeout {test["timeout_min"]} min)', file=log, flush=True)
         proc = subprocess.Popen([SANDBOX_EXEC, '-p', profile, session.python, *test['run'][1:]], cwd=vcopy, env=venv,
                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
@@ -1648,11 +1654,24 @@ def run_target_verifier(session, candidate, log, env):
         finally:
             kill_group(proc.pid)
         proc.wait()
-        return proc.returncode == 0
+        accepted = proc.returncode == 0
     finally:
-        kill_lingering(vcopy, vtmp)
-        shutil.rmtree(vcopy, ignore_errors=True)
-        shutil.rmtree(vtmp, ignore_errors=True)
+        if vcopy is not None and vtmp is not None:
+            kill_lingering(vcopy, vtmp)
+        retained = False
+        if vtmp is not None:
+            try:
+                retained = not nested_lifetimes_settled(Path(vtmp))
+            except VerificationStorageError as exc:
+                retained = True
+                print(f'harness-headless: verifier storage retained: {exc}', file=log, flush=True)
+        if retained:
+            print(f'harness-headless: nested lifetime unresolved; verifier artifacts retained: {vtmp}', file=log, flush=True)
+        else:
+            for owned in (vcopy, vtmp):
+                if owned is not None:
+                    shutil.rmtree(owned, ignore_errors=True)
+    return accepted and not retained
 
 
 def pr_body(target, base, message):

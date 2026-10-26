@@ -1122,28 +1122,38 @@ codex_sandbox_profile() {
     "$(sbpl_str "$codex_home/config.toml")" "$(sbpl_str "$codex_home/AGENTS.md")"
 }
 run_repository_verifier() {
-  local candidate="$1" id="$2" remote="$3" baseline="$4" trusted verifier help_output
+  local candidate="$1" id="$2" remote="$3" baseline="$4" trusted verifier help_output storage_root vtmp resolved_vtmp
   local -a verifier_args
-  trusted="$(mktemp -d "$(state_home)/verifier.XXXXXX")" || return 2
+  # Resolve host policy outside the verifier sandbox, before any verifier copy.
+  storage_root="$(python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py")" || return 2
+  trusted="$(mktemp -d "${storage_root:-$(state_home)}/verifier.XXXXXX")" || return 2
   { git clone -q "$remote" "$trusted" && git -C "$trusted" checkout -q --detach "$baseline"; } || { rm -rf "$trusted"; return 2; }
   verifier="$trusted/core/bin/auto-deliver.sh"
   [[ -f "$verifier" ]] || { echo 'ERROR: repository-owned core/bin/auto-deliver.sh verifier is required' >&2; rm -rf "$trusted"; return 2; }
   verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push)
   if [[ -e "$(session_dir "$id")/headless" ]]; then
-    run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "$baseline" "${verifier_args[@]}"
+    run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "$baseline" "$storage_root" "${verifier_args[@]}"
     return
   fi
-  help_output="$(bash "$verifier" --help 2>/dev/null || true)"
+  vtmp="$(mktemp -d "${storage_root:-/private/tmp}/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
+  resolved_vtmp="$(phys "$vtmp")" || { rm -rf "$trusted" "$vtmp"; return 2; }
+  vtmp="$resolved_vtmp"
+  help_output="$(TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" bash "$verifier" --help 2>/dev/null || true)"
   if grep -q -- '--contract-checked' <<< "$help_output"; then
     verifier_args+=(--contract-checked 'broker candidate cascade verified')
   fi
   local rc=0
-  (unset HARNESS_SESSION_ID HARNESS_SOURCE_ROOT HARNESS_SESSION_ROOT HARNESS_RUN_DIR HARNESS_SESSION_STATE_HOME; cd "$candidate" && TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 \
+  (unset HARNESS_SESSION_ID HARNESS_SOURCE_ROOT HARNESS_SESSION_ROOT HARNESS_RUN_DIR HARNESS_SESSION_STATE_HOME; cd "$candidate" && TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 \
     bash "$verifier" "${verifier_args[@]}") || rc=$?
-  rm -rf "$trusted"
+  if python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py" --settled "$vtmp"; then
+    rm -rf "$trusted" "$vtmp"
+  else
+    echo "harness-session: verifier artifacts retained; nested lifetime unresolved: $vtmp" >&2
+    [[ "$rc" -ne 0 ]] || rc=2
+  fi
   return "$rc"
 }
-# run_sandboxed_verifier <candidate> <id> <trusted> <verifier> <args...>:
+# run_sandboxed_verifier <candidate> <id> <trusted> <verifier> <baseline> <storage-root> <args...>:
 # headless sessions only. The verifier gets a copy of the candidate (index
 # included, no hard links), a minimal environment (no agent sockets, tokens or
 # GitHub variables), a fresh temp dir outside HOME and a generated global git
@@ -1169,9 +1179,10 @@ write_verifier_gitconfig() {
     printf '[core]\n\texcludesFile = /dev/null\n\tattributesFile = /dev/null\n'; } > "$1"
 }
 run_sandboxed_verifier() {
-  local candidate="$1" id="$2" trusted="$3" verifier="$4" baseline="$5" source vtmp vcopy profile help_output name rc=0 release_prefix
-  shift 5
+  local candidate="$1" id="$2" trusted="$3" verifier="$4" baseline="$5" storage_root="$6" source vtmp vcopy profile help_output name rc=0 release_prefix
+  shift 6
   local -a args=("$@") venv=()
+  local resolved_vtmp resolved_vcopy
   release_prefix="$("$RELEASE_CLIENT" host-profile "$trusted" "$baseline")" || { echo verifier_policy_unavailable >&2; rm -rf "$trusted"; return 17; }
   if [[ -n "$release_prefix" ]]; then
     session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" || { rm -rf "$trusted"; return 17; }
@@ -1184,13 +1195,14 @@ run_sandboxed_verifier() {
   fi
   [[ -x "$SANDBOX_EXEC" ]] || { echo "harness-session: refused: $SANDBOX_EXEC is required to verify a headless session" >&2; rm -rf "$trusted"; return 2; }
   source="$(<"$(session_dir "$id")/source-root")" || { rm -rf "$trusted"; return 2; }
-  vtmp="$(mktemp -d /private/tmp/verifier-tmp.XXXXXX)" || { rm -rf "$trusted"; return 2; }
-  vcopy="$(mktemp -d "$(state_home)/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
-  { vtmp="$(phys "$vtmp")" && vcopy="$(phys "$vcopy")" && cp -R "$candidate/." "$vcopy/" \
+  vtmp="$(mktemp -d "${storage_root:-/private/tmp}/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
+  vcopy="$(mktemp -d "${storage_root:-$(state_home)}/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
+  { resolved_vtmp="$(phys "$vtmp")" && resolved_vcopy="$(phys "$vcopy")" \
+      && vtmp="$resolved_vtmp" && vcopy="$resolved_vcopy" && cp -R "$candidate/." "$vcopy/" \
       && scrub_remotes "$vcopy" && session_git -C "$vcopy" update-ref refs/remotes/origin/main "$baseline" && scrub_remotes "$trusted" && session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" && write_verifier_gitconfig "$vtmp/gitconfig" \
       && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted" "$release_prefix")"; } \
     || { rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
-  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" HARNESS_AUTHORITY_NO_REFRESH=1)
+  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" HARNESS_AUTHORITY_NO_REFRESH=1)
   [[ -z "${LANG:-}" ]] || venv+=(LANG="$LANG")
   for name in $(compgen -e); do [[ "$name" != LC_* ]] || venv+=("$name=${!name}"); done
   help_output="$(cd "$vcopy" && env -i "${venv[@]}" "$SANDBOX_EXEC" -p "$profile" bash "$verifier" --help 2>/dev/null || true)"
@@ -1199,7 +1211,12 @@ run_sandboxed_verifier() {
   fi
   (cd "$vcopy" && env -i "${venv[@]}" TEST_HARNESS_DIR="$vcopy" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 \
     HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 "$SANDBOX_EXEC" -p "$profile" bash "$verifier" "${args[@]}") || rc=$?
-  rm -rf "$trusted" "$vtmp" "$vcopy"
+  if python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py" --settled "$vtmp"; then
+    rm -rf "$trusted" "$vtmp" "$vcopy"
+  else
+    echo "harness-session: verifier artifacts retained; nested lifetime unresolved: $vtmp" >&2
+    [[ "$rc" -ne 0 ]] || rc=2
+  fi
   return "$rc"
 }
 write_manifest_pathset() {

@@ -3,8 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ISOLATION="$ROOT/bin/session-isolation.sh"
 TMP="$(mktemp -d)"
+bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$TMP/runtime"
+ISOLATION="$TMP/runtime/share/harness-launcher/session-isolation.sh"
 trap 'rm -rf "$TMP"' EXIT
 SOURCE="$TMP/source" STATE="$TMP/state" REMOTE="$TMP/remote.git"
 mkdir -p "$SOURCE" "$STATE"

@@ -265,6 +265,36 @@ an `ABANDONED` or `CONFLICT` session whose work will not be delivered: it keeps
 the work as `discarded.patch` in the session record, then marks it terminal
 `DISCARDED`.
 
+Verification scratch can use an owner-managed external APFS volume on macOS.
+The optional account-local `~/.config/harness/verification-storage.json` is a
+JSON object with `"version": 1`, `mount`, `volume_uuid`, and `root` fields (for example,
+mount `/Volumes/Verification` and private root `/Volumes/Verification/scratch`).
+Use the actual mounted volume UUID, an existing owner-only root (0700), and an
+owner-owned policy file that is not group/world writable; symlinks are rejected.
+The resolver checks the live mounted volume, ownership, permissions and paths
+before creating verifier copies or launching verifier commands. A present but
+invalid or unavailable policy refuses verification; it never falls back to the
+internal disk. An absent policy retains the original copy/temp locations.
+
+The broker's trusted verifier clone, disposable sandbox candidate copy, and
+private verifier temp directory use distinct children of that root. Normal
+(non-headless) repository verification also gets a private temp directory.
+Headless target verification routes its disposable copy and temp in the same
+way; agent temp, session state, and the broker's integration candidate remain
+in their existing locations. Sandboxes receive only exact allocated child paths,
+not the storage root or mount. Nested bounded verifiers receive an
+already-admitted private temp context; this does not grant additional access.
+Normal public launches scrub inherited verifier context. Nested runners publish
+parent-facing lifetime leases; unresolved leases retain verifier artifacts and
+refuse verification acceptance instead of deleting files still in use. The
+shared resolver's `--settled PRIVATE_DIRECTORY` mode only observes these leases.
+Mount ancestors must have safe ownership and no group/world write, except
+root-owned sticky temporary directories; an unsafe administrator-owned mount
+must be corrected by its administrator, not exempted from admission.
+No profile config or global `TMPDIR` change is needed. This is source-stage
+support: existing immutable installed runtimes require their ordinary trusted
+release/update before adopting it.
+
 Only one launcher may own a UUID at a time. A kernel lease covers the complete
 runtime and is not inherited by Claude, Codex, heartbeat, or title-broker child
 processes. `CLOSED` workspaces remain resumable for 24 hours by default;

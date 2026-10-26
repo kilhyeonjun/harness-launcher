@@ -30,7 +30,9 @@ markers but host no terminal.
 
 ## Scrub and announcement
 
-Every launch scrubs the environment before doing anything else, in this order:
+Every public launch first removes inherited `HARNESS_VERIFICATION_TMPDIR`; it is reserved for private verifier children and cannot select public-launch storage. The verifier installs its own validated context separately.
+
+Terminal-specific scrubbing then runs in this order:
 
 1. Unset `CODEX_HOME` and `ORCA_CODEX_HOME` when they are equal (Orca's managed
    home, see [CODEX_HOME sanitization](orca-integration.md#codex_home-sanitization)).

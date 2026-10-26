@@ -57,7 +57,7 @@ finish() {
 # and leaves each child's combined stdout/stderr in RESULT_0 and RESULT_1. The
 # script sees $1 = library path, $2 = a scratch dir private to that shell,
 # $3 = env filter, $4 = ARG.
-ENV_FILTER='^([A-Za-z0-9_]*(CMUX|ORCA|HERDR)[A-Za-z0-9_]*|TERM_PROGRAM|CODEX_HOME|HARNESS_TERMINAL_RUNTIME)='
+ENV_FILTER='^([A-Za-z0-9_]*(CMUX|ORCA|HERDR)[A-Za-z0-9_]*|TERM_PROGRAM|CODEX_HOME|HARNESS_TERMINAL_RUNTIME|HARNESS_VERIFICATION_TMPDIR)='
 RESULT_0=""
 RESULT_1=""
 run_shells() {
@@ -116,6 +116,9 @@ rescrub=same
 $(printf '%s\n' "$want_lines" | LC_ALL=C sort)"
   finish "$before" "$label"
 }
+
+check_scrub "public launch removes inherited verifier context" plain \
+  "HARNESS_TERMINAL_RUNTIME=plain" HARNESS_VERIFICATION_TMPDIR="$TMP"
 
 # --- Runtime detection and scrub (brief cases 1-9) ----------------------------
 

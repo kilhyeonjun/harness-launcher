@@ -3,8 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ISOLATION="$ROOT/bin/session-isolation.sh"
 TMP="$(mktemp -d)"
+bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$TMP/runtime"
+ISOLATION="$TMP/runtime/share/harness-launcher/session-isolation.sh"
 trap '[[ ! -d "$TMP/csmnt" ]] || hdiutil detach -quiet -force "$TMP/csmnt" 2>/dev/null; chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 SOURCE="$TMP/source"
@@ -679,8 +680,8 @@ else
   echo 'SKIP: no case-sensitive APFS image (hdiutil unavailable)'
 fi
 
-# Headless verifiers run in a sandbox with a minimal environment; the
-# interactive verifier is unchanged.
+# Headless verifiers run in a sandbox with a minimal environment; interactive
+# verifiers retain the caller environment while receiving private temp context.
 git clone -q "$REMOTE" "$TMP/vfix"
 cat >> "$TMP/vfix/core/bin/auto-deliver.sh" <<'EOF'
 if [[ -e verifier-env-probe ]]; then
@@ -705,19 +706,22 @@ for mode in headless interactive; do
   rm -f "$VHOME/verifier-wrote-home"
   HOME="$VHOME" SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=leak-gh GITHUB_TOKEN=leak-github NPM_TOKEN=leak-npm LANG=en_US.UTF-8 \
     GIT_ASKPASS=/tmp/askpass HOMEBREW_GITHUB_API_TOKEN=leak-brew ANTHROPIC_API_KEY=leak-anthropic OPENAI_API_KEY=leak-openai \
-    CLAUDE_CODE_OAUTH_TOKEN=leak-claude \
+    CLAUDE_CODE_OAUTH_TOKEN=leak-claude HARNESS_AUTHORITY_NO_REFRESH=0 HARNESS_VERIFICATION_TMPDIR=/tmp/forged \
     HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$v_id" > "$TMP/venv-$mode.out" || { echo "FAIL: $mode verifier-env close"; exit 1; }
   grep -qx state=DELIVERED "$STATE/sessions/$v_id/journal" || { echo "FAIL: $mode verifier-env session must be delivered"; exit 1; }
   if [[ "$mode" == headless ]]; then
     keys="$(sed -n 's/^VERIFIER-ENV \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$TMP/venv-$mode.out" | sort -u | tr '\n' ' ')"
     for key in $keys; do
       case "$key" in
-        HOME|PATH|LANG|LC_*|TMPDIR|GIT_CONFIG_GLOBAL|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
+        HOME|PATH|LANG|LC_*|TMPDIR|HARNESS_VERIFICATION_TMPDIR|HARNESS_AUTHORITY_NO_REFRESH|GIT_CONFIG_GLOBAL|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
         *) echo "FAIL: the headless verifier environment carries $key"; exit 1 ;;
       esac
     done
     grep -qx 'VERIFIER-ENV LANG=en_US.UTF-8' "$TMP/venv-$mode.out" || { echo 'FAIL: the headless verifier keeps LANG'; exit 1; }
     v_tmp="$(sed -n 's/^VERIFIER-ENV TMPDIR=//p' "$TMP/venv-$mode.out")"
+    v_context="$(sed -n 's/^VERIFIER-ENV HARNESS_VERIFICATION_TMPDIR=//p' "$TMP/venv-$mode.out")"
+    [[ "$v_context" == "$v_tmp" && "$v_context" != /tmp/forged ]] || { echo 'FAIL: inherited context replaced private verifier temp'; exit 1; }
+    grep -qx 'VERIFIER-ENV HARNESS_AUTHORITY_NO_REFRESH=1' "$TMP/venv-$mode.out" || { echo 'FAIL: inherited authority flag enabled refresh inside sandbox'; exit 1; }
     [[ "$v_tmp" == */verifier-tmp.* && ! -e "$v_tmp" ]] || { echo "FAIL: the headless verifier needs its own removed temp dir (got '$v_tmp')"; exit 1; }
     ! grep -q VERIFIER-WROTE-HOME "$TMP/venv-$mode.out" && [[ ! -e "$VHOME/verifier-wrote-home" ]] || { echo 'FAIL: the headless verifier wrote to HOME'; exit 1; }
     grep -qx 'VERIFIER-MP VERIFIER-MP-OK' "$TMP/venv-$mode.out" \

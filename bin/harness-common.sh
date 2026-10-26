@@ -923,6 +923,8 @@ harness_terminal_launch_runtime() {
 # optional argument (herdr, orca, cmux or plain) is used as the runtime instead
 # of detecting one; any other value, or none, detects from the markers.
 harness_terminal_scrub_env() {
+  # Only a verifier may install this private temporary-storage context.
+  unset HARNESS_VERIFICATION_TMPDIR
   local rt line name
   case "${1:-}" in
     herdr|orca|cmux|plain) rt="$1" ;;
