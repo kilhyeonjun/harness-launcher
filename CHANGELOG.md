@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## Pending candidate-verification release
 
 - Bind repository verification to the exact fresh baseline and complete merged
   candidate tree in both interactive and headless broker paths. Recheck the
