@@ -71,7 +71,15 @@ class QueueTests(unittest.TestCase):
         verifier=source/'core/bin/auto-deliver.sh'
         verifier.write_text('''#!/bin/bash
 set -eu
-[[ "${1:-}" != --help ]] || exit 0
+if [[ "${1:-}" == --help ]]; then echo '--verify-candidate --contract-checked'; exit 0; fi
+[[ "${2:-}" == --staged-only && "${3:-}" == --dry-run && "${4:-}" == --no-push && "${5:-}" == --verify-candidate ]] || exit 91
+[[ "${6:-}" == "$(git rev-parse HEAD)" && "${7:-}" == "$(git write-tree)" ]] || exit 94
+[[ "$(git cat-file -t "$6")" == commit && "$(git cat-file -t "$7")" == tree ]] || exit 95
+[[ "${8:-}" == --contract-checked && "${9:-}" == 'broker candidate cascade verified' ]] || exit 96
+if [[ -n "$(git remote)" ]]; then printf '%s %s\\n' "$6" "$7" >> "''' + str(self.base/'bindings') + '''"; fi
+if [[ -f mutate-index ]]; then printf injected > injected; git add injected; fi
+if [[ -f mutate-head ]]; then git -c user.name=bad -c user.email=bad@invalid commit -qm unverified; fi
+if [[ -f wrong-binding ]]; then [[ "$7" == "$(git rev-parse 'HEAD^{tree}')" ]] || exit 97; fi
 if [[ -f block ]]; then
   echo verified >> "''' + str(self.base/'verifications') + '''"
   if [[ -f ignore-term ]]; then trap '' TERM; fi
@@ -152,6 +160,54 @@ exit 0
                and parts[1]==str(worker.pid) and '_queue-execute integrate '+owner in parts[2]]
         self.assertEqual(len(found),1)
         return found[0]
+
+    def remote_oid(self, expression='main'):
+        return self.run_command(['git', '--git-dir='+str(self.remote), 'rev-parse', expression]).stdout.strip()
+
+    def test_bound_verification_commits_exact_complete_merged_tree(self):
+        owner, root = self.create({'work': 'candidate'})
+        # The session predates this independent baseline change.
+        (self.source/'baseline-only').write_text('remote addition')
+        self.run_command(['git', '-C', self.source, 'add', '.'])
+        self.run_command(['git', '-C', self.source, 'commit', '-qm', 'advance'])
+        self.run_command(['git', '-C', self.source, 'push', '-q', 'origin', 'main'])
+        baseline = self.remote_oid()
+        self.cli('submit', owner)
+        self.cli('integrate', owner)
+        bound_base, bound_tree = (self.base/'bindings').read_text().strip().split()
+        self.assertEqual(bound_base, baseline)
+        self.assertEqual(bound_tree, self.remote_oid('main^{tree}'))
+        self.assertEqual(self.remote_oid('main^'), baseline)
+        self.assertEqual(self.run_command(['git', '--git-dir='+str(self.remote), 'show', 'main:baseline-only']).stdout, 'remote addition')
+        self.assertEqual(self.run_command(['git', '--git-dir='+str(self.remote), 'show', 'main:work']).stdout, 'candidate')
+
+    def test_verifier_mutation_wrong_binding_and_refusal_never_publish(self):
+        for marker in ('mutate-index', 'mutate-head', 'wrong-binding', 'reject'):
+            with self.subTest(marker=marker):
+                owner, _ = self.create({marker: 'yes'})
+                baseline = self.remote_oid()
+                self.cli('submit', owner)
+                result = self.cli('integrate', owner, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.remote_oid(), baseline)
+                self.assertIn('state=CONFLICT', (self.state/'sessions'/owner/'journal').read_text())
+                self.assertFalse((self.state/'sessions'/owner/'pending-sha').exists())
+
+    def test_unsupported_baseline_cannot_use_submitted_verifier(self):
+        capable = (self.source/'core/bin/auto-deliver.sh').read_text()
+        (self.source/'core/bin/auto-deliver.sh').write_text('#!/bin/bash\nexit 0\n')
+        self.run_command(['git', '-C', self.source, 'add', '.'])
+        self.run_command(['git', '-C', self.source, 'commit', '-qm', 'legacy verifier'])
+        self.run_command(['git', '-C', self.source, 'push', '-q', 'origin', 'main'])
+        baseline = self.remote_oid()
+        owner, root = self.create({'work': 'protected'})
+        (root/'core/bin/auto-deliver.sh').write_text(capable)
+        self.cli('submit', owner)
+        result = self.cli('integrate', owner, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('trusted baseline lacks bound candidate verification', result.stderr)
+        self.assertEqual(self.remote_oid(), baseline)
+        self.assertFalse((self.base/'bindings').exists())
 
     def test_acceptance_survives_caller_exit_and_only_worker_delivers(self):
         # Break caught: returning success without a durable, executable job.

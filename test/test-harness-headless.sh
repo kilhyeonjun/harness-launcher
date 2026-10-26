@@ -50,6 +50,12 @@ printf '%s\n' base > "$SOURCE/projects/keep.txt"
 printf '%s\n' base > "$SOURCE/projects/drop.txt"
 cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
 #!/usr/bin/env bash
+if [[ "\${1:-}" == --help ]]; then echo '--verify-candidate --contract-checked'; exit 0; fi
+[[ "\${2:-}" == --staged-only && "\${3:-}" == --dry-run && "\${4:-}" == --no-push && "\${5:-}" == --verify-candidate ]] || exit 91
+[[ "\${6:-}" == "\$(git rev-parse HEAD)" && "\${7:-}" == "\$(git write-tree)" ]] || exit 94
+[[ "\$(git cat-file -t "\$6")" == commit && "\$(git cat-file -t "\$7")" == tree ]] || exit 95
+[[ "\${8:-}" == --contract-checked && "\${9:-}" == 'broker candidate cascade verified' ]] || exit 96
+printf 'VERIFIER-BOUND %s %s\\n' "\$6" "\$7"
 # Reports the environment the repository verifier runs with on stdout (the
 # broker log): headless verifiers are sandboxed and can only write their
 # candidate and temp dir. Like a harness auto-deliver, it runs the candidate's tests.

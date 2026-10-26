@@ -2,6 +2,19 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+- Bind repository verification to the exact fresh baseline and complete merged
+  candidate tree in both interactive and headless broker paths. Recheck the
+  submission, HEAD, parent, committed tree and index before publication; remote
+  retries rebuild and reverify their bindings. Scrubbed headless copies retain
+  only the fresh bound baseline ref and use cache-only authority reads, without
+  restoring remote URLs, credentials or network refresh.
+- Require trusted baseline support for verification-only `--verify-candidate`.
+  Unsupported repositories fail closed, with no submitted-verifier or path-filter
+  fallback. Baseline support must be installed through authorized maintenance
+  before adopting this launcher. Sandbox isolation and delivery recovery remain.
+
 ## 0.77.8 — 2026-10-25
 
 - Open an enrolled host's bare runtime menu from the verified sealed launcher,

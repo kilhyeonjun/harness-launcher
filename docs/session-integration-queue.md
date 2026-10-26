@@ -51,6 +51,32 @@ and return code; PIDs are observations, never ownership proof. Full verifier
 output is in `<queue-home>/logs/<job-uuid>.log`. Repository-owned verifiers
 remain responsible for individual suite progress and timeout policies.
 
+## Bound candidate verification
+
+Both queue and legacy integration require the trusted remote baseline's
+`core/bin/auto-deliver.sh` to support
+`--staged-only --dry-run --no-push --verify-candidate BASE_OID TREE_OID`.
+The broker computes these full object IDs after the three-way merge and exact
+submission/candidate pathset check. An unsupported baseline refuses; there is
+no path-filter, submitted-verifier or unbound-verification fallback. Install
+baseline support through the repository's authorized maintainer procedure
+before using this launcher; this interface does not grant a maintenance lease.
+
+Verification cannot commit or push. It checks the full frozen candidate under
+the baseline's policy, including protected source changes, while ordinary
+staged-only delivery retains its protected-file refusal. Headless verification
+still runs against a scrubbed sandbox copy with no verifier state copied back.
+After removing remotes, the broker restores only `refs/remotes/origin/main` at
+its fresh bound baseline in the copy and trusted clone, and forces cache-only
+authority reads. This retains committed authority history without restoring a
+remote URL, credentials, network refresh or a writer credential. Missing or
+invalid authenticated release/cache inputs still fail closed.
+The broker independently rebinds candidate HEAD/tree and submission identity
+after verification, then checks the committed parent/tree and index again
+immediately before non-force publication. Remote advancement rebuilds the
+candidate and runs verification with fresh IDs. Pending evidence, remote
+readback and uncertain-outcome recovery remain required.
+
 ## Ownership, budgets and recovery
 
 SQLite FULL-synchronous transactions publish accepted jobs only after fsynced,

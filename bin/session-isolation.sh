@@ -1130,18 +1130,19 @@ codex_sandbox_profile() {
     "$(sbpl_str "$codex_home/config.toml")" "$(sbpl_str "$codex_home/AGENTS.md")"
 }
 run_repository_verifier() {
-  local candidate="$1" id="$2" remote="$3" baseline="$4" trusted verifier help_output
+  local candidate="$1" id="$2" remote="$3" baseline="$4" tree="$5" trusted verifier help_output
   local -a verifier_args
   trusted="$(mktemp -d "$(state_home)/verifier.XXXXXX")" || return 2
   { git clone -q --no-local "$remote" "$trusted" && git -C "$trusted" checkout -q --detach "$baseline"; } || { rm -rf "$trusted"; return 2; }
   verifier="$trusted/core/bin/auto-deliver.sh"
   [[ -f "$verifier" ]] || { echo 'ERROR: repository-owned core/bin/auto-deliver.sh verifier is required' >&2; rm -rf "$trusted"; return 2; }
-  verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push)
+  verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push --verify-candidate "$baseline" "$tree")
   if integration_headless "$id"; then
-    run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "${verifier_args[@]}"
+    run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "$baseline" "${verifier_args[@]}"
     return
   fi
   help_output="$(verifier_exec bash "$verifier" --help 2>/dev/null || true)"
+  grep -q -- '--verify-candidate' <<< "$help_output" || { echo 'ERROR: trusted baseline lacks bound candidate verification' >&2; rm -rf "$trusted"; return 2; }
   if grep -q -- '--contract-checked' <<< "$help_output"; then
     verifier_args+=(--contract-checked 'broker candidate cascade verified')
   fi
@@ -1152,7 +1153,7 @@ run_repository_verifier() {
   rm -rf "$trusted"
   return "$rc"
 }
-# run_sandboxed_verifier <candidate> <id> <trusted> <verifier> <args...>:
+# run_sandboxed_verifier <candidate> <id> <trusted> <verifier> <baseline> <args...>:
 # headless sessions only. The verifier gets a copy of the candidate (index
 # included, no hard links), a minimal environment (no agent sockets, tokens or
 # GitHub variables), a fresh temp dir outside HOME and a generated global git
@@ -1178,18 +1179,20 @@ write_verifier_gitconfig() {
     printf '[core]\n\texcludesFile = /dev/null\n\tattributesFile = /dev/null\n'; } > "$1"
 }
 run_sandboxed_verifier() {
-  local candidate="$1" id="$2" trusted="$3" verifier="$4" source vtmp vcopy profile help_output name rc=0
-  shift 4
+  local candidate="$1" id="$2" trusted="$3" verifier="$4" baseline="$5" source vtmp vcopy profile help_output name rc=0
+  shift 5
   local -a args=("$@") venv=()
   [[ -x "$SANDBOX_EXEC" ]] || { echo "harness-session: refused: $SANDBOX_EXEC is required to verify a headless session" >&2; rm -rf "$trusted"; return 2; }
   source="$(<"$(session_dir "$id")/source-root")" || { rm -rf "$trusted"; return 2; }
   vtmp="$(mktemp -d /private/tmp/verifier-tmp.XXXXXX)" || { rm -rf "$trusted"; return 2; }
   vcopy="$(mktemp -d "$(state_home)/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
   { vtmp="$(phys "$vtmp")" && vcopy="$(phys "$vcopy")" && cp -R "$candidate/." "$vcopy/" \
-      && scrub_remotes "$vcopy" && scrub_remotes "$trusted" && write_verifier_gitconfig "$vtmp/gitconfig" \
+      && scrub_remotes "$vcopy" && session_git -C "$vcopy" update-ref refs/remotes/origin/main "$baseline" \
+      && scrub_remotes "$trusted" && session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" \
+      && write_verifier_gitconfig "$vtmp/gitconfig" \
       && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted")"; } \
     || { rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
-  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig")
+  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" HARNESS_AUTHORITY_NO_REFRESH=1)
   if [[ -n "${INTEGRATION_INPUT_DIR:-}" ]]; then
     [[ "${HARNESS_DELIVER_TEST_JOBS:-}" =~ ^([1-9]|1[0-6])$ ]] || return 2
     venv+=(HARNESS_DELIVER_TEST_JOBS="$HARNESS_DELIVER_TEST_JOBS" HARNESS_TEST_CASE_JOBS_LIMIT="$HARNESS_DELIVER_TEST_JOBS")
@@ -1197,6 +1200,7 @@ run_sandboxed_verifier() {
   [[ -z "${LANG:-}" ]] || venv+=(LANG="$LANG")
   for name in $(compgen -e); do [[ "$name" != LC_* ]] || venv+=("$name=${!name}"); done
   help_output="$(cd "$vcopy" && verifier_exec env -i "${venv[@]}" "$SANDBOX_EXEC" -p "$profile" bash "$verifier" --help 2>/dev/null || true)"
+  grep -q -- '--verify-candidate' <<< "$help_output" || { echo 'ERROR: trusted baseline lacks bound candidate verification' >&2; rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
   if grep -q -- '--contract-checked' <<< "$help_output"; then
     args+=(--contract-checked 'broker candidate cascade verified')
   fi
@@ -1221,7 +1225,7 @@ write_index_pathset() {
   done < <(git -C "$repo" diff --cached --name-status --no-renames -z "$base")
 }
 integrate_unlocked() {
-  local id="$1" dir input source remote attempt candidate current delivered readback kind mode hash path actual_mode actual_type actual_oid actual_path entry
+  local id="$1" dir input source remote attempt candidate current candidate_tree delivered readback kind mode hash path actual_mode actual_type actual_oid actual_path entry
   dir="$(session_dir "$id")"; source="$(<"$dir/source-root")"
   input="${INTEGRATION_INPUT_DIR:-$dir}"
   remote="$(git -C "$source" remote get-url origin)"
@@ -1238,14 +1242,19 @@ integrate_unlocked() {
     write_manifest_pathset "$input/manifest" "$dir/.submitted-pathset"
     write_index_pathset "$candidate" "$current" "$dir/.candidate-pathset"
     cmp -s "$dir/.submitted-pathset" "$dir/.candidate-pathset" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
+    candidate_tree="$(session_git -C "$candidate" write-tree)" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
     integration_phase verifying || return $?
-    run_repository_verifier "$candidate" "$id" "$remote" "$current" || {
+    run_repository_verifier "$candidate" "$id" "$remote" "$current" "$candidate_tree" || {
       rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"
       # Headless: exit 9, the verifier rejected the candidate (not a merge conflict).
       if integration_headless "$id"; then return 9; fi
       return 3
     }
-    verify_submission_identity "$dir" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
+    if ! verify_submission_identity "$dir" \
+        || [[ "$(session_git -C "$candidate" rev-parse --verify HEAD)" != "$current" ]] \
+        || [[ "$(session_git -C "$candidate" write-tree)" != "$candidate_tree" ]]; then
+      rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2
+    fi
     [[ "${HARNESS_SESSION_TEST_CRASH_BEFORE_PUSH:-0}" == 1 ]] && kill -9 "$BASHPID"
     # Headless: no hooks, fsmonitor or external drivers on the broker's own
     # commit and push (the verifier never touched this dir; belt and braces).
@@ -1270,6 +1279,14 @@ integrate_unlocked() {
     git -C "$candidate" fetch -q origin main
     [[ "$(git -C "$candidate" rev-parse origin/main)" == "$current" ]] || { rm -rf "$candidate"; continue; }
     integration_phase publishing || return $?
+    # Commit hooks and verifier processes must not substitute an unverified tree.
+    if ! verify_submission_identity "$dir" \
+        || [[ "$(session_git -C "$candidate" rev-parse --verify HEAD)" != "$delivered" ]] \
+        || [[ "$(session_git -C "$candidate" rev-parse --verify 'HEAD^')" != "$current" ]] \
+        || [[ "$(session_git -C "$candidate" rev-parse --verify 'HEAD^{tree}')" != "$candidate_tree" ]] \
+        || [[ "$(session_git -C "$candidate" write-tree)" != "$candidate_tree" ]]; then
+      rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2
+    fi
     if "${cgit[@]}" -C "$candidate" push -q origin HEAD:refs/heads/main; then
       [[ "${HARNESS_SESSION_TEST_CRASH_BEFORE_ACK:-0}" == 1 ]] && kill -9 "$BASHPID"
       printf '%s\n' "$delivered" > "$dir/push-ack"
