@@ -1630,7 +1630,8 @@ headless "${CODEX_ARGS[@]}" || fail 'codex failed run must exit 0'
 expect_status failed
 [[ "$(field summary)" == boom && "$(field exit_code)" == 3 && "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] \
   || fail 'a failed codex run keeps its summary and exit code and delivers nothing'
-grep -qx state=ABANDONED "$STATE/sessions/$(field session_id)/journal" || fail 'a failed codex session must be kept'
+other="$(field session_id)"
+grep -qx state=ABANDONED "$STATE/sessions/$other/journal" || fail 'a failed codex session must be kept'
 codex_prompt cap
 headless "${CODEX_ARGS[@]}" --max-model-requests 2 || fail 'codex capped run must exit 0'
 expect_status budget
@@ -1647,7 +1648,10 @@ for f in .ssh/id_fixture .hermes/state.json buzz/token .codex/auth.json .claude/
     Library/Keychains/login.keychain-db .zsh_history; do
   printf 'secret-%s\n' fixture > "$FAKE_HOME/$f"
 done
-other="$(ls "$STATE/sessions" | grep -v "^$sid\$" | head -n 1)"
+# Use the failed codex session retained above, not an arbitrary record whose
+# worktree may be gone. Prove both targets are readable outside the sandbox.
+cat "$STATE/sessions/$other/journal" "$STATE/worktrees/$other/tracked.txt" > /dev/null \
+  || fail 'the other-session sandbox fixtures must exist and be readable'
 # A terminal the user has open: a PTY made outside the sandbox.
 python3 -c 'import os, pty, time
 m, s = pty.openpty()

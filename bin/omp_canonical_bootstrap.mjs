@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -116,8 +115,27 @@ export function validatePin(pin) {
   }
   need(hash(canonical({ schema: 'canonical-bootstrap-source/v1', files: pin.files }) + '\n') === pin.manifest_sha256);
 }
+// Bun userInfo().homedir follows HOME; that fresh auth home is not account authority.
+export function accountHome() {
+  need(process.platform === 'darwin');
+  let result;
+  try {
+    result = spawnSync('/usr/bin/python3', ['-I', '-S', '-B', '-c',
+      'import json,os,pwd,sys; u=os.getuid(); sys.stdout.buffer.write(json.dumps({"home":pwd.getpwuid(u).pw_dir,"uid":u},ensure_ascii=False,sort_keys=True,separators=(",",":")).encode("utf-8"))'],
+    { shell: false, cwd: '/', env: { PATH: '/usr/bin:/bin' }, stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 4096 });
+  } catch { fail('source_admission_failed'); }
+  need(result && !result.error && result.signal === null && result.status === 0
+    && Buffer.isBuffer(result.stdout) && result.stdout.length > 0 && result.stdout.length <= 4096);
+  let value;
+  try { value = JSON.parse(result.stdout.toString('utf8')); } catch { fail('source_admission_failed'); }
+  keys(value, ['home', 'uid']);
+  need(text(value.home) && Number.isSafeInteger(value.uid) && value.uid === process.getuid()
+    && Buffer.from(canonical(value), 'utf8').equals(result.stdout));
+  ancestry(value.home, value.home);
+  return value.home;
+}
 function admitOwnSource() {
-  const home = os.userInfo().homedir;
+  const home = accountHome();
   const own = fileURLToPath(import.meta.url);
   physical(own);
   const root = path.dirname(path.dirname(own));

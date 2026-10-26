@@ -63,6 +63,29 @@ release does not depend on a future compatible MCP upstream release.
   before the human's exact once decision. No cross-profile source or credential
   adoption is part of this handoff.
 
+## Native OS-account correction
+
+The pinned 18.11.3 runtime's `userInfo().homedir` follows the deliberately fresh
+native HOME. It cannot be the source of OS-account authority. Keep fresh HOME
+and all source/tree/native/frame/observer checks; replace only this lookup.
+
+- Reuse literal `/usr/bin/python3 -I -S -B -c` and a fixed UID/passwd script;
+  no shell, caller arguments, path discovery or target-tree helper. Use cwd `/`,
+  PATH-only `/usr/bin:/bin`, ignored stdin/stderr, byte stdout, 15-second timeout,
+  SIGKILL timeout termination and a 4096-byte cap.
+- Require successful unsignaled status, canonical compact UTF-8 closed
+  `{home,uid}` bytes, exact native UID and an absolute normalized physical
+  owner-safe home. Reject malformed/duplicate/extra fields, alternate encodings,
+  failures and unsafe ancestry. Never fall back to environment or control data.
+- Preserve the actual failure's unknown/cleanup result; no automatic replay.
+  The owning profile reconciles its old process/lease/canonical state separately.
+- Prove the unmodified getter under the original pinned native with fresh HOME,
+  then admit the common public/private trees. No substituted getter/interpreter,
+  company/profile records, approval keys or engine execution. After normal new
+  release/install, test the actual installed startup's source-admission boundary
+  separately before any owner-authorized operation. A read-only source check is
+  not BIND, native approval, engine success or genuine HUMAN once.
+
 ## Evidence boundaries
 
 Code review, fixtures, a published pin and private delivery do not prove public

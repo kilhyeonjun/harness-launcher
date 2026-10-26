@@ -18,8 +18,13 @@ Releases **0.78.0 and 0.78.1** contain a stale compiler-helper size/hash in the
 bootstrap descriptor. Their private-closure admission correctly refuses with
 `canonical_bootstrap_content`; do not patch those releases or their sealed caches.
 Release **0.78.2** binds the corrected published private manifest and the actual
-seven Git blobs instead. The admitted code and native binary remain the reviewed
-ones; no verifier or approval check is relaxed. The candidate-verifier baseline
+seven Git blobs, but its native carrier still fails source admission: the pinned
+runtime's `userInfo().homedir` follows fresh `HOME`, not the OS account home.
+Release **0.78.3** corrects that authority lookup using the already trusted fixed
+system-Python UID/passwd query, with bounded canonical output and physical owner
+checks. Native HOME stays fresh; do not expose account auth/configuration by
+changing it to the account home. No verifier or approval check is relaxed.
+The candidate-verifier baseline
 prerequisite introduced in 0.78.1 also remains in force: each affected repository's
 trusted baseline must support verification-only `--verify-candidate` before
 adopting that broker. Each profile owner verifies its own prerequisite.

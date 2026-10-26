@@ -2,6 +2,19 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.78.3 — 2026-10-27
+
+- Derive native bootstrap source authority from the operating-system UID/passwd
+  home through the existing fixed, isolated system-Python interpreter. The pinned
+  native runtime's `userInfo().homedir` follows the intentionally fresh `HOME`,
+  so 0.78.2 rejected valid installed code before native approval.
+- Keep fresh native HOME/auth isolation, exact source/native/owner/once checks
+  and unknown/cleanup handling unchanged. Bound and validate the account query's
+  canonical UTF-8 result; failures never fall back to caller environment or paths.
+- Cover HOME-sensitive runtime behavior, failed/malformed/foreign account proofs,
+  non-ASCII canonical bytes and unsafe home ancestry. Read-only pinned-native
+  account/common-tree smoke is not a BIND, engine, approval or once receipt.
+
 ## 0.78.2 — 2026-10-26
 
 - Repin the canonical bootstrap descriptor to the corrected published private
