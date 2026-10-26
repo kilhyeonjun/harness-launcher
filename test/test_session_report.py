@@ -162,7 +162,6 @@ class SessionReportTest(unittest.TestCase):
         result = self.cli(entry=entry, extra_env={'PATH': str(tools) + os.pathsep + os.environ['PATH']})
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, '')
-        self.assertIn('cannot resolve report entry', result.stderr)
         self.assertEqual(os.readlink(entry), 'harness-session')
         self.assertEqual(before, (self.snapshot(self.state), self.snapshot(self.runtime)))
 

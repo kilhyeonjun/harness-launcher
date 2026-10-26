@@ -28,6 +28,7 @@ PY
 chmod +x "$TMP/catalog.py"
 
 mkdir -p "$TMP/bin"
+cp "$ROOT/bin/"{harness-release-client.sh,harness_release_client.py,harness-common.sh} "$TMP/bin/"
 cp "$TMP/catalog.py" "$TMP/bin/codex-history.py"
 export HARNESS_SESSION_STATE_HOME="$TMP/state"
 source "$ROOT/bin/aliases.zsh"
