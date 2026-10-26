@@ -14,6 +14,20 @@ its release-pinned private code closure before this command can run. That flow
 can install the new launcher without first updating the canonical repository.
 It preserves existing workspaces, sessions and the older Homebrew keg.
 
+Releases **0.78.0 and 0.78.1** contain a stale compiler-helper size/hash in the
+bootstrap descriptor. Their private-closure admission correctly refuses with
+`canonical_bootstrap_content`; do not patch those releases or their sealed caches.
+Release **0.78.2** binds the corrected published private manifest and the actual
+seven Git blobs instead. The admitted code and native binary remain the reviewed
+ones; no verifier or approval check is relaxed. The candidate-verifier baseline
+prerequisite introduced in 0.78.1 also remains in force: each affected repository's
+trusted baseline must support verification-only `--verify-candidate` before
+adopting that broker. Each profile owner verifies its own prerequisite.
+
+A corrected published descriptor is not an installed-runtime receipt or proof of
+canonical apply. Complete the trusted activation and verify its selected runtime
+and sealed closure before invoking the new entry.
+
 The closure is executable code, not configuration. Its revision, manifest and
 seven-file inventory are fixed by the public release; the installer verifies
 source provenance, file modes, sizes and hashes before sealing the cache. Missing,
