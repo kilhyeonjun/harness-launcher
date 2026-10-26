@@ -2,6 +2,19 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.78.2 — 2026-10-26
+
+- Repin the canonical bootstrap descriptor to the corrected published private
+  manifest and its actual seven Git blobs. The earlier releases carried a stale
+  size/hash for the shared compiler helper and correctly refused closure admission
+  with `canonical_bootstrap_content`. The seven admitted code files and native
+  binary are unchanged from the independently reviewed correction.
+- Preserve the existing verifier, policy, approval, lock and publication guards.
+  Never repair an old release or sealed cache in place. Release metadata is not
+  evidence of installation, actual canonical apply or a genuine human **once**;
+  those still require their own receipts. The 0.78.1 candidate-verifier baseline
+  prerequisite remains in force.
+
 ## 0.78.1 — 2026-10-26
 
 - Bind repository verification to the exact fresh baseline and complete merged
@@ -17,7 +30,7 @@ Notable changes are recorded here. This project follows semantic versioning for 
   fallback. Baseline support must be installed through authorized maintenance
   before adopting this launcher. Sandbox isolation and delivery recovery remain.
 
-## 0.78.0 — Unreleased
+## 0.78.0 — 2026-10-26
 
 - Add `harness-canonical-update --profile <registered-profile> --expected-base
   <full40> --revision <full40>` as a dedicated, no-auth native approval carrier
