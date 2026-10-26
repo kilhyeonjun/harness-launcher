@@ -234,7 +234,9 @@ Delivery requires the trusted remote baseline verifier's
 The verification-only call is bound to the complete merged candidate; the broker
 independently rechecks it before publication. Unsupported baselines refuse without
 fallback. Add baseline support through authorized repository maintenance before
-upgrading the delivery runtime; this is not a maintenance grant.
+upgrading the delivery runtime; this is not a maintenance grant. The
+[rollout plan and execution record](docs/plans/2026-10-26-bound-candidate-verification.md)
+preserve the baseline prerequisites, review evidence and activation boundary.
 
 An operator can explicitly enable the [durable integration queue](docs/session-integration-queue.md)
 after enrolling all affected old and profile pools. Then `close --enqueue <uuid>`
