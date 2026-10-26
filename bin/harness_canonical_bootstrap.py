@@ -401,7 +401,7 @@ def observe(home, directory):
 
 def request_from_args(argv):
     require(len(argv) == 6 and argv[::2] == ['--profile', '--expected-base', '--revision'], 'BOOTSTRAP_ARGUMENTS')
-    require(re.fullmatch('[a-z][a-z0-9-]{0,31}', argv[1]) and HEX40.fullmatch(argv[3]) and HEX40.fullmatch(argv[5]),
+    require(re.fullmatch('[A-Za-z_][A-Za-z0-9_-]{0,63}', argv[1]) and HEX40.fullmatch(argv[3]) and HEX40.fullmatch(argv[5]),
             'BOOTSTRAP_ARGUMENTS')
     return {'profile': argv[1], 'expected_base': argv[3], 'revision': argv[5]}
 

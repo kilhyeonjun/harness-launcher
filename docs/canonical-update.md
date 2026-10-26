@@ -37,7 +37,8 @@ The only operation arguments, in this order, are:
 harness-canonical-update --profile <registered-profile> --expected-base <full40> --revision <full40>
 ```
 
-`--profile` selects an already registered profile. `--expected-base` is the
+`--profile` selects an already registered and enrolled profile, preserving its
+existing identifier grammar: `[A-Za-z_][A-Za-z0-9_-]{0,63}`. `--expected-base` is the
 expected current canonical commit; `--revision` is the requested target commit.
 Both commits must be full 40-character lowercase hexadecimal revisions. The
 command also accepts `--help`. It accepts no root, origin, source, native binary,

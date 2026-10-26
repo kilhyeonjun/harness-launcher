@@ -9,6 +9,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
   for the existing private canonical transaction. Only a genuine human **once**
   decision bound to the full profile, root, origin, base, target and expiry can
   authorize apply; caller paths and approval overrides are not accepted.
+- Preserve the existing enrolled-profile identifier grammar, including uppercase
+  letters, underscores and names up to 64 characters. Registration and enrollment
+  remain mandatory; accepting an identifier grants no root or operation authority.
 - Require the selected immutable public runtime and its exact release-pinned
   private code closure. The trusted installer can stage that pair before a
   canonical update, preserving existing sessions and the legacy Homebrew keg;

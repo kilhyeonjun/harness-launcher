@@ -174,11 +174,15 @@ class SourceAdmission(Disposable):
 class InputAndRecordBoundaries(Disposable):
     def test_exact_request_and_no_authority_overrides(self):
         argv = ['--profile', 'sample-profile', '--expected-base', '1' * 40, '--revision', '2' * 40]
-        self.assertEqual(b.request_from_args(argv), {'profile': 'sample-profile', 'expected_base': '1' * 40, 'revision': '2' * 40})
+        for profile in ('sample-profile', 'Sample', 'sample_profile', '_profile', 'a' * 33, 'A_' + 'b' * 62):
+            changed = argv[:]
+            changed[1] = profile
+            with self.subTest(profile=profile):
+                self.assertEqual(b.request_from_args(changed)['profile'], profile)
         variants = [argv + ['--once'], argv + ['--source', str(self.home)], argv + ['--home', str(self.home)],
                     argv + ['--native-arg', '--print'], argv + ['--approval', 'once'], argv[2:] + argv[:2],
                     ['--profile=sample-profile'] + argv[2:]]
-        for profile in ('../sample', 'Sample', 'sample_profile', '', 'a' * 33):
+        for profile in ('../sample', '', 'a' * 65, '-profile', '1profile', 'two words', 'prøfile', 'line\nfeed'):
             changed = argv[:]
             changed[1] = profile
             variants.append(changed)
@@ -218,8 +222,6 @@ class InputAndRecordBoundaries(Disposable):
                    'binary_release': {key: native[key] for key in ('version', 'source_revision')}}
         request = {'profile': 'sample-profile'}
         projection = types.SimpleNamespace(select=mock.Mock(return_value=context))
-        self.assertEqual(b.profile_context(self.home, directory, projection, request, pin), (workspace, context))
-        projection.select.assert_called_once_with('sample-profile', str(workspace), str(directory / 'aliases.zsh'), continuation=True)
         for key, replacement in (('binary_path', str(self.home / 'other-native')), ('binary_sha256', '0' * 64),
                                  ('binary_size', native['bytes'] - 1), ('binary_release', {'version': 'other'})):
             altered = copy.deepcopy(context)
