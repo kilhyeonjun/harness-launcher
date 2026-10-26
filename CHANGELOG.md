@@ -9,7 +9,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
   submission, HEAD, parent, committed tree and index before publication; remote
   retries rebuild and reverify their bindings. Scrubbed headless copies retain
   only the fresh bound baseline ref and use cache-only authority reads, without
-  restoring remote URLs, credentials or network refresh.
+  restoring remote URLs, credentials or network refresh. Force system Git
+  configuration off in the scrubbed verifier while retaining its generated
+  global config; Xcode host configuration is not a sandbox prerequisite.
 - Require trusted baseline support for verification-only `--verify-candidate`.
   Unsupported repositories fail closed, with no submitted-verifier or path-filter
   fallback. Baseline support must be installed through authorized maintenance

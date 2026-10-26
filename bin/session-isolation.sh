@@ -1192,7 +1192,7 @@ run_sandboxed_verifier() {
       && write_verifier_gitconfig "$vtmp/gitconfig" \
       && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted")"; } \
     || { rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
-  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" HARNESS_AUTHORITY_NO_REFRESH=1)
+  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HARNESS_AUTHORITY_NO_REFRESH=1)
   if [[ -n "${INTEGRATION_INPUT_DIR:-}" ]]; then
     [[ "${HARNESS_DELIVER_TEST_JOBS:-}" =~ ^([1-9]|1[0-6])$ ]] || return 2
     venv+=(HARNESS_DELIVER_TEST_JOBS="$HARNESS_DELIVER_TEST_JOBS" HARNESS_TEST_CASE_JOBS_LIMIT="$HARNESS_DELIVER_TEST_JOBS")
