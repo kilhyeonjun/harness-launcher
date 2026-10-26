@@ -4,7 +4,69 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import bootstrap, { runOperation, canonical, validateScope, validatePin, admitTree, openChannel, identity } from '../bin/omp_canonical_bootstrap.mjs';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import bootstrap, { accountHome, runOperation, canonical, validateScope, validatePin, admitTree, openChannel, identity } from '../bin/omp_canonical_bootstrap.mjs';
+
+test('native account authority ignores fresh HOME and HOME-sensitive userInfo', { skip: process.platform !== 'darwin' }, () => {
+  const carrier = new URL('../bin/omp_canonical_bootstrap.mjs', import.meta.url).href;
+  const script = `import os from 'node:os';
+    const expected = os.userInfo().homedir;
+    const original = os.userInfo;
+    os.userInfo = () => ({ ...original(), homedir: process.env.HOME });
+    const { accountHome } = await import(${JSON.stringify(carrier)});
+    const actual = accountHome();
+    console.log(JSON.stringify({ matchesOSAccount: actual === expected, ignoresFreshHome: actual !== process.env.HOME }));`;
+  const done = childProcess.spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: '/', env: { PATH: '/usr/bin:/bin', HOME: '/untrusted-fresh-native-home' }, encoding: 'utf8', timeout: 20000,
+  });
+  assert.equal(done.status, 0, done.stderr);
+  assert.deepEqual(JSON.parse(done.stdout), { matchesOSAccount: true, ignoresFreshHome: true });
+});
+function withAccountReply(reply, run) {
+  const original = childProcess.spawnSync;
+  childProcess.spawnSync = typeof reply === 'function' ? reply : () => reply;
+  syncBuiltinESMExports();
+  try { run(); } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); }
+}
+test('account proof rejects failed queries and malformed or foreign authority without fallback', { skip: process.platform !== 'darwin' }, () => {
+  const home = os.userInfo().homedir;
+  const uid = process.getuid();
+  const valid = Buffer.from(canonical({ home, uid }));
+  const okay = { status: 0, signal: null, stdout: valid };
+  const replies = [
+    { ...okay, error: new Error('private query diagnostic') },
+    { ...okay, status: 1 }, { ...okay, status: null }, { ...okay, status: undefined },
+    { ...okay, signal: 'SIGKILL', status: null },
+    { ...okay, stdout: Buffer.alloc(0) }, { ...okay, stdout: Buffer.alloc(4097) },
+    { ...okay, stdout: valid.toString() }, { ...okay, stdout: Buffer.from('{') },
+    { ...okay, stdout: Buffer.from(canonical({ home, uid: uid + 1 })) },
+    { ...okay, stdout: Buffer.from(canonical({ home, uid: String(uid) })) },
+    { ...okay, stdout: Buffer.from(canonical({ home, uid, extra: true })) },
+    { ...okay, stdout: Buffer.from(`{"home":${JSON.stringify(home)},"home":${JSON.stringify(home)},"uid":${uid}}`) },
+    { ...okay, stdout: Buffer.from(canonical({ home, uid }) + '\n') },
+    { ...okay, stdout: Buffer.from(canonical({ home: '../foreign-home', uid })) },
+    () => { throw new Error('private spawn diagnostic'); },
+  ];
+  for (const reply of replies) withAccountReply(reply, () => assert.throws(accountHome, /^Error: source_admission_failed$/));
+});
+test('account proof accepts canonical UTF8 but rejects escaped, linked or writable homes', { skip: process.platform !== 'darwin' }, () => {
+  const base = fs.mkdtempSync(path.join(os.userInfo().homedir, '.native-account-proof-'));
+  const home = path.join(base, '界');
+  const linked = path.join(base, 'linked');
+  fs.mkdirSync(home, { mode: 0o700 });
+  fs.symlinkSync(home, linked);
+  const proof = value => ({ status: 0, signal: null, stdout: Buffer.from(canonical({ home: value, uid: process.getuid() }), 'utf8') });
+  try {
+    withAccountReply(proof(home), () => assert.equal(accountHome(), home));
+    const escaped = proof(home);
+    escaped.stdout = Buffer.from(escaped.stdout.toString().replace('界', '\\u754c'));
+    withAccountReply(escaped, () => assert.throws(accountHome, /^Error: source_admission_failed$/));
+    withAccountReply(proof(linked), () => assert.throws(accountHome, /^Error: source_admission_failed$/));
+    fs.chmodSync(home, 0o777);
+    withAccountReply(proof(home), () => assert.throws(accountHome, /^Error: source_admission_failed$/));
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
 
 const request = Object.freeze({ profile: 'sample', expected_base: 'a'.repeat(40), revision: 'b'.repeat(40) });
 const authority = { release: 'c'.repeat(40), revision: 'd'.repeat(40), digest: 'e'.repeat(64) };
