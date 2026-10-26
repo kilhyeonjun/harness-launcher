@@ -201,11 +201,17 @@ The opt-in profiles participate in atomic publication and warm-cache drift repai
 
 The main profile does not downgrade reviewers: reviewer subagents route independently to Sol/medium by default and may explicitly escalate effort for unusually risky work.
 
-Generated homes default to `model_context_window = 272000` and
-`model_auto_compact_token_limit = 217600`, compacting at 80% before the GPT-5.6
-API's documented 272K long-context pricing boundary. The TUI context toggle or `codex ... 1m` emits
-`1000000` with the existing 414000 compact line. Codex clamps either request to
-the selected model/account maximum; verify effective context in a native session.
+New launches default to `Auto — Codex settings`. In this mode the launcher emits
+neither `model_context_window` nor `model_auto_compact_token_limit`; Codex resolves
+them using its normal configuration precedence and model metadata. Explicit
+native settings remain authoritative. The launcher does not fetch a catalog or
+pin today's model window during preparation.
+
+Explicit `272k`, `500k`, and `1m` modes retain predictable launcher policies:
+respectively `272000 / 217600`, `500000 / 400000`, and `1000000 / 414000`
+(requested window / automatic compaction threshold). Codex may clamp a request
+to the selected model/account maximum. Larger retained context can consume more
+quota; Auto is not a cost cap. Verify effective context in a native session.
 
 With Codex CLI 0.153.0 or newer, generated homes also enable
 `features.context_management.experimental_mode`. Eligible ChatGPT Plus, Pro,
@@ -335,9 +341,8 @@ opus   → GPT-5.6 Sol, medium
 Generated agent files are output. Edit the source agent definition instead.
 Launcher-generated custom roles set `model_context_window = 272000` and
 `model_auto_compact_token_limit = 217600` independently of the main profile.
-Consequently, selecting the 1M main-session mode retains its `1000000` and
-`414000` base-config values, while converted Claude agent roles remain at the
-272K/80% compact limit. This applies only to roles generated from
+Consequently, selecting Auto, 500K, or 1M for the main session does not enlarge
+converted Claude agent roles: they retain the 272K/80% compact limit. This applies only to roles generated from
 `.claude/agents/*.md`; Codex's built-in and ad-hoc agents have no launcher
 generated role file and are not globally capped by this setting. Provider-owned
 external roles such as synchronized `glider-*` TOMLs are also preserved rather
@@ -440,6 +445,48 @@ approved-file digest is audit metadata: new isolated paths necessarily change
 those bytes. Enforcement uses the versioned normalized complete hook set and
 per-script hashes verified against both approved and current Git base blobs.
 
+### Capturing the approval (operator)
+
+After the owner reviews and approves the hook set once in a native Codex session
+(decisions persist in the session's `$CODEX_HOME/<profile>.config.toml`, `base`
+for the default Native profile), an operator runs, from a shell outside that
+session and while it is still OPEN:
+
+```sh
+python3 "$(brew --prefix)/share/harness-launcher/codex-hook-trust.py" capture --session-id UUID --dry-run
+python3 "$(brew --prefix)/share/harness-launcher/codex-hook-trust.py" capture --session-id UUID [--profile base]
+```
+
+`--session-id` is mandatory: the session is never taken from the environment, and
+a Codex sandbox or inherited `HARNESS_SESSION_*` environment is refused (exit 1):
+capture must be operator-run (an agent must never run it). The session can write
+its own profile, so its native decision is evidence, not approval: without
+`--dry-run`, capture prints the exact normalized hooks, scripts and callbacks on
+the controlling terminal (`/dev/tty`) and records only after the operator types
+`record`. No terminal, or any other answer, writes nothing. Both checks guard
+against accidents, not against a same-user process: the limit on what a record
+can grant is that inheritance trusts only hooks the source home already trusts,
+with the same normalized command and scripts equal to the session's fresh clone.
+
+The command invents no approval. It refuses (exit 1, nothing written) unless
+every hook has a trusted, enabled native decision whose hash equals the generated
+hook hash, each `core/hooks` script equals its snapshot Git blob, the session
+record binds the source (open, same inode and snapshot), and the launcher's own
+inheritance would carry at least one hook (the canonical home needs its matching
+decisions). `--dry-run` prints counts, names and digests only. The record is
+written atomically (0600, owner-only 0700 `hook-approvals/`, directory fsynced);
+the previous one is kept as `<name>.json.bak-<ns timestamp>` (newest five).
+`approval_receipt_sha256` is the digest of `approval_evidence` (native decisions,
+normalized hook set, Codex identity), which is stored for audit and not enforced
+on read. A Codex upgrade or any hook-set change invalidates the record; capture
+again after a new native review.
+
+Fail-closed cases: capture must run from the launcher package that prepared the
+session (the refusal names the expected package path); the `codex` on PATH or
+`HARNESS_CODEX_BIN` must be the approved binary, whose digest is checked before it
+is executed; an existing record or `hook-approvals/` that is a link, not 0600
+(file) or not 0700 (directory) is refused.
+
 Native `--profile rich` saves hook decisions in `rich.config.toml`. Preparation
 preserves exact profile hook-state blocks through cold publication and its CAS,
 and warm signatures exclude only those mutable blocks. Other profile content
@@ -451,6 +498,56 @@ warm launches preserve runtime trust. This carries an existing approval across
 an equivalent path; it does not enable `--dangerously-bypass-hook-trust` or approve
 new hooks. Legacy homes without a surface manifest retain their existing review
 behavior. The command fingerprint subset is verified against Codex 0.161.
+
+## Native plugins in isolated sessions
+
+A fresh isolated home has no natively installed plugins, so a harness audit that
+requires one would always fail there. When both the canonical and the session
+`config/codex-surface.json` list a plugin in
+`runtime_audit.native_codex_plugins`, preparation copies that plugin from the
+canonical `<source>/.harness/codex` only if it is installed and enabled there.
+It runs after publication on warm and cold launches and only for a launcher
+session record that binds the source, physical session root and inode (the same
+binding as hook trust). Other harnesses and launches start no extra process.
+
+What is carried:
+
+- the single cached version under `plugins/cache/<marketplace>/<plugin>/`, read
+  through no-follow directory descriptors (no links, owner-only writable,
+  bounded size) and checked against its manifest name and version;
+- `[marketplaces.<marketplace>]`, only as an exact local definition, and
+  `[plugins."<id>"] enabled = true`.
+
+What is never carried: plugins outside both lists, `openai-bundled` (launcher
+managed), hook trust (`[hooks.state.*]`), `auth.json`, tokens, and other runtime
+state such as `.glider`. Plugin hooks therefore stay under native `/hooks` review
+in each new home until the user trusts them there.
+
+Session state always wins: no plugin cache, table or staging directory is
+replaced or deleted, and only `config.toml` and the record are atomically
+swapped after a compare-and-swap check. A plugin table
+already in the session (enabled or disabled), a differing marketplace table, a
+differing cache directory, or a concurrent native install leaves the session as
+it is. The cache moves into place with an exclusive rename; the config tables are
+appended last with a compare-and-swap that keeps concurrent writes. Inherited ids
+are recorded in `plugins/.harness-inherited.json`, so a native uninstall in the
+session is not reversed; disabling is the persistent opt-out. A record that is
+unsafe or malformed only suppresses inheritance. Platforms without an exclusive
+rename primitive inherit nothing.
+
+Missing canonical installation, a closed session or any unsafe evidence leaves
+the home unchanged and prints a `harness-launcher:` notice: one per plugin for
+plugin evidence or installation, one overall for session binding, policy,
+config or record failures. The harness audit still reports the plugin as
+missing. A later launch retries, so a
+plugin installed in the canonical home after the session started is picked up on
+the next resume. An attempt that fails after staging leaves its
+`plugins/.harness-inherit-*` directory in place rather than deleting anything.
+If an interrupted attempt left a cache that no longer matches the canonical
+version, the notice names that directory; remove it or start a new session.
+
+This is independent of `HARNESS_CODEX_GLOBAL_PLUGIN_POLICY`: it neither reads nor
+writes `~/.codex`, and behaves the same under `manage` and `preserve`.
 
 ## Auth behavior
 
@@ -505,16 +602,25 @@ The interactive launcher also supports forking the last Codex session. Extra run
 When native Codex is selected interactively, the Profile menu offers the model
 profiles only; the work surface is a `🔌 MCP surface` toggle on the summary
 screen (the same UX as the Claude/Kiro `light` toggle) and combines with any
-profile. The adjacent `🧠 Context` toggle defaults to `272K (Recommended)` and
-can opt into `1M`; shortcuts accept the same `272k`/`1m` keywords before any
+profile. The adjacent `🧠 Context` toggle defaults to Auto and cycles through
+`Auto`, `272K`, `500K`, and `1M`; shortcuts accept `auto`, `272k`, `500k`, or `1m` before any
 free-form Codex arguments. The selection is stored in launch history and passed
 to preparation as `HARNESS_CODEX_CONTEXT`.
+
+Auto omits both launcher-owned numeric settings, including after a switch from
+an explicit mode. Existing launch-history choices are preserved, rather than
+rewritten to Auto. Older records cannot distinguish a default 272K selection
+from an explicit one. Exact-session resumes retain their bound runtime; old
+restores with no recorded context policy retain the legacy 272K fallback.
 
 The 272K mode emits `model_context_window = 272000` and
 `model_auto_compact_token_limit = 217600`, so compaction starts at 80% of the
 nominal window and remains below the 258400 effective ceiling reported by the
-current 95% model metadata. The 1M mode emits `1000000` and `414000`; Codex may
-clamp the requested window to the active account/model ceiling. Switching modes
+current 95% model metadata. The 500K mode emits `500000` and `400000`, also an
+80% threshold. The 1M mode emits `1000000` and `414000`; Codex may
+clamp the requested window to the active account/model ceiling. The 1M label
+describes the requested window, not a promise to retain one million tokens;
+its conservative compression policy can compact earlier than Auto. Switching modes
 invalidates the exact-surface warm check and regenerates `config.toml` before
 launch. `default` leaves `HARNESS_CODEX_MCP_PROFILE` unset and uses the
 manifest's minimal default surface; `work` exports

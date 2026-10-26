@@ -267,14 +267,18 @@ history_field() {
 # captured when the launchpad menu is built, so a concurrent launcher rewriting
 # the file while the menu is open cannot shift which config gets replayed.
 history_load_line() {
-  local line="$1" field key
+  local line="$1" field key context_present=0
   [ -n "$line" ] || return 1
   local fields=()
   IFS=$'\t' read -ra fields <<< "$line"
   for field in "${fields[@]}"; do
     key="${field%%=*}"
+    [ "$key" != CODEX_CONTEXT ] || context_present=1
     plan_apply_field "$key" "${field#*=}"
   done
+  if [ "$CHOICE_RUNTIME" = codex ] && [ "$context_present" -eq 0 ]; then
+    CHOICE_CODEX_CONTEXT=272k
+  fi
   [ -n "$CHOICE_RUNTIME" ]
 }
 
@@ -289,7 +293,7 @@ plan_reset() {
     CHOICE_CODEX_SURFACE="default"
   fi
   CHOICE_CODEX_SAFETY="default"
-  CHOICE_CODEX_CONTEXT="272k"
+  CHOICE_CODEX_CONTEXT="auto"
   CHOICE_KIRO_TRUST=0
   PLAN_SUMMARY=""
 }
@@ -300,10 +304,14 @@ migrate_legacy_plan() {
   [ -f "$LEGACY_PLAN_FILE" ] || return 0
   if [ ! -f "$HISTORY_FILE" ]; then
     plan_reset
-    local line ts
+    local line ts context_present=0
     while IFS= read -r line; do
+      [ "${line%%=*}" != CODEX_CONTEXT ] || context_present=1
       plan_apply_field "${line%%=*}" "${line#*=}"
     done < "$LEGACY_PLAN_FILE"
+    if [ "$CHOICE_RUNTIME" = codex ] && [ "$context_present" -eq 0 ]; then
+      CHOICE_CODEX_CONTEXT=272k
+    fi
     if [ -n "$CHOICE_RUNTIME" ]; then
       ts=$(stat -f %m "$LEGACY_PLAN_FILE" 2>/dev/null || stat -c %Y "$LEGACY_PLAN_FILE" 2>/dev/null || date +%s)
       history_save "$ts"
@@ -351,7 +359,7 @@ history_migrate_single_full() {
   local raw="$HISTORY_FILE.migrate.raw.$$"
   local sorted="$HISTORY_FILE.migrate.sorted.$$"
   local tmp="$HISTORY_FILE.migrate.$$"
-  local line field key ts runtime canonical ident prior count=0 duplicate
+  local line field key ts runtime canonical ident prior count=0 duplicate context_present
   local read_rc
   local fields=() idents=()
 
@@ -362,11 +370,12 @@ history_migrate_single_full() {
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     plan_reset
+    context_present=0
     fields=()
     IFS=$'\t' read -ra fields <<< "$line"
     for field in "${fields[@]}"; do
       case "$field" in
-        ?*=*) key="${field%%=*}"; plan_apply_field "$key" "${field#*=}" ;;
+        ?*=*) key="${field%%=*}"; [ "$key" != CODEX_CONTEXT ] || context_present=1; plan_apply_field "$key" "${field#*=}" ;;
         *)
           history_migration_fail "malformed TSV field" "$raw" "$sorted" "$tmp"
           return 1 ;;
@@ -387,6 +396,7 @@ history_migrate_single_full() {
         fi ;;
       codex)
         CHOICE_MCP_SURFACE="full"; CHOICE_CODEX_SURFACE="full"
+        [ "$context_present" -ne 0 ] || CHOICE_CODEX_CONTEXT=272k
         codex_summary ;;
       kiro)
         CHOICE_CODEX_SURFACE="full"
@@ -517,6 +527,14 @@ CODEX_BIN=""
 if CODEX_BIN="$(harness_codex_bin_resolve)"; then HAS_CODEX=true; fi
 KIRO_BIN=""
 if KIRO_BIN="$(harness_kiro_bin_resolve)"; then HAS_KIRO=true; fi
+# OMP is offered only when the parent runner selected this profile's prepared
+# namespace and passed a private handoff file; the runner starts OMP itself.
+# Neither value may reach another runtime launched from this menu.
+OMP_HANDOFF="${HARNESS_LAUNCHER_OMP_HANDOFF:-}"
+OMP_UNAVAILABLE="${HARNESS_LAUNCHER_OMP_UNAVAILABLE:-}"
+unset HARNESS_LAUNCHER_OMP_HANDOFF HARNESS_LAUNCHER_OMP_UNAVAILABLE
+HAS_OMP=false
+[ -n "$OMP_HANDOFF" ] || [ -n "$OMP_UNAVAILABLE" ] && HAS_OMP=true
 
 prewarm_probes
 migrate_legacy_plan
@@ -537,7 +555,7 @@ collect_launchpad() {
   local opts=() labels=() hist_lines=() i line ts summary runtime
   history_migrate_single_full || return 2
   AUTO_RUNTIME=false
-  if ! $HAS_CLAUDE && ! $HAS_CODEX && ! $HAS_KIRO; then
+  if ! $HAS_CLAUDE && ! $HAS_CODEX && ! $HAS_KIRO && ! $HAS_OMP; then
     echo "Error: no runtime found (claude / codex / kiro-cli not in PATH)" >&2
     echo "  claude 설치 여부 또는 HARNESS_CODEX_BIN / HARNESS_KIRO_BIN 설정을 확인하세요." >&2
     exit 1
@@ -547,6 +565,11 @@ collect_launchpad() {
   $HAS_CLAUDE && { opts+=("claude"); labels+=("☁️  New — Claude Code 구성…"); }
   $HAS_CODEX && { opts+=("codex"); labels+=("⚡ New — Codex CLI 구성…"); }
   $HAS_KIRO && { opts+=("kiro"); labels+=("🦜 New — Kiro CLI 구성…"); }
+  if [ -n "$OMP_UNAVAILABLE" ]; then
+    opts+=("omp"); labels+=("🥧 OMP — 사용 불가 ($OMP_UNAVAILABLE)")
+  elif $HAS_OMP; then
+    opts+=("omp"); labels+=("🥧 New — OMP 구성…")
+  fi
   # History rows — complete configs, newest first. Rows whose runtime is no
   # longer installed are hidden (the entry stays in the file). The full line is
   # captured per row so replay does not depend on the file staying unchanged
@@ -561,6 +584,7 @@ collect_launchpad() {
         claude) $HAS_CLAUDE || continue ;;
         codex)  $HAS_CODEX || continue ;;
         kiro)   $HAS_KIRO || continue ;;
+        omp)    $HAS_OMP || continue ;;
         *) continue ;;
       esac
       ts=$(history_field "$line" TS)
@@ -757,8 +781,8 @@ codex_happy_compatible() {
 }
 
 codex_summary() {
-  local context_label="272K"
-  [ "$CHOICE_CODEX_CONTEXT" = "1m" ] && context_label="1M"
+  local context_label
+  case "$CHOICE_CODEX_CONTEXT" in auto) context_label="Auto" ;; 272k) context_label="272K" ;; 500k) context_label="500K" ;; 1m) context_label="1M" ;; esac
   PLAN_SUMMARY="Codex · $CHOICE_SESSION · $CHOICE_CODEX_PROFILE · $context_label"
   [ "$CHOICE_CODEX_SURFACE" = "work" ] && PLAN_SUMMARY="$PLAN_SUMMARY · work-MCP"
   [ "$CHOICE_CODEX_SAFETY" != "default" ] && PLAN_SUMMARY="$PLAN_SUMMARY · $CHOICE_CODEX_SAFETY"
@@ -833,7 +857,11 @@ collect_codex() {
         if $HAS_HAPPY && codex_happy_compatible; then
           fopts+=("📱 Happy wrapper: $( [ "$CHOICE_HAPPY" = 1 ] && echo on || echo off )")
         fi
-        fopts+=("🧠 Context: $( [ "$CHOICE_CODEX_CONTEXT" = "1m" ] && echo "1M" || echo "272K (Recommended)" )")
+        case "$CHOICE_CODEX_CONTEXT" in
+          auto) context_label="Auto (Codex settings)" ;; 272k) context_label=272K ;;
+          500k) context_label=500K ;; 1m) context_label=1M ;;
+        esac
+        fopts+=("🧠 Context: $context_label")
         fopts+=("↩ Back")
         menu "$PLAN_SUMMARY" "${fopts[@]}" || { step=safety; continue; }
         case "$MENU_RESULT" in
@@ -850,7 +878,7 @@ collect_codex() {
           *Happy*)
             if [ "$CHOICE_HAPPY" = 1 ]; then CHOICE_HAPPY=0; else CHOICE_HAPPY=1; fi ;;
           *Context*)
-            if [ "$CHOICE_CODEX_CONTEXT" = "1m" ]; then CHOICE_CODEX_CONTEXT="272k"; else CHOICE_CODEX_CONTEXT="1m"; fi ;;
+            case "$CHOICE_CODEX_CONTEXT" in auto) CHOICE_CODEX_CONTEXT=272k ;; 272k) CHOICE_CODEX_CONTEXT=500k ;; 500k) CHOICE_CODEX_CONTEXT=1m ;; *) CHOICE_CODEX_CONTEXT=auto ;; esac ;;
           *Back*) step=safety ;;
         esac ;;
     esac
@@ -974,7 +1002,8 @@ launch_claude() {
   local HARNESS_OTLP_HTTP_ENDPOINT obs_rc
   # Per-harness GitHub identity: fail-open, never overrides with an empty token.
   local GH_TOKEN HARNESS_GH_USER
-  harness_gh_token_load "$HARNESS_DIR" || true
+  # The session worktree lacks the gitignored config/.local (team github_user).
+  harness_gh_token_load "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || true
   if harness_observability_load "$HARNESS_DIR"; then
     local CLAUDE_CODE_ENABLE_TELEMETRY=1
     local OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none
@@ -1001,6 +1030,13 @@ launch_claude() {
   else
     obs_rc=$?
     [ "$obs_rc" -eq 1 ] || return "$obs_rc"
+    # Child `claude -p` processes do not inherit --settings: discard the
+    # company OTel signals for a profile outside the usage policy.
+    local OTEL_EXPORTER_OTLP_LOGS_ENDPOINT OTEL_EXPORTER_OTLP_METRICS_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+    local OTEL_EXPORTER_OTLP_LOGS_HEADERS OTEL_EXPORTER_OTLP_METRICS_HEADERS OTEL_EXPORTER_OTLP_TRACES_HEADERS
+    unset OTEL_EXPORTER_OTLP_LOGS_ENDPOINT OTEL_EXPORTER_OTLP_METRICS_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS OTEL_EXPORTER_OTLP_METRICS_HEADERS OTEL_EXPORTER_OTLP_TRACES_HEADERS
+    harness_agent_usage_export_discard "$HARNESS_DIR" "$(harness_launch_source_root)"
   fi
   case "$CHOICE_PROVIDER" in
     kiro)
@@ -1131,6 +1167,8 @@ launch_claude() {
   launch_banner "$PLAN_SUMMARY" "$exe" "${banner_args[@]}"
   harness_claude_cmux_broker_start "$LAUNCHER_BIN_DIR/codex-cmux-title-sync.py" "$HARNESS_DIR"
   local HARNESS_SLACK_ARGV=()
+  # launcher.sh is its own process; the variable reaches only Claude.
+  harness_claude_export_durable_tmpdir
   if [ "$exe" = "claude" ]; then
     harness_slack_claude_argv "$LAUNCHER_BIN_DIR/slack-approval-policy.py" "${args[@]}" || return $?
     args=("${HARNESS_SLACK_ARGV[@]}")
@@ -1178,6 +1216,11 @@ launch_codex() {
   [ "$prepare_rc" -eq 0 ] || return "$prepare_rc"
   export CODEX_HOME="$runtime_home"
   harness_export_local_env "$HARNESS_DIR"
+  # Claude children of Codex: loopback (observed) or discard signal endpoints
+  # for a profile outside the usage policy. An inherited set (a Codex started
+  # from a personal profile's shell) is dropped first, as in launch_claude.
+  unset $HARNESS_AGENT_USAGE_DISCARD_VARS
+  harness_agent_usage_export_discard "$HARNESS_DIR" "$(harness_launch_source_root)"
 
   # The launch record's source root, resolved before any cd.
   local source_root
@@ -1233,6 +1276,53 @@ launch_codex() {
   local rc=$?
   harness_codex_cmux_broker_stop
   return $rc
+}
+
+# --- OMP flow --------------------------------------------------------------
+# omp_modes — one "<mode>\t<label>" line per canonical model mode in this
+# profile's source, default first; no output when the profile has none.
+omp_modes() {
+  local spec="$HARNESS_DIR/.claude/source/omp-model-modes.json"
+  [ -f "$spec" ] || return 0
+  python3 -I - "$spec" <<'PYMODES' 2>/dev/null
+import json, sys
+spec = json.load(open(sys.argv[1]))
+names = {k: v.split('/')[-1] for k, v in spec['modeled_selectors'].items()}
+for mode in sorted(spec['modes'], key=lambda m: m != spec['default']):
+    roles = ' · '.join(f'{r} {names[s]}' for r, s in spec['modes'][mode].items())
+    print(f"{mode}\t{mode}{' (기본)' if mode == spec['default'] else ''} — {roles}")
+PYMODES
+}
+
+collect_omp() {
+  local lines=() opts=() modes=() line i
+  if [ -n "$OMP_UNAVAILABLE" ]; then
+    echo "⚠️  OMP를 시작할 수 없습니다: $OMP_UNAVAILABLE (${HARNESS_PREFIX:-$HARNESS_NAME} omp 로 상세 확인)" >&2
+    return 1
+  fi
+  while IFS= read -r line; do [ -n "$line" ] && lines+=("$line"); done < <(omp_modes)
+  CHOICE_MODE=""
+  if [ ${#lines[@]} -gt 0 ]; then
+    for line in "${lines[@]}"; do modes+=("${line%%$'\t'*}"); opts+=("${line#*$'\t'}"); done
+    BREADCRUMB="$HARNESS_NAME ▸ OMP"
+    menu "Model mode" "${opts[@]}" || return 1
+    for i in "${!opts[@]}"; do
+      [ "$MENU_RESULT" = "${opts[$i]}" ] && { CHOICE_MODE="${modes[$i]}"; break; }
+    done
+  fi
+  PLAN_SUMMARY="OMP · ${CHOICE_MODE:-default}"
+}
+
+# launch_omp — the parent runner owns the namespace lease and revalidates the
+# mode, so hand it the fresh-session argv and exit 75 instead of running OMP.
+launch_omp() {
+  local args=(omp)
+  [ -n "$OMP_HANDOFF" ] || { echo "⚠️  OMP를 시작할 수 없습니다: ${OMP_UNAVAILABLE:-not configured}" >&2; return 1; }
+  [ -n "$CHOICE_MODE" ] && args+=(--model-mode "$CHOICE_MODE")
+  history_save
+  launch_banner "$PLAN_SUMMARY" "${HARNESS_PREFIX:-$HARNESS_NAME}" "${args[@]}"
+  printf '%s\n' "${args[@]}" > "$OMP_HANDOFF" || return 1
+  exit 75
 }
 
 launch_kiro() {
@@ -1291,6 +1381,7 @@ while true; do
       claude) collect_claude || { $AUTO_RUNTIME && exit 0; continue; } ;;
       codex)  collect_codex || { $AUTO_RUNTIME && exit 0; continue; } ;;
       kiro)   collect_kiro || { $AUTO_RUNTIME && exit 0; continue; } ;;
+      omp)    collect_omp || { $AUTO_RUNTIME && exit 0; continue; } ;;
       *) echo "Error: unknown runtime '$CHOICE_RUNTIME'" >&2; exit 1 ;;
     esac
   fi
@@ -1299,6 +1390,7 @@ while true; do
     claude) launch_claude ;;
     codex)  launch_codex ;;
     kiro)   launch_kiro ;;
+    omp)    launch_omp ;;
   esac
   # launch_* only returns on failure — surface it and let the user retry.
   echo "" >&2

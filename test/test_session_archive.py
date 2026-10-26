@@ -112,6 +112,23 @@ class SessionArchiveTest(unittest.TestCase):
                 'bytes': len(index), 'sha256': hashlib.sha256(index).hexdigest(),
             }])
 
+    def test_archive_preserves_codex_context_grants(self):
+        from harness_session_archive import archive, verify
+        owner = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        native = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        for context in ('auto', '272k', '500k', '1m'):
+            with self.subTest(context=context), tempfile.TemporaryDirectory() as tmp:
+                root, state, source = Path(tmp, 'root'), Path(tmp, 'state'), Path(tmp, 'source')
+                source.mkdir()
+                raw = root / '.harness' / 'codex' / 'sessions' / f'{native}.jsonl'
+                raw.parent.mkdir(parents=True)
+                raw.write_text('{"type":"session_meta","payload":{"id":"%s"}}\n' % native)
+                records = state / 'launch-records'; records.mkdir(parents=True)
+                (records / ('codex-' + native)).write_text('context=%s\nsource_root=%s\nisolated=1\nharness_session_id=%s\n' % (context, source.resolve(), owner))
+                archive(root=root, state=state, owner_id=owner, source_root=source)
+                manifest = verify(archive=state / 'archives' / owner, owner_id=owner, source_root=source)
+                self.assertEqual(manifest['grant_provenance']['codex'][0]['context'], context)
+
     def test_archive_grant_provenance_does_not_follow_later_global_record_changes(self):
         from harness_session_archive import archive, verify
 
@@ -194,6 +211,87 @@ class SessionArchiveTest(unittest.TestCase):
             native_restore_fixture(source,state,root/'.harness/codex',record/'native-history-restore.json',native)
             with self.assertRaises(module.ArchiveError):module.archive(root=root,state=state,owner_id=owner,source_root=source)
             self.assertEqual((saved/'manifest.json').read_bytes(),before)
+
+
+
+class WalIndexReuseTest(unittest.TestCase):
+    def fixture(self):
+        import sqlite3
+        from harness_session_archive import archive
+        tmp=tempfile.TemporaryDirectory(prefix='archive-wal-index-');self.addCleanup(tmp.cleanup)
+        root,state,source=Path(tmp.name,'root'),Path(tmp.name,'state'),Path(tmp.name,'source');source.mkdir()
+        home=root/'.harness/codex';home.mkdir(parents=True)
+        database=home/'state_5.sqlite';writer=sqlite3.connect(database)
+        writer.execute('PRAGMA journal_mode=WAL');writer.execute('PRAGMA wal_autocheckpoint=0')
+        writer.execute('CREATE TABLE sentinel(value)');writer.execute('INSERT INTO sentinel VALUES (42)');writer.commit()
+        reader=sqlite3.connect(database.as_uri()+'?mode=ro',uri=True)
+        self.assertEqual(reader.execute('SELECT * FROM sentinel').fetchall(),[(42,)])
+        writer.close();reader.close()
+        owner='11111111-1111-4111-8111-111111111111'
+        target=archive(root=root,state=state,owner_id=owner,source_root=source)
+        before={p.name:p.read_bytes() for p in home.iterdir()}
+        reader=sqlite3.connect(database.as_uri()+'?mode=ro',uri=True)
+        try:self.assertEqual(reader.execute('SELECT * FROM sentinel').fetchall(),[(42,)])
+        finally:reader.close()
+        after={p.name:p.read_bytes() for p in home.iterdir()}
+        self.assertEqual(before['state_5.sqlite'],after['state_5.sqlite'])
+        self.assertEqual(before['state_5.sqlite-wal'],after['state_5.sqlite-wal'])
+        self.assertNotEqual(before['state_5.sqlite-shm'],after['state_5.sqlite-shm'])
+        return root,state,source,owner,target,after
+
+    def test_real_read_only_wal_recovery_reuses_immutable_archive(self):
+        from harness_session_archive import archive,verify
+        root,state,source,owner,target,after=self.fixture()
+        manifest=(target/'manifest.json').read_bytes();shm=(target/'codex/state_5.sqlite-shm').read_bytes()
+        self.assertEqual(archive(root=root,state=state,owner_id=owner,source_root=source),target)
+        verify(archive=target,owner_id=owner,source_root=source)
+        self.assertEqual((target/'manifest.json').read_bytes(),manifest)
+        self.assertEqual((target/'codex/state_5.sqlite-shm').read_bytes(),shm)
+        self.assertEqual((root/'.harness/codex/state_5.sqlite-shm').read_bytes(),after['state_5.sqlite-shm'])
+
+    def test_unknown_body_padding_read_marks_and_invalid_allowed_fields_hold(self):
+        from harness_session_archive import archive,ArchiveError
+        for offset in [136,4,100,40,56,128]:
+            with self.subTest(offset=offset):
+                root,state,source,owner,target,after=self.fixture();path=root/'.harness/codex/state_5.sqlite-shm'
+                raw=bytearray(after['state_5.sqlite-shm'])
+                if offset==128:raw[128:132]=(0xffffffff).to_bytes(4,sys.byteorder)
+                else:raw[offset]^=1
+                path.write_bytes(raw);manifest=(target/'manifest.json').read_bytes()
+                with self.assertRaises(ArchiveError):archive(root=root,state=state,owner_id=owner,source_root=source)
+                self.assertEqual((target/'manifest.json').read_bytes(),manifest)
+
+    def test_database_wal_file_set_and_symlink_changes_hold(self):
+        from harness_session_archive import archive,ArchiveError
+        for kind in ['database','wal','added','missing_wal','symlink','unknown_shm']:
+            with self.subTest(kind=kind):
+                root,state,source,owner,target,after=self.fixture();home=root/'.harness/codex'
+                if kind in ('database','wal'):
+                    p=home/('state_5.sqlite' if kind=='database' else 'state_5.sqlite-wal');raw=bytearray(p.read_bytes());raw[-1]^=1;p.write_bytes(raw)
+                elif kind=='added':(home/'history.jsonl').write_bytes(b'new history')
+                elif kind=='missing_wal':(home/'state_5.sqlite-wal').unlink()
+                elif kind=='symlink':
+                    p=home/'state_5.sqlite-shm';p.unlink();p.symlink_to(target/'codex/state_5.sqlite-shm')
+                else:(home/'state_other.sqlite-shm').write_bytes(after['state_5.sqlite-shm'])
+                with self.assertRaises((ArchiveError,OSError)):archive(root=root,state=state,owner_id=owner,source_root=source)
+
+    def test_new_archive_publication_still_requires_exact_shared_memory(self):
+        import sqlite3
+        import harness_session_archive as module
+        root,state,source,owner,target,after=self.fixture();home=root/'.harness/codex'
+        (home/'state_5.sqlite-shm').write_bytes((target/'codex/state_5.sqlite-shm').read_bytes())
+        shutil.rmtree(target)  # Only this fixture's previously created archive.
+        copy=module._copy_file
+        def changed(incoming,outgoing,total):
+            result=copy(incoming,outgoing,total)
+            if incoming.name=='state_5.sqlite-shm':
+                reader=sqlite3.connect((home/'state_5.sqlite').as_uri()+'?mode=ro',uri=True)
+                try:reader.execute('SELECT * FROM sentinel').fetchall()
+                finally:reader.close()
+            return result
+        with patch.object(module,'_copy_file',side_effect=changed),self.assertRaises(module.ArchiveError):
+            module.archive(root=root,state=state,owner_id=owner,source_root=source)
+        self.assertFalse(target.exists())
 
 
 class ArchiveSafetyTest(unittest.TestCase):

@@ -29,6 +29,10 @@ NATIVE_THREAD_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 PARENT_THREAD_ID = "ffffffff-1111-4222-8333-444444444444"
 
 
+def uuid_hex():
+    return os.urandom(6).hex()
+
+
 def digest_tree(root, excluded=()):
     entries = []
     for path in sorted(root.rglob("*")):
@@ -64,7 +68,7 @@ class CodexHistoryTest(unittest.TestCase):
             + "\n" + json.dumps({"id": PARENT_THREAD_ID, "path": "archived_sessions/2026/10/09/rollout-2026-10-09T01-02-03-" + PARENT_THREAD_ID + ".jsonl"}) + "\n")
         (current / ("rollout-2026-10-10T01-02-03-" + NATIVE_THREAD_ID + ".jsonl")).write_text(
             json.dumps({"timestamp": "2026-10-10T01:02:03Z", "type": "session_meta", "payload": {
-                "id": NATIVE_THREAD_ID, "history_base": {"thread_id": PARENT_THREAD_ID}, "cwd": "/fixture"}}) + "\n")
+                "id": NATIVE_THREAD_ID, "cwd": "/fixture"}}) + "\n")
         (current / ("rollout-2026-10-10T01-02-03-" + NATIVE_THREAD_ID + "_0001.jsonl")).write_text('{"type":"response_item","id":"segment"}\n')
         (archived / ("rollout-2026-10-09T01-02-03-" + PARENT_THREAD_ID + ".jsonl")).write_text('{"type":"response_item","id":"parent"}\n')
         for name in ("logs_2", "goals_1", "memories_1", "queue_1", "shell_snapshots", "generated_images", "attachments"):
@@ -126,6 +130,52 @@ class CodexHistoryTest(unittest.TestCase):
             "snapshot", "--source", str(self.home), "--catalog", str(self.catalog), "--receipt", str(self.receipt),
             "--source-root", str(self.source_root), "--isolation-id", ISOLATION_ID,
             "--runtime-revision", RUNTIME_REVISION, *extra, expected=expected)
+
+    def test_selected_restore_does_not_clone_other_threads_or_native_databases(self):
+        """A selected resume must not materialize the entire canonical HOME."""
+        unrelated = self.home / 'sessions/2026/10/10/rollout-2026-10-10T01-02-03-00000000-1111-4222-8333-444444444444.jsonl'
+        unrelated.write_text('{"type":"response_item","id":"unrelated"}\n')
+        (self.home/'external_agent_session_imports.json').write_text('{"imported_threads":["fixture"]}\n')
+        receipt = json.loads(self.snapshot().stdout)
+        restored = self.base / 'selected-home'
+        self.run_history('restore', '--catalog', str(self.catalog), '--snapshot', receipt['snapshot_id'],
+                         '--destination', str(restored), '--receipt', str(self.base/'selected-receipt.json'),
+                         '--native-id', NATIVE_THREAD_ID)
+        self.assertFalse((restored / unrelated.relative_to(self.home)).exists())
+        self.assertFalse(list(restored.glob('*.sqlite*')))
+        self.assertFalse((restored/'history.jsonl').exists())
+        self.assertFalse((restored/'session_index.jsonl').exists())
+        self.assertTrue(list(restored.rglob('*'+NATIVE_THREAD_ID+'*.jsonl')))
+        self.assertFalse(list(restored.rglob('*'+PARENT_THREAD_ID+'*.jsonl')))
+        self.assertTrue(list(restored.rglob('*'+NATIVE_THREAD_ID+'_0001.jsonl')))
+        self.assertEqual((restored/'attachments/native-data').read_text(), 'attachments\n')
+        self.assertEqual((restored/'external_agent_session_imports.json').read_text(), '{"imported_threads":["fixture"]}\n')
+        self.assertTrue((self.catalog/'snapshots'/receipt['snapshot_id']/'data'/unrelated.relative_to(self.home)).is_file())
+
+    def test_missing_selected_uuid_refuses_before_creating_restore_destination(self):
+        receipt = json.loads(self.snapshot().stdout)
+        destination = self.base/'absent-native'
+        self.run_history('restore', '--catalog', str(self.catalog), '--snapshot', receipt['snapshot_id'],
+                         '--destination', str(destination), '--receipt', str(self.base/'missing.json'),
+                         '--native-id', '00000000-1111-4222-8333-444444444444', expected=2)
+        self.assertFalse(destination.exists())
+
+    def test_selected_restore_refuses_parent_projection_before_creating_destination(self):
+        physical='00000000-1111-4222-8333-444444444444'
+        parent_physical='12345678-1111-4222-8333-444444444444'
+        parent_logical='87654321-1111-4222-8333-444444444444'
+        reverted=self.home/'sessions/2026/10/10'/('rollout-2026-10-10T01-02-04-'+NATIVE_THREAD_ID+'_'+physical+'.jsonl')
+        reverted.write_text(json.dumps({'type':'session_meta','payload':{'id':NATIVE_THREAD_ID,
+            'history_base':{'thread_id':parent_physical}}})+'\n')
+        parent=reverted.with_name('rollout-2026-10-10T01-02-05-'+parent_logical+'_'+parent_physical+'.jsonl')
+        parent.write_text(json.dumps({'type':'session_meta','payload':{'id':parent_logical}})+'\n')
+        with sqlite3.connect(self.home/'state_5.sqlite') as database:
+            database.execute('UPDATE threads SET rollout_path=? WHERE id=?',(str(reverted),NATIVE_THREAD_ID))
+        receipt=json.loads(self.snapshot().stdout);destination=self.base/'reverted-restore'
+        self.run_history('restore','--catalog',str(self.catalog),'--snapshot',receipt['snapshot_id'],
+            '--destination',str(destination),'--receipt',str(self.base/'reverted.json'),'--native-id',NATIVE_THREAD_ID,expected=2)
+        self.assertFalse(destination.exists())
+        self.assertTrue((self.catalog/'snapshots'/receipt['snapshot_id']/'data'/reverted.relative_to(self.home)).is_file())
 
     def test_snapshot_restore_preserves_native_history_without_authority(self):
         source_before = digest_tree(self.home)
@@ -331,7 +381,7 @@ class CodexHistoryTest(unittest.TestCase):
         proc = self.run_history("catalog", "--source-root", str(self.source_root), "--state-home", str(state))
         result = json.loads(proc.stdout)
         entry = next(item for item in result["entries"] if item["native_id"] == NATIVE_THREAD_ID)
-        self.assertEqual(set(entry), {"native_id", "home", "source_root", "isolation_id", "origin_runtime", "snapshot_id", "updated_at", "status", "reason", "source_local"})
+        self.assertEqual(set(entry), {"native_id", "home", "source_root", "isolation_id", "origin_runtime", "snapshot_id", "updated_at", "status", "reason", "source_local", "origin_state_home"})
         self.assertEqual(entry["source_root"], str(self.source_root))
         self.assertEqual(entry["isolation_id"], "canonical")
         self.assertEqual(entry["origin_runtime"], "legacy-unknown")
@@ -506,6 +556,26 @@ class CodexHistoryTest(unittest.TestCase):
         self.run_history("snapshot", "--source", str(root / ".harness/codex"), "--catalog", str(state / "native-history"),
                          "--receipt", str(record / "receipt.json"), "--source-root", str(self.source_root),
                          "--isolation-id", identifier, "--runtime-revision", RUNTIME_REVISION, expected=2)
+
+    def test_profile_catalog_finds_shared_old_owner_with_original_state_provenance(self):
+        shared=self.base.resolve()/'session-state';current=shared/'gamma';uid=ISOLATION_ID
+        root=shared/'worktrees'/uid;native=root/'.harness/codex'
+        shutil.copytree(self.home,native,symlinks=True);shutil.rmtree(self.home)
+        self._pool_record(shared,uid,self.source_root.resolve())
+        registry=self.base/'.config/harness-launcher/profiles';registry.mkdir(parents=True)
+        (self.source_root/'config').mkdir();(self.source_root/'config/launcher.env').write_text('fixture')
+        (registry/'gamma').write_text(str(self.source_root)+'\n')
+        with mock.patch.dict(os.environ,HOME=str(self.base.resolve())):
+            value=json.loads(self.run_history('catalog','--source-root',str(self.source_root.resolve()),
+                '--state-home',str(current),'--pool-base',str(shared)).stdout)
+        row=next(r for r in value['entries'] if r['native_id']==NATIVE_THREAD_ID)
+        self.assertEqual(row['home'],str(native))
+        self.assertEqual(row['origin_state_home'],str(shared))
+        self.assertEqual(row['isolation_id'],uid)
+        with mock.patch.dict(os.environ,HOME=str(self.base.resolve())):
+            self.run_history('catalog','--source-root',str(self.source_root.resolve()),
+                '--state-home',str(self.base.resolve()/'foreign-current'),
+                '--pool-base',str(shared),expected=2)
 
     def test_legacy_state_catalog_and_prepare_preserve_selected_archive(self):
         legacy = self.base / "legacy-state"; identifier = "11111111-2222-4333-8444-555555555556"
@@ -1075,6 +1145,440 @@ class CodexHistoryTest(unittest.TestCase):
         try:
             self.run_history('catalog','--source-root',str(self.source_root),'--state-home',str(self.base/'unreadable-canonical'),expected=2)
         finally:denied.chmod(0o700)
+
+
+class RootIdentityTest(unittest.TestCase):
+    """Root identity tolerates APFS device renumbering at every codex-history site."""
+
+    setUp = CodexHistoryTest.setUp
+    _make_home = CodexHistoryTest._make_home
+    _make_auxiliary_db = CodexHistoryTest._make_auxiliary_db
+    _make_state_db = CodexHistoryTest._make_state_db
+    _make_history_db = CodexHistoryTest._make_history_db
+
+    def fixture(self, name, recorded):
+        state = self.base / name
+        identifier = ISOLATION_ID
+        root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+        shutil.copytree(self.home, root / ".harness/codex", symlinks=True)
+        record.mkdir(parents=True)
+        info = root.stat()
+        for key, value in (("source-root", str(self.source_root)), ("session-root", str(root)),
+                           ("root-inode", recorded(info)), ("lease-v1", "1\n"), ("runtime.lock", ""),
+                           ("journal", "state=CLOSED\nidentity=\nheartbeat=2026-10-10T00:00:00Z\n")):
+            (record / key).write_text(value)
+        return state, root, record
+
+    RENUMBERED = staticmethod(lambda info: f"{info.st_dev + 1} {info.st_ino}")
+    OTHER_INODE = staticmethod(lambda info: f"{info.st_dev + 1} {info.st_ino + 1}")
+    SAME = staticmethod(lambda info: f"{info.st_dev} {info.st_ino}")
+
+    def seam_other_device(self, root):
+        real = history_module.identity_stat
+        def fake(path):
+            info = real(path)
+            if Path(path) != root:
+                return info
+            return os.stat_result((info.st_mode, info.st_ino, info.st_dev + 7, *tuple(info)[3:]))
+        return mock.patch.object(history_module, "identity_stat", fake)
+
+    def test_helper_rule(self):
+        state, root, _ = self.fixture("helper", self.SAME)
+        info = root.stat()
+        match = history_module.root_identity_matches
+        self.assertTrue(match(f"{info.st_dev} {info.st_ino}", root))
+        self.assertTrue(match(f"{info.st_dev + 1} {info.st_ino}", root))
+        self.assertFalse(match(f"{info.st_dev + 1} {info.st_ino + 1}", root))
+        self.assertFalse(match(f"{info.st_dev} {info.st_ino + 1}", root))
+        self.assertFalse(match("garbage", root))
+        self.assertFalse(match("", root))
+        with self.seam_other_device(root):
+            self.assertFalse(match(f"{info.st_dev + 1} {info.st_ino}", root))
+        replaced = root.with_name("replaced")
+        replaced.mkdir()
+        self.assertFalse(match(f"{info.st_dev + 1} {info.st_ino}", replaced))
+        link = root.with_name("link")
+        link.symlink_to(root, target_is_directory=True)
+        self.assertFalse(match(f"{info.st_dev} {info.st_ino}", link))
+
+    def catalog_args(self, state):
+        return type("Args", (), {"source_root": str(self.source_root), "state_home": str(state), "legacy_state_home": None})()
+
+    def test_catalog_quarantine_site(self):
+        for label, recorded, seam, reason in (("renumbered", self.RENUMBERED, False, None),
+                                              ("inode", self.OTHER_INODE, False, "root_inode_mismatch"),
+                                              ("device", self.RENUMBERED, True, "root_inode_mismatch")):
+            with self.subTest(label):
+                state, root, _ = self.fixture("catalog-" + label, recorded)
+                with (self.seam_other_device(root) if seam else contextlib.nullcontext()):
+                    result = history_module.catalog_value(self.catalog_args(state))
+                self.assertEqual([w["reason"] for w in result["warnings"]], [reason] if reason else [])
+
+    def test_provenance_site(self):
+        for label, recorded, seam, ok in (("renumbered", self.RENUMBERED, False, True),
+                                          ("inode", self.OTHER_INODE, False, False),
+                                          ("device", self.RENUMBERED, True, False)):
+            with self.subTest(label):
+                state, root, _ = self.fixture("prov-" + label, recorded)
+                args = types.SimpleNamespace(isolation_id=ISOLATION_ID, runtime_revision=RUNTIME_REVISION,
+                                             source_root=str(self.source_root), source=str(root / ".harness/codex"),
+                                             catalog=str(state / "native-history"))
+                with (self.seam_other_device(root) if seam else contextlib.nullcontext()):
+                    if ok:
+                        history_module.validate_provenance(args)
+                    else:
+                        with self.assertRaisesRegex(history_module.Refusal, "unverified Native root inode"):
+                            history_module.validate_provenance(args)
+
+    def protect(self, state):
+        seen = []
+        def fake_snapshot(args):
+            Path(args.receipt).write_text(json.dumps({"snapshot_id": "a" * 64}))
+            print(json.dumps({"snapshot_id": "a" * 64}))
+        def fake_verify(args):
+            seen.append(True)
+        args = type("Args", (), {"state_home": str(state), "source_root": str(self.source_root), "codex_bin": "/bin/true"})()
+        with mock.patch.object(history_module, "snapshot", fake_snapshot), mock.patch.object(history_module, "verify", fake_verify), \
+                contextlib.redirect_stdout(io.StringIO()):
+            history_module.protect_pool(args)
+        return seen
+
+    def test_protect_pool_validation_and_under_lease_sites(self):
+        for label, recorded, seam, ok in (("renumbered", self.RENUMBERED, False, True),
+                                          ("inode", self.OTHER_INODE, False, False),
+                                          ("device", self.RENUMBERED, True, False)):
+            with self.subTest(label):
+                state, root, _ = self.fixture("pool-" + label, recorded)
+                with (self.seam_other_device(root) if seam else contextlib.nullcontext()):
+                    if ok:
+                        self.assertEqual(self.protect(state), [True])
+                    else:
+                        with self.assertRaisesRegex(history_module.Refusal, "session root inode mismatch"):
+                            self.protect(state)
+
+    def test_under_lease_recheck_site(self):
+        state, root, record = self.fixture("pool-race", self.RENUMBERED)
+        real = history_module.runtime_lease
+        @contextlib.contextmanager
+        def swap(path):
+            with real(path):
+                (record / "root-inode").write_text(self.OTHER_INODE(root.stat()))
+                yield
+        with mock.patch.object(history_module, "runtime_lease", swap):
+            with self.assertRaisesRegex(history_module.Refusal, "Native candidate changed"):
+                self.protect(state)
+
+    def test_tomb_recovery_site(self):
+        for label, recorded, seam, ok in (("renumbered", self.RENUMBERED, False, True),
+                                          ("inode", self.OTHER_INODE, False, False),
+                                          ("device", self.RENUMBERED, True, False)):
+            with self.subTest(label):
+                state, root, record = self.fixture("tomb-" + label, self.SAME)
+                tomb = root.with_name(".retired-" + ISOLATION_ID + "-1")
+                root.rename(tomb)
+                (record / "root-inode").write_text(recorded(tomb.stat()))
+                with (self.seam_other_device(tomb) if seam else contextlib.nullcontext()):
+                    if ok:
+                        self.protect(state)
+                        self.assertTrue(root.is_dir() and not tomb.exists())
+                    else:
+                        with self.assertRaisesRegex(history_module.Refusal, "Native tomb binding mismatch"):
+                            self.protect(state)
+
+
+class CatalogCostTest(unittest.TestCase):
+    """D3: an exact-id catalog equals the full catalog's target row; inventory is computed once."""
+
+    setUp = CodexHistoryTest.setUp
+    _make_home = CodexHistoryTest._make_home
+    _make_auxiliary_db = CodexHistoryTest._make_auxiliary_db
+    _make_state_db = CodexHistoryTest._make_state_db
+    _make_history_db = CodexHistoryTest._make_history_db
+    run_history = CodexHistoryTest.run_history
+
+    def hide_canonical(self):
+        shutil.move(self.home, self.base / ("hidden-canonical-" + uuid_hex()))
+
+    def iso_home(self, state, identifier, native=None):
+        root, record = state / "worktrees" / identifier, state / "sessions" / identifier
+        home = root / ".harness/codex"
+        shutil.copytree(self.home, home, symlinks=True)
+        if native:
+            rollout = next(path for path in (home / "sessions").rglob("*.jsonl") if "session_meta" in path.read_text())
+            value = json.loads(rollout.read_text().splitlines()[0]); value["payload"]["id"] = native
+            rollout.write_text(json.dumps(value) + "\n")
+        record.mkdir(parents=True)
+        for name, value in (("source-root", str(self.source_root)), ("session-root", str(root)),
+                            ("root-inode", history_module.root_inode(root)), ("runtime.lock", ""),
+                            ("lease-v1", "1\n"), ("journal", "state=CLOSED\nidentity=\nheartbeat=2026-10-10T00:00:00Z\n")):
+            (record / name).write_text(value)
+        return root, record, home
+
+    def snap(self, state, identifier, home, record):
+        return json.loads(self.run_history(
+            "snapshot", "--source", str(home), "--catalog", str(state / "native-history"),
+            "--receipt", str(record / ("snap-" + uuid_hex() + ".json")), "--source-root", str(self.source_root),
+            "--isolation-id", identifier, "--runtime-revision", RUNTIME_REVISION).stdout)
+
+    def args(self, state, native=None):
+        values = {"source_root": str(self.source_root), "state_home": str(state), "legacy_state_home": None}
+        if native:
+            values["native_id"] = native
+        return type("Args", (), values)()
+
+    A, B = "11111111-2222-4333-8444-55555555555a", "11111111-2222-4333-8444-55555555555b"
+
+    def scenario_live_and_archive(self, state):
+        root, record, home = self.iso_home(state, self.A)
+        self.snap(state, self.A, home, record)
+        self.hide_canonical()
+
+    def scenario_held_ids(self, state):
+        root, record, home = self.iso_home(state, self.A)
+        (record / "root-inode").write_text("0 0\n")
+
+    def scenario_incomplete_hints(self, state):
+        self.scenario_held_ids(state)
+        for path in (state / "worktrees" / self.A / ".harness/codex/sessions").rglob("*.jsonl"):
+            path.rename(path.with_name("rollout-no-identifier.jsonl"))
+            break
+
+    def scenario_restored_lineage(self, state):
+        first = json.loads(self.run_history("prepare", "--source-root", str(self.source_root),
+                           "--state-home", str(state), "--native-id", NATIVE_THREAD_ID).stdout)
+        root, record = state / "worktrees" / self.B, state / "sessions" / self.B
+        (root / ".harness/codex").mkdir(parents=True); record.mkdir(parents=True)
+        for name, value in (("source-root", str(self.source_root)), ("session-root", str(root)),
+                            ("root-inode", history_module.root_inode(root)), ("runtime.lock", ""),
+                            ("lease-v1", "1\n"), ("journal", "state=CLOSED\nidentity=\nheartbeat=2026-10-10T00:00:00Z\n")):
+            (record / name).write_text(value)
+        self.run_history("restore", "--catalog", str(state / "native-history"), "--snapshot", first["snapshot_id"],
+                         "--destination", str(root / ".harness/codex"), "--receipt", str(record / "native-history-restore.json"),
+                         "--native-id", NATIVE_THREAD_ID, "--origin-runtime", first["origin_runtime"])
+
+    def scenario_imported_suppression(self, state):
+        child = "22222222-2222-4333-8444-555555555556"
+        self.iso_home(state, self.A)
+        new_root, new_record, new_home = self.iso_home(state, self.B)
+        rollout = next(path for path in (new_home / "sessions").rglob("*.jsonl") if NATIVE_THREAD_ID in path.name)
+        (rollout.parent / ("rollout-child-" + child + ".jsonl")).write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": child}}) + "\n")
+        ledger = new_record / "restored-native-sessions"
+        ledger.write_text(json.dumps({"schema": 1, "session_id": self.B, "source_root": str(self.source_root.resolve()),
+            "imports": [{"runtime": "codex", "native_id": NATIVE_THREAD_ID, "source_owner": self.A}]}, sort_keys=True) + "\n")
+        ledger.chmod(0o600)
+        self.hide_canonical()
+
+    def scenario_duplicate_live(self, state):
+        self.iso_home(state, self.A)
+        self.iso_home(state, self.B)
+        self.hide_canonical()
+
+    def scenario_duplicate_archive(self, state):
+        for identifier in (self.A, self.B):
+            root, record, home = self.iso_home(state, identifier)
+            self.snap(state, identifier, home, record)
+            shutil.move(root, self.base / ("moved-" + identifier))
+        self.hide_canonical()
+
+    SCENARIOS = ("live_and_archive", "held_ids", "incomplete_hints", "restored_lineage",
+                 "imported_suppression", "duplicate_live", "duplicate_archive")
+
+    def test_filtered_catalog_gives_the_complete_target_row_of_the_full_catalog(self):
+        for name in self.SCENARIOS:
+            for target in (NATIVE_THREAD_ID, NATIVE_THREAD_ID.upper()):
+                with self.subTest(scenario=name, target=target):
+                    state = self.base / ("scenario-" + name)
+                    if not state.exists():
+                        self._make_home()
+                        getattr(self, "scenario_" + name)(state)
+                    full = history_module.catalog_value(self.args(state))
+                    wanted = [row for row in full["entries"] if row["native_id"].lower() == NATIVE_THREAD_ID]
+                    self.assertTrue(wanted, name)
+                    filtered = history_module.catalog_value(self.args(state, target))
+                    self.assertEqual(filtered["entries"], wanted)
+                    self.assertEqual(filtered["warnings"], full["warnings"])
+                    self.assertEqual(filtered["schema_version"], 1)
+                    cli = json.loads(self.run_history("catalog", "--source-root", str(self.source_root),
+                                                      "--state-home", str(state), "--native-id", target).stdout)
+                    self.assertEqual(cli, filtered)
+            self.assertEqual(self.EXPECTED[name], sorted((r["status"], r["reason"], bool(r["snapshot_id"])) for r in wanted), name)
+
+    EXPECTED = {
+        "live_and_archive": [("live", None, True)],
+        "held_ids": [("ambiguous", "unverified_native_owner", False)],
+        "incomplete_hints": [("ambiguous", "unverified_native_owner_hints_incomplete", False)],
+        "restored_lineage": [("live", None, False)],
+        "imported_suppression": [("live", None, False)],
+        "duplicate_live": [("ambiguous", "duplicate_live_owner", False)],
+        "duplicate_archive": [("ambiguous", "duplicate_archive_owner", True)],
+    }
+
+    def multi_row_live_home_with_archive(self, name, extra=3):
+        state = self.base / name
+        root, record, home = self.iso_home(state, self.A)
+        directory = next((home / "sessions").rglob("*.jsonl")).parent
+        for index in range(extra):
+            identifier = "33333333-2222-4333-8444-55555555550%d" % index
+            (directory / ("rollout-extra-" + identifier + ".jsonl")).write_text(
+                json.dumps({"type": "session_meta", "payload": {"id": identifier}}) + "\n")
+        self.snap(state, self.A, home, record)
+        self.hide_canonical()
+        return state, home
+
+    def counted(self, home, after_call=None):
+        calls = []
+        real = history_module.source_inventory
+        def wrapper(source, children):
+            result = real(source, children)
+            if Path(source) == home:
+                calls.append(1)
+                if after_call:
+                    after_call(len(calls))
+            return result
+        return calls, mock.patch.object(history_module, "source_inventory", wrapper)
+
+    def test_inventory_is_computed_once_per_home_for_many_rows(self):
+        state, home = self.multi_row_live_home_with_archive("inventory-once")
+        calls, patch = self.counted(home)
+        with patch:
+            result = history_module.catalog_value(self.args(state))
+        self.assertGreaterEqual(len([r for r in result["entries"] if r["snapshot_id"]]), 4)
+        self.assertEqual(len(calls), 1)
+
+    def test_inventory_is_recomputed_when_a_nested_file_changes_between_rows(self):
+        state, home = self.multi_row_live_home_with_archive("inventory-nested")
+        nested = next((home / "sessions").rglob("rollout-extra-*.jsonl"))
+        def mutate(count):
+            if count == 1:
+                nested.write_text(nested.read_text() + "{}\n")
+        calls, patch = self.counted(home, mutate)
+        with patch:
+            history_module.catalog_value(self.args(state))
+        self.assertEqual(len(calls), 2)
+
+    def test_inventory_is_recomputed_when_only_mtime_changes_between_rows(self):
+        state, home = self.multi_row_live_home_with_archive("inventory-mtime")
+        nested = next((home / "sessions").rglob("rollout-extra-*.jsonl"))
+        def mutate(count):
+            if count == 1:
+                info = nested.stat()
+                os.utime(nested, ns=(info.st_atime_ns, info.st_mtime_ns + 5_000_000_000))
+        calls, patch = self.counted(home, mutate)
+        with patch:
+            history_module.catalog_value(self.args(state))
+        self.assertEqual(len(calls), 2)
+
+    def signature_walks(self, home):
+        walks = []
+        real = history_module.inventory_signature
+        def wrapper(path, children):
+            if Path(path) == home:
+                walks.append(1)
+            return real(path, children)
+        return walks, mock.patch.object(history_module, "inventory_signature", wrapper)
+
+    def test_signature_is_walked_twice_per_home_however_many_rows(self):
+        state, home = self.multi_row_live_home_with_archive("signature-twice", 6)
+        walks, patch = self.signature_walks(home)
+        with patch:
+            result = history_module.catalog_value(self.args(state))
+        self.assertGreaterEqual(len([r for r in result["entries"] if r["snapshot_id"]]), 7)
+        self.assertEqual(len(walks), 2)
+
+    def test_change_between_first_and_end_signature_redoes_once_and_keeps_rows(self):
+        state, home = self.multi_row_live_home_with_archive("signature-redo-once")
+        baseline = history_module.catalog_value(self.args(state))
+        nested = next((home / "sessions").rglob("rollout-extra-*.jsonl"))
+        calls, patch = self.counted(home, lambda count: nested.write_text(nested.read_text() + "{}\n") if count == 1 else None)
+        with patch:
+            result = history_module.catalog_value(self.args(state))
+        self.assertEqual(len(calls), 2)
+        self.assertFalse([r for r in result["entries"] if r["reason"] == "source_changed_during_catalog"])
+        self.assertEqual([r["native_id"] for r in result["entries"]], [r["native_id"] for r in baseline["entries"]])
+        self.assertEqual(len(result["entries"]), len(baseline["entries"]))
+
+    def test_change_on_the_redo_too_holds_the_rows_that_used_the_home(self):
+        state, home = self.multi_row_live_home_with_archive("signature-redo-twice")
+        nested = next((home / "sessions").rglob("rollout-extra-*.jsonl"))
+        calls, patch = self.counted(home, lambda count: nested.write_text(nested.read_text() + "{}\n"))
+        with patch:
+            result = history_module.catalog_value(self.args(state))
+        self.assertEqual(len(calls), 2)
+        held = [r for r in result["entries"] if r["home"] == str(home)]
+        self.assertGreaterEqual(len(held), 4)
+        for row in held:
+            self.assertEqual((row["status"], row["reason"]), ("ambiguous", "source_changed_during_catalog"))
+
+    def test_home_removed_between_first_and_end_signature_is_held_without_traceback(self):
+        state, home = self.multi_row_live_home_with_archive("signature-home-removed")
+        calls, patch = self.counted(home, lambda count: shutil.rmtree(home) if count == 1 else None)
+        with patch:
+            result = history_module.catalog_value(self.args(state))
+        held = [r for r in result["entries"] if r["home"] == str(home)]
+        self.assertTrue(held)
+        for row in held:
+            self.assertEqual((row["status"], row["reason"]), ("ambiguous", "source_changed_during_catalog"))
+
+
+class OriginStateHomeTest(unittest.TestCase):
+    """origin_state_home names the one configured state home that owns a row's origin record."""
+
+    SOURCE = Path("/work/src")
+    CURRENT = Path("/state/current")
+    LEGACY = Path("/state/legacy")
+
+    def origin(self, row, pools=None, legacy="default"):
+        pools = pools if pools is not None else [self.CURRENT, self.LEGACY]
+        legacy = self.LEGACY if legacy == "default" else legacy
+        return history_module.origin_state_home(row, self.SOURCE, pools, legacy)
+
+    def live(self, pool, identifier=ISOLATION_ID):
+        return {"status": "live", "isolation_id": identifier,
+                "home": str(pool / "worktrees" / identifier / ".harness" / "codex")}
+
+    def test_live_row_maps_to_its_pool(self):
+        self.assertEqual(self.origin(self.live(self.CURRENT)), str(self.CURRENT))
+        self.assertEqual(self.origin(self.live(self.LEGACY)), str(self.LEGACY))
+
+    def test_live_row_in_an_unconfigured_pool_grants_nothing(self):
+        self.assertEqual(self.origin(self.live(Path("/state/other"))), "")
+
+    def test_snapshot_row_uses_the_manifest_source_not_the_store(self):
+        row = {"status": "snapshot", "isolation_id": ISOLATION_ID,
+               "home": "/state/current/native-history/snapshots/x/data",
+               "_source_home": str(self.live(self.LEGACY)["home"])}
+        self.assertEqual(self.origin(row), str(self.LEGACY))
+
+    def test_canonical_row_and_canonical_snapshot_map_to_the_legacy_home(self):
+        canonical = {"status": "canonical", "isolation_id": "canonical",
+                     "home": str(self.SOURCE / ".harness" / "codex")}
+        self.assertEqual(self.origin(canonical), str(self.LEGACY))
+        snapshot = {"status": "snapshot", "isolation_id": "canonical", "home": "/s/data",
+                    "_source_home": str(self.SOURCE / ".harness" / "codex")}
+        self.assertEqual(self.origin(snapshot), str(self.LEGACY))
+        self.assertEqual(self.origin(canonical, legacy=None), "")
+
+    def test_malformed_layouts_grant_nothing(self):
+        row = self.live(self.CURRENT)
+        self.assertEqual(self.origin(dict(row, isolation_id="not-a-uuid")), "")
+        self.assertEqual(self.origin(dict(row, home=str(self.CURRENT / "elsewhere" / "codex"))), "")
+        self.assertEqual(self.origin({"status": "live"}), "")
+
+    def test_catalog_rows_carry_the_field_without_private_keys(self):
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            source, state = base / "source", base / "state"
+            home = source / ".harness" / "codex" / "sessions" / "2026" / "10" / "10"
+            home.mkdir(parents=True)
+            (home / ("rollout-2026-10-10T01-02-03-%s.jsonl" % NATIVE_THREAD_ID)).write_text(
+                json.dumps({"type": "session_meta", "payload": {"id": NATIVE_THREAD_ID}}) + "\n")
+            state.mkdir()
+            args = types.SimpleNamespace(source_root=str(source), state_home=str(state),
+                                         legacy_state_home=str(base / "legacy"), native_id=None)
+            rows = history_module.catalog_value(args)["entries"]
+            self.assertEqual([row["origin_state_home"] for row in rows], [str(base / "legacy")])
+            self.assertFalse([key for row in rows for key in row if key.startswith("_")])
 
 
 if __name__ == "__main__":

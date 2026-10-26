@@ -119,6 +119,50 @@ def identity(path):
         cold()
 
 
+COMPANY_OTEL_KEYS = {"environment", "log_user_prompt", "exporter", "trace_exporter", "metrics_exporter"}
+
+
+def otel_matches(otel, expected_profile):
+    """The generated [otel] table is either the local-observability profile or,
+    for a collecting profile without it, the whitelisted company table (its
+    exact content is fingerprinted by codex-home-prepare.sh)."""
+    if otel is None:
+        return True
+    if not expected_profile and os.environ.get("HARNESS_AGENT_USAGE_COMPANY_OTEL") == "1":
+        return isinstance(otel, dict) and bool(otel) and set(otel) <= COMPANY_OTEL_KEYS
+    profile = (otel.get("span_attributes") or {}).get("obs.profile") if isinstance(otel, dict) else None
+    return profile == expected_profile and otel == {
+        "environment": expected_profile,
+        "log_user_prompt": False,
+        "span_attributes": {
+            "service.name": "harness-agent",
+            "obs.runtime": "codex",
+            "obs.profile": profile,
+        },
+        "exporter": {
+            "otlp-http": {
+                "endpoint": "http://127.0.0.1:4318/v1/logs",
+                "protocol": "binary",
+                "headers": {},
+            }
+        },
+        "trace_exporter": {
+            "otlp-http": {
+                "endpoint": "http://127.0.0.1:4318/v1/traces",
+                "protocol": "binary",
+                "headers": {},
+            }
+        },
+        "metrics_exporter": {
+            "otlp-http": {
+                "endpoint": "http://127.0.0.1:4318/v1/metrics",
+                "protocol": "binary",
+                "headers": {},
+            }
+        },
+    }
+
+
 def config_matches(
     codex_home,
     catalog,
@@ -176,44 +220,14 @@ def config_matches(
         return False
     if config.get("model_reasoning_effort") != "medium":
         return False
+    if expected_context_window is None and ("model_context_window" in config or "model_auto_compact_token_limit" in config):
+        return False
     if config.get("model_context_window") != expected_context_window:
         return False
     if config.get("model_auto_compact_token_limit") != expected_auto_compact_limit:
         return False
-    otel = config.get("otel")
-    if otel is not None:
-        profile = (otel.get("span_attributes") or {}).get("obs.profile") if isinstance(otel, dict) else None
-        if profile != expected_profile or otel != {
-            "environment": expected_profile,
-            "log_user_prompt": False,
-            "span_attributes": {
-                "service.name": "harness-agent",
-                "obs.runtime": "codex",
-                "obs.profile": profile,
-            },
-            "exporter": {
-                "otlp-http": {
-                    "endpoint": "http://127.0.0.1:4318/v1/logs",
-                    "protocol": "binary",
-                    "headers": {},
-                }
-            },
-            "trace_exporter": {
-                "otlp-http": {
-                    "endpoint": "http://127.0.0.1:4318/v1/traces",
-                    "protocol": "binary",
-                    "headers": {},
-                }
-            },
-            "metrics_exporter": {
-                "otlp-http": {
-                    "endpoint": "http://127.0.0.1:4318/v1/metrics",
-                    "protocol": "binary",
-                    "headers": {},
-                }
-            },
-        }:
-            return False
+    if not otel_matches(config.get("otel"), expected_profile):
+        return False
     allowed_apps = expected_apps()
     expected_features = {
         "apps": allowed_apps is not None,
@@ -480,8 +494,8 @@ def main():
         ssot_file,
     ) = sys.argv[1:]
     try:
-        expected_context_window = int(context_window_raw)
-        expected_auto_compact_limit = int(auto_compact_limit_raw)
+        expected_context_window = int(context_window_raw) if context_window_raw else None
+        expected_auto_compact_limit = int(auto_compact_limit_raw) if auto_compact_limit_raw else None
     except ValueError:
         cold()
     stamp = load_object(stamp_path)

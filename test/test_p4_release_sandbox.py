@@ -33,3 +33,7 @@ class ExportSandboxTests(unittest.TestCase):
             self.assertNotEqual(sandbox('/bin/cat', str(sibling)).returncode, 0)
             self.assertNotEqual(sandbox('/bin/sh', '-c', 'printf changed > "$1"', 'sh', str(export / 'policy')).returncode, 0)
             self.assertEqual((export / 'policy').read_text(), 'verified')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -6,7 +6,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$TMP/runtime"
 ISOLATION="$TMP/runtime/share/harness-launcher/session-isolation.sh"
-trap '[[ ! -d "$TMP/csmnt" ]] || hdiutil detach -quiet -force "$TMP/csmnt" 2>/dev/null; chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  # A failed concurrent child must not delete fixtures under its sibling.
+  # Cleanup is best-effort, but must retain the original assertion/tool status.
+  set +e
+  wait
+  [[ ! -d "$TMP/csmnt" ]] || hdiutil detach -quiet -force "$TMP/csmnt" 2>/dev/null
+  chmod -R u+w "$TMP" 2>/dev/null
+  rm -rf "$TMP"
+  exit "$rc"
+}
+trap cleanup EXIT
 
 SOURCE="$TMP/source"
 STATE="$TMP/state"
@@ -21,7 +33,13 @@ printf '%s\n' rename-me > "$SOURCE/rename-old.txt"
 printf '%s\n' 'secret' > "$SOURCE/config/.local/secret.env"
 cat > "$SOURCE/core/bin/auto-deliver.sh" <<'EOF'
 #!/usr/bin/env bash
-[[ " $* " == *' --staged-only '* && " $* " == *' --dry-run '* && " $* " == *' --no-push '* ]] || exit 91
+if [[ "${1:-}" == --help ]]; then echo '--verify-candidate --contract-checked'; exit 0; fi
+[[ "${2:-}" == --staged-only && "${3:-}" == --dry-run && "${4:-}" == --no-push && "${5:-}" == --verify-candidate ]] || exit 91
+[[ "${6:-}" == "$(git rev-parse HEAD)" && "${7:-}" == "$(git write-tree)" ]] || exit 94
+[[ "$(git cat-file -t "$6")" == commit && "$(git cat-file -t "$7")" == tree ]] || exit 95
+[[ "${8:-}" == --contract-checked && "${9:-}" == 'broker candidate cascade verified' ]] || exit 96
+[[ -z "${BINDING_LOG:-}" ]] || printf '%s %s\n' "$6" "$7" >> "$BINDING_LOG"
+printf 'VERIFIER-BOUND %s %s\n' "$6" "$7"
 [[ "${HARNESS_SESSION_TEST_VERIFY_FAIL:-0}" != 1 ]] || exit 92
 [[ -z "${HARNESS_TEST_VERIFIER:-}" ]] || "$HARNESS_TEST_VERIFIER"
 EOF
@@ -34,8 +52,13 @@ create() {
   HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE"
 }
 
+# Git maintenance metadata is not an object. A dangling transient entry makes
+# filesystem-copy clones fail deterministically without racing a real GC.
+# Creation must obtain reachable objects through Git's transport instead.
+ln -s "$TMP/vanished-midx-lock" "$SOURCE/.git/objects/pack/multi-pack-index.lock"
 first="$(create)"
 second="$(create)"
+rm "$SOURCE/.git/objects/pack/multi-pack-index.lock"
 first_root="$(printf '%s\n' "$first" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
 second_root="$(printf '%s\n' "$second" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
 first_id="$(printf '%s\n' "$first" | sed -n 's/^HARNESS_SESSION_ID=//p')"
@@ -65,7 +88,7 @@ grep -q 'cannot resume SUBMITTED session; run harness-session integrate or recov
 printf '%s\n' dirty > "$first_root/new.txt"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$first_id"
 grep -qx 'state=ABANDONED' "$STATE/sessions/$first_id/journal" || { echo 'FAIL: dirty exit must be ABANDONED'; exit 1; }
-HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$first_id" | grep -qx "HARNESS_SESSION_ROOT=$first_root" || { echo 'FAIL: abandoned session must be recoverable'; exit 1; }
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$first_id" | grep -x "HARNESS_SESSION_ROOT=$first_root" >/dev/null || { echo 'FAIL: abandoned session must be recoverable'; exit 1; }
 
 stale="$(create)"
 stale_id="$(printf '%s\n' "$stale" | sed -n 's/^HARNESS_SESSION_ID=//p')"
@@ -79,6 +102,7 @@ git init --bare -q "$REMOTE"
 git -C "$SOURCE" add tracked.txt && git -C "$SOURCE" commit -qm source-clean
 git -C "$SOURCE" remote add origin "$REMOTE"
 git -C "$SOURCE" push -q -u origin main
+git --git-dir="$REMOTE" symbolic-ref HEAD refs/heads/main
 clean_close="$(create)"; clean_close_id="$(printf '%s\n' "$clean_close" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$clean_close_id"
 grep -qx state=CLOSED "$STATE/sessions/$clean_close_id/journal" || { echo 'FAIL: closing a clean session must terminate it without submission'; exit 1; }
@@ -161,7 +185,7 @@ sed -i '' 's/^heartbeat=.*/heartbeat=2999-01-01T00:00:00Z/' "$STATE/sessions/$fu
 HARNESS_SESSION_RETENTION_SECONDS=0 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" gc
 [[ -d "$future_root" ]] || { echo 'FAIL: GC must retain future-dated terminal journals'; exit 1; }
 ADVANCE_CLONE="$TMP/create-advance"
-git clone -q "$REMOTE" "$ADVANCE_CLONE"
+git clone -q --no-local "$REMOTE" "$ADVANCE_CLONE"
 git -C "$ADVANCE_CLONE" config user.email test@example.invalid
 git -C "$ADVANCE_CLONE" config user.name test
 printf '%s\n' remote-latest > "$ADVANCE_CLONE/remote-latest.txt"
@@ -236,7 +260,9 @@ line_a_id="$(printf '%s\n' "$line_a" | sed -n 's/^HARNESS_SESSION_ID=//p')"; lin
 printf '%s\n' ONE two three > "$line_a_root/merge.txt"; printf '%s\n' one two THREE > "$line_b_root/merge.txt"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$line_a_id"; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$line_b_id"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$line_a_id"
-HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$line_b_id"
+merged_base="$(git --git-dir="$REMOTE" rev-parse main)"
+BINDING_LOG="$TMP/merged-binding" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$line_b_id"
+[[ "$(<"$TMP/merged-binding")" == "$merged_base $(git --git-dir="$REMOTE" rev-parse 'main^{tree}')" ]] || { echo 'FAIL: verifier must bind the complete committed three-way merged tree'; exit 1; }
 [[ "$(git --git-dir="$REMOTE" show main:merge.txt)" == $'ONE\ntwo\nTHREE' ]] || { echo 'FAIL: 3-way integration must preserve disjoint line edits'; exit 1; }
 
 renamed="$(create)"; renamed_root="$(printf '%s\n' "$renamed" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; renamed_id="$(printf '%s\n' "$renamed" | sed -n 's/^HARNESS_SESSION_ID=//p')"
@@ -253,13 +279,20 @@ cat > "$VERIFY" <<'EOF'
 #!/usr/bin/env bash
 n=0; [[ -f "$COUNT" ]] && n="$(<"$COUNT")"; n=$((n + 1)); printf '%s\n' "$n" > "$COUNT"
 if [[ "$n" == 1 ]]; then
-  d="$(mktemp -d)"; git clone -q "$REMOTE" "$d"; git -C "$d" config user.email test@example.invalid; git -C "$d" config user.name test; printf '%s\n' advance > "$d/advance.txt"; git -C "$d" add advance.txt; git -C "$d" commit -qm advance; git -C "$d" push -q origin HEAD:main; rm -rf "$d"
+  d="$(mktemp -d)"; git clone -q --no-local "$REMOTE" "$d"; git -C "$d" config user.email test@example.invalid; git -C "$d" config user.name test; printf '%s\n' advance > "$d/advance.txt"; git -C "$d" add advance.txt; git -C "$d" commit -qm advance; git -C "$d" push -q origin HEAD:main; rm -rf "$d"
 fi
 EOF
 chmod +x "$VERIFY"
-COUNT="$COUNT" REMOTE="$REMOTE" HARNESS_TEST_VERIFIER="$VERIFY" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$advance_id"
+BINDING_LOG="$TMP/retry-bindings" COUNT="$COUNT" REMOTE="$REMOTE" HARNESS_TEST_VERIFIER="$VERIFY" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$advance_id"
 [[ "$(<"$COUNT")" -ge 2 ]] || { echo 'FAIL: remote advance must force verifier re-run'; exit 1; }
+read -r retry_base_one retry_tree_one < "$TMP/retry-bindings"
+while read -r retry_base retry_tree; do retry_base_two="$retry_base"; retry_tree_two="$retry_tree"; done < "$TMP/retry-bindings"
+[[ "$retry_base_one" != "$retry_base_two" && "$retry_tree_one" != "$retry_tree_two" ]] || { echo 'FAIL: remote retry must rebind both fresh baseline and complete tree'; exit 1; }
+[[ "$retry_tree_two" == "$(git --git-dir="$REMOTE" rev-parse 'main^{tree}')" ]] || { echo 'FAIL: retried verification must describe the published tree'; exit 1; }
 
+# The same non-object metadata must not enter candidate, verifier, normal
+# readback or recovery clones, including concurrent integrations below.
+ln -s "$TMP/vanished-remote-midx-lock" "$REMOTE/objects/pack/multi-pack-index.lock"
 readback="$(create)"; readback_root="$(printf '%s\n' "$readback" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; readback_id="$(printf '%s\n' "$readback" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 printf '%s\n' readback > "$readback_root/readback.txt"; git -C "$readback_root" add readback.txt; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$readback_id"
 if HARNESS_SESSION_TEST_READBACK_FAIL=1 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$readback_id"; then echo 'FAIL: readback outage must defer delivery'; exit 1; fi
@@ -269,8 +302,15 @@ HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$readback_id" | grep -
 disjoint_a="$(create)"; disjoint_b="$(create)"; da_root="$(printf '%s\n' "$disjoint_a" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; db_root="$(printf '%s\n' "$disjoint_b" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; da_id="$(printf '%s\n' "$disjoint_a" | sed -n 's/^HARNESS_SESSION_ID=//p')"; db_id="$(printf '%s\n' "$disjoint_b" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 printf a > "$da_root/disjoint-a"; printf b > "$db_root/disjoint-b"; git -C "$da_root" add disjoint-a; git -C "$db_root" add disjoint-b
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$da_id"; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$db_id"
-HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$da_id" & pa=$!; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$db_id" & pb=$!; wait "$pa"; wait "$pb"
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$da_id" & pa=$!
+HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$db_id" & pb=$!
+a_rc=0; b_rc=0
+wait "$pa" || a_rc=$?
+wait "$pb" || b_rc=$?
+[[ "$a_rc" == 0 && "$b_rc" == 0 ]] || { echo "FAIL: concurrent integrations exited $a_rc/$b_rc"; exit 1; }
+rm "$REMOTE/objects/pack/multi-pack-index.lock"
 git --git-dir="$REMOTE" show main:disjoint-a >/dev/null && git --git-dir="$REMOTE" show main:disjoint-b >/dev/null || { echo 'FAIL: disjoint concurrent submissions must both deliver'; exit 1; }
+echo 'PASS: creation and broker snapshots ignore transient non-object maintenance entries'
 
 git -C "$SOURCE" fetch -q origin main:refs/remotes/origin/main
 paths="$(create)"; paths_root="$(printf '%s\n' "$paths" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; paths_id="$(printf '%s\n' "$paths" | sed -n 's/^HARNESS_SESSION_ID=//p')"
@@ -316,7 +356,7 @@ RETRY_COUNT="$TMP/retry-count"; RETRY_VERIFY="$TMP/retry-advance.sh"
 cat > "$RETRY_VERIFY" <<'EOF'
 #!/usr/bin/env bash
 n=0; [[ -f "$RETRY_COUNT" ]] && n="$(<"$RETRY_COUNT")"; n=$((n + 1)); printf '%s\n' "$n" > "$RETRY_COUNT"
-d="$(mktemp -d)"; git clone -q "$REMOTE" "$d"; git -C "$d" config user.email test@example.invalid; git -C "$d" config user.name test
+d="$(mktemp -d)"; git clone -q --no-local "$REMOTE" "$d"; git -C "$d" config user.email test@example.invalid; git -C "$d" config user.name test
 touch "$d/remote-advance-$n"; git -C "$d" add .; git -C "$d" commit -qm "advance $n"; git -C "$d" push -q origin HEAD:main; rm -rf "$d"
 EOF
 chmod +x "$RETRY_VERIFY"
@@ -354,9 +394,11 @@ git --git-dir="$REMOTE" show main:preack-crash | grep -qx delivered || { echo 'F
 postpush_race="$(create)"; postpush_race_root="$(printf '%s\n' "$postpush_race" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; postpush_race_id="$(printf '%s\n' "$postpush_race" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 printf delivered > "$postpush_race_root/postpush-race"; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" submit "$postpush_race_id"
 HARNESS_SESSION_TEST_POST_PUSH_DELAY=2 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" integrate "$postpush_race_id" & race_pid=$!
-for _ in {1..100}; do [[ -f "$STATE/sessions/$postpush_race_id/push-ack" ]] && break; sleep 0.05; done
+# Git/verification can take over five seconds on a busy host; wait for the
+# acknowledgement itself within a bounded minute, rather than racing startup.
+for _ in {1..1200}; do [[ -f "$STATE/sessions/$postpush_race_id/push-ack" ]] && break; sleep 0.05; done
 [[ -f "$STATE/sessions/$postpush_race_id/push-ack" ]] || { echo 'FAIL: successful push must persist an acknowledgement before readback'; exit 1; }
-race_advance="$TMP/postpush-race-advance"; git clone -q "$REMOTE" "$race_advance"; git -C "$race_advance" config user.email test@example.invalid; git -C "$race_advance" config user.name test
+race_advance="$TMP/postpush-race-advance"; git clone -q --no-local "$REMOTE" "$race_advance"; git -C "$race_advance" config user.email test@example.invalid; git -C "$race_advance" config user.name test
 printf advanced > "$race_advance/after-race"; git -C "$race_advance" add after-race; git -C "$race_advance" commit -qm after-race; git -C "$race_advance" push -q origin HEAD:main
 wait "$race_pid"
 grep -qx state=DELIVERED "$STATE/sessions/$postpush_race_id/journal" || { echo 'FAIL: a later remote descendant must not invalidate an acknowledged delivery'; exit 1; }
@@ -383,7 +425,7 @@ grep -q '"Read"' "$headless_root/.claude/settings.local.json" || { echo 'FAIL: h
 echo 'PASS: headless clones copy machine-local files without links or env secrets'
 
 # Headless clone hardening: no cwd module hijack, no symlink-following writes.
-PY_ABS="$(command -v python3)"
+PY_ABS="$(python3 -c 'import sys; print(sys.executable)')"
 mkdir -p "$TMP/hijack"
 printf '%s\n' "open('$TMP/hijack-ran', 'w').write('x')" 'from importlib import import_module' > "$TMP/hijack/json.py"
 hijack_root="$(cd "$TMP/hijack" && HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
@@ -412,7 +454,9 @@ expect_headless_refusal() {
 dangling_src="$(headless_link_source dangling-src)"
 mkdir -p "$dangling_src/.claude" "$TMP/outside-dangling"
 ln -s "$TMP/outside-dangling/settings.local.json" "$dangling_src/.claude/settings.local.json"
-git -C "$dangling_src" add -A && git -C "$dangling_src" commit -qm link
+# These fixtures deliberately track unsafe local paths, including when a host
+# global ignore normally excludes .claude.
+git -C "$dangling_src" add -f -A && git -C "$dangling_src" commit -qm link
 rm "$dangling_src/.claude/settings.local.json"; printf '%s\n' '{}' > "$dangling_src/.claude/settings.local.json"
 expect_headless_refusal "$dangling_src" 'a dangling settings symlink'
 [[ ! -e "$TMP/outside-dangling/settings.local.json" ]] || { echo 'FAIL: headless copy wrote through a dangling symlink'; exit 1; }
@@ -420,7 +464,7 @@ expect_headless_refusal "$dangling_src" 'a dangling settings symlink'
 dir_src="$(headless_link_source dir-src)"
 mkdir -p "$TMP/outside-dir"
 ln -s "$TMP/outside-dir" "$dir_src/.claude"
-git -C "$dir_src" add -A && git -C "$dir_src" commit -qm link
+git -C "$dir_src" add -f -A && git -C "$dir_src" commit -qm link
 rm "$dir_src/.claude"; mkdir -p "$dir_src/.claude"; printf '%s\n' '{}' > "$dir_src/.claude/settings.local.json"
 expect_headless_refusal "$dir_src" 'a symlinked .claude directory'
 [[ ! -e "$TMP/outside-dir/settings.local.json" ]] || { echo 'FAIL: headless copy wrote through a symlinked parent'; exit 1; }
@@ -492,13 +536,112 @@ deliver_headless
 git --git-dir="$REMOTE" show main:hl-linked.txt >/dev/null || { echo 'FAIL: a symlinked .git must not stop headless delivery'; exit 1; }
 [[ -z "$(ls -A "$TMP/evil-git")" ]] || { echo 'FAIL: broker git wrote through a symlinked session .git'; exit 1; }
 # Headless marker without its trusted git dir fails closed.
+observe_missing_trusted() {
+  "$PY_ABS" -I -S -B - "$@" 2>/dev/null <<'PY'
+import json, os, stat, sys
+
+states = {'OPEN', 'ABANDONED', 'CLOSED', 'SUBMITTED', 'INTEGRATING', 'DELIVERED', 'CONFLICT', 'DISCARDED', 'OTHER', 'UNREADABLE'}
+markers = {'present', 'absent', 'unreadable'}
+trusted = {'real-directory', 'symlink', 'other', 'absent', 'unreadable'}
+
+def read_metadata(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as f:
+        info = os.fstat(f.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 8192:
+            raise ValueError()
+        data = f.read(8193)
+    if len(data) > 8192 or b'\0' in data:
+        raise ValueError()
+    return data.decode('utf-8')
+
+def state_at(record):
+    try:
+        value = next((s[6:] for s in read_metadata(record + '/journal').split('\n') if s.startswith('state=')), '')
+        return value if value in states else 'OTHER'
+    except Exception:
+        return 'UNREADABLE'
+
+def presence(path, named=False):
+    try:
+        (os.lstat if named else os.stat)(path)
+        return 'present'
+    except FileNotFoundError:
+        return 'absent'
+    except Exception:
+        return 'unreadable'
+
+def trusted_before(path):
+    try:
+        mode = os.lstat(path).st_mode
+        return 'symlink' if stat.S_ISLNK(mode) else 'real-directory' if stat.S_ISDIR(mode) else 'other'
+    except FileNotFoundError:
+        return 'absent'
+    except Exception:
+        return 'unreadable'
+
+def same_path(record, field, selected, physical=False):
+    try:
+        value = read_metadata(record + '/' + field).rstrip('\n')
+        if not value or '\n' in value:
+            return 'unreadable'
+        return value == (os.path.realpath(selected) if physical else selected)
+    except Exception:
+        return 'unreadable'
+
+def snapshot(raw, choices, fallback):
+    try:
+        value = json.loads(raw) if len(raw) <= 4096 else None
+        if type(value) is list and len(value) == len(choices) and all(check(v) for check, v in zip(choices, value)):
+            return value
+    except Exception:
+        pass
+    return fallback
+
+try:
+    mode = sys.argv[1]
+    if mode in ('before', 'pre', 'after'):
+        record, selected_root, source = sys.argv[2:5]
+        if mode == 'before':
+            value = [state_at(record), presence(record + '/headless'), trusted_before(record + '/trusted.git'), same_path(record, 'session-root', selected_root), same_path(record, 'source-root', source, physical=True)]
+        elif mode == 'pre':
+            value = [state_at(record), presence(record + '/headless'), presence(record + '/trusted.git', named=True)]
+        else:
+            value = state_at(record)
+        print(json.dumps(value, separators=(',', ':')))
+    elif mode == 'emit':
+        stage, before, pre, after, raw_rc = sys.argv[2:7]
+        rc = json.loads(raw_rc)
+        if stage not in ('missing-trusted-exit', 'missing-trusted-close') or type(rc) is not int or not 0 <= rc <= 255:
+            raise ValueError()
+        is_state = lambda v: type(v) is str and v in states
+        is_marker = lambda v: type(v) is str and v in markers
+        is_match = lambda v: type(v) is bool or type(v) is str and v == 'unreadable'
+        b = snapshot(before, [is_state, is_marker, lambda v: type(v) is str and v in trusted, is_match, is_match], ['UNREADABLE', 'unreadable', 'unreadable', 'unreadable', 'unreadable'])
+        p = snapshot(pre, [is_state, is_marker, is_marker], ['UNREADABLE', 'unreadable', 'unreadable'])
+        a = snapshot('[' + after + ']', [is_state], ['UNREADABLE'])[0]
+        value = dict(stage=stage, record_state_before_remove=b[0], headless_marker_before_remove=b[1], trusted_before_remove=b[2], selected_root_equals_record_root=b[3], selected_source_equals_record_source=b[4], trusted_after_remove=p[2], record_state_immediately_before_exit=p[0], record_state_after_exit=a, headless_marker_immediately_before_exit=p[1], original_exit_or_close_rc=rc)
+        line = ('MISSING_TRUSTED ' + json.dumps(value, separators=(',', ':'), ensure_ascii=True) + '\n').encode('ascii')
+        if len(line) <= 512:
+            # One bounded write, no truncation, retry or raw fallback on failure.
+            os.write(1, line)
+except Exception:
+    pass
+PY
+}
 headless_session
 printf 'x\n' > "$hs_root/hl-missing.txt"
+# Category-only snapshots of this selected record, not proof of an internal branch.
+missing_before="$(observe_missing_trusted before "$STATE/sessions/$hs_id" "$hs_root" "$SOURCE")" || missing_before=''
 rm -rf "$STATE/sessions/$hs_id/trusted.git"
+missing_pre="$(observe_missing_trusted pre "$STATE/sessions/$hs_id" "$hs_root" "$SOURCE")" || missing_pre=''
 rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" exit "$hs_id" 2>/dev/null || rc=$?
-[[ "$rc" == 6 ]] || { echo "FAIL: a headless record without trusted.git must refuse (rc=$rc)"; exit 1; }
+# Save the exit rc first; this snapshot is after exit, never after close.
+missing_after="$(observe_missing_trusted after "$STATE/sessions/$hs_id" "$hs_root" "$SOURCE")" || missing_after=''
+[[ "$rc" == 6 ]] || { observe_missing_trusted emit missing-trusted-exit "$missing_before" "$missing_pre" "$missing_after" "$rc" || :; echo "FAIL: a headless record without trusted.git must refuse (rc=$rc)"; exit 1; }
 rc=0; HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$hs_id" 2>/dev/null || rc=$?
-[[ "$rc" == 6 ]] || { echo "FAIL: close must refuse without trusted.git (rc=$rc)"; exit 1; }
+# Close failure carries the same named exit snapshots, not close-internal state.
+[[ "$rc" == 6 ]] || { observe_missing_trusted emit missing-trusted-close "$missing_before" "$missing_pre" "$missing_after" "$rc" || :; echo "FAIL: close must refuse without trusted.git (rc=$rc)"; exit 1; }
 
 echo 'PASS: headless broker git uses the launcher-owned git dir, never the session .git'
 
@@ -522,7 +665,7 @@ HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$ok_id"
 git --git-dir="$REMOTE" show main:committed-normal.txt >/dev/null || { echo 'FAIL: committed normal paths must be delivered'; exit 1; }
 
 # Interactive close when the harness .gitignore ignores the machine-local links.
-git clone -q "$REMOTE" "$TMP/ignore-clone"
+git clone -q --no-local "$REMOTE" "$TMP/ignore-clone"
 printf '%s\n' '.claude/settings.local.json' 'mcp.local.json' '/projects' > "$TMP/ignore-clone/.gitignore"
 git -C "$TMP/ignore-clone" add .gitignore
 git -C "$TMP/ignore-clone" -c user.name=t -c user.email=t@example.invalid commit -qm ignore-local
@@ -548,7 +691,7 @@ git --git-dir="$REMOTE" show main:headless-ignored.txt >/dev/null || { echo 'FAI
 mkdir -p "$TMP/tplhome" "$TMP/tpl/hooks"
 printf '#!/bin/sh\ntouch "%s"\n' "$TMP/template-hook-ran" > "$TMP/tpl/hooks/post-checkout"; chmod +x "$TMP/tpl/hooks/post-checkout"
 printf '[init]\n\ttemplateDir = %s\n' "$TMP/tpl" > "$TMP/tplhome/.gitconfig"
-tpl_out="$(HOME="$TMP/tplhome" HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE")" || { echo 'FAIL: headless create must survive a hooks-only git template'; exit 1; }
+tpl_out="$(PATH="${PY_ABS%/*}:$PATH" HOME="$TMP/tplhome" HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE")" || { echo 'FAIL: headless create must survive a hooks-only git template'; exit 1; }
 tpl_id="$(printf '%s\n' "$tpl_out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 grep -qx '/projects' "$STATE/sessions/$tpl_id/trusted.git/info/exclude" || { echo 'FAIL: trusted.git must ignore the excluded paths'; exit 1; }
 [[ ! -e "$STATE/sessions/$tpl_id/trusted.git/hooks/post-checkout" ]] || { echo 'FAIL: user template hooks must not reach trusted.git'; exit 1; }
@@ -682,9 +825,15 @@ fi
 
 # Headless verifiers run in a sandbox with a minimal environment; interactive
 # verifiers retain the caller environment while receiving private temp context.
-git clone -q "$REMOTE" "$TMP/vfix"
+git clone -q --no-local "$REMOTE" "$TMP/vfix"
 cat >> "$TMP/vfix/core/bin/auto-deliver.sh" <<'EOF'
 if [[ -e verifier-env-probe ]]; then
+  if [[ -z "$(git remote)" ]]; then
+    [[ "${HARNESS_AUTHORITY_NO_REFRESH:-}" == 1 ]] || exit 97
+    [[ "$(git rev-parse --verify 'refs/remotes/origin/main^{commit}')" == "$6" ]] || exit 98
+    if cat "$HOME/forbidden-system-gitconfig" >/dev/null 2>&1; then exit 96; fi
+    GIT_CONFIG_SYSTEM="$HOME/forbidden-system-gitconfig" git cat-file -e refs/remotes/origin/main:merge.txt || exit 99
+  fi
   env | sed 's/^/VERIFIER-ENV /'
   if ( : > "$HOME/verifier-wrote-home" ) 2>/dev/null; then echo VERIFIER-WROTE-HOME; fi
   # Test suites use multiprocessing (POSIX semaphores named /mp-*).
@@ -695,6 +844,7 @@ EOF
 git -C "$TMP/vfix" -c user.name=t -c user.email=t@example.invalid commit -qam verifier-env-probe
 git -C "$TMP/vfix" push -q origin HEAD:main
 VHOME="$TMP/vhome"; mkdir -p "$VHOME"
+printf '[core]\n  pager = false\n' > "$VHOME/forbidden-system-gitconfig"
 for mode in headless interactive; do
   if [[ "$mode" == headless ]]; then out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"; else out="$(create)"; fi
   v_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; v_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
@@ -704,19 +854,22 @@ for mode in headless interactive; do
     HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" recover "$v_id" >/dev/null
   fi
   rm -f "$VHOME/verifier-wrote-home"
-  HOME="$VHOME" SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=leak-gh GITHUB_TOKEN=leak-github NPM_TOKEN=leak-npm LANG=en_US.UTF-8 \
+  PATH="${PY_ABS%/*}:$PATH" HOME="$VHOME" SSH_AUTH_SOCK=/tmp/agent.sock GH_TOKEN=leak-gh GITHUB_TOKEN=leak-github NPM_TOKEN=leak-npm LANG=en_US.UTF-8 \
     GIT_ASKPASS=/tmp/askpass HOMEBREW_GITHUB_API_TOKEN=leak-brew ANTHROPIC_API_KEY=leak-anthropic OPENAI_API_KEY=leak-openai \
-    CLAUDE_CODE_OAUTH_TOKEN=leak-claude HARNESS_AUTHORITY_NO_REFRESH=0 HARNESS_VERIFICATION_TMPDIR=/tmp/forged \
+    CLAUDE_CODE_OAUTH_TOKEN=leak-claude HARNESS_AUTHORITY_NO_REFRESH=forged HARNESS_VERIFICATION_TMPDIR=/tmp/forged GIT_CONFIG_NOSYSTEM=0 \
     HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$v_id" > "$TMP/venv-$mode.out" || { echo "FAIL: $mode verifier-env close"; exit 1; }
   grep -qx state=DELIVERED "$STATE/sessions/$v_id/journal" || { echo "FAIL: $mode verifier-env session must be delivered"; exit 1; }
+  v_delivered="$(<"$STATE/sessions/$v_id/delivered-sha")"
+  grep -qx "VERIFIER-BOUND $(git --git-dir="$REMOTE" rev-parse "$v_delivered^") $(git --git-dir="$REMOTE" rev-parse "$v_delivered^{tree}")" "$TMP/venv-$mode.out" || { echo "FAIL: $mode must publish exactly its verified baseline/tree binding"; exit 1; }
   if [[ "$mode" == headless ]]; then
     keys="$(sed -n 's/^VERIFIER-ENV \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$TMP/venv-$mode.out" | sort -u | tr '\n' ' ')"
     for key in $keys; do
       case "$key" in
-        HOME|PATH|LANG|LC_*|TMPDIR|HARNESS_VERIFICATION_TMPDIR|HARNESS_AUTHORITY_NO_REFRESH|GIT_CONFIG_GLOBAL|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
+        HOME|PATH|LANG|LC_*|TMPDIR|HARNESS_VERIFICATION_TMPDIR|GIT_CONFIG_GLOBAL|GIT_CONFIG_NOSYSTEM|HARNESS_AUTHORITY_NO_REFRESH|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
         *) echo "FAIL: the headless verifier environment carries $key"; exit 1 ;;
       esac
     done
+    grep -qx 'VERIFIER-ENV GIT_CONFIG_NOSYSTEM=1' "$TMP/venv-$mode.out" || { echo 'FAIL: sandbox must suppress caller/system Git configuration'; exit 1; }
     grep -qx 'VERIFIER-ENV LANG=en_US.UTF-8' "$TMP/venv-$mode.out" || { echo 'FAIL: the headless verifier keeps LANG'; exit 1; }
     v_tmp="$(sed -n 's/^VERIFIER-ENV TMPDIR=//p' "$TMP/venv-$mode.out")"
     v_context="$(sed -n 's/^VERIFIER-ENV HARNESS_VERIFICATION_TMPDIR=//p' "$TMP/venv-$mode.out")"
@@ -727,6 +880,7 @@ for mode in headless interactive; do
     grep -qx 'VERIFIER-MP VERIFIER-MP-OK' "$TMP/venv-$mode.out" \
       || { echo 'FAIL: the headless verifier must allow multiprocessing semaphores'; grep '^VERIFIER-MP' "$TMP/venv-$mode.out"; exit 1; }
   else
+    grep -qx 'VERIFIER-ENV GIT_CONFIG_NOSYSTEM=0' "$TMP/venv-$mode.out" || { echo 'FAIL: interactive Git configuration changed'; exit 1; }
     grep -qx 'VERIFIER-ENV GH_TOKEN=leak-gh' "$TMP/venv-$mode.out" && grep -q VERIFIER-WROTE-HOME "$TMP/venv-$mode.out" \
       || { echo 'FAIL: the interactive verifier must run as before'; exit 1; }
   fi
@@ -783,7 +937,7 @@ for mode in headless interactive; do
   [[ "$(jfield "$d_id" state)" == DISCARDED && -z "$(jfield "$d_id" identity)" ]] || { echo "FAIL: $mode discard must end DISCARDED"; exit 1; }
   [[ -f "$d_dir/discarded.patch" && ! -L "$d_dir/discarded.patch" && -s "$d_dir/discarded.patch" ]] || { echo "FAIL: $mode discard must keep the patch"; exit 1; }
   grep -Eqx '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' "$d_dir/discarded-at" || { echo "FAIL: $mode discard must record discarded-at"; exit 1; }
-  fresh="$TMP/discard-fresh-$mode"; git clone -q "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$d_dir/base-sha")"
+  fresh="$TMP/discard-fresh-$mode"; git clone -q --no-local "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$d_dir/base-sha")"
   git -C "$fresh" apply --check "$d_dir/discarded.patch" && git -C "$fresh" apply "$d_dir/discarded.patch" || { echo "FAIL: $mode patch must apply at base"; exit 1; }
   for f in merge.txt discard-committed.txt discard-untracked.txt discard.bin; do
     cmp -s "$fresh/$f" "$d_root/$f" || { echo "FAIL: $mode patch must reproduce $f"; exit 1; }
@@ -832,7 +986,7 @@ git -C "$ix_root" -c user.name=t -c user.email=t@example.invalid commit -qm inde
 ix_index_before="$(shasum "$(git -C "$ix_root" rev-parse --absolute-git-dir)/index")"
 iso exit "$ix_id"; iso discard "$ix_id" || { echo 'FAIL: index-seeded discard must succeed'; exit 1; }
 [[ "$(shasum "$(git -C "$ix_root" rev-parse --absolute-git-dir)/index")" == "$ix_index_before" ]] || { echo 'FAIL: discard must not write the session index'; exit 1; }
-fresh="$TMP/discard-fresh-index"; git clone -q "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$STATE/sessions/$ix_id/base-sha")"
+fresh="$TMP/discard-fresh-index"; git clone -q --no-local "$REMOTE" "$fresh"; git -C "$fresh" checkout -q --detach "$(<"$STATE/sessions/$ix_id/base-sha")"
 git -C "$fresh" apply "$STATE/sessions/$ix_id/discarded.patch" || { echo 'FAIL: index-seeded patch must apply at base'; exit 1; }
 [[ "$(<"$fresh/ign/x")" == forced ]] || { echo 'FAIL: a force-added ignored file must be kept in the patch'; exit 1; }
 [[ ! -e "$fresh/merge.txt" ]] || { echo 'FAIL: a git rm --cached file must stay deleted in the patch'; exit 1; }

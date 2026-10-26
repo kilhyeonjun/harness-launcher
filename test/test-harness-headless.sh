@@ -20,6 +20,24 @@ mkdir -p "$STUB" "$FAKE_HOME" "$PROFILES/profiles" "$TMP/out" "$SOURCE/config" "
 
 bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$PREFIX"
 
+# The clean verifier PATH already includes STUB. Bind its python3 to the
+# launcher's supported runtime instead of macOS's xcrun-backed system shim.
+# This adds no PATH directory or sandbox permission and copies no executable.
+FIXTURE_PYTHON="$(source "$ROOT/bin/harness-common.sh"; harness_python3_resolve)"
+[[ "$FIXTURE_PYTHON" == /* && -x "$FIXTURE_PYTHON" ]] || {
+  echo 'FAIL: headless fixture requires an absolute supported Python executable' >&2
+  exit 1
+}
+ln -s "$FIXTURE_PYTHON" "$STUB/python3"
+# /usr/bin/git can enter xcrun and the host-selected Xcode application, outside
+# the verifier's existing toolchain boundary. Bind the installed CLT executable
+# in this owned fixture; add no sandbox permission or PATH directory.
+FIXTURE_GIT="$(command -v git)"
+if [[ -x /Library/Developer/CommandLineTools/usr/bin/git ]]; then
+  FIXTURE_GIT=/Library/Developer/CommandLineTools/usr/bin/git
+fi
+ln -s "$FIXTURE_GIT" "$STUB/git"
+
 git init -q --bare -b main "$REMOTE"
 git -C "$SOURCE" init -q -b main
 git -C "$SOURCE" config user.email test@example.invalid
@@ -32,6 +50,12 @@ printf '%s\n' base > "$SOURCE/projects/keep.txt"
 printf '%s\n' base > "$SOURCE/projects/drop.txt"
 cat > "$SOURCE/core/bin/auto-deliver.sh" <<EOF
 #!/usr/bin/env bash
+if [[ "\${1:-}" == --help ]]; then echo '--verify-candidate --contract-checked'; exit 0; fi
+[[ "\${2:-}" == --staged-only && "\${3:-}" == --dry-run && "\${4:-}" == --no-push && "\${5:-}" == --verify-candidate ]] || exit 91
+[[ "\${6:-}" == "\$(git rev-parse HEAD)" && "\${7:-}" == "\$(git write-tree)" ]] || exit 94
+[[ "\$(git cat-file -t "\$6")" == commit && "\$(git cat-file -t "\$7")" == tree ]] || exit 95
+[[ "\${8:-}" == --contract-checked && "\${9:-}" == 'broker candidate cascade verified' ]] || exit 96
+printf 'VERIFIER-BOUND %s %s\\n' "\$6" "\$7"
 # Reports the environment the repository verifier runs with on stdout (the
 # broker log): headless verifiers are sandboxed and can only write their
 # candidate and temp dir. Like a harness auto-deliver, it runs the candidate's tests.
@@ -307,6 +331,8 @@ assert set(fs['denyRead']) == set(homes + [source, '/secret']), fs
 assert fs['allowWrite'] == [tmp], fs
 git = root + '/.git'
 assert set(fs['denyWrite']) >= {git + '/config', git + '/hooks', git + '/info', '/private/tmp/claude-' + uid, '/tmp/claude-' + uid}, fs
+assert home + '/.local/state/cct' in fs['denyWrite'], ('durable scratchpad base must be write-denied', fs)
+assert 'Write(/%s/.local/state/cct/**)' % home in deny, 'edit tools must also be denied the durable base'
 assert set(sandbox) == {'enabled', 'failIfUnavailable', 'allowUnsandboxedCommands', 'autoAllowBashIfSandboxed', 'network', 'filesystem'}, sandbox
 # Gate parity: every sandbox read deny is a Read deny, and both read- and
 # write-denied paths are closed to the edit tools.
@@ -577,7 +603,10 @@ cat > "$TMP/failgit/git" <<EOF
 #!/bin/bash
 pattern="\$(cat "$TMP/fail-git" 2>/dev/null)"
 if [[ -n "\$pattern" && " \$* " == *"\$pattern"* ]]; then echo "injected git failure: \$pattern" >&2; exit 128; fi
-exec "$(command -v git)" "\$@"
+# System config is host data outside this hermetic fixture.
+# Preserve the verifier's generated GIT_CONFIG_GLOBAL identity.
+export GIT_CONFIG_NOSYSTEM=1
+exec "$FIXTURE_GIT" "\$@"
 EOF
 chmod +x "$TMP/failgit/git"
 echo variants > "$TMP/mode"
@@ -1114,6 +1143,7 @@ cat > "$TMP/vendor/codex" <<'EOF'
 # Fake codex: answers --version; for `exec`, reports what it was given on
 # stderr (the run log) and then acts on MODE=<mode> from the prompt.
 [[ "${1:-}" != --version ]] || { echo 'codex-cli 0.0.0-fake'; exit 0; }
+[[ "$*" != 'features list' ]] || exit 0
 [[ "${1:-}" == exec ]] || exit 64
 args=("$@") out=""
 for ((i = 0; i < ${#args[@]}; i++)); do [[ "${args[i]}" != -o ]] || out="${args[i+1]}"; done
@@ -1370,21 +1400,56 @@ with contextlib.redirect_stderr(err):
     fw.start()
     with open(os.path.join(up, 'delay'), 'w') as f:
         f.write('1')
+    # Hold the actual relay only after the production semaphore admits it.
+    # Eight started threads or a fixed sleep do not prove eight occupied slots.
+    entered = threading.Barrier(9, timeout=10)
+    release = threading.Event()
+    relay = h.ForwardHandler.relay
+    workers = []
+    def held_relay(self, forwarder):
+        if forwarder is fw and self.command == 'POST':
+            entered.wait()
+            if not release.wait(10):
+                raise AssertionError('forwarder fixture release timed out')
+        return relay(self, forwarder)
+    h.ForwardHandler.relay = held_relay
     try:
         results = []
         workers = [threading.Thread(target=lambda: results.append(req(fw, 'POST', '/v1/responses', body=ok_body)[0]))
                    for _ in range(8)]
         for w in workers:
             w.start()
-        time.sleep(0.7)
+        entered.wait()
         assert req(fw, 'GET', '/v1/models')[0] == 503
+        release.set()
         for w in workers:
             w.join()
         assert results == [200] * 8, results
         assert req(fw, 'GET', '/v1/models')[0] == 200
     finally:
-        os.unlink(os.path.join(up, 'delay'))
-        fw.close()
+        failed = sys.exc_info()[0] is not None
+        cleanup_error = None
+        release.set()
+        entered.abort()
+        deadline = time.monotonic() + 10
+        for w in workers:
+            if w.ident is not None:
+                try:
+                    w.join(max(0, deadline - time.monotonic()))
+                except BaseException as exc:
+                    if cleanup_error is None:
+                        cleanup_error = exc
+        h.ForwardHandler.relay = relay
+        for cleanup in (lambda: os.unlink(os.path.join(up, 'delay')), fw.close):
+            try:
+                cleanup()
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+        if not failed:
+            if cleanup_error is not None:
+                raise cleanup_error
+            assert not any(w.is_alive() for w in workers), 'forwarder fixture workers did not settle'
     # An idle client is dropped after the handler timeout.
     h.ForwardHandler.timeout = 1
     fw = h.Forwarder(up_port, key, 'stub-model', 5)
@@ -1520,7 +1585,7 @@ grep -qxF "FAKE-CODEX-ENV HARNESS_COMMIT_MESSAGE_FILE=$run_tmp/commit-message" "
 [[ "$(sed -n 's/^FAKE-CODEX-HOME //p' "$log" | sort | tr '\n' ' ')" == 'AGENTS.md config.toml ' ]] || fail 'CODEX_HOME must hold exactly config.toml and AGENTS.md'
 grep -qx 'FAKE-CODEX-HOME-MODE 700' "$log" || fail 'CODEX_HOME must be 0700'
 sed -n 's/^FAKE-CODEX-CONFIG //p' "$log" > "$TMP/codex-config.toml"
-python3 - "$TMP/codex-config.toml" "$UP_PORT" <<'PY' || fail 'codex config.toml contract'
+"$FIXTURE_PYTHON" - "$TMP/codex-config.toml" "$UP_PORT" <<'PY' || fail 'codex config.toml contract'
 import re, sys, tomllib
 text = open(sys.argv[1]).read()
 c = tomllib.loads(text)
@@ -1568,7 +1633,8 @@ headless "${CODEX_ARGS[@]}" || fail 'codex failed run must exit 0'
 expect_status failed
 [[ "$(field summary)" == boom && "$(field exit_code)" == 3 && "$(git --git-dir="$REMOTE" rev-parse main)" == "$remote_before" ]] \
   || fail 'a failed codex run keeps its summary and exit code and delivers nothing'
-grep -qx state=ABANDONED "$STATE/sessions/$(field session_id)/journal" || fail 'a failed codex session must be kept'
+other="$(field session_id)"
+grep -qx state=ABANDONED "$STATE/sessions/$other/journal" || fail 'a failed codex session must be kept'
 codex_prompt cap
 headless "${CODEX_ARGS[@]}" --max-model-requests 2 || fail 'codex capped run must exit 0'
 expect_status budget
@@ -1585,7 +1651,10 @@ for f in .ssh/id_fixture .hermes/state.json buzz/token .codex/auth.json .claude/
     Library/Keychains/login.keychain-db .zsh_history; do
   printf 'secret-%s\n' fixture > "$FAKE_HOME/$f"
 done
-other="$(ls "$STATE/sessions" | grep -v "^$sid\$" | head -n 1)"
+# Use the failed codex session retained above, not an arbitrary record whose
+# worktree may be gone. Prove both targets are readable outside the sandbox.
+cat "$STATE/sessions/$other/journal" "$STATE/worktrees/$other/tracked.txt" > /dev/null \
+  || fail 'the other-session sandbox fixtures must exist and be readable'
 # A terminal the user has open: a PTY made outside the sandbox.
 python3 -c 'import os, pty, time
 m, s = pty.openpty()
@@ -1766,7 +1835,7 @@ for _ in $(seq 1 200); do grep -q '^FAKE-CODEX-SETSID' "$RESULT.log" 2>/dev/null
 grandchild="$(sed -n 's/^FAKE-CODEX-GRANDCHILD //p' "$RESULT.log")"
 setsid_child="$(sed -n 's/^FAKE-CODEX-SETSID //p' "$RESULT.log")"
 [[ -n "$grandchild" && -n "$setsid_child" ]] || fail 'codex hang run did not start'
-term_sid="$(sed -n 's/^harness-launcher: isolated session \([0-9A-F-]*\);.*/\1/p' "$RESULT.log")"
+term_sid="$(sed -n 's/^harness-launcher: isolated session \([0-9A-Fa-f-]*\);.*/\1/p' "$RESULT.log")"
 python3 - "$STATE/sessions/$term_sid/runtime.lock" <<'PY' || fail 'the session lease must be held while codex runs'
 import fcntl, sys
 with open(sys.argv[1], 'r+') as f:

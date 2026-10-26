@@ -47,8 +47,10 @@ case "$GLOBAL_PLUGIN_POLICY" in
   *) echo 'ERROR: HARNESS_CODEX_GLOBAL_PLUGIN_POLICY must be manage or preserve' >&2; exit 2 ;;
 esac
 
-CODEX_CONTEXT_MODE="${HARNESS_CODEX_CONTEXT:-272k}"
+CODEX_CONTEXT_MODE="${HARNESS_CODEX_CONTEXT:-auto}"
 case "$CODEX_CONTEXT_MODE" in
+  auto) CODEX_CONTEXT_WINDOW=""; CODEX_AUTO_COMPACT_TOKEN_LIMIT="" ;;
+  500k) CODEX_CONTEXT_WINDOW=500000; CODEX_AUTO_COMPACT_TOKEN_LIMIT=400000 ;;
   272k)
     CODEX_CONTEXT_WINDOW=272000
     CODEX_AUTO_COMPACT_TOKEN_LIMIT=217600
@@ -58,7 +60,7 @@ case "$CODEX_CONTEXT_MODE" in
     CODEX_AUTO_COMPACT_TOKEN_LIMIT=414000
     ;;
   *)
-    echo "ERROR: HARNESS_CODEX_CONTEXT must be '272k' or '1m' (got '$CODEX_CONTEXT_MODE')" >&2
+    echo "ERROR: HARNESS_CODEX_CONTEXT must be 'auto', '272k', '500k' or '1m' (got '$CODEX_CONTEXT_MODE')" >&2
     exit 2
     ;;
 esac
@@ -153,6 +155,53 @@ else
   observability_status=$?
   [[ "$observability_status" -eq 1 ]] || exit "$observability_status"
 fi
+
+# Company usage collection (harness_agent_usage_policy): a collecting profile
+# without local observability inherits the whitelisted [otel] table of the
+# user's ~/.codex/config.toml. The block (headers included) is never printed.
+# The flag comes from the canonical source root; an inherited
+# HARNESS_SOURCE_ROOT counts only when this harness is that session's root.
+COMPANY_OTEL_TOML=""
+if [[ "$HARNESS_OBSERVABILITY_ACTIVE" -eq 0 ]]; then
+  harness_agent_usage_policy "$HARNESS_DIR" "$(harness_agent_usage_session_hint "$HARNESS_DIR")" || true
+  if [[ "$HARNESS_AGENT_USAGE_ACTIVE" == 1 ]]; then
+    company_otel_python=""
+    if [[ "${HARNESS_AGENT_USAGE_TEST_MODE:-0}" != 1 || "${HARNESS_AGENT_USAGE_TEST_PYTHON_FAIL:-0}" != 1 ]]; then
+      company_otel_python="$(harness_python3_resolve 2>/dev/null)" || company_otel_python=""
+    fi
+    if [[ -z "$company_otel_python" ]]; then
+      echo "WARN: company OTel not inherited for Codex: python 3.11+ (tomllib) unavailable" >&2
+    else
+      company_otel_status=0
+      COMPANY_OTEL_TOML="$("$company_otel_python" -I "$SCRIPT_DIR/harness_agent_usage.py" codex-otel "$HOME/.codex/config.toml" 2>/dev/null)" || company_otel_status=$?
+      case "$company_otel_status" in
+        0) ;;
+        4) COMPANY_OTEL_TOML=""; echo "WARN: company OTel not inherited for Codex: ~/.codex/config.toml is missing or has no [otel] table" >&2 ;;
+        *) COMPANY_OTEL_TOML=""; echo "WARN: company OTel not inherited for Codex: ~/.codex/config.toml [otel] could not be parsed" >&2 ;;
+      esac
+    fi
+  fi
+fi
+if [[ -n "$COMPANY_OTEL_TOML" ]]; then
+  export HARNESS_AGENT_USAGE_COMPANY_OTEL=1
+else
+  unset HARNESS_AGENT_USAGE_COMPANY_OTEL
+fi
+
+# Fast-path guard: does the existing generated [otel] block still equal what
+# this launch would write? Contents are compared by hash, never printed.
+otel_block_sha() { awk '/^\[otel\]$/{f=1;print;next} /^\[/{f=0} f' "$1" 2>/dev/null | shasum -a 256 | awk '{print $1}'; }
+codex_otel_state_current() {
+  local config="$CODEX_HOME/config.toml" present=0
+  [[ -f "$config" ]] && grep -q '^\[otel\]$' "$config" && present=1
+  if [[ "$HARNESS_OBSERVABILITY_ACTIVE" -eq 1 ]]; then
+    [[ "$present" -eq 1 ]]
+  elif [[ -n "$COMPANY_OTEL_TOML" ]]; then
+    [[ "$present" -eq 1 && "$(otel_block_sha "$config")" == "$(printf '%s\n\n' "$COMPANY_OTEL_TOML" | shasum -a 256 | awk '{print $1}')" ]]
+  else
+    [[ "$present" -eq 0 ]]
+  fi
+}
 
 # Serialize the complete mutation of one generated Codex home. The lock file
 # itself requires the generated directory to exist, but no launcher-managed
@@ -270,6 +319,16 @@ repair_auth_link_no_clobber() {
   return 1
 }
 
+# Broker-bound isolated homes inherit only the canonical home's installed and
+# enabled plugins that both manifests list in runtime_audit.native_codex_plugins.
+# Runs after publication on warm and cold paths; it never fails preparation, so
+# a missing installation is still reported by the harness audit.
+inherit_native_codex_plugins() {
+  [[ -n "${HARNESS_SESSION_ID:-}" && -f "$SURFACE_MANIFEST" ]] || return 0
+  grep -q '"native_codex_plugins"' "$SURFACE_MANIFEST" 2>/dev/null || return 0
+  python3 "$SCRIPT_DIR/codex-plugin-inherit.py" ensure "$FINAL_CODEX_HOME" || true
+}
+
 if [[ -f "$SURFACE_MANIFEST" ]]; then
   [[ -x "$SURFACE_RESOLVER" && -x "$SURFACE_WARM_PROBE" ]] || {
     echo "ERROR: Codex surface manifest requires executable resolver and warm probe" >&2
@@ -293,10 +352,9 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
       "$CODEX_CONTEXT_WINDOW" \
       "$CODEX_AUTO_COMPACT_TOKEN_LIMIT" \
       "$HARNESS_DIR" "$SSOT_HOOKS_SOURCE" 2>/dev/null)"; then
-    existing_observability=0
-    [[ -f "$CODEX_HOME/config.toml" ]] && grep -q '^\[otel\]$' "$CODEX_HOME/config.toml" && existing_observability=1
-    if [[ "$existing_observability" -eq "$HARNESS_OBSERVABILITY_ACTIVE" ]]; then
+    if codex_otel_state_current; then
       repair_auth_link_no_clobber
+      inherit_native_codex_plugins
       exit 0
     fi
   else
@@ -430,6 +488,25 @@ if [[ -n "$RELEASE_ROOT" ]]; then
 elif [[ -f "$compiler" && -f "$HARNESS_DIR/.claude/source/runtime-contract.yaml" ]]; then
   compiler_root="$HARNESS_DIR"
   if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
+    # Capability discovery does not validate source; an advertised renderer's
+    # actual validation failure must never retry through the legacy facade.
+    if ! compiler_help="$(python3 "$compiler" --help)"; then
+      echo "ERROR: harness compiler capability query failed" >&2
+      exit 23
+    fi
+    if [[ "$compiler_help" == *"--broker-render-codex-project"* ]]; then
+      compiler_output="$(mktemp -d "$CODEX_PREPARE_STAGE/.compiler-output.XXXXXX")"
+      if ! python3 "$compiler" --broker-render-codex-project \
+          --input-root "$HARNESS_DIR" --output-root "$compiler_output" >/dev/null; then
+        echo "ERROR: harness compiler failed while preparing Codex candidate" >&2
+        exit 23
+      fi
+      mv -f "$compiler_output/AGENTS.md" "$agents_md"
+      rmdir "$compiler_output"
+      compiled_agents=1
+    fi
+  fi
+  if [[ "$SURFACE_ENABLED" -eq 1 && "$compiled_agents" -eq 0 ]]; then
     compiler_root="$CODEX_PREPARE_STAGE/.compiler-root"
     python3 - "$HARNESS_DIR" "$compiler_root" "$CODEX_HOME" <<'PY'
 import os
@@ -446,7 +523,9 @@ for entry in source.iterdir():
 (facade / ".harness" / "codex").symlink_to(output, target_is_directory=True)
 PY
   fi
-  if python3 "$compiler" --write-codex-project "$compiler_root" >/dev/null 2>&1; then
+  if [[ "$compiled_agents" -eq 1 ]]; then
+    : # Separated render already produced the candidate AGENTS.md.
+  elif python3 "$compiler" --write-codex-project "$compiler_root" >/dev/null 2>&1; then
     compiled_agents=1
   elif python3 "$compiler" --write-codex "$compiler_root" >/dev/null; then
     compiled_agents=1
@@ -957,15 +1036,13 @@ cat > "$tmp_config" <<TOML
 
 model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
-# Context is selected by the launcher. The 272K default compacts at 80% of the
-# nominal window (217600), below Codex's 95% effective ceiling (258400) with
-# room for the compaction turn. The explicit 1M option is clamped by Codex to
-# the active model/account ceiling and keeps the validated 414000 compact line.
-# Every newly reachable model must keep the selected compact limit below its
-# effective context ceiling.
-model_context_window = $CODEX_CONTEXT_WINDOW
-model_auto_compact_token_limit = $CODEX_AUTO_COMPACT_TOKEN_LIMIT
 TOML
+
+if [[ "$CODEX_CONTEXT_MODE" != auto ]]; then
+  printf 'model_context_window = %s\nmodel_auto_compact_token_limit = %s\n' \
+    "$CODEX_CONTEXT_WINDOW" "$CODEX_AUTO_COMPACT_TOKEN_LIMIT" >> "$tmp_config"
+fi
+
 
 # Validate explicit private Slack app opt-ins before publishing the config.
 slack_policy_toml="$(python3 "$SCRIPT_DIR/slack-approval-policy.py" toml)" || exit $?
@@ -984,6 +1061,8 @@ trace_exporter = { otlp-http = { endpoint = "$HARNESS_OTLP_HTTP_ENDPOINT/v1/trac
 metrics_exporter = { otlp-http = { endpoint = "$HARNESS_OTLP_HTTP_ENDPOINT/v1/metrics", protocol = "binary", headers = {} } }
 
 TOML
+elif [[ -n "$COMPANY_OTEL_TOML" ]]; then
+  printf '%s\n\n' "$COMPANY_OTEL_TOML" >> "$tmp_config"
 fi
 
 codex_apps_allowlist="${HARNESS_CODEX_APPS_ALLOWLIST:-}"
@@ -1837,16 +1916,21 @@ STRICT_PRETOOL_SCRIPTS = {
     "pre-bash-pr-gate.sh",
 }
 STRICT_PRETOOL_MATCHER = "^(Bash|code_mode_exec|exec)$"
+# The peer-checkout guard also covers Edit/Write/apply_patch, so it keeps its
+# ordinary direct entry; only Codex code mode (exec|code_mode_exec) needs the
+# composite adapter to see each resolved command.
+PEER_GUARD_SCRIPT = "pre-tool-peer-checkout-guard.sh"
+PEER_GUARD_CODE_MODE_MATCHER = "^(code_mode_exec|exec)$"
 adapter_available = os.path.isfile(adapter)
 pretool_adapter_available = os.path.isfile(pretool_adapter)
 
-def cmd(script, event=None, timeout=None):
+def cmd(script, event=None, timeout=None, strict=False):
     path = os.path.join(hooks_dir, script)
     if event and event in ADAPTED_EVENTS and adapter_available:
         command = " ".join(
             ("bash", shlex.quote(adapter), shlex.quote(event), shlex.quote(path))
         )
-    elif event == "PreToolUse" and script in STRICT_PRETOOL_SCRIPTS:
+    elif event == "PreToolUse" and (strict or script in STRICT_PRETOOL_SCRIPTS):
         if not pretool_adapter_available:
             raise RuntimeError(
                 f"strict PreToolUse hook requires codex-pretool-adapter.py: {script}"
@@ -1936,6 +2020,12 @@ def settings_driven_config(exclusions):
                     })
                 else:
                     out_hooks.append(normalized)
+                    if event == "PreToolUse" and script == PEER_GUARD_SCRIPT:
+                        out_entries.append({
+                            "matcher": PEER_GUARD_CODE_MODE_MATCHER,
+                            "hooks": [cmd(script, event=event,
+                                          timeout=hook.get("timeout"), strict=True)],
+                        })
             if not out_hooks:
                 continue
             out_entry = {"hooks": out_hooks}
@@ -2710,3 +2800,5 @@ PY
   fi
   repair_auth_link_no_clobber
 fi
+
+inherit_native_codex_plugins

@@ -44,15 +44,18 @@ e="$(harness_json_escape 'a\b"c')"
 
 # harness_launch_record_export_codex
 export HARNESS_LAUNCH_PERMISSION=bypassPermissions HARNESS_LAUNCH_APPROVAL=never HARNESS_LAUNCH_SANDBOX=read-only HARNESS_LAUNCH_NETWORK=enabled
+HARNESS_CODEX_CONTEXT=500k
 harness_launch_record_export_codex /r "" "" 1 sol
 [ "${HARNESS_LAUNCH_BYPASS-}" = 1 ] && [ "${HARNESS_LAUNCH_PROFILE-}" = sol ] && [ "$HARNESS_LAUNCH_SOURCE_ROOT" = /r ] \
-  && [ "$HARNESS_LAUNCH_ISOLATED" = 0 ] || fail 'codex export values'
+  && [ "$HARNESS_LAUNCH_ISOLATED" = 0 ] && [ "$HARNESS_LAUNCH_CONTEXT" = 500k ] || fail 'codex export values'
 [ -z "${HARNESS_LAUNCH_PERMISSION+x}${HARNESS_LAUNCH_APPROVAL+x}${HARNESS_LAUNCH_SANDBOX+x}${HARNESS_LAUNCH_NETWORK+x}" ] || fail 'inherited grant not dropped'
-[ "$(/usr/bin/env | grep -c '^HARNESS_LAUNCH_')" = 4 ] || fail 'codex export must reach child processes'
+[ "$(/usr/bin/env | grep -c '^HARNESS_LAUNCH_')" = 5 ] || fail 'codex export must reach child processes'
 HARNESS_SESSION_ROOT=/s harness_launch_record_export_codex /r on-request workspace-write "" ""
 [ "$HARNESS_LAUNCH_ISOLATED" = 1 ] && [ "$HARNESS_LAUNCH_APPROVAL" = on-request ] && [ -z "${HARNESS_LAUNCH_BYPASS+x}" ] || fail 'isolated export'
 harness_launch_record_export_codex /r never workspace-write "" base disabled
-[ "$HARNESS_LAUNCH_NETWORK" = disabled ] || fail 'explicit network must reach the hook'
+[ "$HARNESS_LAUNCH_NETWORK" = disabled ] && [ "$HARNESS_LAUNCH_CONTEXT" = 500k ] && [ "$HARNESS_LAUNCH_APPROVAL" = never ] && [ "$HARNESS_LAUNCH_SANDBOX" = workspace-write ] && [ "$HARNESS_LAUNCH_PROFILE" = base ] || fail 'explicit network, context and grants must reach the hook'
+HARNESS_CODEX_CONTEXT=auto harness_launch_record_export_codex /r "" "" "" base
+[ "$HARNESS_LAUNCH_CONTEXT" = auto ] || fail 'auto context must reach the hook'
 
 # task / parent for auto-link (Codex through the environment, Claude through hook arguments)
 export HARNESS_LAUNCH_TASK_ID=stale HARNESS_LAUNCH_PARENT_NATIVE=stale
@@ -85,8 +88,10 @@ s="$(HARNESS_SESSION_ROOT=/s HARNESS_SESSION_ID=0D5D1F3E-0000-4000-8000-00000000
 case "$(hook_of "$s")" in *"--isolated 1"*"--harness-session-id 0D5D1F3E-0000-4000-8000-0000000000C2") ;; *) fail "isolated hook: $(hook_of "$s")" ;; esac
 s="$(HARNESS_SESSION_ROOT=/s HARNESS_SESSION_ID='x;id' harness_claude_launch_settings "$ROOT/bin" /r false plan "")"
 case "$(hook_of "$s")" in *--harness-session-id*) fail 'a non-UUID session id must not be passed' ;; esac
-[ -z "$(harness_claude_launch_settings "$ROOT/bin" "$(printf '/r\033x')" false plan "")" ] || fail 'a control character must drop the hook'
-[ -z "$(harness_claude_launch_settings "$TMP/no-bin" /r false plan "")" ] || fail 'no hook script must print nothing'
+# A root without the usage opt-in also gets the telemetry-off env block, so the
+# check is that the hook itself is dropped, not that nothing is printed.
+case "$(harness_claude_launch_settings "$ROOT/bin" "$(printf '/r\033x')" false plan "")" in *hooks*|*SessionStart*) fail 'a control character must drop the hook' ;; esac
+case "$(harness_claude_launch_settings "$TMP/no-bin" /r false plan "")" in *hooks*|*SessionStart*) fail 'no hook script must print no hook' ;; esac
 s="$(harness_claude_launch_settings "$ROOT/bin" /r false plan "" /r "$T" "$P")"
 case "$(hook_of "$s")" in *" --task-id $T"*" --parent-native $P"*) ;; *) fail "task/parent not passed to the hook: $(hook_of "$s")" ;; esac
 s="$(harness_claude_launch_settings "$ROOT/bin" /r false plan "" /r "x y" "../x")"

@@ -4,6 +4,11 @@ The README covers installation and the first registered project. These documents
 
 ## User guides
 
+- [Durable session integration](session-integration-queue.md) — explicit queue cutover, bounded execution, crash recovery, and service lifecycle.
+
+- [Session disk diagnostics](session-report.md) — explicit read-only retention reasons, runtime metadata, and bounded size observations.
+
+- [Trusted preservation](trusted-preservation.md) — one-shot, native-confirmed Git preservation.
 - [Architecture and trust boundaries](architecture.md) — registration, command routing, generated runtime homes, and security boundaries.
 - [Codex integration](codex-integration.md) — profile overlays, MCP translation, skills, plugins, hooks, and compatibility behavior.
 - [Session titles in cmux](session-titles.md) — exact-session Claude/Codex title transport, native rename priority, and legacy hook coordination.
@@ -30,6 +35,7 @@ The README covers installation and the first registered project. These documents
 | `bin/harness-auto` | Current-workspace profile resolver for external agent launchers |
 | `bin/harness-exec` | Non-interactive executable entrypoint and canonical cwd resolver for external orchestrators |
 | `bin/harness-profile` | Durable profile registry and executable prefix installer |
+| `bin/harness_integration_queue.py` | Durable broker jobs, runtime/input custody, execution ownership and optional service |
 | `bin/launcher.sh` | Interactive runtime/session/mode/safety picker |
 | `bin/codex-home-prepare.sh` | Generated per-project Codex home |
 | `bin/kiro-home-prepare.sh` | Generated per-project Kiro home |

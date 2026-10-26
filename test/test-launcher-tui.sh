@@ -52,6 +52,7 @@ write_stub() {
   echo "CMUX_WORKSPACE_ID:\${CMUX_WORKSPACE_ID:-<UNSET>}"
   echo "CMUX_TAB_ID:\${CMUX_TAB_ID:-<UNSET>}"
   echo "CMUX_SURFACE_ID:\${CMUX_SURFACE_ID:-<UNSET>}"
+  echo "OMP_HANDOFF_LEAK:\${HARNESS_LAUNCHER_OMP_HANDOFF:-<UNSET>}"
 } >> "\$TEST_STUB_FILE"
 printf '%s\n' "\$@" > "\$TEST_STUB_FILE.argv"
 exit 0
@@ -542,14 +543,14 @@ TS=800	SUMMARY=Codex newer work duplicate	RUNTIME=codex	SESSION=new	CODEX_PROFIL
 EOF
 EXPECTED_HISTORY="$TEST_TEMP/23b.expected"
 cat > "$EXPECTED_HISTORY" <<'EOF'
-TS=900	SUMMARY=Claude · direct · new · sonnet · high	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=base	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=272k	KIRO_TRUST=0
-TS=850	SUMMARY=Claude · direct · new · haiku · low · acceptEdits · chrome · happy	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=fast	C_MODEL=	C_EFFORT=	PERM=acceptEdits	MCP_SURFACE=full	CHROME=1	HAPPY=1	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=272k	KIRO_TRUST=0
+TS=900	SUMMARY=Claude · direct · new · sonnet · high	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=base	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=auto	KIRO_TRUST=0
+TS=850	SUMMARY=Claude · direct · new · haiku · low · acceptEdits · chrome · happy	RUNTIME=claude	PROVIDER=direct	SESSION=new	MODE=fast	C_MODEL=	C_EFFORT=	PERM=acceptEdits	MCP_SURFACE=full	CHROME=1	HAPPY=1	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=auto	KIRO_TRUST=0
 TS=800	SUMMARY=Codex · new · base · 272K	RUNTIME=codex	PROVIDER=direct	SESSION=new	MODE=	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=272k	KIRO_TRUST=0
-TS=750	SUMMARY=Claude · direct · continue · opus[1m] · xhigh · bypassPermissions	RUNTIME=claude	PROVIDER=direct	SESSION=continue	MODE=rich	C_MODEL=	C_EFFORT=	PERM=bypassPermissions	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=272k	KIRO_TRUST=0
+TS=750	SUMMARY=Claude · direct · continue · opus[1m] · xhigh · bypassPermissions	RUNTIME=claude	PROVIDER=direct	SESSION=continue	MODE=rich	C_MODEL=	C_EFFORT=	PERM=bypassPermissions	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=auto	KIRO_TRUST=0
 TS=700	SUMMARY=Codex · resume · rich · 272K · never	RUNTIME=codex	PROVIDER=direct	SESSION=resume	MODE=	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=rich	CODEX_SURFACE=full	CODEX_SAFETY=never	CODEX_CONTEXT=272k	KIRO_TRUST=0
 TS=600	SUMMARY=Codex · fork · fast · 272K · full-auto	RUNTIME=codex	PROVIDER=direct	SESSION=fork	MODE=	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=fast	CODEX_SURFACE=full	CODEX_SAFETY=full-auto	CODEX_CONTEXT=272k	KIRO_TRUST=0
-TS=500	SUMMARY=KIRO_LIGHT_SENTINEL	RUNTIME=kiro	PROVIDER=direct	SESSION=resume	MODE=base	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=light	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=272k	KIRO_TRUST=1
-TS=400	SUMMARY=Kiro · new · claude-haiku-4.5 · low	RUNTIME=kiro	PROVIDER=direct	SESSION=new	MODE=fast	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=272k	KIRO_TRUST=0
+TS=500	SUMMARY=KIRO_LIGHT_SENTINEL	RUNTIME=kiro	PROVIDER=direct	SESSION=resume	MODE=base	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=light	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=auto	KIRO_TRUST=1
+TS=400	SUMMARY=Kiro · new · claude-haiku-4.5 · low	RUNTIME=kiro	PROVIDER=direct	SESSION=new	MODE=fast	C_MODEL=	C_EFFORT=	PERM=default	MCP_SURFACE=full	CHROME=0	HAPPY=0	CODEX_PROFILE=base	CODEX_SURFACE=full	CODEX_SAFETY=default	CODEX_CONTEXT=auto	KIRO_TRUST=0
 EOF
 run_seeded_tui_status $'q\n' "$OUT" "$STUB" HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro"
 [[ "$RUN_TUI_RC" -eq 0 ]] || fail "mixed history migration should reach the launchpad (rc=$RUN_TUI_RC)" "$OUT"
@@ -573,6 +574,18 @@ SECOND_HISTORY_SHA="$(shasum -a 256 "$HISTORY" | awk '{print $1}')"
   || fail 'second migration must be byte-identical' "$HISTORY"
 assert_no_migration_temps
 echo 'PASS: mixed history canonicalizes, dedupes newest-first, caps at 8, and is idempotent'
+
+# Canonicalization retains every explicitly recorded Codex context.
+: > "$HISTORY"
+for context in auto 272k 500k 1m; do
+  printf 'TS=1\tSUMMARY=old\tRUNTIME=codex\tSESSION=new\tCODEX_PROFILE=base\tCODEX_CONTEXT=%s\n' "$context" >> "$HISTORY"
+done
+run_seeded_tui_status $'q\n' "$TEST_TEMP/23b-context.out" "$TEST_TEMP/23b-context.stub" HARNESS_KIRO_BIN="$TEST_TEMP/kirodir/my-kiro"
+[[ "$RUN_TUI_RC" -eq 0 ]] || fail 'explicit context canonicalization failed' "$TEST_TEMP/23b-context.out"
+for context in auto 272k 500k 1m; do
+  grep -q "CODEX_CONTEXT=$context" "$HISTORY" || fail "canonicalization lost $context" "$HISTORY"
+done
+echo 'PASS: canonicalization preserves explicit Codex contexts'
 
 # --- 23bb. Codex-gateway migration uses configured suffix without env leaks --
 printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' \
@@ -833,3 +846,41 @@ assert "Stop" in h and "UserPromptSubmit" in h, "TUI session opt-in lost"
 assert sys.argv[2] in h["SessionStart"][0]["hooks"][0]["command"], "TUI source binding changed"
 PYCODE
 echo 'PASS: TUI session opt-in preserves canonical launch binding'
+
+# --- OMP composer: offered only with the runner's handoff; modes from source.
+reset_plan
+mkdir -p "$TEST_HARNESS/.claude/source"
+cat > "$TEST_HARNESS/.claude/source/omp-model-modes.json" <<'JSON'
+{"schema":1,"default":"hybrid-opus-lead","modeled_selectors":{"G":"openai-codex/gpt-6.1-sol","O":"anthropic/claude-opus-5-5"},"modes":{"gpt-only":{"leader":"G","worker":"G","helper":"G","reviewer":"G"},"hybrid-opus-lead":{"leader":"O","worker":"G","helper":"G","reviewer":"O"}}}
+JSON
+HANDOFF="$TEST_TEMP/omp-handoff"
+OUT="$TEST_TEMP/omp.out"; STUB="$TEST_TEMP/omp.stub"
+# The canonical default wins even when gpt-only appears first in the JSON.
+run_tui $'2\n1\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+[ "$(cat "$HANDOFF")" = $'omp\n--model-mode\nhybrid-opus-lead' ] || fail 'fresh OMP default must hand off the recommended mode' "$HANDOFF"
+[ ! -e "$STUB" ] || fail 'fresh OMP default must not execute another runtime' "$STUB"
+rm -f "$HANDOFF"; reset_plan
+# An explicit Codex-only choice remains selectable and replayable.
+run_tui $'2\n2\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+[ "$(cat "$HANDOFF")" = $'omp\n--model-mode\ngpt-only' ] || fail 'OMP mode handoff argv' "$HANDOFF"
+[ ! -e "$STUB" ] || fail 'OMP choice must not execute another runtime' "$STUB"
+rm -f "$HANDOFF"
+run_tui $'3\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+[ "$(cat "$HANDOFF")" = $'omp\n--model-mode\ngpt-only' ] || fail 'OMP history replay handoff' "$OUT"
+rm -f "$HANDOFF"
+run_tui $'1\n2\n1\n' "$OUT" "$STUB"
+! grep -Fq 'OMP' "$OUT" || fail 'OMP offered without the runner handoff' "$OUT"
+grep -q 'EXEC:claude ' "$STUB" || fail 'Claude must stay auto-selected without OMP' "$OUT"
+# Another runtime picked from the same menu never sees the handoff path.
+rm -f "$STUB"
+run_tui $'1\n1\n2\n1\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+grep -Fqx 'OMP_HANDOFF_LEAK:<UNSET>' "$STUB" || fail 'OMP handoff path leaked into Claude' "$STUB"
+[ ! -e "$HANDOFF" ] || fail 'Claude choice must not write the OMP handoff' "$HANDOFF"
+# An enrolled profile that fails selection is listed with its label, not hidden.
+run_seeded_tui_status $'2\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_UNAVAILABLE=OMP_PROJECTION_EXPIRED
+grep -Fq 'OMP — 사용 불가 (OMP_PROJECTION_EXPIRED)' "$OUT" || fail 'unavailable OMP must show its label' "$OUT"
+[ "$RUN_TUI_RC" -ne 75 ] && [ ! -e "$HANDOFF" ] || fail 'unavailable OMP must not hand off' "$OUT"
+rm -f "$TEST_HARNESS/.claude/source/omp-model-modes.json" "$STUB"; reset_plan
+run_tui $'2\n' "$OUT" "$STUB" HARNESS_LAUNCHER_OMP_HANDOFF="$HANDOFF"
+[ "$(cat "$HANDOFF")" = 'omp' ] || fail 'OMP without model modes hands off the default launch' "$OUT"
+echo 'PASS: TUI OMP composer, model modes and replay'

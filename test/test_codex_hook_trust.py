@@ -1,10 +1,15 @@
 """Native-compatible approved hook trust across fresh isolated homes."""
+import contextlib
 import hashlib
+import io
 import importlib.util
 import json
 import os
+import pty
+import re
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,6 +20,16 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_codex_surface as fixtures
+
+
+def operator_main(m, args, confirm=True):
+    """Run capture as the operator would: no session environment, terminal answer mocked."""
+    saved = {k: os.environ.pop(k) for k in m.SESSION_ENV[:3] if k in os.environ}
+    try:
+        with mock.patch.object(m, 'confirm_on_tty', return_value=confirm):
+            return m.main(args)
+    finally:
+        os.environ.update(saved)
 
 @unittest.skipUnless(Path("/usr/bin/lockf").is_file(), "requires macOS /usr/bin/lockf")
 class IsolatedTrustIntegrationTests(unittest.TestCase):
@@ -51,11 +66,16 @@ class IsolatedTrustIntegrationTests(unittest.TestCase):
         subprocess.run(['git','-C',str(source),'-c','core.hooksPath=/dev/null','commit','-qm','fixture'],env=env,check=True)
         sid='11111111-1111-4111-8111-111111111111'
         state=fixture.tmp.resolve()/'launcher-state'; target=state/'worktrees'/sid; record=state/'sessions'/sid
-        shutil.copytree(source,target,ignore=shutil.ignore_patterns('.harness'))
+        # Git owns concurrent object maintenance; copying a live .git can race
+        # transient maintenance.lock files. A real detached worktree has the
+        # same committed fixture bytes without copying mutable repository state.
+        target.parent.mkdir(parents=True)
+        subprocess.run(['git','-C',str(source),'worktree','add','--detach',str(target),'HEAD'],
+                       env=env,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         record.mkdir(parents=True)
         for name,value in {'source-root':str(source),'session-root':str(target),'base-sha':subprocess.check_output(['git','-C',str(target),'rev-parse','HEAD'],text=True).strip(),'root-inode':f'{target.stat().st_dev} {target.stat().st_ino}','journal':'state=OPEN'}.items():
             (record/name).write_text(value+'\n')
-        approvals=state/'hook-approvals';approvals.mkdir()
+        approvals=state/'hook-approvals';approvals.mkdir(mode=0o700)
         grant=approvals/(hashlib.sha256(str(source).encode()).hexdigest()+'.json')
         grant.write_text(json.dumps({'schema_version':1,'source':str(source),'algorithm':'codex-0.161-command-hooks','approval_receipt_sha256':'a'*64,'approved_snapshot':{'base_sha':(record/'base-sha').read_text().strip(),'audit_raw_hooks_sha256':hashlib.sha256(hook_file.read_bytes()).hexdigest()},'hooks':json.loads(hook_file.read_text()),'normalization':'literal-core-and-approved-callback-paths-v1','normalized_hooks_sha256':hashlib.sha256(json.dumps(json.loads(hook_file.read_text()),sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest(),'codex_binary_sha256':hashlib.sha256(fixture.codex_bin.read_bytes()).hexdigest(),'codex_version':'codex-cli 0.153.2','callbacks':{str(package/name):hashlib.sha256((package/name).read_bytes()).hexdigest() for name in ('codex-hook-adapter.sh','codex-pretool-adapter.py','codex-cmux-title-sync.py','harness-launch-record')},'scripts':{'core/hooks/session-start.sh':{'sha256':hashlib.sha256(script.read_bytes()).hexdigest(),'base_blob_sha256':hashlib.sha256(script.read_bytes()).hexdigest()}}}))
         grant.chmod(0o600)
@@ -116,6 +136,35 @@ class IsolatedTrustIntegrationTests(unittest.TestCase):
             with self.subTest(case=tweak.__name__):
                 config,key=self.build(tweak)
                 self.assertNotIn(key,config.get('hooks',{}).get('state',{}))
+
+    def test_root_identity_tolerates_device_renumbering_only(self):
+        def renumbered(source,target,record):
+            i=target.stat();(record/'root-inode').write_text(f'{i.st_dev+1} {i.st_ino}\n')
+        def other_inode(source,target,record):
+            i=target.stat();(record/'root-inode').write_text(f'{i.st_dev+1} {i.st_ino+1}\n')
+        config,key=self.build(renumbered)
+        self.assertIn(key,config.get('hooks',{}).get('state',{}),'renumbered device must keep approved hooks')
+        config,key=self.build(other_inode)
+        self.assertNotIn(key,config.get('hooks',{}).get('state',{}))
+
+    def test_root_identity_rule_unit(self):
+        spec=importlib.util.spec_from_file_location('hook_trust_identity',ROOT/'bin/codex-hook-trust.py')
+        m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+        with tempfile.TemporaryDirectory() as tmp:
+            wt=Path(tmp).resolve()/'worktrees';root=wt/'id';root.mkdir(parents=True)
+            i=root.stat()
+            self.assertTrue(m.root_identity_matches(f'{i.st_dev} {i.st_ino}',root))
+            self.assertTrue(m.root_identity_matches(f'{i.st_dev+1} {i.st_ino}',root))
+            self.assertFalse(m.root_identity_matches(f'{i.st_dev+1} {i.st_ino+1}',root))
+            self.assertFalse(m.root_identity_matches('bogus',root))
+            real=m.identity_stat
+            def other_device(path):
+                r=real(path)
+                return os.stat_result((r.st_mode,r.st_ino,r.st_dev+9,*tuple(r)[3:])) if Path(path)==root else r
+            with mock.patch.object(m,'identity_stat',other_device):
+                self.assertFalse(m.root_identity_matches(f'{i.st_dev+1} {i.st_ino}',root))
+            fresh=wt/'fresh';fresh.mkdir()
+            self.assertFalse(m.root_identity_matches(f'{i.st_dev+1} {i.st_ino}',fresh))
 
     def test_normalized_grant_digest_is_verified(self):
         def bad_digest(source,target,record):
@@ -202,6 +251,291 @@ class IsolatedTrustIntegrationTests(unittest.TestCase):
         handler={'type':'command','command':command,'timeout':5}
         self.assertEqual(module.fingerprint('Stop',None,handler),'sha256:e15f2c7d58c59e58ca47fd189969fe9041eaed2f185bb5e4e8d43b24c1f01427')
 
+@unittest.skipUnless(Path("/usr/bin/lockf").is_file(), "requires macOS /usr/bin/lockf")
+class CaptureApprovalTests(unittest.TestCase):
+    def test_native_binary_digest_is_checked_before_it_runs(self):
+        spec = importlib.util.spec_from_file_location('identity_order', ROOT / 'bin/codex-hook-trust.py')
+        m = importlib.util.module_from_spec(spec)
+        with mock.patch.object(sys, 'dont_write_bytecode', True):
+            spec.loader.exec_module(m)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); marker = root / 'ran'; binary = root / 'codex'
+            binary.write_text(f'#!/bin/sh\ntouch {marker}\necho codex-cli 1\n'); binary.chmod(0o755)
+            with mock.patch.dict(os.environ, {'HARNESS_CODEX_BIN': str(binary)}):
+                with self.assertRaisesRegex(ValueError, 'native executable changed'):
+                    m.native_identity('0' * 64)
+                self.assertFalse(marker.exists(), 'unapproved native binary was executed')
+                digest, version = m.native_identity(hashlib.sha256(binary.read_bytes()).hexdigest())
+            self.assertEqual(version, 'codex-cli 1')
+
+    """Operator capture records only an approval the owner already gave natively."""
+
+    def test_capture_combined_callback_and_reject_later_byte_drift(self):
+        def scenario(fixture, source, target, record):
+            package = fixture.tmp.resolve() / 'launcher-bin'
+            spec = importlib.util.spec_from_file_location('combined_capture', package / 'codex-hook-trust.py')
+            module = importlib.util.module_from_spec(spec)
+            with mock.patch.object(sys, 'dont_write_bytecode', True):
+                spec.loader.exec_module(module)
+            home = target / '.harness/codex'
+            source_home = source / '.harness/codex'
+            profile = home / 'base.config.toml'
+            grant_path = record.parents[1] / 'hook-approvals' / (hashlib.sha256(str(source).encode()).hexdigest() + '.json')
+            paths = [home / 'hooks.json', source_home / 'hooks.json', source_home / 'config.toml', profile, grant_path]
+            before = {path: path.read_bytes() if path.exists() else None for path in paths}
+            hook = fixture.home / '.local/share/harness-service/bin/harness-session-hook'
+            hook.parent.mkdir(parents=True, exist_ok=True)
+            hook.write_text('#!/bin/sh\nexit 0\n')
+            handler = {'type': 'command', 'command': 'python3 ' + str(package / 'harness-launch-record') + ' codex --callback', 'timeout': 10}
+            hooks = {'hooks': {'SessionStart': [{'hooks': [handler]}]}}
+            digest = module.fingerprint('SessionStart', None, handler)
+            try:
+                for directory in (home, source_home):
+                    (directory / 'hooks.json').write_text(json.dumps(hooks))
+                    config = profile if directory == home else directory / 'config.toml'
+                    base = module.split_profile_state(config.read_text() if config.exists() else '')[0]
+                    key = str(directory / 'hooks.json') + ':session_start:0:0'
+                    config.write_text(base + '\n[hooks.state.' + json.dumps(key) + ']\ntrusted_hash = ' + json.dumps(digest) + '\nenabled = true\n')
+                env = {'HOME': str(fixture.home), 'HARNESS_SESSION_STATE_HOME': str(record.parents[1]),
+                       'HARNESS_SESSION_ID': record.name, 'HARNESS_SOURCE_ROOT': str(source),
+                       'HARNESS_SESSION_ROOT': str(target), 'HARNESS_CODEX_BIN': str(fixture.codex_bin)}
+                with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(operator_main(module, ['capture', '--session-id', record.name]), 0)
+                    key = str(home / 'hooks.json') + ':session_start:0:0'
+                    inherited = tomllib.loads(module.inherit('', home / 'hooks.json', home))
+                    self.assertIn(key, inherited.get('hooks', {}).get('state', {}))
+                    hook.write_text('#!/bin/sh\nexit 42\n')
+                    refused = tomllib.loads(module.inherit('', home / 'hooks.json', home))
+                    self.assertNotIn(key, refused.get('hooks', {}).get('state', {}))
+            finally:
+                for path, contents in before.items():
+                    if contents is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_bytes(contents)
+        IsolatedTrustIntegrationTests.build(self, post_prepare=scenario)
+
+    def test_capture_records_only_complete_native_approval(self):
+        self.ran = False
+        IsolatedTrustIntegrationTests.build(self, post_prepare=self.scenarios)
+        self.assertTrue(self.ran)
+
+    def scenarios(self, fixture, source, target, record):
+        self.ran = True
+        package = fixture.tmp.resolve() / 'launcher-bin'
+        spec = importlib.util.spec_from_file_location('hook_capture', package / 'codex-hook-trust.py')
+        m = importlib.util.module_from_spec(spec)
+        with mock.patch.object(sys, 'dont_write_bytecode', True):  # keep the package tree unchanged
+            spec.loader.exec_module(m)
+        state = record.parents[1]; home = target / '.harness/codex'; published = home
+        hooks_path = home / 'hooks.json'; hooks = json.loads(hooks_path.read_text())
+        approvals = state / 'hook-approvals'
+        grant_path = approvals / (hashlib.sha256(str(source).encode()).hexdigest() + '.json')
+        original = grant_path.read_bytes()
+        shutil.rmtree(approvals)
+        profile = home / 'base.config.toml'
+        existed = profile.exists(); profile_before = profile.read_bytes() if existed else b''
+        entries = []
+        for event, groups in hooks['hooks'].items():
+            for gi, group in enumerate(groups):
+                for hi, handler in enumerate(group['hooks']):
+                    entries.append((f'{hooks_path}:{m.EVENTS[event]}:{gi}:{hi}', m.fingerprint(event, group.get('matcher'), handler)))
+        self.assertGreater(len(entries), 1, 'fixture needs several hooks to test partial approval')
+
+        def write_profile(skip=None, hash_for=None, enabled=None, raw=None):
+            text = profile_before.decode()
+            for key, digest in entries:
+                if key == skip:
+                    continue
+                text += '\n[hooks.state.' + json.dumps(key) + ']\ntrusted_hash = ' + json.dumps(hash_for.get(key, digest) if hash_for else digest) + '\n'
+                if enabled is not None and key == entries[0][0]:
+                    text += 'enabled = ' + enabled + '\n'
+            profile.write_text(raw if raw is not None else text)
+        env = {'HARNESS_SESSION_ID': record.name, 'HARNESS_SESSION_STATE_HOME': str(state),
+               'HARNESS_SESSION_ROOT': str(target), 'HARNESS_SOURCE_ROOT': str(source),
+               'HARNESS_CODEX_BIN': str(fixture.codex_bin)}
+        patch = mock.patch.dict(os.environ, env); patch.start()
+
+        def refused(label, why, **kw):
+            with self.subTest(refusal=label):
+                write_profile(**kw)
+                with self.assertRaisesRegex(ValueError, why):
+                    m.capture(published)
+                self.assertFalse(approvals.exists(), 'refusal must not create a record')
+
+        # Refusals: partial, untrusted, hash mismatch, disabled, unreadable, foreign source.
+        refused('missing-decision', 'no trusted enabled native decision', skip=entries[-1][0])
+        refused('hash-mismatch', 'no trusted enabled native decision', hash_for={entries[0][0]: 'sha256:' + '0' * 64})
+        refused('disabled', 'no trusted enabled native decision', enabled='false')
+        refused('malformed', '', raw='[hooks.state.\n')
+        profile.write_bytes(b'\xff\xfe')
+        with self.assertRaises(ValueError):
+            m.capture(published)
+        profile.unlink()
+        with self.assertRaisesRegex(ValueError, 'unreadable or unsupported evidence'):
+            m.capture(published)
+        write_profile()
+        with self.assertRaisesRegex(ValueError, 'unknown profile'):
+            m.capture(published, profile='../base')
+        journal = (record / 'journal').read_text()
+        (record / 'source-root').write_text(str(target) + '\n')
+        with self.assertRaisesRegex(ValueError, 'invalid source root'):
+            m.capture(published)
+        (record / 'source-root').write_text(str(source) + '\n')
+        (record / 'journal').write_text('state=OPEN\nstate=DELIVERED\n')
+        with self.assertRaisesRegex(ValueError, 'not open'):
+            m.capture(published)
+        (record / 'journal').write_text(journal)
+        real_git = m.git_output  # the session script no longer matches its snapshot blob
+        with mock.patch.object(m, 'git_output', lambda t, *a: b'other' if a[0] == 'show' else real_git(t, *a)):
+            with self.assertRaisesRegex(ValueError, 'differs from the session snapshot'):
+                m.capture(published)
+        self.assertFalse(approvals.exists())
+
+        # Same hash under another path (source home or another session) is not this session's decision.
+        for other in (str(source / '.harness/codex/hooks.json'), str(state / 'worktrees/22222222-2222-4222-8222-222222222222/.harness/codex/hooks.json')):
+            profile.write_text(profile_before.decode() + ''.join(
+                '\n[hooks.state.' + json.dumps(key.replace(str(hooks_path), other)) + ']\ntrusted_hash = ' + json.dumps(digest) + '\n'
+                for key, digest in entries))
+            with self.assertRaisesRegex(ValueError, 'no trusted enabled native decision'):
+                m.capture(published)
+        for value in ('"true"', '1'):
+            refused('non-bool-enabled', 'no trusted enabled native decision', enabled=value)
+        write_profile()
+        # Links never count as evidence: profile, hooks.json.
+        moved = profile.with_name('moved.toml'); profile.rename(moved); profile.symlink_to(moved)
+        with self.assertRaisesRegex(ValueError, 'unreadable or unsupported evidence'):
+            m.capture(published)
+        profile.unlink(); moved.rename(profile)
+        moved = hooks_path.with_name('moved.json'); hooks_path.rename(moved); hooks_path.symlink_to(moved)
+        with self.assertRaisesRegex(ValueError, 'unreadable or unsupported evidence'):
+            m.capture(published)
+        hooks_path.unlink(); moved.rename(hooks_path)
+        inode = (record / 'root-inode').read_text()
+        (record / 'root-inode').write_text('0 0\n')
+        with self.assertRaisesRegex(ValueError, 'session root replaced'):
+            m.capture(published)
+        (record / 'root-inode').write_text(inode)
+        # Sandbox or inherited session environment must not select the session implicitly.
+        with mock.patch.dict(os.environ, {'CODEX_SANDBOX': 'seatbelt'}), mock.patch('sys.stderr') as err:
+            self.assertEqual(m.main(['capture', '--dry-run']), 1)
+        self.assertIn('operator', ''.join(c.args[0] for c in err.write.call_args_list))
+        with mock.patch('sys.stderr') as err:  # HARNESS_SESSION_* is inherited here: fail closed
+            self.assertEqual(m.main(['capture', '--session-id', record.name, '--dry-run']), 1)
+        self.assertIn('operator', ''.join(c.args[0] for c in err.write.call_args_list))
+        with mock.patch('sys.stderr') as err:
+            self.assertEqual(operator_main(m, ['capture', '--dry-run']), 1)
+        self.assertIn('--session-id', ''.join(c.args[0] for c in err.write.call_args_list))
+        # Without the operator's terminal, or without the operator's answer, nothing is recorded.
+        with mock.patch.object(m.os, 'open', side_effect=OSError('no tty')):
+            with self.assertRaisesRegex(ValueError, 'interactive terminal'):
+                m.confirm_on_tty({}, {})
+        shown = {'hooks': {'x': 1}, 'scripts': {}, 'callbacks': {}}
+        for answer, expected in ((b'record\n', True), (b'yes\n', False), (b'', False)):
+            master, slave = pty.openpty()
+            try:
+                os.write(master, answer if answer else b'\x04')
+                with mock.patch.object(m.os, 'open', return_value=os.dup(slave)):
+                    self.assertIs(m.confirm_on_tty(shown, {'record': 'r'}), expected)
+                self.assertIn(b"Type 'record'", os.read(master, 65536))
+            finally:
+                os.close(slave); os.close(master)
+        with mock.patch('sys.stderr') as err:
+            self.assertEqual(operator_main(m, ['capture', '--session-id', record.name], confirm=False), 1)
+        self.assertIn('did not confirm', ''.join(c.args[0] for c in err.write.call_args_list))
+        self.assertFalse(approvals.exists())
+        # Unsafe record directory: link, or not private.
+        other_dir = state / 'elsewhere'; other_dir.mkdir()
+        approvals.symlink_to(other_dir)
+        with self.assertRaises((ValueError, OSError)):
+            m.capture(published)
+        approvals.unlink(); other_dir.rmdir()
+        approvals.mkdir(0o755); approvals.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, 'private directory'):
+            m.capture(published)
+        approvals.rmdir()
+        self.assertFalse(approvals.exists())
+
+        with mock.patch.object(m, 'inherit', lambda config, hooks, published, grant=None: config):
+            with self.assertRaisesRegex(ValueError, 'would inherit no hook'):
+                m.capture(published)
+        # Dry run reports without writing and exposes no hook command text.
+        summary = m.capture(published, dry_run=True)
+        self.assertFalse(approvals.exists(), 'dry-run wrote a record')
+        self.assertEqual(summary['hooks'], len(entries))
+        self.assertNotIn(str(target), json.dumps(summary))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = operator_main(m, ['capture', '--session-id', record.name, '--dry-run', '--profile', 'base'])
+        self.assertEqual(code, 0)
+        for groups in hooks['hooks'].values():
+            for group in groups:
+                for handler in group['hooks']:
+                    self.assertNotIn(handler['command'], out.getvalue())
+                    self.assertNotIn(str(target), out.getvalue())
+        self.assertFalse(approvals.exists())
+
+        # Capture writes a private atomic record that the launcher accepts and inherits from.
+        self.assertEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
+        self.assertEqual(stat.S_IMODE(approvals.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(grant_path.stat().st_mode), 0o600)
+        grant = m.approval_record(state, source, target, hooks, record.joinpath('base-sha').read_text().strip())
+        self.assertEqual(grant['approval_receipt_sha256'], summary['approval_receipt_sha256'])
+        self.assertRegex(grant['approval_receipt_sha256'], '^[0-9a-f]{64}$')
+        evidence = grant['approval_evidence']
+        self.assertEqual(hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest(), grant['approval_receipt_sha256'])
+        self.assertEqual(evidence['normalized_hooks_sha256'], grant['normalized_hooks_sha256'])
+        stripped = m.split_profile_state((home / 'config.toml').read_text())[0]
+        self.assertNotIn('hooks', tomllib.loads(stripped))
+        inherited = tomllib.loads(m.inherit(stripped, hooks_path, published))
+        key = str(hooks_path) + ':session_start:0:0'
+        self.assertIn(key, inherited['hooks']['state'])
+        self.assertEqual(sorted(p.name for p in approvals.iterdir()), [grant_path.name])
+
+        # Recapture backs up the previous record; a failed replace leaves it intact.
+        first = grant_path.read_bytes()
+        self.assertEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
+        backups = [p for p in approvals.iterdir() if p != grant_path]
+        self.assertEqual([p.read_bytes() for p in backups], [first])
+        self.assertEqual(stat.S_IMODE(backups[0].stat().st_mode), 0o600)
+        for backup in backups:
+            backup.unlink()
+        with mock.patch.object(m.os, 'replace', side_effect=OSError('boom')):
+            self.assertNotEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
+        self.assertEqual(grant_path.read_bytes(), first)
+        self.assertEqual([p.name for p in approvals.iterdir() if '.tmp' in p.name], [], 'failed write left a temp file')
+        # Existing record must stay a private regular file; only the newest five backups stay.
+        grant_path.chmod(0o644)
+        self.assertNotEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
+        grant_path.chmod(0o600)
+        grant_path.rename(grant_path.with_name('moved-record')); grant_path.symlink_to(grant_path.with_name('moved-record'))
+        self.assertNotEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
+        grant_path.unlink(); grant_path.with_name('moved-record').rename(grant_path)
+        for _ in range(7):
+            self.assertEqual(operator_main(m, ['capture', '--session-id', record.name]), 0)
+        self.assertEqual(len([p for p in approvals.iterdir() if '.bak-' in p.name]), 5)
+        first = grant_path.read_bytes()
+        # Refusal exits non-zero with a message and leaves the record alone.
+        write_profile(skip=entries[-1][0])
+        with mock.patch('sys.stderr') as err:
+            self.assertEqual(operator_main(m, ['capture', '--session-id', record.name]), 1)
+        self.assertIn('refused', ''.join(c.args[0] for c in err.write.call_args_list))
+        self.assertEqual(grant_path.read_bytes(), first)
+        # Operator shells have no session environment: --session-id selects it.
+        for name in env:
+            os.environ.pop(name)
+        os.environ['HARNESS_SESSION_STATE_HOME'] = str(state); os.environ['HARNESS_CODEX_BIN'] = str(fixture.codex_bin)
+        write_profile()
+        self.assertEqual(operator_main(m, ['capture', '--dry-run', '--session-id', record.name]), 0)
+        self.assertEqual(operator_main(m, ['capture', '--dry-run', '--session-id', 'not-a-uuid']), 1)
+        self.assertEqual(operator_main(m, ['capture', '--dry-run']), 1)
+        self.assertNotEqual(original, first, 'fixture grant used a placeholder receipt')
+        # Leave the fixture as found so the warm-preparation checks in build() stay meaningful.
+        shutil.rmtree(approvals); approvals.mkdir(); grant_path.write_bytes(original); grant_path.chmod(0o600)
+        profile.write_bytes(profile_before) if existed else profile.unlink()
+        patch.stop()
+
+
 class ApprovalFileSafetyTests(unittest.TestCase):
     def test_public_writable_and_hardlinked_files_are_rejected(self):
         spec=importlib.util.spec_from_file_location('approval_reader',ROOT/'bin/codex-hook-trust.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -234,7 +568,7 @@ class CallbackMappingSafetyTests(unittest.TestCase):
             approved=hashlib.sha256((old/name).read_bytes()).hexdigest();grant={'callbacks':{str(old/name):approved}}
             command='python3 '+str(current/name)
             self.assertEqual(m.approved_package_command(command,grant),'python3 '+str(old/name))
-            with self.assertRaises((OSError,ValueError)):m.approved_package_command('python3 '+str(other/name),grant)
+            with self.assertRaisesRegex(ValueError,re.escape(str(current))):m.approved_package_command('python3 '+str(other/name),grant)
             with self.assertRaises((OSError,ValueError)):m.approved_package_command('python3 "'+str(current/name)+'"',grant)
             with self.assertRaises((OSError,ValueError)):m.approved_package_command(command+' extra',grant)
             duplicate={'callbacks':{str(old/name):approved,str(other/name):approved}}

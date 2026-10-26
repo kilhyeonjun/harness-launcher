@@ -244,7 +244,14 @@ OUT="$TEST_TEMP/p14"
 [[ ! -s "$OUT.stdout" ]] || fail 'P14 launcher wrote to the JSON-RPC stdout' "$OUT.stdout"
 echo 'PASS: P14 the launcher keeps stdout clean for the app-server'
 
-# P12: the rejecting-subcommand table matches the installed Codex.
+# P12: profile classification is independent of server routing and is also
+# checked without an installed Codex. P9 must still block mcp-server entirely.
+source "$LAUNCHER_DIR/bin/harness-common.sh"
+harness_codex_subcommand_rejects_profile mcp-server || fail 'P12 mcp-server must reject --profile'
+harness_codex_subcommand_rejects_profile mcp && fail 'P12 mcp must accept --profile'
+echo 'PASS: P12 mcp-server rejects profiles while mcp accepts them'
+
+# Compare the complete rejecting-subcommand table with the installed Codex.
 if codex_bin="$(PATH="${PATH#$TEST_BIN:}" command -v codex 2>/dev/null)" && [[ "$codex_bin" != "$TEST_BIN/codex" ]]; then
   probe_home="$TEST_TEMP/codex-probe-home"
   mkdir -p "$probe_home"
@@ -252,7 +259,6 @@ if codex_bin="$(PATH="${PATH#$TEST_BIN:}" command -v codex 2>/dev/null)" && [[ "
   [[ "$allowed" == *'--profile only applies to'* ]] || fail "P12 unexpected probe output: $allowed"
   codex_commands=("${(@f)$(CODEX_HOME="$probe_home" "$codex_bin" --help | sed -n '/^Commands:/,/^$/p' \
     | sed -n 's/^  \([a-z][a-z-]*\) .*/\1/p')}")
-  source "$LAUNCHER_DIR/bin/harness-common.sh"
   for sub in "${codex_commands[@]}"; do
     [[ "$sub" == debug ]] && continue
     if [[ "$allowed" == *"\`codex $sub\`"* ]]; then

@@ -1,0 +1,7 @@
+settings:
+  model: synthetic-test-no-provider
+  includeGitInstructions: false
+  env:
+  attribution:
+hooks:
+  entries:

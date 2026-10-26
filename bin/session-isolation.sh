@@ -8,6 +8,47 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OB
 
 state_home() { printf '%s\n' "${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"; }
 session_dir() { printf '%s/sessions/%s\n' "$(state_home)" "$1"; }
+integration_queue_enabled() { [[ -e "$(state_home)/integration-queue.json" || -L "$(state_home)/integration-queue.json" ]]; }
+# engine_path: this script's physical file. Homebrew exposes it through a chain
+# of symlinks (prefix bin -> keg bin -> share/harness-launcher), and every
+# helper lives beside the final target, never beside a link. Link traversal is
+# bounded so a concurrent broken install fails instead of looping.
+engine_path() {
+  local script="${BASH_SOURCE[0]}" directory hop
+  for hop in {1..40}; do
+    directory="$(cd -P -- "$(dirname -- "$script")" && pwd -P)" || return 2
+    script="$directory/$(basename -- "$script")"
+    [[ -L "$script" ]] || break
+    script="$(readlink "$script")" || return 2
+    [[ "$script" == /* ]] || script="$directory/$script"
+  done
+  [[ -f "$script" && ! -L "$script" ]] || return 2
+  printf '%s\n' "$script"
+}
+# engine_dir: the physical directory holding this script and its helpers.
+engine_dir() { local script; script="$(engine_path)" || return 2; printf '%s\n' "${script%/*}"; }
+integration_queue() {
+  local script directory
+  script="$(engine_path)" || return 2
+  directory="${script%/*}"
+  [[ -f "$directory/harness_integration_queue.py" ]] || return 2
+  # A guardian must replace its background shell: that shell waiting for its
+  # child would otherwise keep the execution group alive forever after a crash.
+  if [[ "${1:-}" == guardian ]]; then
+    exec python3 -I -B "$directory/harness_integration_queue.py" --state "$(state_home)" --engine "$script" "$@"
+  fi
+  python3 -I -B "$directory/harness_integration_queue.py" --state "$(state_home)" --engine "$script" "$@"
+}
+integration_headless() { [[ -e "${INTEGRATION_INPUT_DIR:-$(session_dir "$1")}/headless" ]]; }
+integration_phase() {
+  [[ -n "${INTEGRATION_INPUT_DIR:-}" ]] || return 0
+  integration_queue phase "$1" --home "${HARNESS_INTEGRATION_HOME:?}"
+}
+verifier_exec() {
+  if [[ -n "${INTEGRATION_INPUT_DIR:-}" ]]; then
+    integration_queue verifier-exec --home "${HARNESS_INTEGRATION_HOME:?}" -- "$@"
+  else "$@"; fi
+}
 new_id() { uuidgen 2>/dev/null || { date +%s%N; } | shasum -a 256 | cut -c1-32; }
 write_journal() {
   local dir="$1" state="$2" identity="$3" tmp
@@ -20,6 +61,15 @@ write_heartbeat() {
   tmp="$(mktemp "$dir/.heartbeat.XXXXXX")"
   date -u +%Y-%m-%dT%H:%M:%SZ > "$tmp"
   mv -f "$tmp" "$dir/heartbeat"
+}
+# agent_usage_sync <session-id> <source-root>: refresh this session's company
+# usage-collection manifest (created, retired). Fail-open and silent on stdout:
+# create's stdout is a key=value contract.
+agent_usage_sync() {
+  local bin
+  bin="$(engine_dir)" || return 0
+  [[ -f "$bin/harness-common.sh" ]] || return 0
+  ( source "$bin/harness-common.sh"; harness_agent_usage_sync_session "$bin" "$1" "$2" ) >/dev/null || true
 }
 field() { sed -n "s/^$2=//p" "$1" | head -n 1; }
 # Broker git on a session root: nothing named by the session's own config may
@@ -39,7 +89,10 @@ unset _excluded
 # Release overlays are per-session and are deliberately kept out of the
 # bootstrap filesystem-alias probe above.  The helper is the single source of
 # truth for Unicode folding, literal pathspecs and the fixed argv cap.
-OVERLAY_PATH_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/harness-overlay-paths.py"
+OVERLAY_PATH_HELPER="$(engine_dir)" || {
+  echo 'harness-session: cannot resolve helper directory' >&2; exit 2;
+}
+OVERLAY_PATH_HELPER="$OVERLAY_PATH_HELPER/harness-overlay-paths.py"
 OVERLAY_PATHS_FILE=""
 RELEASE_CLIENT="$(dirname "$OVERLAY_PATH_HELPER")/harness-release-client.sh"
 delivery_exclusions_file() {
@@ -223,6 +276,23 @@ excluded_aliases() {
 ROOT_GIT_DIR="" SOURCE_GIT_DIR=""
 # root_identity <path>: device and inode of the path itself (never followed).
 root_identity() { stat -f '%d %i' "$1" 2>/dev/null || stat -c '%d %i' "$1"; }
+# root_identity_matches <recorded> <root>: the record "<dev> <ino>" still names
+# <root>. The inode must match. The device must match too, except that a
+# whole-volume device renumbering (reboot) is accepted when the root sits on
+# the device of its worktrees directory; a root replaced by a mount of another
+# filesystem has a different device from its parent and is refused.
+root_identity_matches() {
+  local recorded="$1" root="$2" current parent rdev rino cdev cino extra
+  [[ "$recorded" != *$'\n'* ]] || return 1
+  while [[ "$root" == */?* && "$root" == */ ]]; do root="${root%/}"; done
+  current="$(root_identity "$root")" || return 1
+  read -r rdev rino extra <<<"$recorded"
+  read -r cdev cino <<<"$current"
+  [[ -z "$extra" && "$rdev" =~ ^[0-9]+$ && "$rino" =~ ^[0-9]+$ && "$rino" == "$cino" ]] || return 1
+  [[ "$rdev" == "$cdev" ]] && return 0
+  parent="$(root_identity "${root%/*}")" || return 1
+  [[ "${parent%% *}" == "$cdev" ]]
+}
 # root_intact <dir> <root>: the session root is still the directory create
 # made: a real directory (not a symlink) with the inode recorded at create;
 # a record from an older launcher without it falls back to the physical
@@ -232,7 +302,7 @@ root_intact() {
   local dir="$1" root="$2"
   [[ -d "$root" && ! -L "$root" ]] || return 1
   if [[ -f "$dir/root-inode" && ! -L "$dir/root-inode" ]]; then
-    [[ "$(root_identity "$root")" == "$(<"$dir/root-inode")" ]]
+    root_identity_matches "$(<"$dir/root-inode")" "$root"
   else
     [[ "$(cd "${root%/*}" && pwd -P)/${root##*/}" == "$(cd "$root" && pwd -P)" ]]
   fi
@@ -311,37 +381,65 @@ headless_local_files() {
   done
 }
 create() {
-  local source="$1" local_only="${2:-0}" root state id base sha dir local_file has_origin=0 deadline
+  local source="$1" local_only="${2:-0}" reserved_id="${3:-}" root state id base sha dir local_file has_origin=0 helper="" deadline
   deadline="$(( $(date +%s) + 120 ))"
   source="$(cd "$source" && pwd -P)"
   git -C "$source" rev-parse --is-inside-work-tree >/dev/null
-  state="$(state_home)"; mkdir -p "$state/sessions" "$state/worktrees"
-  if git -C "$source" remote get-url origin >/dev/null 2>&1; then
-    has_origin=1
-    [[ "$local_only" == 1 ]] || "$RELEASE_CLIENT" budget "$deadline" git -C "$source" fetch -q origin main:refs/remotes/origin/main
+  state="$(state_home)"
+  helper="$(engine_dir)/harness_session_creation.py" || helper=""
+  if [[ -n "$reserved_id" ]]; then
+    valid_id "$reserved_id" || { echo 'harness-session: invalid reserved UUID' >&2; return 2; }
+    dir="$state/sessions/$reserved_id"; root="$state/worktrees/$reserved_id"
+    [[ -n "${HARNESS_CREATION_LEASE_FD:-}" && -f "$helper" && ! -L "$helper" ]] || {
+      echo 'harness-session: reserved create lacks its creation lease' >&2; return 2;
+    }
+    python3 -I "$helper" verify-reserved --record "$dir" --source "$source" --engine "$0" \
+      --lease-fd "$HARNESS_CREATION_LEASE_FD" || return 2
+    [[ -d "$dir" && ! -L "$dir" && -d "$state/worktrees" && ! -L "$state/worktrees" \
+        && -d "$root" && ! -L "$root" && -z "$(find "$root" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+      echo 'harness-session: reserved paths are no longer owned' >&2; return 2;
+    }
+    for local_file in source-root session-root base-sha root-inode lease-v1 runtime.lock journal; do
+      [[ ! -e "$dir/$local_file" && ! -L "$dir/$local_file" ]] || {
+        echo 'harness-session: reserved record is no longer empty' >&2; return 2;
+      }
+    done
+    id="$reserved_id"
+  else
+    mkdir -p "$state/sessions" "$state/worktrees"
   fi
-  if [[ "$local_only" == 1 && "$has_origin" == 1 ]]; then
-    base="$(git -C "$source" rev-parse --verify -q refs/remotes/origin/main)" || {
+  [[ -f "$helper" && ! -L "$helper" ]] || { echo 'harness-session: creation helper unavailable' >&2; return 2; }
+  if [[ "$local_only" == 1 ]]; then
+    sha="$("$RELEASE_CLIENT" budget "$deadline" python3 -I "$helper" source-base --source "$source" --local)" || {
       echo 'harness-session: offline restore requires a cached origin/main' >&2; return 2;
     }
-  elif [[ "$local_only" == 1 ]]; then
-    base="$(git -C "$source" rev-parse --verify -q refs/heads/main)" || return 2
   else
-    base="$(git -C "$source" rev-parse --verify -q origin/main 2>/dev/null || git -C "$source" rev-parse HEAD)"
+    sha="$("$RELEASE_CLIENT" budget "$deadline" python3 -I "$helper" source-base --source "$source")" || return 2
   fi
-  sha="$(git -C "$source" rev-parse "$base^{commit}")"
-  id="$(new_id)"; dir="$state/sessions/$id"; root="$state/worktrees/$id"
-  (umask 077; mkdir -p "$dir")
-  "$RELEASE_CLIENT" select "$source" "$sha" "$dir" "$deadline" || { local rc=$?; rm -rf "$dir"; return "$rc"; }
-  local -a clone_flags=(-q --no-checkout)
-  [[ "${HARNESS_HEADLESS:-0}" != 1 ]] || clone_flags+=(--no-hardlinks)
-  "$RELEASE_CLIENT" run "$dir" git clone "${clone_flags[@]}" "$source" "$root" \
+  if [[ -z "$reserved_id" ]]; then
+    id="$(new_id)"; dir="$state/sessions/$id"; root="$state/worktrees/$id"
+    (umask 077; mkdir -p "$dir")
+  fi
+  "$RELEASE_CLIENT" select "$source" "$sha" "$dir" "$deadline" || {
+    local rc=$?; [[ -n "$reserved_id" ]] || rm -rf "$dir"; return "$rc";
+  }
+  # Transport cloning avoids maintenance races and shared hardlinks. Fetch the
+  # selected origin/main explicitly, including remote-tracking-only commits.
+  "$RELEASE_CLIENT" run "$dir" git clone -q --no-local --no-checkout "$source" "$root" \
+    && "$RELEASE_CLIENT" run "$dir" git -C "$root" fetch -q --no-tags origin "$sha" \
     && "$RELEASE_CLIENT" run "$dir" git -C "$root" remote remove origin \
     && "$RELEASE_CLIENT" run "$dir" git -C "$root" checkout -q --detach "$sha" \
-    || { local rc=$?; rm -rf "$root" "$dir"; return "$rc"; }
+    || { local rc=$?; [[ -n "$reserved_id" ]] || rm -rf "$root" "$dir"; return "$rc"; }
   rm -rf "$root/config/.local"
   if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
-    headless_local_files "$source" "$root" || { rm -rf "$root" "$dir"; return 2; }
+    headless_local_files "$source" "$root" || {
+      # Reserved cleanup belongs to the lease/identity-checked parent. A fixed
+      # internal status preserves the public refusal outcome without raw stderr.
+      [[ -z "$reserved_id" ]] || return 78
+      rm -rf "$dir"
+      rm -rf "$root"
+      return 2
+    }
   else
     if [[ -d "$source/projects" ]]; then rm -rf "$root/projects"; ln -s "$source/projects" "$root/projects"; fi
     for local_file in .mcp.local.json mcp.local.json .claude/settings.local.json; do
@@ -375,11 +473,12 @@ create() {
     printf '/%s\n' "${EXCLUDED_PATHS[@]}" >> "$dir/trusted.git/info/exclude"
     : > "$dir/headless"
   fi
-  "$RELEASE_CLIENT" materialize "$dir" "$root" || { local rc=$?; rm -rf "$root" "$dir"; return "$rc"; }
+  "$RELEASE_CLIENT" materialize "$dir" "$root" || { local rc=$?; [[ -n "$reserved_id" ]] || rm -rf "$root" "$dir"; return "$rc"; }
   printf '1\n' > "$dir/lease-v1"
   : > "$dir/runtime.lock"
-  write_journal "$dir" OPEN ""
-  write_heartbeat "$dir"
+  [[ -n "$reserved_id" ]] || write_journal "$dir" OPEN ""
+  [[ -n "$reserved_id" ]] || write_heartbeat "$dir"
+  agent_usage_sync "$id" "$source"
   printf 'HARNESS_SESSION_ID=%s\nHARNESS_SOURCE_ROOT=%s\nHARNESS_SESSION_ROOT=%s\nHARNESS_RUN_DIR=%s\n' "$id" "$source" "$root" "$root"
 }
 valid_id() { [[ "$1" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; }
@@ -453,10 +552,21 @@ terminal_epoch() {
 }
 # Called only under the stock per-root lease. Native verification must see the
 # original pathname disappear; failures restore the same directory/inode.
+work_content_verified() {
+  local dir="$1" root="$2" helper tmp
+  helper="$(engine_dir)/harness_session_work_proof.py" || return 1
+  [[ -f "$helper" && ! -L "$helper" ]] || return 1
+  tmp="$(mktemp "$dir/.work-proof.XXXXXX")" || return 1
+  if python3 -I "$helper" --state "$(cd "$dir/../.." && pwd -P)" --owner "${dir##*/}" --retained-root "$root" --preserve-python-caches > "$tmp"; then
+    mv -f "$tmp" "$dir/work-proof.json"
+  else
+    rm -f "$tmp"; return 1
+  fi
+}
 retire_native_root() {
   local root="$1" tomb="$2" dir="$3" source="$4" id="$5" staged="${6:-0}"
   local helper py native catalog receipt output snapshot revision='legacy-unknown'
-  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-history.py"
+  helper="$(engine_dir)/codex-history.py" || return 1
   [[ -f "$helper" && ! -L "$helper" ]] || return 1
   source "$(dirname "$helper")/harness-common.sh"
   py="$(harness_python3_resolve)" && native="$(harness_codex_bin_resolve)" || return 1
@@ -473,8 +583,16 @@ retire_native_root() {
   if [[ "$staged" != 1 ]]; then
     [[ ! -e "$tomb" && ! -L "$tomb" ]] && mv "$root" "$tomb" || return 1
   fi
+  if ! work_content_verified "$dir" "$tomb"; then
+    if [[ "$staged" != 1 && ! -e "$root" && ! -L "$root" ]]; then mv "$tomb" "$root" || return 1; fi
+    return 1
+  fi
   if ! "$py" -I "$helper" verify --catalog "$catalog" --snapshot "$snapshot" \
       --source "$tomb/.harness/codex" --codex-bin "$native" >/dev/null; then
+    if [[ "$staged" != 1 && ! -e "$root" && ! -L "$root" ]]; then mv "$tomb" "$root" || return 1; fi
+    return 1
+  fi
+  if ! work_content_verified "$dir" "$tomb"; then
     if [[ "$staged" != 1 && ! -e "$root" && ! -L "$root" ]]; then mv "$tomb" "$root" || return 1; fi
     return 1
   fi
@@ -482,13 +600,13 @@ retire_native_root() {
 }
 archive_verified() {
   local state="$1" id="$2" source="$3" script
-  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_archive.py"
+  script="$(engine_dir)/harness_session_archive.py" || return 1
   [[ -f "$script" && ! -L "$script" ]] || return 1
   python3 "$script" verify --state "$state" --owner "$id" --source "$source" >/dev/null 2>&1
 }
 archive_session_transcripts() {
   local state="$1" id="$2" source="$3" root="$4" script
-  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/harness_session_archive.py"
+  script="$(engine_dir)/harness_session_archive.py" || return 1
   [[ -f "$script" && ! -L "$script" ]] || return 1
   python3 "$script" archive --state "$state" --owner "$id" --source "$source" --root "$root" >/dev/null 2>&1 \
     && archive_verified "$state" "$id" "$source"
@@ -567,7 +685,7 @@ gc_unlocked() {
   [[ ! -L "$state" && ! -L "$sessions" && ! -L "$worktrees" ]] || return 2
   state="$(cd "$state" && pwd -P)" || return 2
   sessions="$(cd "$sessions" && pwd -P)"; worktrees="$(cd "$worktrees" && pwd -P)"
-  history_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-history.py"
+  history_helper="$(engine_dir)/codex-history.py" || return 2
   [[ -f "$history_helper" && ! -L "$history_helper" ]] || return 2
   source "$(dirname "$history_helper")/harness-common.sh"
   history_python="$(harness_python3_resolve)" || return 2
@@ -577,23 +695,19 @@ gc_unlocked() {
     [[ -d "$tomb" && ! -L "$tomb" ]] || continue
     tomb_name="${tomb##*/}"; tomb_id="${tomb_name#.retired-}"; tomb_id="${tomb_id%-*}"; tomb_nonce="${tomb_name##*-}"
     valid_id "$tomb_id" && [[ "$tomb_nonce" =~ ^[0-9]+$ ]] || continue
-    presence="$("$history_python" -I "$history_helper" presence --source "$tomb/.harness/codex" --anchor "$state")" || { retained=$((retained + 1)); continue; }
-    if [[ "$presence" != absent ]]; then
-      # Old tombs have no successful Native restore receipt. Preserve them;
-      # protect-pool can recover/validate an owner-bound remnant explicitly.
-      retained=$((retained + 1)); continue
-    fi
-    dir="$sessions/$tomb_id"
-    [[ -f "$dir/source-root" && ! -L "$dir/source-root" ]] || continue
-    IFS= read -r source < "$dir/source-root"
-    archive_verified "$state" "$tomb_id" "$source" || continue
-    rm -rf -- "$tomb"
+    # A transcript archive alone cannot prove the work content of an old
+    # crash tomb. Preserve it for explicit identity/lease/work reconstruction.
+    retained=$((retained + 1))
   done
   for tomb in "$worktrees"/.archiving-*; do
     [[ -d "$tomb" && ! -L "$tomb" ]] || continue
     tomb_name="${tomb##*/}"; tomb_id="${tomb_name#.archiving-}"; tomb_id="${tomb_id%-*}"; tomb_nonce="${tomb_name##*-}"
     valid_id "$tomb_id" && [[ "$tomb_nonce" =~ ^[0-9]+$ ]] || continue
+    [[ -z "${HARNESS_GC_OWNER_FILTER:-}" || "$tomb_id" == "$HARNESS_GC_OWNER_FILTER" ]] || continue
     dir="$sessions/$tomb_id"; root="$worktrees/$tomb_id"
+    if [[ -n "${HARNESS_GC_SOURCE_FILTER:-}" ]]; then
+      [[ -f "$dir/source-root" && ! -L "$dir/source-root" && "$(<"$dir/source-root")" == "$HARNESS_GC_SOURCE_FILTER" ]] || continue
+    fi
     [[ ! -e "$root" && ! -L "$root" && -f "$dir/runtime.lock" && ! -L "$dir/runtime.lock" ]] || { retained=$((retained + 1)); continue; }
     (
       exec 8>"$dir/runtime.lock"; /usr/bin/lockf -s -t 0 8 || exit 11
@@ -607,6 +721,10 @@ gc_unlocked() {
   for dir in "$sessions"/*; do
     [[ -d "$dir" && ! -L "$dir" ]] || continue
     id="${dir##*/}"; valid_id "$id" || continue
+    [[ -z "${HARNESS_GC_OWNER_FILTER:-}" || "$id" == "$HARNESS_GC_OWNER_FILTER" ]] || continue
+    if [[ -n "${HARNESS_GC_SOURCE_FILTER:-}" ]]; then
+      [[ -f "$dir/source-root" && ! -L "$dir/source-root" && "$(<"$dir/source-root")" == "$HARNESS_GC_SOURCE_FILTER" ]] || continue
+    fi
     scanned=$((scanned + 1)); journal="$dir/journal"; marker="$dir/lease-v1"; lock="$dir/runtime.lock"
     [[ -f "$lock" && ! -L "$lock" ]] && lease_marker_valid "$marker" && terminal_record_valid "$dir" || { retained=$((retained + 1)); continue; }
     status="$(field "$journal" state)"
@@ -627,26 +745,39 @@ gc_unlocked() {
       [[ "$(cd "$root" && pwd -P)" == "$expected" && -d "$source" && "$(cd "$source" && pwd -P)" != "$expected" ]] || exit 17
       root_intact "$dir" "$root" || exit 17
       resume_hold_preserves_root "$dir" "$id" "$source" && exit 21
+      work_content_verified "$dir" "$root" || exit 23
       # Binding checks above establish this physical path; keep the recorded
       # spelling for provenance even when system temp paths have aliases.
-      presence="$("$history_python" -I "$history_helper" presence --source "$expected/.harness/codex" --anchor "$state")" || exit 21
+      presence="$("$history_python" -I "$history_helper" content-kind --source "$expected/.harness/codex" --anchor "$state")" || exit 21
       if [[ "$presence" == native ]]; then
         [[ -z "${HARNESS_HISTORY_SOURCE_ROOT:-}" || "$source" == "$HARNESS_HISTORY_SOURCE_ROOT" ]] || exit 21
         tomb="$worktrees/.archiving-$id-${BASHPID:-$$}"
         retire_native_root "$root" "$tomb" "$dir" "$source" "$id" || exit 21
+        agent_usage_sync "$id" "$source"
         exit 0
       fi
-      [[ "$presence" == absent ]] || exit 21
+      [[ "$presence" == absent || "$presence" == generated ]] || exit 21
       archive_session_transcripts "$state" "$id" "$source" "$root" || exit 22
       tomb="$worktrees/.retired-$id-${BASHPID:-$$}"
       [[ ! -e "$tomb" && ! -L "$tomb" ]] || exit 18
       mv "$root" "$tomb" || exit 19
+      if ! work_content_verified "$dir" "$tomb"; then
+        [[ ! -e "$root" && ! -L "$root" ]] && mv "$tomb" "$root"
+        exit 23
+      fi
       rm -rf -- "$tomb" || exit 20
+      agent_usage_sync "$id" "$source"
     ) && retired=$((retired + 1)) || retained=$((retained + 1))
   done
   printf 'harness-session gc: scanned=%s retired=%s retained=%s elapsed_seconds=%s\n' "$scanned" "$retired" "$retained" "$(( $(date -u +%s) - started ))" >&2
 }
-gc_sessions() { with_lock gc_unlocked; }
+gc_sessions() {
+  if integration_queue_enabled; then
+    local retention="${HARNESS_SESSION_RETENTION_SECONDS:-86400}"
+    [[ "$retention" != archive ]] || retention=86400
+    integration_queue control gc --wait --retention "$retention" --filter-owner "${HARNESS_GC_OWNER_FILTER:-}" --filter-source "${HARNESS_GC_SOURCE_FILTER:-}"
+  else with_lock gc_unlocked; fi
+}
 resume_session() {
   local source="$1" id="$2" dir recorded root state lock worktrees expected
   valid_id "$id" || { echo "cannot resume $id: invalid session UUID" >&2; return 2; }
@@ -793,17 +924,27 @@ session_has_changes() {
   rm -f "$list"
   [[ -n "$out" ]] || return 1
 }
+write_exit_reason() {
+  local dir="$1" reason="$2" code="$3" tmp
+  tmp="$(mktemp "$dir/.exit-reason.XXXXXX")" || return 1
+  printf 'reason=%s\nexit_code=%s\nobserved_at=%s\n' "$reason" "$code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp"
+  mv -f "$tmp" "$dir/exit-reason"
+}
 exit_session() {
   local id="$1" dir root state
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; state="$(field "$dir/journal" state)"
   if [[ "$state" == OPEN ]]; then
     local refused=0
     use_session_git "$id" || refused=$?
-    [[ "$refused" == 0 ]] || { transition "$id" ABANDONED; return "$refused"; }
+    [[ "$refused" == 0 ]] || { write_exit_reason "$dir" git_preflight_refused "$refused"; transition "$id" ABANDONED; return "$refused"; }
     # Only a clean answer closes; changes or a git error keep the work.
     local rc=0
     session_has_changes "$root" "$(<"$dir/base-sha")" || rc=$?
-    if [[ "$rc" == 1 ]]; then transition "$id" CLOSED; else transition "$id" ABANDONED; fi
+    if [[ "$rc" == 1 ]]; then write_exit_reason "$dir" clean "$rc"; transition "$id" CLOSED
+    else
+      if [[ "$rc" == 0 ]]; then write_exit_reason "$dir" work_changes "$rc"; else write_exit_reason "$dir" git_read_error "$rc"; fi
+      transition "$id" ABANDONED
+    fi
   fi
 }
 recover_unlocked() {
@@ -815,7 +956,7 @@ recover_unlocked() {
       pending="$(<"$dir/pending-sha")"
       if [[ ! -f "$dir/push-ack" || "$(<"$dir/push-ack")" == "$pending" ]]; then
         readback="$(mktemp -d "$(state_home)/recover-readback.XXXXXX")"
-        git clone -q "$remote" "$readback"
+        git clone -q --no-local "$remote" "$readback"
         git -C "$readback" merge-base --is-ancestor "$pending" HEAD || { rm -rf "$readback"; transition "$id" SUBMITTED "$(field "$dir/journal" identity)"; printf 'HARNESS_SESSION_ROOT=%s\nstate=SUBMITTED\n' "$(<"$dir/session-root")"; return 0; }
         while IFS= read -r -d '' kind && IFS= read -r -d '' mode && IFS= read -r -d '' hash && IFS= read -r -d '' path; do
           if [[ "$kind" == D ]]; then git -C "$readback" cat-file -e "$pending:$path" 2>/dev/null && { rm -rf "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }; continue; fi
@@ -823,8 +964,10 @@ recover_unlocked() {
           [[ "$actual_mode" == "$mode" && "$actual_oid" == "$hash" ]] || { rm -rf "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }
         done < "$dir/.candidate-manifest"
         printf '%s\n' "$pending" > "$dir/delivered-sha"
-        mv -f "$dir/.candidate-manifest" "$dir/delivered-manifest"
+        cp -p "$dir/.candidate-manifest" "$dir/delivered-manifest"
+        fsync_paths "$dir/delivered-sha" "$dir/delivered-manifest" "$dir" || return 4
         rm -rf "$readback"; transition "$id" DELIVERED "$(field "$dir/journal" identity)"
+        fsync_paths "$dir/journal" "$dir" || return 4
         printf 'HARNESS_SESSION_ROOT=%s\nstate=DELIVERED\n' "$(<"$dir/session-root")"
         return 0
       fi
@@ -838,7 +981,10 @@ recover_unlocked() {
   reopen_session "$id"
   printf 'HARNESS_SESSION_ROOT=%s\nstate=OPEN\n' "$(<"$dir/session-root")"
 }
-recover() { with_lock recover_unlocked "$1"; }
+recover() {
+  if integration_queue_enabled; then integration_queue control recover "$1" --wait
+  else with_lock recover_unlocked "$1"; fi
+}
 heartbeat_epoch() { date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || printf '0\n'; }
 heartbeat_session() {
   local dir="$(session_dir "$1")" state
@@ -855,7 +1001,24 @@ list() {
     id="${dir##*/}"; state="$(field "$dir/journal" state)"
     if [[ -f "$dir/heartbeat" ]]; then heartbeat="$(heartbeat_epoch "$(<"$dir/heartbeat")")"; else heartbeat="$(heartbeat_epoch "$(field "$dir/journal" heartbeat)")"; fi
     age=$((now - heartbeat))
-    if [[ "$state" == OPEN && "$age" -gt "$limit" ]]; then transition "$id" ABANDONED; state=ABANDONED; fi
+    if [[ "$state" == OPEN && "$age" -gt "$limit" ]]; then
+      # Stale heartbeats do not prove a runtime stopped. Only lease-v1 owners
+      # with an available runtime lease can be observed as abandoned.
+      if [[ -f "$dir/lease-v1" && ! -L "$dir/lease-v1" && "$(<"$dir/lease-v1")" == 1 && -f "$dir/runtime.lock" && ! -L "$dir/runtime.lock" ]]; then
+        (
+          exec 8>"$dir/runtime.lock"; /usr/bin/lockf -s -t 0 8 || exit 1
+          [[ "$(field "$dir/journal" state)" == OPEN ]] || exit 1
+          local latest
+          if [[ -f "$dir/heartbeat" ]]; then latest="$(heartbeat_epoch "$(<"$dir/heartbeat")")"; else latest="$(heartbeat_epoch "$(field "$dir/journal" heartbeat)")"; fi
+          [[ $((now - latest)) -gt "$limit" ]] || exit 1
+          local reason_tmp
+          reason_tmp="$(mktemp "$dir/.exit-reason.XXXXXX")" || exit 1
+          printf 'reason=stale_without_lease\nexit_code=unknown\nobserved_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$reason_tmp"
+          mv "$reason_tmp" "$dir/exit-reason" && transition "$id" ABANDONED
+        ) || true
+        state="$(field "$dir/journal" state)"
+      fi
+    fi
     printf '%s %s\n' "$id" "$state"
   done
 }
@@ -952,6 +1115,10 @@ write_candidate_manifest() {
 }
 verify_submission_identity() {
   local dir="$1" expected
+  if [[ -n "${INTEGRATION_INPUT_DIR:-}" ]]; then
+    integration_queue authorize integrate "${dir##*/}" --home "${HARNESS_INTEGRATION_HOME:?}" >/dev/null
+    return
+  fi
   expected="$(field "$dir/journal" identity)"
   [[ -n "$expected" && "$(submission_identity "$dir")" == "$expected" ]]
 }
@@ -1100,6 +1267,11 @@ codex_sandbox_profile() {
   [[ "$port" =~ ^[0-9]{1,5}$ ]] || { echo 'harness-session: invalid forwarder port' >&2; return 2; }
   root="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; codex_home="$(phys "$7")"
   verifier_sandbox_profile "$1" "$2" "$3" "$source" "$exe" || return
+  # Codex bootstraps the system requirements even with an isolated CODEX_HOME.
+  # Grant data read of that trusted file only, before the final credential denies.
+  local policy_dir
+  policy_dir="$(engine_dir)" || return 2
+  python3 -I -B "$policy_dir/harness_codex_policy.py" || return
   # PTYs as Codex's own Seatbelt policy grants them: openpty(), and a slave
   # tty only with the sandbox extension the kernel issues for a PTY opened
   # inside the sandbox, never a terminal opened outside it.
@@ -1122,29 +1294,31 @@ codex_sandbox_profile() {
     "$(sbpl_str "$codex_home/config.toml")" "$(sbpl_str "$codex_home/AGENTS.md")"
 }
 run_repository_verifier() {
-  local candidate="$1" id="$2" remote="$3" baseline="$4" trusted verifier help_output storage_root vtmp resolved_vtmp
+  local candidate="$1" id="$2" remote="$3" baseline="$4" tree="$5" trusted verifier help_output storage_root vtmp resolved_vtmp
   local -a verifier_args
   # Resolve host policy outside the verifier sandbox, before any verifier copy.
   storage_root="$(python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py")" || return 2
   trusted="$(mktemp -d "${storage_root:-$(state_home)}/verifier.XXXXXX")" || return 2
-  { git clone -q "$remote" "$trusted" && git -C "$trusted" checkout -q --detach "$baseline"; } || { rm -rf "$trusted"; return 2; }
+  { git clone -q --no-local "$remote" "$trusted" && git -C "$trusted" checkout -q --detach "$baseline"; } || { rm -rf "$trusted"; return 2; }
   verifier="$trusted/core/bin/auto-deliver.sh"
   [[ -f "$verifier" ]] || { echo 'ERROR: repository-owned core/bin/auto-deliver.sh verifier is required' >&2; rm -rf "$trusted"; return 2; }
-  verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push)
-  if [[ -e "$(session_dir "$id")/headless" ]]; then
+  verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push --verify-candidate "$baseline" "$tree")
+  if integration_headless "$id"; then
     run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "$baseline" "$storage_root" "${verifier_args[@]}"
     return
   fi
   vtmp="$(mktemp -d "${storage_root:-/private/tmp}/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
   resolved_vtmp="$(phys "$vtmp")" || { rm -rf "$trusted" "$vtmp"; return 2; }
   vtmp="$resolved_vtmp"
-  help_output="$(TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" bash "$verifier" --help 2>/dev/null || true)"
+  help_output="$(TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" verifier_exec bash "$verifier" --help 2>/dev/null || true)"
+  grep -q -- '--verify-candidate' <<< "$help_output" || { echo 'ERROR: trusted baseline lacks bound candidate verification' >&2; rm -rf "$trusted" "$vtmp"; return 2; }
   if grep -q -- '--contract-checked' <<< "$help_output"; then
     verifier_args+=(--contract-checked 'broker candidate cascade verified')
   fi
   local rc=0
-  (unset HARNESS_SESSION_ID HARNESS_SOURCE_ROOT HARNESS_SESSION_ROOT HARNESS_RUN_DIR HARNESS_SESSION_STATE_HOME; cd "$candidate" && TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 \
-    bash "$verifier" "${verifier_args[@]}") || rc=$?
+  (if [[ -z "${INTEGRATION_INPUT_DIR:-}" ]]; then unset HARNESS_SESSION_ID HARNESS_SOURCE_ROOT HARNESS_SESSION_ROOT HARNESS_RUN_DIR HARNESS_SESSION_STATE_HOME; fi
+    cd "$candidate" && TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 \
+    verifier_exec bash "$verifier" "${verifier_args[@]}") || rc=$?
   if python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py" --settled "$vtmp"; then
     rm -rf "$trusted" "$vtmp"
   else
@@ -1202,14 +1376,19 @@ run_sandboxed_verifier() {
       && scrub_remotes "$vcopy" && session_git -C "$vcopy" update-ref refs/remotes/origin/main "$baseline" && scrub_remotes "$trusted" && session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" && write_verifier_gitconfig "$vtmp/gitconfig" \
       && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted" "$release_prefix")"; } \
     || { rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
-  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" HARNESS_AUTHORITY_NO_REFRESH=1)
+  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HARNESS_AUTHORITY_NO_REFRESH=1)
+  if [[ -n "${INTEGRATION_INPUT_DIR:-}" ]]; then
+    [[ "${HARNESS_DELIVER_TEST_JOBS:-}" =~ ^([1-9]|1[0-6])$ ]] || return 2
+    venv+=(HARNESS_DELIVER_TEST_JOBS="$HARNESS_DELIVER_TEST_JOBS" HARNESS_TEST_CASE_JOBS_LIMIT="$HARNESS_DELIVER_TEST_JOBS")
+  fi
   [[ -z "${LANG:-}" ]] || venv+=(LANG="$LANG")
   for name in $(compgen -e); do [[ "$name" != LC_* ]] || venv+=("$name=${!name}"); done
-  help_output="$(cd "$vcopy" && env -i "${venv[@]}" "$SANDBOX_EXEC" -p "$profile" bash "$verifier" --help 2>/dev/null || true)"
+  help_output="$(cd "$vcopy" && verifier_exec env -i "${venv[@]}" "$SANDBOX_EXEC" -p "$profile" bash "$verifier" --help 2>/dev/null || true)"
+  grep -q -- '--verify-candidate' <<< "$help_output" || { echo 'ERROR: trusted baseline lacks bound candidate verification' >&2; rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
   if grep -q -- '--contract-checked' <<< "$help_output"; then
     args+=(--contract-checked 'broker candidate cascade verified')
   fi
-  (cd "$vcopy" && env -i "${venv[@]}" TEST_HARNESS_DIR="$vcopy" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 \
+  (cd "$vcopy" && verifier_exec env -i "${venv[@]}" TEST_HARNESS_DIR="$vcopy" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 \
     HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 "$SANDBOX_EXEC" -p "$profile" bash "$verifier" "${args[@]}") || rc=$?
   if python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py" --settled "$vtmp"; then
     rm -rf "$trusted" "$vtmp" "$vcopy"
@@ -1235,19 +1414,21 @@ write_index_pathset() {
   done < <(git -C "$repo" diff --cached --name-status --no-renames -z "$base")
 }
 integrate_unlocked() {
-  local id="$1" dir source remote attempt candidate current delivered readback kind mode hash path actual_mode actual_type actual_oid actual_path entry
+  local id="$1" dir input source remote attempt candidate current candidate_tree delivered readback kind mode hash path actual_mode actual_type actual_oid actual_path entry
   dir="$(session_dir "$id")"; source="$(<"$dir/source-root")"
-  use_session_git "$id" || { transition "$id" INTEGRATING "$(field "$dir/journal" identity)"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
+  input="${INTEGRATION_INPUT_DIR:-$dir}"
+  OVERLAY_PATHS_FILE="$input/overlay-paths"
   remote="$(git -C "$source" remote get-url origin)"
   [[ "$remote" == "$(<"$dir/remote-url")" ]] || { transition "$id" INTEGRATING "$(field "$dir/journal" identity)"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
   transition "$id" INTEGRATING "$(field "$dir/journal" identity)"
   verify_submission_identity "$dir" || { transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
   for attempt in 1 2; do
+    integration_phase preparing || return $?
     candidate="$(mktemp -d "$(state_home)/candidate.XXXXXX")"
-    git clone -q "$remote" "$candidate"
+    git clone -q --no-local "$remote" "$candidate"
     git -C "$candidate" checkout -q main
     current="$(git -C "$candidate" rev-parse HEAD)"
-    if ! git -C "$candidate" apply --3way --index "$dir/submission.patch"; then rm -rf "$candidate"; transition "$id" CONFLICT; return 3; fi
+    if ! git -C "$candidate" apply --3way --index "$input/submission.patch"; then rm -rf "$candidate"; transition "$id" CONFLICT; return 3; fi
     git -C "$candidate" diff --cached --name-only -z "$current" > "$dir/.candidate-unfiltered"
     if overlay_path_in_submission "$dir/.candidate-unfiltered"; then
       rm -f "$dir/.candidate-unfiltered"; rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3
@@ -1255,10 +1436,12 @@ integrate_unlocked() {
       rm -f "$dir/.candidate-unfiltered"; rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3
     fi
     rm -f "$dir/.candidate-unfiltered"
-    write_manifest_pathset "$dir/manifest" "$dir/.submitted-pathset"
+    write_manifest_pathset "$input/manifest" "$dir/.submitted-pathset"
     write_index_pathset "$candidate" "$current" "$dir/.candidate-pathset"
     cmp -s "$dir/.submitted-pathset" "$dir/.candidate-pathset" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
-    run_repository_verifier "$candidate" "$id" "$remote" "$current" || {
+    candidate_tree="$(session_git -C "$candidate" write-tree)" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
+    integration_phase verifying || return $?
+    run_repository_verifier "$candidate" "$id" "$remote" "$current" "$candidate_tree" || {
       local verifier_rc=$?
       rm -rf "$candidate"
       if [[ "$verifier_rc" == 17 ]]; then
@@ -1267,19 +1450,24 @@ integrate_unlocked() {
         return 17
       fi
       transition "$id" CONFLICT "$(field "$dir/journal" identity)"
-      if [[ -e "$dir/headless" ]]; then return 9; fi
+      # Headless: exit 9, the verifier rejected the candidate (not a merge conflict).
+      if integration_headless "$id"; then return 9; fi
       return 3
     }
-    verify_submission_identity "$dir" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
+    if ! verify_submission_identity "$dir" \
+        || [[ "$(session_git -C "$candidate" rev-parse --verify HEAD)" != "$current" ]] \
+        || [[ "$(session_git -C "$candidate" write-tree)" != "$candidate_tree" ]]; then
+      rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2
+    fi
     [[ "${HARNESS_SESSION_TEST_CRASH_BEFORE_PUSH:-0}" == 1 ]] && kill -9 "$BASHPID"
     # Headless: no hooks, fsmonitor or external drivers on the broker's own
     # commit and push (the verifier never touched this dir; belt and braces).
     local -a cgit=(git)
-    [[ ! -e "$dir/headless" ]] || cgit=(session_git)
+    if integration_headless "$id"; then cgit=(session_git); fi
     local message="" text="" rc=0
     local -a cmsg=(-m "harness session $id")
     # A launcher-written message (headless runs) plus the session trailer.
-    if [[ -f "$dir/commit-message" && ! -L "$dir/commit-message" ]] && text="$(<"$dir/commit-message")" && [[ -n "$text" ]] \
+    if [[ -f "$input/commit-message" && ! -L "$input/commit-message" ]] && text="$(<"$input/commit-message")" && [[ -n "$text" ]] \
         && message="$(mktemp "$(state_home)/commit-message.XXXXXX")"; then
       printf '%s\n\nHarness-Session: %s\n' "$text" "$id" > "$message" && cmsg=(--cleanup=whitespace -F "$message")
     fi
@@ -1287,10 +1475,22 @@ integrate_unlocked() {
     [[ -z "$message" ]] || rm -f "$message"
     [[ "$rc" == 0 ]] || { rm -rf "$candidate"; return "$rc"; }
     delivered="$(git -C "$candidate" rev-parse HEAD)"
-    write_candidate_manifest "$candidate" "$delivered" "$dir/manifest" "$dir/.candidate-manifest" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
+    write_candidate_manifest "$candidate" "$delivered" "$input/manifest" "$dir/.candidate-manifest" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
     printf '%s\n' "$delivered" > "$dir/pending-sha"
+    # Durable write-ahead proof must precede any remote side effect. A queue
+    # publishing receipt without this evidence remains indeterminate on reboot.
+    fsync_paths "$dir/.candidate-manifest" "$dir/pending-sha" "$dir/journal" "$dir" || return 4
     git -C "$candidate" fetch -q origin main
     [[ "$(git -C "$candidate" rev-parse origin/main)" == "$current" ]] || { rm -rf "$candidate"; continue; }
+    integration_phase publishing || return $?
+    # Commit hooks and verifier processes must not substitute an unverified tree.
+    if ! verify_submission_identity "$dir" \
+        || [[ "$(session_git -C "$candidate" rev-parse --verify HEAD)" != "$delivered" ]] \
+        || [[ "$(session_git -C "$candidate" rev-parse --verify 'HEAD^')" != "$current" ]] \
+        || [[ "$(session_git -C "$candidate" rev-parse --verify 'HEAD^{tree}')" != "$candidate_tree" ]] \
+        || [[ "$(session_git -C "$candidate" write-tree)" != "$candidate_tree" ]]; then
+      rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2
+    fi
     if "${cgit[@]}" -C "$candidate" push -q origin HEAD:refs/heads/main; then
       [[ "${HARNESS_SESSION_TEST_CRASH_BEFORE_ACK:-0}" == 1 ]] && kill -9 "$BASHPID"
       printf '%s\n' "$delivered" > "$dir/push-ack"
@@ -1301,7 +1501,8 @@ integrate_unlocked() {
       # pending commit from fresh remote history without resubmitting it.
       [[ "${HARNESS_SESSION_TEST_READBACK_FAIL:-0}" == 1 ]] && { rm -rf "$candidate"; return 4; }
       readback="$(mktemp -d "$(state_home)/readback.XXXXXX")"
-      git clone -q "$remote" "$readback"
+      integration_phase readback || return $?
+      git clone -q --no-local "$remote" "$readback"
       git -C "$readback" merge-base --is-ancestor "$delivered" HEAD || { rm -rf "$candidate" "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }
       while IFS= read -r -d '' kind && IFS= read -r -d '' mode && IFS= read -r -d '' hash && IFS= read -r -d '' path; do
         if [[ "$kind" == D ]]; then git -C "$readback" cat-file -e "$delivered:$path" 2>/dev/null && { rm -rf "$candidate" "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }; continue; fi
@@ -1309,18 +1510,36 @@ integrate_unlocked() {
         [[ "$actual_mode" == "$mode" && "$actual_oid" == "$hash" ]] || { rm -rf "$candidate" "$readback"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 4; }
       done < "$dir/.candidate-manifest"
       printf '%s\n' "$delivered" > "$dir/delivered-sha"
-      mv -f "$dir/.candidate-manifest" "$dir/delivered-manifest"
-      rm -rf "$candidate" "$readback"; transition "$id" DELIVERED "$(field "$dir/journal" identity)"; return 0
+      cp -p "$dir/.candidate-manifest" "$dir/delivered-manifest"
+      fsync_paths "$dir/delivered-sha" "$dir/delivered-manifest" "$dir" || return 4
+      rm -rf "$candidate" "$readback"; transition "$id" DELIVERED "$(field "$dir/journal" identity)"
+      fsync_paths "$dir/journal" "$dir" || return 4
+      return 0
     fi
     rm -rf "$candidate"
   done
   transition "$id" CONFLICT "$(field "$dir/journal" identity)"
   return 5
 }
-integrate() { with_lock integrate_unlocked "$@"; }
+integrate() {
+  if integration_queue_enabled; then
+    local accepted job
+    accepted="$(integration_queue enqueue "$1")" || return $?
+    job="$(printf '%s' "$accepted" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["job_id"])')" || return 2
+    integration_queue wait "$job"
+  else
+    with_lock integrate_unlocked "$@"
+  fi
+}
 close_session() {
-  local id="$1" dir state root
+  local id="$1" mode="${2:-wait}" dir state root
+  [[ "$mode" != enqueue ]] || integration_queue_enabled || { echo 'harness-session: queue is not enabled for this pool' >&2; return 2; }
   dir="$(session_dir "$id")"; state="$(field "$dir/journal" state)"; root="$(<"$dir/session-root")"
+  if integration_queue_enabled && [[ "$state" == SUBMITTED || "$state" == INTEGRATING || "$state" == DELIVERED ]]; then
+    if [[ "$mode" == enqueue ]]; then integration_queue enqueue "$id"
+    else integrate "$id"; fi
+    return
+  fi
   use_session_git "$id" || return $?
   if [[ "$state" == OPEN ]]; then
     local rc=0
@@ -1330,6 +1549,7 @@ close_session() {
   fi
   [[ "$state" == OPEN ]] && submit "$id"
   [[ "$(field "$dir/journal" state)" == SUBMITTED ]] || { echo "cannot close $state session" >&2; return 2; }
+  if [[ "$mode" == enqueue ]]; then integration_queue enqueue "$id"; return; fi
   integrate "$id"
 }
 # write_discard_patch <id> <dir>: the session work tree against its base as a
@@ -1410,8 +1630,54 @@ discard_unlocked() {
   )
 }
 case "${1:-}" in
-  create) shift; if [[ "${1:-}" == --local ]]; then shift; [[ $# -eq 1 ]] || exit 2; create "$1" 1; else [[ $# -eq 1 ]] || exit 2; create "$1"; fi ;;
-  discard) shift; [[ $# -eq 1 ]] || exit 2; with_lock discard_unlocked "$1" ;;
+  queue) shift; integration_queue "$@" ;;
+  wait) shift; integration_queue wait "$@" ;;
+  _queue-execute)
+    shift; [[ $# -eq 2 ]] || exit 2
+    # Never trust inherited INPUT_DIR. Only the job's current inherited leases
+    # and pinned runtime can authorize entry past the old compatibility gate.
+    unset INTEGRATION_INPUT_DIR
+    INTEGRATION_INPUT_DIR="$(integration_queue authorize "$1" "$2" --home "${HARNESS_INTEGRATION_HOME:?}")" || exit $?
+    export INTEGRATION_INPUT_DIR
+    integration_queue guardian --home "$HARNESS_INTEGRATION_HOME" >/dev/null &
+    integration_queue await-guardian --home "$HARNESS_INTEGRATION_HOME" || exit $?
+    case "$1" in
+      gc) gc_unlocked; exit $? ;;
+      recover) recover_unlocked "$2"; exit $? ;;
+      discard) discard_unlocked "$2"; exit $? ;;
+      integrate) ;;
+      *) exit 2 ;;
+    esac
+    queued_state="$(field "$(session_dir "$2")/journal" state)"
+    if [[ "$queued_state" == INTEGRATING ]]; then
+      integration_queue recovery-check --home "$HARNESS_INTEGRATION_HOME" || exit $?
+      recover_unlocked "$2"; queued_state="$(field "$(session_dir "$2")/journal" state)"
+    fi
+    if [[ "$queued_state" == DELIVERED ]]; then exit 0; fi
+    [[ "$queued_state" == SUBMITTED ]] || exit 2
+    integrate_unlocked "$2"
+    ;;
+  create)
+    shift
+    if [[ "${1:-}" == --reserved ]]; then
+      reserved_id="${2:-}"
+      shift 2
+      if [[ "${1:-}" == --local ]]; then shift; [[ $# -eq 1 ]] || exit 2; create "$1" 1 "$reserved_id"; else [[ $# -eq 1 ]] || exit 2; create "$1" 0 "$reserved_id"; fi
+    else
+      creation_script="$(engine_dir)/harness_session_creation.py" || creation_script=""
+      [[ -f "$creation_script" && ! -L "$creation_script" ]] || { echo 'harness-session: creation helper unavailable' >&2; exit 2; }
+      if [[ "${1:-}" == --local ]]; then
+        shift; [[ $# -eq 1 ]] || exit 2
+        exec python3 -I "$creation_script" legacy-create --engine "$0" --state "$(state_home)" --local "$1"
+      fi
+      [[ $# -eq 1 ]] || exit 2
+      exec python3 -I "$creation_script" legacy-create --engine "$0" --state "$(state_home)" "$1"
+    fi
+    ;;
+  discard)
+    shift; [[ $# -eq 1 ]] || exit 2
+    if integration_queue_enabled; then integration_queue control discard "$1" --wait
+    else with_lock discard_unlocked "$1"; fi ;;
   resolve-run-dir) shift; [[ $# -eq 3 ]] || exit 2; resolve_run_dir "$@" ;;
   resume) shift; [[ $# -eq 2 ]] || exit 2; resume_session "$1" "$2" ;;
   transition)
@@ -1423,7 +1689,27 @@ case "${1:-}" in
   recover) shift; recover "$1" ;;
   list) list ;;
   heartbeat) shift; heartbeat_session "$1" ;;
-  gc) shift; [[ $# -eq 0 ]] || exit 2; gc_sessions ;;
+  report)
+    shift
+    report_dir="$(engine_dir)" || {
+      echo 'harness-session: cannot resolve report entry' >&2; exit 2;
+    }
+    [[ -f "$report_dir/harness-common.sh" && -r "$report_dir/harness-common.sh" \
+        && -f "$report_dir/harness_session_report.py" && -r "$report_dir/harness_session_report.py" ]] || {
+      echo 'harness-session: report modules unavailable' >&2; exit 2;
+    }
+    source "$report_dir/harness-common.sh"
+    report_python="$(harness_python3_resolve)" || exit $?
+    exec "$report_python" -I "$report_dir/harness_session_report.py" "$@" ;;
+  gc)
+    shift
+    HARNESS_GC_OWNER_FILTER="" HARNESS_GC_SOURCE_FILTER=""
+    if [[ $# -gt 0 ]]; then
+      [[ $# -eq 4 && "$1" == --owner && "$3" == --source-root ]] && valid_id "$2" || exit 2
+      HARNESS_GC_OWNER_FILTER="$2"; HARNESS_GC_SOURCE_FILTER="$4"
+      [[ -d "$4" && ! -L "$4" ]] || exit 2
+    fi
+    gc_sessions ;;
   reserve-hold) shift; [[ $# -eq 5 ]] || exit 2; reserve_hold "$@" ;;
   release-hold) shift; [[ $# -eq 2 ]] || exit 2; release_hold "$@" ;;
   sandbox-check) shift; [[ $# -eq 1 ]] || exit 2; sandbox_check "$1" ;;
@@ -1431,6 +1717,9 @@ case "${1:-}" in
   verifier-sandbox-profile) shift; [[ $# -eq 5 || $# -eq 6 ]] || exit 2; verifier_sandbox_profile "$@" ;;
   submit) shift; submit "$1" ;;
   integrate) shift; [[ $# -eq 1 ]] || exit 2; integrate "$1" ;;
-  close) shift; [[ $# -eq 1 ]] || exit 2; close_session "$1" ;;
-  *) echo 'usage: harness-session {create|resolve-run-dir|resume|transition|exit|recover|list|heartbeat|gc|reserve-hold|release-hold|submit|integrate|close|discard|sandbox-check}' >&2; exit 2 ;;
+  close)
+    shift; close_mode=wait
+    if [[ "${1:-}" == --enqueue || "${1:-}" == --wait ]]; then close_mode="${1#--}"; shift; fi
+    [[ $# -eq 1 ]] || exit 2; close_session "$1" "$close_mode" ;;
+  *) echo 'usage: harness-session {create|resolve-run-dir|resume|transition|exit|recover|list|heartbeat|report|gc|reserve-hold|release-hold|submit|integrate|close [--enqueue|--wait]|queue|wait|discard|sandbox-check}' >&2; exit 2 ;;
 esac

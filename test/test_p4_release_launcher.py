@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -123,7 +124,7 @@ class LegacySessionConsumerTests(unittest.TestCase):
                               env=env or self.env, capture_output=True)
 
     def broker(self, *args):
-        result = subprocess.run([str(BIN / 'session-isolation.sh'), *map(str, args)],
+        result = subprocess.run([str(getattr(self, 'broker_entry', BIN / 'session-isolation.sh')), *map(str, args)],
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
@@ -359,7 +360,8 @@ print('release pinned ' + 'a' * 64 + ' DB -')
         verifier.parent.mkdir(parents=True)
         verifier.write_text('''#!/bin/bash
 set -eu
-[[ "${1:-}" != --help ]] || exit 0
+if [[ "${1:-}" == --help ]]; then echo --verify-candidate; exit 0; fi
+[[ "$5" == --verify-candidate && "$6" == "$(git rev-parse HEAD)" && "$7" == "$(git write-tree)" ]]
 [[ " $* " == *" --staged-only "* && " $* " == *" --dry-run "* && " $* " == *" --no-push "* ]]
 [[ -z "${HARNESS_SESSION_ID:-}" && "${HARNESS_AUTHORITY_NO_REFRESH:-}" == 1 ]]
 git diff --cached --exit-code --quiet && exit 91
@@ -375,6 +377,62 @@ git diff --cached --exit-code --quiet && exit 91
         git(self.source, 'push', '-q', '-u', 'origin', 'main')
         self.env['HARNESS_HEADLESS'] = '1'
         return remote
+
+    def install_broker_chain(self):
+        # Reproduce Homebrew's prefix -> keg bin -> shared helper directory.
+        prefix = self.base / 'brew'
+        keg = prefix / 'Cellar/harness-launcher/0.79.0'
+        share = keg / 'share/harness-launcher'
+        shutil.copytree(BIN, share)
+        (keg / 'bin').mkdir()
+        (keg / 'bin/harness-session').symlink_to('../share/harness-launcher/session-isolation.sh')
+        (prefix / 'bin').mkdir()
+        entry = prefix / 'bin/harness-session'
+        entry.symlink_to('../Cellar/harness-launcher/0.79.0/bin/harness-session')
+        self.env.update(XDG_CONFIG_HOME=str(self.home / '.config'),
+                        XDG_STATE_HOME=str(self.home / '.local/state'),
+                        XDG_CACHE_HOME=str(self.home / '.cache'), TMPDIR=str(self.base))
+        return entry
+
+    @unittest.skipUnless(Path('/usr/bin/lockf').is_file(), 'broker requires macOS lockf')
+    def test_installed_symlink_chain_resumes_direct_session(self):
+        entry = self.install_broker_chain()
+        sid, root, record = self.create()
+        self.broker('exit', sid)
+        self.broker_entry = entry
+        self.broker('resume', self.source, sid)
+        self.assertIn('state=OPEN\n', (record / 'journal').read_text())
+        self.assertEqual((root / 'tracked.txt').read_text(), 'baseline\n')
+        self.assertEqual((self.source / 'tracked.txt').read_text(), 'baseline\n')
+
+    @unittest.skipUnless(Path('/usr/bin/lockf').is_file(), 'broker requires macOS lockf')
+    def test_installed_symlink_chain_submits_direct_session(self):
+        remote = self.base / 'origin.git'
+        git(self.source, 'init', '--bare', '-q', str(remote))
+        git(self.source, 'remote', 'add', 'origin', str(remote))
+        git(self.source, 'push', '-q', '-u', 'origin', 'main')
+        entry = self.install_broker_chain()
+        sid, root, record = self.create()
+        self.broker_entry = entry
+        (root / 'tracked.txt').write_text('submitted through installed entry\n')
+        self.broker('submit', sid)
+        journal = dict(line.split('=', 1) for line in (record / 'journal').read_text().splitlines())
+        self.assertEqual(journal['state'], 'SUBMITTED')
+        self.assertTrue(journal['identity'])
+        self.assertEqual((self.source / 'tracked.txt').read_text(), 'baseline\n')
+
+    @unittest.skipUnless(Path('/usr/bin/sandbox-exec').is_file() and Path('/usr/bin/lockf').is_file(),
+                         'real headless verifier requires macOS Seatbelt and lockf')
+    def test_installed_symlink_chain_closes_with_real_headless_verifier(self):
+        remote = self.prepare_headless()
+        entry = self.install_broker_chain()
+        sid, root, record = self.create()
+        self.broker_entry = entry
+        (root / 'tracked.txt').write_text('delivered\n')
+        self.broker('close', sid)
+        self.assertIn('state=DELIVERED\n', (record / 'journal').read_text())
+        self.assertEqual(subprocess.check_output(['git', '--git-dir=' + str(remote), 'show', 'main:tracked.txt']),
+                         b'delivered\n')
 
     @unittest.skipUnless(Path('/usr/bin/sandbox-exec').is_file() and Path('/usr/bin/lockf').is_file(),
                          'real headless verifier requires macOS Seatbelt and lockf')
@@ -479,3 +537,7 @@ class InstalledEntryConsumerTests(unittest.TestCase):
             result = subprocess.run([str(BIN / 'harness-release-client.sh'), 'runtime-source', directory], capture_output=True)
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout, b'')
+
+
+if __name__ == '__main__':
+    unittest.main()

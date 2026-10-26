@@ -93,4 +93,11 @@ printf 'github_user: known-user\n' > "$TMP/harness/config/.local/config.yaml"
 out="$(harness_gh_token_load "$TMP/harness" 2>&1)"
 [[ "$out" != *gho_TESTTOKEN_known* ]]
 
+# 9. Every launch path loads from the session's source root when there is one:
+#    an isolated worktree has no gitignored config/.local, where team profiles keep
+#    github_user (team-profile sessions ran with no token and gh used the global account).
+calls="$(grep -h 'harness_gh_token_load "' "$ROOT/bin/aliases.zsh" "$ROOT/bin/launcher.sh")"
+[[ "$(grep -c . <<<"$calls")" -eq 5 ]]
+! grep -q 'harness_gh_token_load "\$HARNESS_DIR"' <<<"$calls"
+
 printf 'PASS: per-harness GH_TOKEN derivation is strict, redacted, and fail-open\n'

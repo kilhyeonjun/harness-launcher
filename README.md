@@ -150,6 +150,11 @@ Registered commands are workspace-aware. If the current directory resolves insid
 
 ### Isolated sessions
 
+Concurrent creation uses a per-session lease. Preparation does not admit a session
+until its normal journal and any dispatcher binding are ready; interrupted or
+uncertain publication is recovered with verified readback. See
+[session creation and recovery](docs/session-creation.md).
+
 Root sessions can opt into a disposable detached Git repository with `--isolated`, or by
 setting `HARNESS_SESSION_ISOLATION=1`. The launcher exports
 `HARNESS_SOURCE_ROOT`, `HARNESS_SESSION_ROOT`, and `HARNESS_RUN_DIR`; a root
@@ -161,6 +166,10 @@ canonical harness so existing product worktrees remain available. Claude
 plugins installed with `--scope project` or `--scope local` for the canonical
 harness also load in the session: the launcher mirrors their install records
 for the session root (see [Claude plugins in isolated sessions](docs/architecture.md#claude-plugins-in-isolated-sessions)).
+Native Codex plugins that both the canonical and session `config/codex-surface.json`
+list in `runtime_audit.native_codex_plugins` are carried from the canonical
+`.harness/codex` when installed and enabled there, without hook trust or auth
+(see [Native plugins in isolated sessions](docs/codex-integration.md#native-plugins-in-isolated-sessions)).
 
 A profile can set `HARNESS_SESSION_ISOLATION_DEFAULT=1` to route fresh,
 interactive direct-Claude and native-Codex launches into isolation by default.
@@ -170,6 +179,11 @@ an explicit shared-session choice. Batch, help, diagnostics, and gateway/Kiro
 remain on the legacy path. Claude continuation and fork commands require the exact
 UUID shown at session start, or explicit `--no-isolated` for canonical history. This
 profile setting is a bounded canary switch; it does not change other profiles.
+
+The v0.79.0 release adds source/client capability only. Installing the
+launcher or measured product client does not create host release profiles,
+approve deployment, change authority fences, or activate existing immutable
+session runtimes; each retains its ordinary trusted update/activation boundary.
 
 For release-backed sessions, the launcher parses `HARNESS_PREFIX` from the
 selected committed base's `config/launcher.env`; it does not source that file
@@ -227,8 +241,13 @@ or network call; `ex codex resume <native-uuid>` restores history into a fresh
 local workspace. Completed Git journals keep their original state. A request
 with several possible histories needs an exact UUID in a noninteractive shell.
 Native data is archived separately from disposable roots, and GC retains a root
-until a characterized Native binary verifies the restored full history. See
-[Durable native Codex history](docs/codex-history.md) for limits and recovery.
+until a characterized Native binary verifies the restored full history.
+Historical read/change paths are retained as metadata; workspace image references
+require verified inline bytes and an independently readable archived attachment.
+See [Durable native Codex history](docs/codex-history.md) for limits and recovery.
+Unaccounted terminal work remains held unless an operator explicitly preserves
+its exact inventory, including independent staged and worktree contents, with
+verified recovery outside the disposable root. GC never creates that approval.
 
 Release-owned entries can verify an explicit Claude fork without inheriting the
 parent grant or reopening a completed owner; see
@@ -295,6 +314,23 @@ No profile config or global `TMPDIR` change is needed. This is source-stage
 support: existing immutable installed runtimes require their ordinary trusted
 release/update before adopting it.
 
+Delivery requires the trusted remote baseline verifier's
+[`--verify-candidate BASE_OID TREE_OID` capability](docs/session-integration-queue.md#bound-candidate-verification).
+The verification-only call is bound to the complete merged candidate; the broker
+independently rechecks it before publication. Unsupported baselines refuse without
+fallback. Add baseline support through authorized repository maintenance before
+upgrading the delivery runtime; this is not a maintenance grant. The
+[rollout plan and execution record](docs/plans/2026-10-26-bound-candidate-verification.md)
+preserve the baseline prerequisites, review evidence and activation boundary.
+
+An operator can explicitly enable the [durable integration queue](docs/session-integration-queue.md)
+after enrolling all affected old and profile pools. Then `close --enqueue <uuid>`
+returns a persisted job identifier without waiting for tests, and `wait <job-id>`
+observes verified completion. Default `close` remains synchronous through the
+same queue; acceptance is never reported as delivery. Queue workers serialize
+the same destination and use a separate bounded host execution budget.
+No ordinary launch or close installs or starts the optional service.
+
 Only one launcher may own a UUID at a time. A kernel lease covers the complete
 runtime and is not inherited by Claude, Codex, heartbeat, or title-broker child
 processes. `CLOSED` workspaces remain resumable for 24 hours by default;
@@ -310,6 +346,160 @@ harness-auto codex base
 harness-auto claude base
 harness-auto kiro-cli base
 ```
+
+Claude can also be selected explicitly with `ex claude base -- prompt` or
+`harness-exec /path/to/harness claude base -- prompt`. Existing implicit Claude
+presets still work. The launcher consumes one selector: `claude claude -- text`
+keeps the second `claude` as a native argument. Native management commands such
+as `claude auth status` and `claude --version` bypass session preparation and
+model/settings injection. Outer `--cwd` and workspace controls precede the
+selector; `harness-auto claude --cwd DIR --isolated-session UUID ...` preserves
+those controls. Explicit Claude cannot select a different runtime prefix.
+
+Public OMP entries start through the trusted installed bootstrap, which verifies
+and executes the owner-managed current launcher's actual immutable snapshot.
+The selected operational release can remain older than the installed package.
+Profile, host, projection and native ownership checks run in that closure;
+metadata help does not establish model, required-policy, approval or restore
+acceptance.
+
+The explicit `ex omp` route starts a fresh Oh My Pi session using a separately
+prepared native home and a SHA-256-pinned executable. Configure
+`HARNESS_OMP_BIN`, `HARNESS_OMP_SHA256`, and `HARNESS_OMP_ROOT` in the trusted
+`config/launcher.env` only after preparing that owned namespace. There is no
+`PATH` fallback or automatic download/configuration. `ex omp --version` and
+`ex omp --help` bypass workspace/session preparation. Existing leading `--cwd`
+and workspace controls keep their usual meaning for fresh sessions. Bounded
+management also bypasses workspace/session preparation:
+
+```bash
+ex omp login anthropic
+ex omp login openai-codex
+ex omp models ls anthropic --json --kind chat --no-extensions
+ex omp models ls openai-codex --json --kind chat --no-extensions
+```
+
+Login and model listing always use the prepared native home's `cwd` and lock,
+including with outer workspace controls. These exact argument arrays permit no
+extra flags or suffixes. Native login may open a browser and persist credentials;
+listing may refresh provider catalogs or credentials before filtering. Neither
+command proves a model response. Other native management, direct native
+restore/resume/fork flags and unbound native flags remain refused; this is
+bounded support, not complete OMP CLI compatibility.
+
+Policy-managed OMP print accepts `-p`/`--print` and `--mode text|json`
+(including `--mode=value`). Positional and `@file` startup prompts require an
+explicit print form; piped/non-TTY stdin is still protected when native OMP
+selects print implicitly. RPC, RPC-UI and ACP remain unsupported. Caller
+`--config`, tools and extension overrides remain refused.
+
+The required main-session extension checks the exact expanded model text before
+provider dispatch. Markdown commands/templates are checked after expansion, not
+as their typed command names; custom extension commands remain disabled. Images
+and unsupported prompt shapes are refused before hooks. A canonical deny, ask,
+exit 2, readiness/binding failure or whole-gate timeout aborts dispatch and latches
+later print prompts denied. Per-hook nonblocking failures retain Claude parity.
+The whole prompt gate has a 25-second cap below the native 30-second handler
+timeout. Preparation retries reuse one verdict; sequential identical prompts
+are independent submissions. TUI and child/advisor prompt semantics are unchanged.
+
+Headless denials emit only a sanitized stderr code. A launcher-owned private
+receipt, bound to a fresh nonce, launcher tuple and native process/session,
+maps denied, missing or invalid results to exit 2 rather than an empty success.
+Caller receipt variables are not forwarded. The parent collects the result while
+native exec and continuation FD locks remain native-owned. Only an incoming,
+absolute, existing non-symlink real `HARNESS_SESSION_STATE_HOME` directory is
+forwarded into native and hook-child environments; no state location is invented.
+When absent, native receives an empty no-authority sentinel so workspace `.env`
+cannot invent a state directory; hook children do not receive that empty field.
+
+The paired normal kernel entry and an explicitly enrolled profile also support
+opt-in continuation:
+
+```bash
+ex omp --session-new --print -- 'Remember a synthetic label.'
+ex omp --session-resume <handle> --print -- 'Recall that label.'
+```
+
+Use the handle printed as `OMP_CONTINUATION_HANDLE` after a successful durable
+NEW run. It identifies the existing kernel workspace, not a native UUID or a
+permission. These modes require one leading mode, `--`, at most one literal
+prompt, and the existing nonstate options. They cannot be combined with outer
+cwd/workspace controls. RESUME reuses the original workspace and bound runtime
+under current host/profile admission; it never creates a replacement workspace.
+Missing, revoked, retired or unresolved state stops without retry or fallback.
+The original workspace must remain available; this does not promise indefinite
+retention or cross-host restoration. See
+[normal OMP continuation](docs/architecture.md#normal-omp-continuation).
+
+Before deploying the typed selector, the trusted configuration operator must
+prepare its complete enrollment index. Never-enrolled profiles retain the
+existing three `launcher.env` values. Explicitly enrolled profiles use only the
+host/profile-bound typed projection; missing, expired, blocked or revoked data
+stops OMP before native execution, with no fallback to the old values. Claude
+and Codex do not depend on this index. This is local configuration data under
+the existing trusted operator boundary, not an account or provider grant.
+See [OMP entry and prepared namespace](docs/architecture.md#omp-entry-and-prepared-namespace)
+and [typed host/profile enrollment](docs/architecture.md#typed-omp-hostprofile-enrollment)
+for the exact boundary and supported options.
+
+Enrolled normal OMP sessions also require the paired canonical core compiler.
+The launcher builds a schema-1 selection whose `runtime_version` is the enrolled
+upstream binary's release version; the compiler emits the bundle and its argv
+(`--no-extensions --trusted-extension=<bundle>/required-extension.ts`, plus the
+bundle `--config` settings overlay). Structural preparation returns `ready=false`
+and `inventory_admitted=false`. Caller-supplied `--trusted-extension`, locator
+and resource overrides refuse. The binary pin, namespace and profile binding
+stay exact. Management and never-enrolled routing retain their existing behavior.
+
+Native must resolve its real complete inventory, validate it, consume the same
+array/bytes and complete required policy startup before readiness. Source-equal
+kernel/fake tests prove structural ingress only. Installed native loading, build
+provenance, applicable fit and restore need separate reviewed delivery/canary
+proof. OMP structural tests use the pinned synthetic source fixture described
+below by default; an explicit paired fixture must pass the same admission. See
+[required OMP preparation](docs/architecture.md#required-omp-preparation-and-native-consumption).
+
+### OMP test source fixture
+
+`test/run-all.sh`, `test/test-omp-continuation.sh` and
+`test/test-omp-required-loading.sh` call the same test-only admission entry before
+running payload code. With `HARNESS_TEST_OMP_SOURCE` unset, it selects
+`test/fixtures/w07-source` in the current checkout. Direct execution needs no
+external harness checkout:
+
+```bash
+bash test/test-omp-continuation.sh
+bash test/test-omp-required-loading.sh
+python3 -I -S -B test/test_omp_fixture_source.py
+```
+
+To test a separate paired fixture, set `HARNESS_TEST_OMP_SOURCE` to its absolute
+physical directory. It must contain the exact allowlisted code and synthetic
+inputs, with the same manifest. Empty, relative, missing, changed or unsafe roots
+fail before payload import or child execution; there is no installed or ambient
+source fallback. The directory and files must belong to the current user, have
+no symlink components or group/world write permission, and payload files must be
+regular singlelink files with their pinned modes and hashes. A system-owned
+sticky temporary ancestor is allowed above the owned checkout/fixture.
+
+The real source files (the compiler, bridge, model-mode helper and source, OMP
+policy section, Python wrapper and curl guard) and seven synthetic YAML inputs
+are pinned by
+`test/omp-fixture-policy.json`. The fixture `manifest.json` has identical bytes;
+`test/omp-fixture-source.py` pins their policy SHA-256. For a reviewed fixture
+update, update the fixed payload records (path, raw SHA-256, size and mode), write
+both JSON files identically, then update `POLICY_SHA256` in the helper and run the
+regressions in the same change. The compiler, bridge, model-mode helper and OMP
+policy section are copies of the canonical upstream-OMP (schema 1) sources (alias tokens neutralized); the pinned
+`revision` string predates them and is a fixture label, not their provenance.
+Origin/revision/digests identify test input only;
+they grant no runtime, lease, native readiness or disclosure authority.
+
+These suites execute the real compiler/template with synthetic input and owned
+fake runtimes. They prove structural source/ingress behavior with
+`ready=false, inventory_admitted=false`; actual native discovery, consumption,
+policy startup and installed compatibility require separate native verification.
 
 This is the supported command override for Orca's built-in Claude, Codex, and Kiro agent entries. It does not infer a profile from repository names or remotes; the worktree must live below its registered harness boundary.
 
@@ -351,6 +541,15 @@ replaced Codex function. Add
 `harness_shell_enable` to `.zshrc` after the source and registration lines for
 persistent activation, then start a new shell (or re-source `.zshrc`).
 
+For explicit read-only disk diagnostics, run `harness-session report --json`.
+It explains retained roots and unknown verification without running GC. Add
+`--sizes` for bounded metadata-only size observations; these figures do not
+establish physically reclaimable space. See [session disk diagnostics](docs/session-report.md).
+Agent startup does not run pool GC. Optional managed background maintenance
+defaults to report-only and requires explicit installation and deletion approval.
+New managed sessions can use registered profile pools while old UUIDs keep their
+absolute roots and bound launcher versions.
+
 The release also includes `bin/harness-plan`: a side-effect-free JSON interface to the validated model, effort, context and permission plan used by managed workspace controls. See [managed workspace creation](docs/herdr-web-ui.md#managed-workspace-creation-and-previous-conversations). It renders a plan; starting an agent still requires an explicit launch.
 
 External orchestrators and non-interactive shells can bypass `.zshrc` while keeping the same project policy:
@@ -384,6 +583,11 @@ harness-headless <profile> --agent codex --model gpt-6.1-sol --effort medium \
   --lock-file run.lock --budget-usd 5 --timeout-min 30
 ```
 
+Codex preflight loads its configuration under the same sandbox before any model
+request. The fixed macOS system requirements file is readable only when it and
+all parent directories are root-owned and not writable by other users; its
+siblings and writes remain denied. Missing system requirements need no grant.
+
 `--target <name>` (Codex only) runs the same Codex agent on a registered personal code repository instead of the harness and delivers a successful change as a draft pull request on a new `loop/<task>-<approval8>` branch. The owner registers each repository once from a terminal; the caller passes the sha256 of that record, so a changed registry entry is refused until it is registered again:
 
 ```bash
@@ -409,7 +613,19 @@ harness-paseo sync --reload                    # Paseo providers from the profil
 harness-herdr-web install                      # herdr web ui, local-only behind a token
 harness-herdr-web usage                        # Claude/Codex plan usage, pace and exhaustion time
 harness-herdr-web usage --watch                # the same as a live board for a herdr popup
+harness-herdr-web cli devices                   # sanitized HTTPS-peer device metadata
+harness-herdr-web cli input --device <uuid> --target-file <private-file> --text-file <private-file> --new-operation
+harness-herdr-web cli agent-wait --device <uuid> --pane <pane-id> --until working --until done --timeout-seconds 30
 ```
+
+Device display names support printable Unicode. Select devices by their complete
+UUID; display names never grant input or lifecycle authority.
+
+The [UI answer CLI](docs/herdr-ui-answer-cli.md) prepares an ordinary Claude option workflow and executes one explicit Web-derived step per command, with private receipts and get/cancel-only recovery after uncertainty.
+
+The unadvertised [owned lifecycle CLI](docs/herdr-lifecycle-cli.md) creates one owned workspace root, interrupts or closes only a completed private create receipt, and recovers the same operation without replay.
+
+The unadvertised [bounded pane read CLI](docs/herdr-pane-read-cli.md) returns metadata by default; `--body` explicitly opts into one bounded visible-text read as JSON.
 
 A plain Codex `app-server` runs without `-p` behind a JSON-RPC guard that keeps every thread working directory inside the selected harness. See [Paseo integration](docs/paseo-integration.md).
 
@@ -427,7 +643,7 @@ The same command shape works for every registered prefix:
 <prefix> ultracode               Claude Code opus[1m] + xhigh (direct only)
 <prefix> continue|resume         Claude Code session shortcut
 <prefix> light                   Claude Code with the light MCP surface (SSH-backed servers excluded)
-<prefix> codex [profile] [272k|1m] native Codex CLI; 272K default, 1M opt-in
+<prefix> codex [profile] [auto|272k|500k|1m] native Codex CLI; Auto default
 <prefix> codex --app <id> [profile]  enable one ChatGPT app for this launch only
 <prefix> codex [profile] work    native Codex CLI with the work MCP surface (any profile)
 <prefix> codex continue          Codex `resume --last`
@@ -631,6 +847,22 @@ Browser support keeps the terminal-safe `browser-harness` path, materializes sup
 See [Codex integration](docs/codex-integration.md) for the generated layout, configuration translation, plugin policy, and compatibility notes.
 For large installations, see [Codex surface manifests](docs/codex-surface.md) for duplicate collapse, explicit-only skills, exact MCP profiles, and the warm prepare path.
 
+## Canonical update approval
+
+The dedicated `harness-canonical-update` command carries one registered-profile
+request into a fresh, no-auth native OMP TUI for genuine human **once** approval:
+
+```text
+harness-canonical-update --profile <registered-profile> --expected-base <full40> --revision <full40>
+```
+
+It requires the officially installed selected launcher and its exact sealed
+private-code closure; it accepts no root, source, credential or approval override.
+Installation can precede the canonical update while preserving running sessions
+and an older Homebrew keg. An unknown result must not be blindly retried. See
+[canonical update through native approval](docs/canonical-update.md) for the full
+approval scope, trusted installation prerequisite and selected-runtime entry.
+
 ## Local configuration and secrets
 
 Keep machine-specific gateway URLs, API keys, and MCP credentials out of Git:
@@ -673,6 +905,17 @@ cd harness-launcher
 ./test/run-all.sh
 ```
 
+The no-argument full runner keeps its suite invocations in one ordered inventory,
+including the canonical bootstrap Python and native JavaScript suites. The latter
+requires an available Node.js runtime with `node:test` support; a missing runtime
+fails rather than skipping the suite. CI runs its four fixed groups
+on separate `macos-15` jobs, each still limited to 20 minutes and retaining the
+same preparation, jq, syntax and documentation checks. The required `test`
+aggregate fails unless all four jobs succeed with complete, nonoverlapping
+current-source inventory coverage. This is complete-suite partitioning, not a
+reduced test selection or a native/runtime proof. See
+[CI regression partition](docs/architecture.md#ci-regression-partition).
+
 The suite dispatches each test through its declared Bash or Zsh interpreter.
 Codex surface tests run new/unlisted cases first in a serial gate. Reviewed
 publication, signal, auth, and revocation cases then stay serial with each other
@@ -714,6 +957,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for project scope, test expectations, por
 - [Public-safe contract demo](https://github.com/kilhyeonjun/harness-launcher-demo)
 - [Documentation index](docs/README.md)
 - [Architecture and trust boundaries](docs/architecture.md)
+- [Canonical update through native approval](docs/canonical-update.md)
 - [Codex integration](docs/codex-integration.md)
 - [Terminal runtimes](docs/terminal-runtimes.md)
 - [Paseo integration](docs/paseo-integration.md)
@@ -737,3 +981,48 @@ For vulnerabilities or credential-handling problems, do not open a public issue.
 Fresh manifest-enabled isolated Codex sessions carry existing canonical hook
 approvals across verified equivalent script paths. Changed or unapproved hooks
 still require native review; see [hook trust](docs/codex-integration.md#hook-trust-in-isolated-sessions).
+
+## Trusted preservation
+
+See [the trusted preservation guide](docs/trusted-preservation.md) for the
+one-shot, native-confirmed Git preservation command, including its strict
+opt-in GitHub SSH identity binding for live remote verification.
+
+The OMP continuation and required-loading fixtures require a real jq executable.
+They select system jq first, otherwise jq from the normal test runner PATH, and
+expose only that executable’s physical directory to preparation; the original
+dependency safety checks and isolated native environment remain in force. CI
+declares jq explicitly.
+The regression runner preserves shell-suite output and exit status. On child
+failure it also reports only the suite basename, interpreter basename and status;
+this identifies the dispatch boundary without dumping arguments or environment.
+The required-loading fixture applies that same preparation PATH to its parent
+in-process checks, then restores the caller PATH at cleanup.
+
+The standard ephemeral GitHub-hosted `macos-15` CI job prepares its two
+Homebrew directory modes after dependency installation, so the jq dependency
+checks see owned directories. `test/omp-ci-owned-homebrew.py` preflights `/opt/homebrew` and
+`/opt/homebrew/Cellar` together, then removes only group/other write bits on
+current-uid-owned directory descriptors. Root-owned safe directories are no-ops;
+root-owned unsafe or foreign-owned directories stop the job. This prerequisite
+never weakens the production dependency checks or proves V1 success. The helper
+is exclusively for that trusted disposable job; exporting CI environment flags
+on a personal or shared machine does not authorize running it. Its synthetic
+tests use owned temporary trees and never modify the actual Homebrew prefix.
+
+The source-bound jq CI evidence pin was retired with the local OMP fork
+(2026-10-22) because it pinned fork-era sources; the runtime jq dependency
+checks above remain.
+
+OMP model modes are launcher controls: `ex omp --model-mode <id>` selects
+`gpt-only`, `opus-only`, `hybrid-gpt-lead`, or `hybrid-opus-lead`; a fresh mode
+source defaults to its canonical `hybrid-opus-lead` recipe. The fresh TUI lists
+that source's `.claude/source/omp-model-modes.json` `default` first and marks it
+`(기본)`; the launcher does not hardcode a separate recommended model. A source
+that still declares `gpt-only` must update its canonical recipe to change that
+default. Explicit mode choices and saved TUI history keep their selected mode.
+Tokens after `--` remain data. Direct model/provider/effort overrides conflict with a mode.
+The id is validated by the source's own parser; the compiler renders the mode
+into the bundle's `omp-settings.yml` overlay (model roles, agent overrides and
+cross-provider fallback chains). Resume uses `--model-mode` when given, else the
+source default.

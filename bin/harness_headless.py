@@ -43,7 +43,8 @@ SESSION_LINE = re.compile(r'^harness-launcher: isolated session (' + UUID + r');
 # (API keys, bot tokens, ...) is dropped before anything is launched.
 ENV_ALLOW = ('HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG')
 # Launcher state location only, so `harness-session` sees the same sessions.
-ENV_LAUNCHER = ('HARNESS_SESSION_STATE_HOME', 'XDG_STATE_HOME', 'HARNESS_SESSION_RETENTION_SECONDS')
+ENV_LAUNCHER = ('HARNESS_SESSION_STATE_HOME', 'XDG_STATE_HOME', 'HARNESS_SESSION_RETENTION_SECONDS',
+                'HARNESS_SESSION_POOL_BASE', 'HARNESS_SESSION_LAYOUT')
 HOME_DENY = ('.hermes', 'buzz', '.ssh', '.config/gh', '.aws', '.claude')
 # Edit-tool denies only (persistence vectors that are not secrets).
 HOME_WRITE_DENY = ('Library/LaunchAgents',)
@@ -352,14 +353,14 @@ def state_home(env):
     return Path(base, 'harness-launcher')
 
 
-def mandatory_settings(source, home, caller_deny_read, run_tmp=None, effort=None):
+def mandatory_settings(source, home, caller_deny_read, run_tmp=None, effort=None, state_base=None):
     """Launcher-owned containment. Passed last, so the launcher's settings
     merge (dicts deep-merged, lists unioned, scalars last-wins) keeps every
     value here over any earlier --settings. Every sandbox read-denied path is
     also denied to the Read and edit tools, which the sandbox does not cover.
     --effort is effortLevel here; xhigh needs thinking on (as the launcher
     forces for its own xhigh), whatever the user settings say."""
-    settings = _mandatory_settings(source, home, caller_deny_read, run_tmp)
+    settings = _mandatory_settings(source, home, caller_deny_read, run_tmp, state_base)
     if effort:
         settings['effortLevel'] = effort
         if effort == 'xhigh':
@@ -367,7 +368,7 @@ def mandatory_settings(source, home, caller_deny_read, run_tmp=None, effort=None
     return settings
 
 
-def _mandatory_settings(source, home, caller_deny_read, run_tmp):
+def _mandatory_settings(source, home, caller_deny_read, run_tmp, state_base=None):
     uid = os.getuid()
     homes = [os.path.join(home, d) for d in HOME_DENY]
     sources = [source, os.path.realpath(source)]
@@ -377,6 +378,10 @@ def _mandatory_settings(source, home, caller_deny_read, run_tmp):
     # Launcher records (profiles, target records and policy, the endpoint key)
     # are written only by the owner, never by a run.
     deny_write = [f'/private/tmp/claude-{uid}', f'/tmp/claude-{uid}', harness_target.profile_home()]
+    # The launcher's durable interactive scratchpad base (CLAUDE_CODE_TMPDIR for
+    # interactive sessions) holds other sessions' scratchpads; a run never writes it.
+    durable = os.path.join(state_base or os.path.join(home, '.local', 'state'), 'cct')
+    deny_write += list(dict.fromkeys([durable, os.path.realpath(durable)]))
     write_paths = deny_read + [os.path.join(home, d) for d in HOME_WRITE_DENY] + deny_write
     deny = [f'Read(/{path}/**)' for path in deny_read]
     deny += [f'{tool}(/{path}/**)' for path in write_paths for tool in EDIT_TOOLS]
@@ -971,6 +976,12 @@ def codex_preflight(profile, exe, host, key_file, env, root):
     if helped.returncode != 0:
         raise Refused(f'{CODE_MODE_HOST} does not start under the agent sandbox (exit {helped.returncode}): '
                       f'{helped.stderr.strip()[-300:]}')
+    # --version does not load configuration. Check the exact execution profile
+    # and environment without spending a model request on an unusable CLI.
+    bootstrap = sandboxed(exe, 'features', 'list', stdout=subprocess.DEVNULL)
+    if bootstrap.returncode != 0:
+        raise Refused(f'codex configuration does not load under the agent sandbox (exit {bootstrap.returncode}): '
+                      f'{bootstrap.stderr.strip()[-300:]}')
     if sandboxed('/bin/cat', os.path.realpath(key_file), stdout=subprocess.DEVNULL).returncode == 0:
         raise Refused('--endpoint-key-file is readable inside the agent sandbox; keep it under ~/.config/harness-launcher')
 
@@ -1016,6 +1027,10 @@ def run(args, result, run_tmp):
             raise Refused('--settings-file must contain a JSON object')
         validate_caller(caller)
     env = child_env(run_tmp)
+    if env.get('HARNESS_SESSION_LAYOUT') == 'profiles-v1':
+        from harness_session_pools import initialize_pool
+        try:env['HARNESS_SESSION_STATE_HOME']=str(initialize_pool(Path(env['HARNESS_SESSION_POOL_BASE']),hdir))
+        except (KeyError,OSError,ValueError) as exc:raise Refused('profile pool unavailable: '+str(exc))
     state = state_home(env)
     journal_run_start(args, os.environ['HOME'])
     log_path = args.result_file + '.log'
@@ -1086,7 +1101,7 @@ def run_claude(args, caller, hdir, env, state, run_tmp, stdin, timeout, log, log
     if caller is not None:
         command += ['--settings', json.dumps(caller)]
     caller_deny_read = ((caller or {}).get('sandbox') or {}).get('filesystem', {}).get('denyRead', [])
-    settings = mandatory_settings(hdir, env['HOME'], caller_deny_read, run_tmp, args.effort)
+    settings = mandatory_settings(hdir, env['HOME'], caller_deny_read, run_tmp, args.effort, env.get('XDG_STATE_HOME') or None)
     command += ['--settings', json.dumps(settings)]
     with tempfile.TemporaryFile('w+') as out:
         try:

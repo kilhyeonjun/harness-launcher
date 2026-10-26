@@ -172,7 +172,8 @@ sys.exit(int(sys.argv[2]))
         repo.mkdir()
         (repo / 'core/bin').mkdir(parents=True)
         verifier = repo / 'core/bin/auto-deliver.sh'
-        verifier.write_text('#!/bin/bash\n[[ "${1:-}" != --help ]] || exit 0\nexec ' +
+        verifier.write_text('#!/bin/bash\nif [[ "${1:-}" == --help ]]; then echo --verify-candidate; exit 0; fi\n'
+                            '[[ "$5" == --verify-candidate && "$6" == "$(git rev-parse FETCH_HEAD)" && "$7" == "$(git rev-parse FETCH_HEAD^{tree})" ]] || exit 93\nexec ' +
                             shlex.quote(sys.executable) + ' probe.py ' + shlex.quote(str(self.report)) + ' ' + str(code) + '\n')
         subprocess.run(['git', 'init', '-q', str(repo)], check=True)
         subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
@@ -194,11 +195,13 @@ sys.exit(int(sys.argv[2]))
 set -euo pipefail
 state_home() { printf '%s\\n' "$STATE"; }
 session_dir() { printf '%s/sessions/%s\\n' "$STATE" "$1"; }
+integration_headless() { [[ -e "$(session_dir "$1")/headless" ]]; }
+verifier_exec() { "$@"; }
 phys() { (cd "$1" && pwd -P); }
 session_git() { git "$@"; }
 verifier_sandbox_profile() { printf '%s\\n' "$1" "$2" "$5" > "$GRANTS"; }
 ''' + functions + ('\nmktemp() { [[ "$*" != *verifier-copy.* ]] || return 1; command mktemp "$@"; }\n' if fail_copy else '') +
-                          '\nrun_repository_verifier "$CANDIDATE" fixture "$REPO" "$BASELINE"\n')
+                          '\nrun_repository_verifier "$CANDIDATE" fixture "$REPO" "$BASELINE" "$(git -C "$REPO" rev-parse "$BASELINE^{tree}")"\n')
         env = dict(os.environ, HOME=str(self.home), TMPDIR=str(self.agent_tmp), STATE=str(self.state),
                    OVERLAY_PATH_HELPER=str(bindir / 'unused'), RELEASE_CLIENT=str(release), SANDBOX_EXEC=str(self.sandbox),
                    GRANTS=str(self.base / 'grants'), CANDIDATE=str(self.candidate), REPO=str(repo), BASELINE=baseline)

@@ -3,3 +3,4 @@
 test/tmp/
 .worktrees/
 .worktrees/
+__pycache__/

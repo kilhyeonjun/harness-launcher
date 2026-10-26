@@ -260,12 +260,16 @@ _harness_launcher_restore_resume_id() {
 # when more than one local history is available.
 _harness_launcher_codex_history_select() {
   local source_root="$1" mode="$2" helper py state output interactive=0
+  local -a scope
   helper="$_HARNESS_LAUNCHER_BIN/codex-history.py"
   [[ -f "$helper" && ! -L "$helper" ]] || return 1
   py="$(harness_python3_resolve 2>/dev/null)" || return 1
   state="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  # An exact id needs only its own row; the full catalog dedupes every home.
+  [[ "$mode" =~ $_HARNESS_LAUNCHER_UUID_RE ]] && scope=(--native-id "${(L)mode}")
+  [[ -z "${HARNESS_SESSION_POOL_BASE:-}" ]] || scope+=(--pool-base "$HARNESS_SESSION_POOL_BASE")
   output="$("$py" -I "$helper" catalog --source-root "$source_root" --state-home "$state" \
-    --legacy-state-home "${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher")" || return $?
+    --legacy-state-home "${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher" "${scope[@]}")" || return $?
   if [[ "$mode" == list ]]; then
     print -r -- "$output"
     return 0
@@ -293,7 +297,7 @@ elif uuid.fullmatch(mode):
 else:
     raise SystemExit(2)
 row = entries[0]
-for key in ("native_id", "home", "source_root", "isolation_id", "origin_runtime", "snapshot_id", "updated_at", "status", "reason"):
+for key in ("native_id", "home", "source_root", "isolation_id", "origin_runtime", "snapshot_id", "updated_at", "status", "reason", "origin_state_home"):
     value = row.get(key)
     if value is not None and (not isinstance(value, str) or "\n" in value or "\r" in value):
         raise SystemExit(2)
@@ -424,6 +428,12 @@ _harness_launcher_restore_probe() {
   restore_model="" restore_effort="" restore_context=""
   if [[ "$agent" == codex ]]; then
     hits=("$HARNESS_DIR"/.harness/codex/sessions/*/*/*/rollout-*-$id.jsonl(N.om[1]))
+    # A durable-history resume starts in a fresh home that is hydrated only after
+    # this probe: read the model and effort from the selected immutable snapshot.
+    if (( ${#hits} == 0 )) && [[ "${HARNESS_CODEX_HISTORY_SNAPSHOT_ID:-}" =~ '^[0-9a-f]{64}$' ]]; then
+      local history_state="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+      hits=("$history_state"/native-history/snapshots/$HARNESS_CODEX_HISTORY_SNAPSHOT_ID/data/sessions/*/*/*/rollout-*-$id.jsonl(N.om[1]))
+    fi
   else
     hits=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/$id.jsonl(N.om[1]))
   fi
@@ -444,7 +454,7 @@ _harness_launcher_restore_probe() {
           minimal) [[ "$agent" == codex ]] && restore_effort="$value" ;;
         esac ;;
       context)
-        [[ "$agent" == codex && "$value" == (272k|1m) ]] && restore_context="$value" ;;
+        [[ "$agent" == codex && "$value" == (auto|272k|500k|1m) ]] && restore_context="$value" ;;
     esac
   done
   return 0
@@ -456,9 +466,10 @@ _harness_launcher_restore_probe() {
 #   grant) and restore_isolated from the launch record, only when it
 #   names this harness root. Returns 1 (all empty) without a usable record.
 _harness_launcher_restore_launch_record() {
-  local agent="$1" id="$2" source_root="$3" py out line key value recorded=""
+  local agent="$1" id="$2" source_root="$3" bound_state="${4:-}" bound_isolation="${5:-}"
+  local py out line key value recorded="" recorded_session=""
   local helper="$_HARNESS_LAUNCHER_BIN/harness-launch-record"
-  local state_home="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  local state_home="${bound_state:-${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}}"
   restore_permission="" restore_approval="" restore_sandbox="" restore_network="" restore_bypass="" restore_isolated="" restore_profile="" restore_window=""
   [[ -f "$helper" ]] || return 1
   py="$(harness_python3_resolve 2>/dev/null)" || return 1
@@ -473,16 +484,73 @@ _harness_launcher_restore_launch_record() {
       network) [[ "$agent" == codex && "$value" == (enabled|disabled) ]] && restore_network="$value" ;;
       bypass) [[ "$agent" == codex && "$value" == 1 ]] && restore_bypass=1 ;;
       profile) [[ "$agent" == codex && "$value" == (fast|base|sol|astra|plan|rich) ]] && restore_profile="$value" ;;
-      context) [[ "$agent" == claude && "$value" == 1m ]] && restore_window=1m ;;
+      context)
+        if [[ "$agent" == claude && "$value" == 1m ]]; then restore_window=1m
+        elif [[ "$agent" == codex && "$value" == (auto|272k|500k|1m) ]]; then restore_context="$value"; fi ;;
       isolated) [[ "$value" == (0|1) ]] && restore_isolated="$value" ;;
       source_root) [[ "$value" == /* && "$value" != *[[:cntrl:]]* ]] && recorded="$value" ;;
+      harness_session_id) [[ "$value" =~ $_HARNESS_LAUNCHER_UUID_RE ]] && recorded_session="${(L)value}" ;;
     esac
   done
-  if [[ -z "$recorded" || "${recorded:A}" != "${source_root:A}" ]]; then
+  # A bound read (history import) also needs the record to belong to the row's
+  # origin: the canonical checkout (isolated=0) or exactly that isolated session.
+  local binding_ok=true
+  if [[ -n "$bound_isolation" ]]; then
+    if [[ "$bound_isolation" == canonical ]]; then
+      [[ "$restore_isolated" == 0 ]] || binding_ok=false
+    else
+      [[ "$restore_isolated" == 1 && -n "$recorded_session" && "$recorded_session" == "${(L)bound_isolation}" ]] || binding_ok=false
+    fi
+  fi
+  if ! $binding_ok || [[ -z "$recorded" || "${recorded:A}" != "${source_root:A}" ]]; then
     restore_permission="" restore_approval="" restore_sandbox="" restore_network="" restore_bypass="" restore_isolated="" restore_profile="" restore_window=""
+    [[ "$agent" != codex ]] || restore_context=""
     return 1
   fi
   return 0
+}
+
+# _harness_launcher_restore_launch_record_bound <agent> <id> <source-root> <state-home> <isolation-id|canonical>
+#   The record is read only from <state-home> and accepted only when it is bound
+#   to the named origin (see _harness_launcher_restore_launch_record).
+_harness_launcher_restore_launch_record_bound() {
+  [[ -n "${4:-}" && -n "${5:-}" ]] || return 1
+  _harness_launcher_restore_launch_record "$1" "$2" "$3" "$4" "$5"
+}
+
+# _harness_launcher_codex_import_origin <source-root> <lowercase id>
+#   Prints `<origin_state_home> <isolation_id>` for a history import, from the
+#   re-selected catalog row (never from the environment), only when the launch is
+#   top-level and the origin state home equals exactly one configured pool.
+_harness_launcher_codex_import_origin() {
+  local source_root="$1" id="$2" selection key value py ctx
+  local row_source="" row_isolation="" row_origin="" row_id=""
+  local current="${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+  local legacy="${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher"
+  ctx="$_HARNESS_LAUNCHER_BIN/harness_launch_context.py"
+  [[ -f "$ctx" && ! -L "$ctx" ]] || return 1
+  py="$(harness_python3_resolve 2>/dev/null)" || return 1
+  HARNESS_SESSION_ID="${inherited_harness_session_id-}" "$py" -I "$ctx" top-level >/dev/null 2>&1 || return 1
+  selection="$(_harness_launcher_codex_history_select "$source_root" "$id" 2>/dev/null)" || return 1
+  while IFS='=' read -r key value; do
+    case "$key" in
+      source_root) row_source="$value" ;;
+      isolation_id) row_isolation="$value" ;;
+      origin_state_home) row_origin="$value" ;;
+      native_id) row_id="$value" ;;
+    esac
+  done <<< "$selection"
+  [[ "$row_source" == "$source_root" && "${(L)row_id}" == "$id" && -n "$row_origin" && -n "$row_isolation" ]] || return 1
+  [[ "$row_origin" == /* && "$row_isolation" != *[[:space:]]* ]] || return 1
+  [[ "$row_isolation" == canonical || "$row_isolation" =~ $_HARNESS_LAUNCHER_UUID_RE ]] || return 1
+  local matches=0
+  [[ "${row_origin:A}" == "${current:A}" ]] && matches=1
+  [[ "${row_origin:A}" == "${legacy:A}" && "${legacy:A}" != "${current:A}" ]] && matches=1
+  # The re-selected catalog validates the registered source profile and admits
+  # its shared original pool explicitly. An environment origin is never used.
+  [[ -n "${HARNESS_SESSION_POOL_BASE:-}" && "${row_origin:A}" == "${HARNESS_SESSION_POOL_BASE:A}" ]] && matches=1
+  (( matches == 1 )) || return 1
+  print -r -- "$row_origin $row_isolation"
 }
 
 # _harness_launcher_restore_hint <claude|codex> <id> <model>
@@ -1031,6 +1099,15 @@ _harness_launcher_is_claude_management_command() {
   harness_claude_is_management_command "$@"
 }
 
+# _harness_launcher_agent_usage_reconcile [<harness-dir>]
+#   One bounded refresh of ~/.agent-usage/collection.d per launch entry, over
+#   every registered harness plus the one being launched. Fail-open.
+_harness_launcher_agent_usage_reconcile() {
+  local -a dirs=("${_HARNESS_LAUNCHER_REGISTERED_DIRS[@]}")
+  [[ -z "${1:-}" ]] || dirs+=("${1:A}")
+  harness_agent_usage_reconcile "$_HARNESS_LAUNCHER_BIN" "${(@u)dirs}" || true
+}
+
 _harness_launcher_auto_claude() {
   _harness_launcher_auto_runtime claude "$@"
 }
@@ -1063,6 +1140,8 @@ codex() {
       # Per-harness GitHub identity: fail-open, never overrides with an empty token.
       local GH_TOKEN HARNESS_GH_USER
       harness_gh_token_load "$harness_dir" || true
+      local ${=HARNESS_AGENT_USAGE_DISCARD_VARS}
+      _harness_launcher_agent_usage_reconcile "$harness_dir"
       if harness_observability_load "$harness_dir"; then
         OTEL_RESOURCE_ATTRIBUTES="service.name=codex_exec,obs.runtime=codex,obs.profile=$HARNESS_OBSERVABILITY_PROFILE"
         export OTEL_RESOURCE_ATTRIBUTES
@@ -1070,6 +1149,10 @@ codex() {
         obs_rc=$?
         [[ "$obs_rc" -eq 1 ]] || return "$obs_rc"
       fi
+      # Claude children of Codex: loopback (observed) or discard signal
+      # endpoints for a profile outside the usage policy.
+      unset ${=HARNESS_AGENT_USAGE_DISCARD_VARS}
+      harness_agent_usage_export_discard "$harness_dir"
       harness_mcp_surface_policy_is_single_full "$mcp_surface_policy" && unset HARNESS_CODEX_MCP_PROFILE
       _harness_launcher_export_codex_runtime_env "$harness_dir" || return $?
       # This wrapper runs in the user's interactive shell and skips
@@ -1212,6 +1295,623 @@ _harness_launcher_announce_run_dir() {
   harness_terminal_announce_cwd "$1"
 }
 
+# _harness_launcher_codex_history_begin <continue|native-uuid>
+# Selects the durable history row, takes its lease and prepares a snapshot for a
+# canonical-only rollout.  It fills history_* variables of the calling
+# _harness_launcher_run (zsh dynamic scope); the caller applies the result.
+_harness_launcher_codex_history_begin() {
+  local history_request="$1"
+  history_selection="$(_harness_launcher_codex_history_select "${HARNESS_DIR:A}" "$history_request")" || {
+    echo 'harness-launcher: durable Codex history selection requires an exact local native UUID' >&2
+    return 2
+  }
+  while IFS='=' read -r history_key history_value; do
+    case "$history_key" in
+      native_id) history_native_id="$history_value" ;;
+      snapshot_id) history_snapshot_id="$history_value" ;;
+      origin_runtime) history_origin_runtime="$history_value" ;;
+    esac
+  done <<< "$history_selection"
+  _harness_launcher_codex_history_lease_acquire "$history_native_id" || {
+    echo 'harness-launcher: selected Codex history is already active' >&2
+    return 2
+  }
+  if [[ -z "$history_snapshot_id" ]]; then
+    _harness_launcher_codex_history_prepare "${HARNESS_DIR:A}" "$history_native_id" >/dev/null || {
+      _harness_launcher_codex_history_lease_release
+      echo 'harness-launcher: selected Codex history cannot be prepared safely' >&2
+      return 2
+    }
+    history_selection="$(_harness_launcher_codex_history_select "${HARNESS_DIR:A}" "$history_native_id")" || return 2
+    history_snapshot_id="" history_origin_runtime=""
+    while IFS='=' read -r history_key history_value; do
+      case "$history_key" in
+        snapshot_id) history_snapshot_id="$history_value" ;;
+        origin_runtime) history_origin_runtime="$history_value" ;;
+      esac
+    done <<< "$history_selection"
+  fi
+  return 0
+}
+
+# OMP accepts fresh sessions and six exact management arrays. Parse values lexically;
+# never reinterpret a value or tokens after -- as a launcher control.
+_harness_launcher_omp_check_args() {
+  case "${1:-}" in
+    claude|codex|kiro|kiro-cli|codex-gateway|checkup|claude-management)
+      echo 'harness-launcher: explicit omp cannot select another runtime' >&2; return 2 ;;
+    --version|--help)
+      [[ $# == 1 ]] && return 0
+      echo 'harness-launcher: OMP public management takes no additional arguments' >&2; return 2 ;;
+    login)
+      [[ $# == 2 && "$2" == (anthropic|openai-codex) ]] && return 0
+      echo 'harness-launcher: OMP login requires exactly anthropic or openai-codex' >&2; return 2 ;;
+    models)
+      [[ $# == 7 && "$2" == ls && "$3" == (anthropic|openai-codex) && "$4" == --json && "$5" == --kind && "$6" == chat && "$7" == --no-extensions ]] && return 0
+      echo 'harness-launcher: use omp models ls <anthropic|openai-codex> --json --kind chat --no-extensions' >&2; return 2 ;;
+    auth|auth-broker|auth-gateway|token|session|gc|config|update|install|plugin|setup|worktree|join|share|stream|clip|ps|shell|acp|agents|anonymize|bench|browser-relay|cleanse|collab|commit|completions|compress|dry-balance|find|gallery|git|grep|grievances|if-bench|images|play|predict|read|render|say|search|skill|ssh|stats|tiny-models|toks|ttsr|usage|resume|continue|fork)
+      echo 'harness-launcher: this OMP management or continuation command is not supported on this entry' >&2; return 2 ;;
+  esac
+  while (( $# )); do
+    case "$1" in
+      --)
+        shift
+        for value in "$@"; do
+          [[ "$value" != --harness-required-bundle(|=*) ]] || return 2
+        done
+        return 0 ;;
+      --harness-required-bundle|--harness-required-bundle=*|--trusted-extension|--trusted-extension=*) return 2 ;;
+      --mode)
+        [[ $# -ge 2 && "$2" == (text|json) ]] || return 2
+        shift 2 ;;
+      --mode=text|--mode=json) shift ;;
+      --model|--smol|--slow|--plan|--provider|--models|--thinking|--service-tier|--tools|--skills|--max-time)
+        [[ $# -ge 2 && "$2" != -* ]] || {
+          echo 'harness-launcher: OMP option requires a literal value' >&2; return 2
+        }
+        shift 2 ;;
+      --model=*|--smol=*|--slow=*|--plan=*|--provider=*|--models=*|--thinking=*|--service-tier=*|--tools=*|--skills=*|--max-time=*) shift ;;
+      -p|--print|--no-tools|--no-lsp|--no-pty|--no-extensions|--no-skills|--no-rules|--no-title|--hide-thinking|--no-prewalk) shift ;;
+      -*)
+        echo 'harness-launcher: OMP state, auth, restore and unbound native options are not enabled on this entry' >&2; return 2 ;;
+      *) shift ;;
+    esac
+  done
+}
+
+# The enrollment selector retains trusted launcher.env for never-enrolled
+# profiles; enrolled profiles receive only the validated typed projection.
+_harness_launcher_omp_projection_select() {
+  local python selection
+  local -a fields
+  [[ -f "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" && ! -L "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" ]] || {
+    echo 'harness-launcher: OMP_PROVENANCE_UNBOUND' >&2; return 2
+  }
+  python="$(harness_python3_resolve)" || return 2
+  selection="$("$python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
+    select "$HARNESS_PREFIX" "${config_root:A}" "$_HARNESS_LAUNCHER_BIN/aliases.zsh")" || return 2
+  fields=("${(@f)selection}")
+  if [[ ${#fields} -eq 1 && "$fields[1]" == NEVER_ENROLLED ]]; then
+    return 0
+  fi
+  [[ ${#fields} -eq 4 && "$fields[1]" == ENROLLED ]] || {
+    echo 'harness-launcher: OMP_PROJECTION_INVALID' >&2; return 2
+  }
+  HARNESS_OMP_BIN="$fields[2]"
+  HARNESS_OMP_ROOT="$fields[3]"
+  HARNESS_OMP_SHA256="$fields[4]"
+  omp_required_selected=true
+}
+
+# Private NUL framing preserves literal argv; this is structural preparation,
+# never native inventory or readiness proof. Keep current and both leases outside.
+_harness_launcher_omp_model_mode() {
+  local python framed
+  local -a fields
+  python="$(harness_python3_resolve)" || return 2
+  framed="$("$python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
+    model-mode-request "${config_root:A}" "$_HARNESS_LAUNCHER_BIN/aliases.zsh" "$@")" || return 2
+  fields=("${(@0)framed}")
+  [[ "${fields[1]-}" == MODEL_MODE && "${fields[-2]-}" == END && "${fields[-1]-}" == '' ]] || return 2
+  omp_model_mode="$fields[2]"; omp_model_recipe="$fields[3]"
+  fields[1,3]=(); fields[-1]=(); fields[-1]=()
+  omp_native_args=("${fields[@]}")
+}
+
+_harness_launcher_omp_required_argv() {
+  local workspace="$1" python
+  shift
+  python="$(harness_python3_resolve)" || return 2
+  local -a fields
+  local framed
+  local -a mode_prepare=(prepare-required) mode_values=()
+  if [[ "${omp_model_mode:--}" != - ]]; then
+    mode_prepare=(prepare-required-mode)
+    mode_values=("$omp_model_mode" "$omp_model_recipe")
+  fi
+  framed="$("$python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
+    "${mode_prepare[@]}" "${config_root:A}" "$_HARNESS_LAUNCHER_BIN/aliases.zsh" \
+    "$workspace" "$HARNESS_OMP_BIN" "$HARNESS_OMP_ROOT" "${mode_values[@]}" "$@")" || return 2
+  fields=("${(@0)framed}")
+  # zsh command substitution retains NULs and strips only trailing newlines.
+  [[ "${fields[1]-}" == REQUIRED_ARGV && "${fields[-2]-}" == END && "${fields[-1]-}" == '' ]] || return 2
+  fields[1]=(); fields[-1]=(); fields[-1]=()
+  omp_required_argv=("${fields[@]}")
+}
+
+# No PATH fallback or auth inheritance. Both input lanes retain this validator.
+_harness_launcher_omp_validate() {
+  local python
+  python="$(harness_python3_resolve)" || return 2
+  "$python" -I -S -B - "$HARNESS_OMP_BIN" "$HARNESS_OMP_ROOT" "$HARNESS_OMP_SHA256" <<'PYOMP'
+import hashlib,json,os,re,stat,sys
+from pathlib import Path
+try:
+    binary,root=map(Path,sys.argv[1:3]);expected=sys.argv[3];uid=os.getuid()
+    assert binary.is_absolute() and root.is_absolute() and re.fullmatch('[0-9a-f]{64}',expected)
+    for path in (binary,root):
+        assert path==path.resolve()
+        for p in (path,*path.parents):assert not p.is_symlink()
+    s=binary.lstat()
+    assert stat.S_ISREG(s.st_mode) and s.st_uid==uid and s.st_nlink==1 and stat.S_IMODE(s.st_mode)==0o555
+    h=hashlib.sha256()
+    with binary.open('rb') as f:
+        for b in iter(lambda:f.read(1048576),b''):h.update(b)
+    assert h.hexdigest()==expected
+    after=binary.lstat()
+    assert (s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns)
+    for name in ['', 'home','agent','history','cwd','tmp','cache','config','state','data','native-cache']:
+        p=root/name;s=p.lstat()
+        assert not p.is_symlink() and stat.S_ISDIR(s.st_mode) and s.st_uid==uid and stat.S_IMODE(s.st_mode)==0o700
+    lock=root/'.launcher.lock'
+    if lock.exists() or lock.is_symlink():
+        s=lock.lstat()
+        assert not lock.is_symlink() and stat.S_ISREG(s.st_mode) and s.st_uid==uid and s.st_nlink==1 and stat.S_IMODE(s.st_mode)==0o600
+    marker=root/'.owner.json';s=marker.lstat()
+    assert not marker.is_symlink() and stat.S_ISREG(s.st_mode) and s.st_uid==uid and s.st_nlink==1 and stat.S_IMODE(s.st_mode)==0o600
+    owner=json.loads(marker.read_bytes())
+    assert owner.get('schema')=='p0-normal-omp-owner-v1' and owner.get('prefix')==str(root) and owner.get('binary')==str(binary) and owner.get('asset_sha256')==expected and isinstance(owner.get('identity'),dict)
+except (AssertionError,OSError,ValueError,TypeError):
+    print('harness-launcher: OMP executable pin or prepared namespace is invalid',file=sys.stderr)
+    raise SystemExit(2)
+PYOMP
+}
+
+# The one launcher-owned tool directory for the OMP native PATH: Homebrew's
+# bin for this CPU. A constant, never derived from the caller's PATH.
+_harness_launcher_omp_tool_dirs() {
+  if [[ "$CPUTYPE" == arm64 ]]; then print -r -- /opt/homebrew/bin
+  else print -r -- /usr/local/bin; fi
+}
+
+# _harness_launcher_omp_native_path: /usr/bin:/bin, then each launcher tool
+# directory that is a real directory (not a symlink) owned by the user or root
+# and writable by no other user. Homebrew keeps its prefix group-writable for
+# the macOS admin group, so group write is accepted only for gid 80 on Darwin.
+# Appended last, so a system tool always wins over a Homebrew one.
+_harness_launcher_omp_native_path() {
+  local native_path=/usr/bin:/bin dir
+  local -A st
+  if zmodload -F zsh/stat b:zstat 2>/dev/null; then
+    for dir in ${(f)"$(_harness_launcher_omp_tool_dirs)"}; do
+      st=()
+      [[ "$dir" == /* && -d "$dir" && ! -L "$dir" ]] && zstat -L -H st -- "$dir" 2>/dev/null || continue
+      (( st[uid] == UID || st[uid] == 0 )) || continue
+      (( ! (st[mode] & 8#002) )) || continue
+      (( ! (st[mode] & 8#020) )) || [[ "$OSTYPE" == darwin* && "$st[gid]" == 80 ]] || continue
+      native_path+=":$dir"
+    done
+  fi
+  print -r -- "$native_path"
+}
+
+# The account's passwd record. macOS `id -P` reads the directory service, so
+# the home is the account's even when $HOME was changed by the caller.
+_harness_launcher_passwd_record() { /usr/bin/id -P 2>/dev/null; }
+
+# _harness_launcher_omp_account_home: the passwd home (second-to-last field; a
+# GECOS may contain ':'), only as an existing absolute directory whose path is
+# safe to single-quote into PI_SHELL_PREFIX. Never derived from $HOME.
+_harness_launcher_omp_account_home() {
+  local record home
+  record="$(_harness_launcher_passwd_record)" || return 1
+  local -a fields=("${(@s.:.)record}")
+  (( ${#fields} >= 2 )) || return 1
+  home="$fields[-2]"
+  [[ "$home" == /* && "$home" != *[^A-Za-z0-9\ ._/+@,%-]* && -d "$home" ]] || return 1
+  print -r -- "$home"
+}
+
+# Stay parent only for policy-managed print. The inner native still execs
+# under continuation locks; caller environment never selects the receipt.
+_harness_launcher_omp_native() (
+  local run_dir="$1"; shift
+  local _harness_omp_print_receipt="" _harness_omp_print_nonce=""
+  local print=false arg previous=""
+  [[ -t 0 ]] || print=true
+  for arg in "$@"; do
+    [[ "$arg" == -- ]] && break
+    [[ "$arg" == (-p|--print|--mode=text|--mode=json) || "$previous" == --mode && "$arg" == (text|json) ]] && print=true
+    previous="$arg"
+  done
+  [[ "${1:-}" == (--help|--version|login|models) ]] && print=false
+  if [[ "$print" != true || "${omp_required_selected:-false}" != true ]]; then
+    _harness_launcher_omp_native_exec "$run_dir" "$@"
+    return $?
+  fi
+  local py helper="$_HARNESS_LAUNCHER_BIN/omp_print_receipt.py" private rc=0 receipt_rc=0
+  py="$(harness_python3_resolve)" || return 2
+  # zsh disconnects asynchronous jobs from terminal stdin; save it before forking.
+  local native_stdin_fd
+  exec {native_stdin_fd}<&0 || return 2
+  umask 077
+  private="$(/usr/bin/mktemp -d "$HARNESS_OMP_ROOT/tmp/print.XXXXXXXX")" || return 2
+  _harness_omp_print_receipt="$private/result.json"
+  _harness_omp_print_nonce="$(/usr/bin/uuidgen)"
+  # Continuation tuples are launcher locals, not necessarily exported.
+  local -a receipt_tuple=("HARNESS_SESSION_ID=${HARNESS_SESSION_ID-}"
+    "HARNESS_SOURCE_ROOT=${HARNESS_SOURCE_ROOT-}" "HARNESS_SESSION_ROOT=${HARNESS_SESSION_ROOT-}"
+    "HARNESS_RUN_DIR=${HARNESS_RUN_DIR-}")
+  /usr/bin/env "${receipt_tuple[@]}" "$py" -I -S -B "$helper" create "$_harness_omp_print_receipt" "$_harness_omp_print_nonce" || return 2
+  {
+    exec 0<&$native_stdin_fd
+    exec {native_stdin_fd}<&-
+    _harness_launcher_omp_native_exec "$run_dir" "$@"
+  } &
+  local native_pid=$! signal_interrupted=false
+  exec {native_stdin_fd}<&-
+  trap 'signal_interrupted=true; kill -INT "$native_pid" 2>/dev/null || true' INT
+  trap 'signal_interrupted=true; kill -TERM "$native_pid" 2>/dev/null || true' TERM
+  trap 'signal_interrupted=true; kill -HUP "$native_pid" 2>/dev/null || true' HUP
+  # A trapped signal interrupts wait before the native has finished shutdown.
+  while true; do
+    signal_interrupted=false
+    rc=0
+    wait "$native_pid" || rc=$?
+    [[ "$signal_interrupted" == true ]] || break
+  done
+  trap - INT TERM HUP
+  /usr/bin/env "${receipt_tuple[@]}" "$py" -I -S -B "$helper" collect "$_harness_omp_print_receipt" "$_harness_omp_print_nonce" "$native_pid" || receipt_rc=$?
+  /bin/rm -f -- "$_harness_omp_print_receipt" "$private/identity.json"
+  /bin/rmdir -- "$private"
+  (( receipt_rc == 0 )) || return 2
+  return "$rc"
+)
+
+# The caller already isolates this function in its wrapper/background child.
+# A second subshell here would make $! an intermediary instead of native.
+_harness_launcher_omp_native_exec() {
+  local run_dir="$1" root="$HARNESS_OMP_ROOT" native_bin="$HARNESS_OMP_BIN"
+  shift
+  cd "$run_dir" || return 2
+  umask 077
+  # A continuation's native holds its own lock: fcntl locks die with their
+  # owning process, so the launcher's workspace lease alone would free a handle
+  # whose native outlived a killed launcher. -e keeps the fd across exec.
+  if [[ "${(t)_harness_omp_native_lock-}" == *local* && -n "$_harness_omp_native_lock" ]]; then
+    local native_lock_fd=""
+    [[ ! -L "$_harness_omp_native_lock" ]] || return 2
+    : >> "$_harness_omp_native_lock" || return 2
+    zmodload zsh/system || return 2
+    zsystem flock -t 0 -e -f native_lock_fd "$_harness_omp_native_lock" 2>/dev/null || {
+      echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
+    }
+  fi
+  # Env contract v2 (decision 038): the 13 fixed fields, PI_AUTO_QA=0,
+  # PI_SHELL_PREFIX, two optional groups that are forwarded whole or not at all,
+  # never synthesized, and the optional per-harness GH_TOKEN (environ only).
+  # OMP's bash tool runs `$PI_SHELL_PREFIX <command>` under the namespace HOME.
+  # Give the model's commands the account home (gh keyring, ~/.gitconfig
+  # includeIf, ~/.local/state) and the default XDG roots; OMP itself keeps the
+  # namespace. The home is validated, so single quotes cannot be escaped.
+  local account_home
+  account_home="$(_harness_launcher_omp_account_home)" || {
+    echo 'harness-launcher: OMP_ACCOUNT_HOME_INVALID: passwd home is not a safe absolute directory' >&2; return 2
+  }
+  local -a extra=(PI_AUTO_QA=0 "PI_SHELL_PREFIX=export HOME='$account_home'; unset XDG_CONFIG_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_DATA_HOME;")
+  local sid="${HARNESS_SESSION_ID-}" src="${HARNESS_SOURCE_ROOT-}" sroot="${HARNESS_SESSION_ROOT-}" rdir="${HARNESS_RUN_DIR-}"
+  local gh_dir="${HARNESS_DIR-}"
+  if [[ "$sid" =~ $_HARNESS_LAUNCHER_UUID_RE && "$src" == /* && "$sroot" == /* && "$rdir" == /* ]]; then
+    extra+=(HARNESS_SESSION_ID="$sid" HARNESS_SOURCE_ROOT="$src" HARNESS_SESSION_ROOT="$sroot" HARNESS_RUN_DIR="$rdir")
+    # An isolated session worktree lacks the gitignored per-machine config/.local
+    # where team profiles keep github_user; read it from the source root.
+    gh_dir="$src"
+  fi
+  if [[ -n "${HARNESS_SESSION_STATE_HOME-}" ]]; then
+    local state_python
+    state_python="$(harness_python3_resolve)" || return 2
+    "$state_python" -I -S -B "$_HARNESS_LAUNCHER_BIN/omp_print_receipt.py" state "$HARNESS_SESSION_STATE_HOME" || return 2
+    extra+=(HARNESS_SESSION_STATE_HOME="$HARNESS_SESSION_STATE_HOME")
+  else
+    # Empty is a no-authority sentinel, not a derived state path. Native Bun
+    # must not fill a missing launcher field from workspace .env files.
+    extra+=(HARNESS_SESSION_STATE_HOME="")
+  fi
+  if [[ "${(t)_harness_omp_print_receipt-}" == *local* && "${(t)_harness_omp_print_nonce-}" == *local* && "$_harness_omp_print_receipt" == /* && "$_harness_omp_print_nonce" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
+    extra+=(HARNESS_OMP_PRINT_RECEIPT="$_harness_omp_print_receipt" HARNESS_OMP_PRINT_NONCE="$_harness_omp_print_nonce")
+  fi
+  if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
+    extra+=(HERDR_ENV=1 HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" HERDR_PANE_ID="$HERDR_PANE_ID")
+    # Only the continuation caller's own local sets the resume argv; an inherited
+    # value (including a caller's HERDR_RESUME_ARGV) never passes. It is always
+    # present with the triple, empty otherwise, so a workspace .env loaded by the
+    # native runtime cannot supply one.
+    local herdr_resume=""
+    [[ "${(t)_harness_omp_herdr_resume-}" == *local* ]] && herdr_resume="$_harness_omp_herdr_resume"
+    extra+=(HERDR_RESUME_ARGV="$herdr_resume")
+  fi
+  # Per-harness GitHub identity as for Claude/Codex: only the loader's own
+  # result, never the caller's value or an empty token (this is a subshell).
+  local HARNESS_GH_USER=""
+  [[ -n "$gh_dir" ]] && harness_gh_token_load "$gh_dir" >/dev/null 2>&1 || unset GH_TOKEN
+  local native_path
+  native_path="$(_harness_launcher_omp_native_path)" || return 2
+  local -a native_env=(HOME="$root/home" PATH="$native_path" LANG=C LC_ALL=C
+    TMPDIR="$root/tmp" XDG_CACHE_HOME="$root/cache" XDG_CONFIG_HOME="$root/config"
+    XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data"
+    PI_CODING_AGENT_DIR="$root/agent" PI_CODING_AGENT_SESSION_DIR="$root/history"
+    PI_NATIVES_DIR="$root/native-cache" TERM=xterm-256color "${extra[@]}")
+  # A secret never rides on argv (ps shows argv to every local user), so
+  # instead of `env -i` clear this subshell's exports, keeping only a loaded
+  # GH_TOKEN; env then adds the non-secret fields and drops the `_` zsh adds.
+  local name
+  # Without zsh/parameter the loop and check below would be vacuous.
+  zmodload zsh/parameter 2>/dev/null && (( ${+parameters} )) || {
+    echo 'harness-launcher: OMP_ENV_NOT_CLOSED' >&2; return 2
+  }
+  for name in ${(k)parameters[(R)*export*]}; do
+    # unset of a readonly aborts this subshell; leave it to the check below.
+    [[ "$name" == GH_TOKEN || "${parameters[$name]}" == *readonly* ]] || unset -- "$name"
+  done
+  [[ -z "${(k)parameters[(R)*export*]:#GH_TOKEN}" ]] || {
+    echo 'harness-launcher: OMP_ENV_NOT_CLOSED' >&2; return 2
+  }
+  # Become the native so the lock's owner (and print receipt pid) is native.
+  if [[ -n "${native_lock_fd-}" || ( "${(t)_harness_omp_print_receipt-}" == *local* && -n "$_harness_omp_print_receipt" ) ]]; then
+    exec /usr/bin/env -u _ "${native_env[@]}" "$native_bin" "$@"
+  fi
+  /usr/bin/env -u _ "${native_env[@]}" "$native_bin" "$@"
+}
+
+_harness_launcher_run_omp() (
+  _harness_launcher_omp_validate || return 2
+  local root="$HARNESS_OMP_ROOT" lease_fd=""
+  if [[ "${1:-}" != (--version|--help) ]]; then
+    # Hold the normal native-home lease, in addition to any existing
+    # isolated-workspace lease held by the outer runner. Fresh sessions share
+    # it: OMP itself locks its auth refresh, session files and settings writes.
+    # Management (login/models) rewrites the home and stays exclusive.
+    local -a lease_mode=(-r)
+    [[ "${1:-}" == (login|models) ]] && lease_mode=()
+    [[ ! -L "$root/.launcher.lock" ]] || return 2
+    umask 077
+    : >> "$root/.launcher.lock" || return 2
+    zmodload zsh/system || return 2
+    zsystem flock -t 0 "${lease_mode[@]}" -f lease_fd "$root/.launcher.lock" 2>/dev/null || {
+      if (( ${#lease_mode} )); then
+        echo 'harness-launcher: OMP namespace is busy with login/models' >&2
+      else
+        echo 'harness-launcher: OMP namespace has active sessions; close them before login/models' >&2
+      fi
+      return 2
+    }
+  fi
+  # Nonpublic management owns the prepared native home, not a workspace.
+  local run_dir="${HARNESS_RUN_DIR:-$root/cwd}"
+  [[ "${1:-}" == (login|models) ]] && run_dir="$root/cwd"
+  if [[ "${omp_required_selected:-false}" == true && "${1:-}" != (--version|--help|login|models) ]]; then
+    local -a omp_required_argv
+    _harness_launcher_omp_required_argv "$run_dir" "$@" || return 2
+    set -- "${omp_required_argv[@]}"
+  fi
+  _harness_launcher_omp_native "$run_dir" "$@"
+)
+
+# Closed metadata via a private pipe, never eval/source a receipt or prompt.
+# Variables are local to the continuation subshell below (zsh dynamic scope).
+_harness_launcher_omp_continuation_metadata() {
+  "$continuation_python" -I -S -B - "$continuation_helper" "$1" "$continuation_state" \
+    "${config_root:A}" "$continuation_w" "$continuation_h" "${2:--}" "${3:--}" "${4:-UNKNOWN}" <<'PYBUILD' |
+import importlib.util,json,sys
+from pathlib import Path
+try:
+    helper,mode,state,source,w,h,expected,nonce,terminal=sys.argv[1:]
+    spec=importlib.util.spec_from_file_location('_omp_continuation_bridge',helper)
+    m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+    consumer=str(Path(helper).with_name('aliases.zsh'))
+    if expected=='-' and nonce=='-':
+        _,raw,row,_=m.load_record(state,source,h,consumer)
+        expected=m.p.digest(raw);nonce=row['lifecycle_nonce']
+    value={'schema':'omp-continuation-operation/v1','mode':mode,'state_root':state,'source_root':source,
+           'launcher_session_id':w,'consumer':consumer,'handle':h,'expected_sha256':expected,
+           'lifecycle_nonce':nonce,'terminal_status':None if terminal=='UNKNOWN' else int(terminal)}
+    raw=m.p.canonical(value);m.require(len(raw)<=16384);sys.stdout.buffer.write(raw)
+except Exception:
+    print('harness-launcher: OMP_CONTINUATION_UNBOUND',file=sys.stderr);raise SystemExit(2)
+PYBUILD
+    "$continuation_python" -I -S -B "$continuation_helper" --input-fd 0 |
+    "$continuation_python" -I -S -B -c '
+import json,re,sys
+try:
+    raw=sys.stdin.buffer.read(16385);assert len(raw)<=16384
+    def pairs(items):
+        value={}
+        for key,item in items:
+            assert key not in value;value[key]=item
+        return value
+    row=json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _:None)
+    assert set(row)==set("schema handle status launcher_session_id workspace_root session_dir native_path record_sha256 lifecycle_nonce".split())
+    assert row["schema"]=="omp-continuation-selection/v1"
+    assert row["status"] in ("PENDING","READY","IN_FLIGHT","BLOCKED")
+    assert re.fullmatch("[0-9a-f]{32}",row["handle"]) and re.fullmatch("[0-9a-f]{32}",row["lifecycle_nonce"])
+    assert re.fullmatch("[0-9a-f]{64}",row["record_sha256"])
+    assert re.fullmatch("[0-9a-fA-F-]{36}",row["launcher_session_id"])
+    for key in ("workspace_root","session_dir","native_path"):
+        value=row[key]
+        if key=="native_path" and value is None:continue
+        assert isinstance(value,str) and value.startswith("/") and not any(ord(c)<32 or ord(c)==127 for c in value)
+    for key in ("status","handle","launcher_session_id","workspace_root","session_dir","native_path","record_sha256","lifecycle_nonce"):
+        print(row[key] if row[key] is not None else "-")
+except Exception:
+    print("harness-launcher: OMP_CONTINUATION_UNBOUND",file=sys.stderr);raise SystemExit(2)
+'
+}
+
+_harness_launcher_omp_continuation() (
+  setopt localoptions pipefail
+  local continuation_w="$1" continuation_mode="$2"; shift 2
+  local continuation_h="${continuation_w//-/}" continuation_state="${HARNESS_SESSION_STATE_HOME:-}"
+  continuation_h="${(L)continuation_h}"
+  [[ "$continuation_h" =~ '^[0-9a-f]{32}$' && "$continuation_state" == /* ]] || return 2
+  if [[ "$continuation_mode" == --session-resume ]]; then
+    [[ "${1:-}" == "$continuation_h" ]] || return 2
+    shift
+  fi
+  local -a native_options=() native_prompt=() fields=()
+  local LC_ALL=C value
+  while (( $# )) && [[ "$1" != -- ]]; do
+    [[ ${#1} -le 65536 ]] || return 2
+    native_options+=("$1"); shift
+  done
+  [[ ( $# -eq 0 || "$1" == -- ) && ${#native_options} -le 128 ]] || return 2
+  (( $# == 0 )) || shift
+  (( $# <= 1 )) || return 2
+  if (( $# )); then [[ ${#1} -le 65536 ]] || return 2; native_prompt=("$1"); fi
+  _harness_launcher_omp_check_args "${native_options[@]}" -- "${native_prompt[@]}" || return 2
+  local continuation_python continuation_helper="$_HARNESS_LAUNCHER_BIN/harness_omp_continuation.py"
+  continuation_python="$(harness_python3_resolve)" || return 2
+  [[ -f "$continuation_helper" && ! -L "$continuation_helper" ]] || return 2
+  # Verify the whole implementing sibling closure before importing metadata
+  # code. The legacy selector intentionally keeps its preexisting closure.
+  "$continuation_python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
+    select-continuation-source "${config_root:A}" "$HOME/.config/harness-launcher/profiles" \
+    "${config_root:A}" "$_HARNESS_LAUNCHER_BIN/aliases.zsh" >/dev/null || return 2
+  local -a public_request=(omp "$continuation_mode")
+  [[ "$continuation_mode" != --session-resume ]] || public_request+=("$continuation_h")
+  public_request+=("${native_options[@]}" -- "${native_prompt[@]}")
+  "$continuation_python" -I -S -B - "$continuation_helper" "${public_request[@]}" <<'PYREQUEST' || return 2
+import importlib.util,sys
+try:
+    spec=importlib.util.spec_from_file_location('_omp_continuation_request',sys.argv[1])
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    assert module.request(sys.argv[2:]) is not None
+except Exception:
+    print('harness-launcher: OMP_CONTINUATION_UNBOUND',file=sys.stderr);raise SystemExit(2)
+PYREQUEST
+  # A launcher activation leaves the binding on the previous runtime: move it to
+  # this current one first (rebind takes the workspace lock, so before the lease).
+  if [[ "$continuation_mode" == --session-resume ]]; then
+    "$continuation_python" -I -S -B "$continuation_helper" --rebind-stale \
+      "$continuation_state" "${config_root:A}" "$continuation_w" >/dev/null || return 2
+  fi
+  local HARNESS_SESSION_LEASE_FD="" namespace_fd="" selected="" native_rc=2 metadata_rc=2
+  local expected_sha="" own_nonce="" retained_c="" retained_s="" retained_p=""
+  _harness_launcher_isolated_lease_acquire "$continuation_w" || return 2
+  {
+    _harness_launcher_omp_validate || return 2
+    umask 077
+    [[ ! -L "$HARNESS_OMP_ROOT/.launcher.lock" ]] || return 2
+    : >> "$HARNESS_OMP_ROOT/.launcher.lock" || return 2
+    zmodload zsh/system || return 2
+    zsystem flock -t 0 -r -f namespace_fd "$HARNESS_OMP_ROOT/.launcher.lock" 2>/dev/null || {
+      echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
+    }
+    _harness_launcher_omp_validate || return 2
+    # A native whose launcher died keeps this handle's native lock: refuse it
+    # before any record transition. The workspace lease orders all launchers.
+    local _harness_omp_native_lock="$HARNESS_OMP_ROOT/launcher-continuations/$continuation_h/native.lock" probe_fd=""
+    if [[ -e "$_harness_omp_native_lock" || -L "$_harness_omp_native_lock" ]]; then
+      [[ -f "$_harness_omp_native_lock" && ! -L "$_harness_omp_native_lock" ]] || {
+        echo "harness-launcher: OMP continuation native lock is not a regular file: $_harness_omp_native_lock" >&2; return 2
+      }
+      zsystem flock -t 0 -f probe_fd "$_harness_omp_native_lock" 2>/dev/null || {
+        echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
+      }
+      zsystem flock -u "$probe_fd"
+    fi
+    local operation=NEW_PREPARE
+    [[ "$continuation_mode" == --session-resume ]] && operation=RESUME_ADMIT
+    selected="$(_harness_launcher_omp_continuation_metadata "$operation")" || return 2
+    fields=("${(@f)selected}")
+    [[ ${#fields} -eq 8 && "$fields[2]" == "$continuation_h" && "$fields[3]" == "$continuation_w" ]] || return 2
+    retained_c="$fields[4]"; retained_s="$fields[5]"; retained_p="$fields[6]"
+    expected_sha="$fields[7]"; own_nonce="$fields[8]"
+    # Repeat authority/origin/header checks after IN_FLIGHT and immediately
+    # before the one foreground call. No generic create/GC/owner preparation.
+    _harness_launcher_omp_continuation_metadata RESOLVE "$expected_sha" "$own_nonce" >/dev/null || return 2
+    # Env contract v2 forwards the isolated-session tuple whole. The continuation
+    # owns W, so it reads the roots from the record RESOLVE just bound: source
+    # root = this registered source, session root = retained cwd = run dir.
+    local HARNESS_SESSION_ID="$continuation_w" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
+    local HARNESS_RUN_DIR="$retained_c" continuation_record="$continuation_state/sessions/$continuation_w"
+    {
+      [[ -f "$continuation_record/source-root" && ! -L "$continuation_record/source-root" &&
+         -f "$continuation_record/session-root" && ! -L "$continuation_record/session-root" ]] &&
+        IFS= read -r HARNESS_SOURCE_ROOT < "$continuation_record/source-root" &&
+        IFS= read -r HARNESS_SESSION_ROOT < "$continuation_record/session-root" &&
+        [[ "$HARNESS_SOURCE_ROOT" == "${config_root:A}" && "$HARNESS_SESSION_ROOT" == "$retained_c" ]]
+    } || {
+      _harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" 2 >/dev/null
+      return 2
+    }
+    local -a omp_required_argv
+    _harness_launcher_omp_required_argv "$retained_c" "${native_options[@]}" -- "${native_prompt[@]}" || {
+      _harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" 2 >/dev/null
+      return 2
+    }
+    # Keep original options first and owned continuation flags before --.
+    # The prepared suffix contains the exact already-validated original prompt.
+    native_options=()
+    for value in "${omp_required_argv[@]}"; do
+      [[ "$value" == -- ]] && break
+      native_options+=("$value")
+    done
+    # herdr restores a pane with bare `omp --resume=<path>`, bypassing this
+    # launcher. Give the native OMP (and its herdr observer) the exact public
+    # command that resumes this same continuation H through the registered source.
+    local _harness_omp_herdr_resume=""
+    if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
+      _harness_omp_herdr_resume="$("$continuation_python" -I -S -B -c \
+        'import json,sys;print(json.dumps(sys.argv[1:],separators=(",",":")))' \
+        harness-exec "${config_root:A}" omp --session-resume "$continuation_h" --)" || {
+        _harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" 2 >/dev/null
+        return 2
+      }
+    fi
+    if [[ "$continuation_mode" == --session-new ]]; then
+      _harness_launcher_omp_native "$retained_c" "${native_options[@]}" --session-dir "$retained_s" -- "${native_prompt[@]}"
+    else
+      [[ "$retained_p" == /* ]] || return 2
+      _harness_launcher_omp_native "$retained_c" "${native_options[@]}" --session-dir "$retained_s" --resume "$retained_p" -- "${native_prompt[@]}"
+    fi
+    native_rc=$?
+    selected="$(_harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" "$native_rc")"
+    metadata_rc=$?
+    # A recorded session file resumes from any state; without one the handle cannot.
+    # A launcher upgrade during the run also fails here (this old runtime's code
+    # finalizes); the next resume rebinds the session to the current runtime.
+    if (( metadata_rc != 0 )); then
+      print -ru2 -- "harness-launcher: OMP continuation $continuation_h not finalized (see the error above); OMP_CONTINUATION_NOT_PERSISTED or OMP_CONTINUATION_NATIVE_FORK means start a new session"
+      print -ru2 -- "harness-launcher: otherwise (also after a launcher upgrade) resume with: harness-exec ${config_root:A} omp --session-resume $continuation_h --"
+    elif (( native_rc != 0 )); then
+      print -ru2 -- "harness-launcher: OMP continuation not finalized; resume with: harness-exec ${config_root:A} omp --session-resume $continuation_h --"
+    fi
+    (( native_rc == 0 )) || return "$native_rc"
+    (( metadata_rc == 0 )) || return 2
+    fields=("${(@f)selected}")
+    [[ ${#fields} -eq 8 && "$fields[1]" == READY && "$fields[2]" == "$continuation_h" ]] || return 2
+    print -ru2 -- "harness-launcher: OMP_CONTINUATION_HANDLE=$continuation_h"
+    return 0
+  } always {
+    [[ -z "$namespace_fd" ]] || zsystem flock -u "$namespace_fd" 2>/dev/null
+    if [[ "$continuation_mode" == --session-new ]]; then
+      _harness_launcher_isolated_finish "$continuation_w" "" "$HARNESS_SESSION_LEASE_FD"
+    else
+      [[ -z "$HARNESS_SESSION_LEASE_FD" ]] || zsystem flock -u "$HARNESS_SESSION_LEASE_FD" 2>/dev/null
+    fi
+  }
+)
+
 # _harness_launcher_run <harness-dir> [args...]
 #   Shared implementation for every registered profile function.
 _harness_launcher_run() {
@@ -1232,16 +1932,21 @@ _harness_launcher_run() {
   # skip the `always` block that finishes an isolated session.
   setopt localoptions noerrexit
   local HARNESS_DIR="$1"; shift
+  _harness_launcher_agent_usage_reconcile "$HARNESS_DIR"
   # Shell routing marks its host-default `base` for a restore; consume it here
   # so it never reaches the agent or a nested launch.
   local host_default_mode="${HARNESS_HOST_DEFAULT_MODE-}"
   unset HARNESS_HOST_DEFAULT_MODE
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST HARNESS_CODEX_APPS_ALLOWLIST HARNESS_CODEX_SLACK_APPS HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
   local HARNESS_SESSION_ISOLATION_DEFAULT="0"
+  # The caller's own HARNESS_SESSION_ID is an agent marker for the top-level
+  # check; the local below would hide it from child processes.
+  local inherited_harness_session_id="${HARNESS_SESSION_ID-}"
   local HARNESS_SESSION_ID="" HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ROOT=""
   local -x HARNESS_RELEASE_OPERATION_ROOT=""
   local HARNESS_NATIVE_HISTORY_LEASE_FD=""
   local HARNESS_NATIVE_HISTORY_LEASE_ADOPTED=0
+  local HARNESS_OMP_BIN="" HARNESS_OMP_ROOT="" HARNESS_OMP_SHA256=""
   {
   if [[ -n "${HARNESS_CODEX_HISTORY_LEASE_FD:-}" ]]; then
     _harness_launcher_codex_history_lease_adopt "${HARNESS_CODEX_HISTORY_NATIVE_ID:-}" || {
@@ -1259,6 +1964,24 @@ _harness_launcher_run() {
       ;;
   esac
   local isolated_source_run_dir="$HARNESS_RUN_DIR"
+
+  # This entry accepts raw argv. Consume one discriminator at the selector
+  # position; the session runner and isolation classifier receive canonical argv.
+  local selector_i=1
+  case "${1:-}" in
+    --isolated|--no-isolated) selector_i=2 ;;
+    --isolated-session) selector_i=3 ;;
+  esac
+  if [[ "${@[selector_i]-}" == claude ]]; then
+    local -a canonical_args=("$@")
+    canonical_args[selector_i]=()
+    set -- "${canonical_args[@]}"
+    case "${@[selector_i]-}" in
+      codex|codex-smoke|checkup|kiro|kiro-cli|codex-gateway|claude-management|omp)
+        echo 'harness-launcher: explicit claude cannot select another runtime prefix' >&2
+        return 2 ;;
+    esac
+  fi
 
   # A bare interactive entrypoint chooses its workspace before any runtime
   # preparation, session allocation or foreground collection. Older installed
@@ -1281,6 +2004,50 @@ _harness_launcher_run() {
   mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
   export HARNESS_PREFIX
 
+  # Keep the OMP discriminator through workspace normalization. Public native
+  # management returns before session/history preparation, even with controls.
+  local omp_selected=false omp_required_selected=false
+  local omp_model_mode=- omp_model_recipe=-
+  if [[ "${@[selector_i]-}" == omp ]]; then
+    omp_selected=true
+    local -a omp_native_args=()
+    (( $# <= selector_i )) || omp_native_args=("${@[selector_i+1,-1]}")
+    _harness_launcher_omp_model_mode "${omp_native_args[@]}" || return 2
+    local -a omp_prefix=("${@[1,selector_i]}")
+    set -- "${omp_prefix[@]}" "${omp_native_args[@]}"
+    if [[ "${omp_native_args[1]-}" == (--session-new|--session-resume) ]]; then
+      # Entry alone supplies this exact internal transport after origin/store
+      # verification. Raw public outer controls are refused by Entry pre-begin.
+      local continuation_session=""
+      if [[ -z "$isolated_source_run_dir" && "$1" == --isolated-session && "$selector_i" == 3 ]]; then
+        continuation_session="$2"
+      elif [[ -z "$isolated_source_run_dir" && "$selector_i" == 1 && "${omp_native_args[1]}" == --session-resume \
+              && "${omp_native_args[2]-}" =~ '^[0-9a-f]{32}$' ]]; then
+        # herdr's bare resume argv: the handle names its session; use the
+        # session directory's own spelling (the record binds that spelling).
+        local continuation_entry
+        local -a continuation_found=()
+        for continuation_entry in "${HARNESS_SESSION_STATE_HOME:-/nonexistent}"/sessions/*(N/); do
+          [[ "${(L)${continuation_entry:t}//-/}" == "${omp_native_args[2]}" ]] && continuation_found+=("${continuation_entry:t}")
+        done
+        (( ${#continuation_found} == 1 )) && continuation_session="$continuation_found[1]"
+      fi
+      [[ -n "$continuation_session" ]] || {
+        echo 'harness-launcher: OMP_CONTINUATION_UNBOUND' >&2; return 2
+      }
+      _harness_launcher_omp_projection_select || return 2
+      _harness_launcher_omp_continuation "$continuation_session" "${omp_native_args[@]}"
+      return $?
+    fi
+    _harness_launcher_omp_check_args "${omp_native_args[@]}" || return 2
+    _harness_launcher_omp_projection_select || return 2
+    if [[ "${omp_native_args[1]-}" == (--version|--help|login|models) ]]; then
+      _harness_launcher_run_omp "${omp_native_args[@]}"
+      return $?
+    fi
+    _harness_launcher_omp_validate || return 2
+  fi
+
   # SDK hosts run diagnostics such as `auth status` through the same argv
   # prefix (`base --passthrough auth status`); a management subcommand right
   # after the marker runs natively. Only for direct Claude: other runtimes and
@@ -1290,7 +2057,11 @@ _harness_launcher_run() {
     --isolated|--no-isolated) mgmt_i=2 ;;
     --isolated-session) mgmt_i=3 ;;
   esac
-  if [[ "${@[mgmt_i]-}" != (codex|codex-smoke|checkup|kiro|kiro-cli|codex-gateway|claude-management) ]]; then
+  if harness_claude_is_management_command "${@[mgmt_i]-}"; then
+    set -- claude-management "${@[mgmt_i,-1]}"
+    mgmt_i=1
+  fi
+  if [[ "${@[mgmt_i]-}" != (codex|codex-smoke|checkup|kiro|kiro-cli|codex-gateway|claude-management|omp) ]]; then
     for (( ; mgmt_i < $#; mgmt_i++ )); do
       [[ "${@[mgmt_i]}" == -- ]] && break
       if [[ "${@[mgmt_i]}" == --passthrough ]]; then
@@ -1334,36 +2105,7 @@ _harness_launcher_run() {
     return $?
   fi
   if [[ -n "$history_request" ]]; then
-    history_selection="$(_harness_launcher_codex_history_select "${HARNESS_DIR:A}" "$history_request")" || {
-      echo 'harness-launcher: durable Codex history selection requires an exact local native UUID' >&2
-      return 2
-    }
-    while IFS='=' read -r history_key history_value; do
-      case "$history_key" in
-        native_id) history_native_id="$history_value" ;;
-        snapshot_id) history_snapshot_id="$history_value" ;;
-        origin_runtime) history_origin_runtime="$history_value" ;;
-      esac
-    done <<< "$history_selection"
-    _harness_launcher_codex_history_lease_acquire "$history_native_id" || {
-      echo 'harness-launcher: selected Codex history is already active' >&2
-      return 2
-    }
-    if [[ -z "$history_snapshot_id" ]]; then
-      _harness_launcher_codex_history_prepare "${HARNESS_DIR:A}" "$history_native_id" >/dev/null || {
-        _harness_launcher_codex_history_lease_release
-        echo 'harness-launcher: selected Codex history cannot be prepared safely' >&2
-        return 2
-      }
-      history_selection="$(_harness_launcher_codex_history_select "${HARNESS_DIR:A}" "$history_native_id")" || return 2
-      history_snapshot_id="" history_origin_runtime=""
-      while IFS='=' read -r history_key history_value; do
-        case "$history_key" in
-          snapshot_id) history_snapshot_id="$history_value" ;;
-          origin_runtime) history_origin_runtime="$history_value" ;;
-        esac
-      done <<< "$history_selection"
-    fi
+    _harness_launcher_codex_history_begin "$history_request" || return $?
     if [[ -n "$history_snapshot_id" ]]; then
       export HARNESS_CODEX_HISTORY_NATIVE_ID="$history_native_id"
       export HARNESS_CODEX_HISTORY_SNAPSHOT_ID="$history_snapshot_id"
@@ -1386,7 +2128,7 @@ _harness_launcher_run() {
     shift
   elif [[ "${HARNESS_SESSION_ISOLATION-}" == 1 ]]; then
     isolated=true
-  elif [[ "$HARNESS_SESSION_ISOLATION_DEFAULT" == 1 ]]; then
+  elif ! $history_local_create && [[ "$HARNESS_SESSION_ISOLATION_DEFAULT" == 1 ]]; then
     local isolation_interactive=0
     harness_claude_stdio_is_tty && isolation_interactive=1
     isolation_route="$(harness_session_isolation_default_route "$isolation_interactive" "$@")" || return $?
@@ -1399,7 +2141,54 @@ _harness_launcher_run() {
           0) isolated=true; requested_session_id="$orca_resume_id"; orca_resume=true ;;
           3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
              return 2 ;;
-          4) isolation_route=legacy ;;
+          4)
+             # The session lives in the canonical checkout.  Never continue it
+             # there silently.  Only the pure forms `codex [preset...] [--passthrough]
+             # resume <id>` become a fresh isolated session through durable history
+             # (presets are kept, so the caller's profile wins over the recorded
+             # grant); any other Codex form (-m, -s, -a, -c, context words, prompt
+             # text, planner argv) would lose its flags in the rewrite and let the
+             # recorded grant be re-applied, so it is refused, as is Claude.
+             local canonical_arg canonical_prev="" canonical_codex_id="" canonical_pure=false
+             local canonical_cwd="" canonical_alt="" canonical_prepare_failed=false
+             local -a canonical_presets=()
+             if [[ "${1:-}" == codex ]]; then
+               for canonical_arg in "${@:2}"; do
+                 [[ "$canonical_arg" == -- ]] && break
+                 [[ "$canonical_prev" == resume && "$canonical_arg" =~ $_HARNESS_LAUNCHER_UUID_RE ]] && canonical_codex_id="${(L)canonical_arg}"
+                 canonical_prev="$canonical_arg"
+               done
+               # Pure forms: [profile presets...] [--passthrough] resume <id>, nothing else.
+               # Presets stay in the rewrite, so profile_explicit keeps the recorded
+               # grant from being re-applied.  Native flags, context words, prompt text
+               # and anything after --passthrough but `resume <id>` are refused.
+               local -a canonical_rest=("${@:2}")
+               while (( ${#canonical_rest} )) && [[ "${canonical_rest[1]}" == (fast|base|sol|plan|rich|astra) ]]; do
+                 canonical_presets+=("${canonical_rest[1]}")
+                 canonical_rest=("${(@)canonical_rest[2,-1]}")
+               done
+               [[ "${canonical_rest[1]-}" != --passthrough ]] || canonical_rest=("${(@)canonical_rest[2,-1]}")
+               if (( ${#canonical_rest} == 2 )) && [[ "${canonical_rest[1]}" == resume && "${canonical_rest[2]}" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
+                 canonical_pure=true
+               fi
+             fi
+             if $canonical_pure && _harness_launcher_codex_history_begin "$canonical_codex_id" && [[ -n "$history_snapshot_id" ]]; then
+               export HARNESS_CODEX_HISTORY_NATIVE_ID="$history_native_id"
+               export HARNESS_CODEX_HISTORY_SNAPSHOT_ID="$history_snapshot_id"
+               export HARNESS_CODEX_HISTORY_ORIGIN_RUNTIME="$history_origin_runtime"
+               set -- codex "${canonical_presets[@]}" resume "$history_native_id"
+               isolated=true
+               history_local_create=true
+             else
+               ! $canonical_pure || canonical_prepare_failed=true
+               [[ -z "$isolated_source_run_dir" ]] || canonical_cwd="--cwd ${(q-)isolated_source_run_dir} "
+               canonical_alt="start a fresh isolated session ('${HARNESS_PREFIX}'), or for maintenance run '${HARNESS_PREFIX} ${canonical_cwd}--no-isolated ${(j: :)${(q-)@}}'"
+               # The pure alternative would fail for the same reason after a failed prepare.
+               [[ -z "$canonical_codex_id" ]] || $canonical_prepare_failed || canonical_alt+=", or resume it as a fresh isolated session with '${HARNESS_PREFIX} ${canonical_cwd}codex resume ${canonical_codex_id}'"
+               echo "harness-launcher: this session lives in the shared canonical checkout and would keep writing there; $canonical_alt" >&2
+               return 2
+             fi
+             ;;
           *) echo "harness-launcher: this profile isolates fresh sessions; use '${HARNESS_PREFIX} --isolated-session <uuid> $*' or '${HARNESS_PREFIX} --no-isolated $*'" >&2
              return 2 ;;
         esac
@@ -1438,9 +2227,6 @@ _harness_launcher_run() {
         $orca_resume && echo "harness-launcher: could not restore isolated session $requested_session_id" >&2
         return "$resume_rc"
       }
-      if ! harness_claude_stdio_is_tty; then
-        HARNESS_HISTORY_SOURCE_ROOT="$source_root" "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" gc >/dev/null 2>&1 || echo 'harness-launcher: warning: isolated-session GC failed; workspaces retained' >&2
-      fi
       _harness_launcher_isolated_session_create "$source_root" "$requested_session_id" || {
         local resume_rc=$?
         zsystem flock -u "$HARNESS_SESSION_LEASE_FD" 2>/dev/null || true
@@ -1448,11 +2234,8 @@ _harness_launcher_run() {
         return "$resume_rc"
       }
     else
-      # Do not make a new interactive start wait on retention collection.
-      # Noninteractive launches retain the legacy best-effort maintenance.
-      if ! harness_claude_stdio_is_tty; then
-        HARNESS_HISTORY_SOURCE_ROOT="$source_root" "$_HARNESS_LAUNCHER_BIN/session-isolation.sh" gc >/dev/null 2>&1 || echo 'harness-launcher: warning: isolated-session GC failed; workspaces retained' >&2
-      fi
+      # Explicit GC or the approved scheduled maintainer owns retirement.
+      # Starting any agent never waits for a whole-pool GC pass.
       if $history_local_create; then
         _harness_launcher_isolated_session_create "$source_root" "" local || return $?
       else
@@ -1476,7 +2259,9 @@ _harness_launcher_run() {
     # caller's run directory (harness-exec passes --cwd), not the session root.
     _harness_launcher_isolated_record_run_dir
     if $created_isolated_session; then
-      if [[ "${1:-}" == codex ]]; then
+      if $omp_selected; then
+        echo "harness-launcher: isolated session $HARNESS_SESSION_ID; OMP continuation is not enabled on this entry" >&2
+      elif [[ "${1:-}" == codex ]]; then
         echo "harness-launcher: isolated session $HARNESS_SESSION_ID; continue: ${HARNESS_PREFIX} --isolated-session $HARNESS_SESSION_ID codex resume" >&2
       else
         echo "harness-launcher: isolated session $HARNESS_SESSION_ID; continue: ${HARNESS_PREFIX} --isolated-session $HARNESS_SESSION_ID resume" >&2
@@ -1535,6 +2320,12 @@ _harness_launcher_run_session() {
 
   # Optional provider prefix (must be first arg)
   case "${1:-}" in
+    omp)
+      shift
+      if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
+      _harness_launcher_run_omp "$@"
+      return $?
+      ;;
     kiro)
       provider_name="kiro"
       local _env_file="$config_root/config/.local/kiro-gateway.env"
@@ -1685,9 +2476,11 @@ _harness_launcher_run_session() {
     # returned above; no-argument TUI selection is handled inside launcher.sh.
     local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE
     local HARNESS_OTLP_HTTP_ENDPOINT obs_rc
+    local ${=HARNESS_AGENT_USAGE_DISCARD_VARS}
     # Per-harness GitHub identity: fail-open, never overrides with an empty token.
     local GH_TOKEN HARNESS_GH_USER
-    harness_gh_token_load "$HARNESS_DIR" || true
+    # The session worktree lacks the gitignored config/.local (team github_user).
+    harness_gh_token_load "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || true
     if harness_observability_load "$HARNESS_DIR"; then
       local CLAUDE_CODE_ENABLE_TELEMETRY=1
       local OTEL_METRICS_EXPORTER=otlp OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none
@@ -1714,6 +2507,10 @@ _harness_launcher_run_session() {
     else
       obs_rc=$?
       [[ "$obs_rc" -eq 1 ]] || return "$obs_rc"
+      # Child `claude -p` processes do not inherit --settings: discard the
+      # company OTel signals for a profile outside the usage policy.
+      unset ${=HARNESS_AGENT_USAGE_DISCARD_VARS}
+      harness_agent_usage_export_discard "$HARNESS_DIR" "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}"
     fi
 
     [[ -n "$session_flag" ]] && claude_args=("$session_flag" "${claude_args[@]}")
@@ -1808,6 +2605,7 @@ _harness_launcher_run_session() {
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
+        harness_claude_export_durable_tmpdir
         local -a HARNESS_SLACK_ARGV=()
         harness_slack_claude_argv "$_HARNESS_SLACK_POLICY" --strict-mcp-config --mcp-config "$_light_file" "${claude_args[@]}" "${claude_launch_tail[@]}" || exit $?
         trap 'harness_slack_settings_cleanup' EXIT
@@ -1821,6 +2619,7 @@ _harness_launcher_run_session() {
       (
         [[ -z "$HARNESS_RUN_DIR" ]] || cd "$HARNESS_RUN_DIR" || exit $?
         harness_export_local_env "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || exit $?
+        harness_claude_export_durable_tmpdir
         _harness_launcher_claude_mcp_local_args "$HARNESS_DIR" || exit $?
         local -a HARNESS_SLACK_ARGV=()
         harness_slack_claude_argv "$_HARNESS_SLACK_POLICY" "${claude_args[@]}" "${reply[@]}" "${claude_launch_tail[@]}" || exit $?
@@ -1834,10 +2633,56 @@ _harness_launcher_run_session() {
   else
     if [[ -n "$isolated_session_id" ]]; then _harness_launcher_isolated_heartbeat "$isolated_session_id" & isolated_heartbeat_pid=$!; fi
     _harness_launcher_announce_run_dir "${HARNESS_RUN_DIR:-$HARNESS_DIR}"
-    HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
-      HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
-      "$_HARNESS_LAUNCHER_BIN/launcher.sh"
-    return $?
+    # Where OMP is set up at all (an enrollment index or a configured binary),
+    # the menu offers it when this profile's namespace selects and otherwise
+    # lists it with the selection's error label; elsewhere OMP stays hidden and
+    # no probe runs. The menu only hands back `omp [--model-mode <id>]` and
+    # exits 75; the full OMP checks (binary hash included) run here.
+    local omp_handoff_dir="" omp_unavailable="" omp_probe="" tui_rc
+    local -a omp_native_args=() omp_handoff_lines=()
+    if [[ -e "$HOME/.config/harness-launcher/omp-projection-v1/enrollment.json" || -n "$HARNESS_OMP_BIN" ]]; then
+      omp_probe="$( (_harness_launcher_omp_projection_select && [[ -n "$HARNESS_OMP_BIN" ]] && print -r READY) 2>&1)"
+    fi
+    if [[ "$omp_probe" == *READY ]]; then
+      omp_handoff_dir="$(mktemp -d "${TMPDIR:-/tmp}/harness-omp-handoff.XXXXXX")" || return 2
+    elif [[ "$omp_probe" =~ 'harness-launcher: (OMP_[A-Z_]+)' ]]; then
+      omp_unavailable="$match[1]"
+    fi
+    {
+      while true; do
+        HARNESS_DIR="$HARNESS_DIR" HARNESS_NAME="$HARNESS_NAME" HARNESS_PREFIX="$HARNESS_PREFIX" \
+          HARNESS_RUN_DIR="${HARNESS_RUN_DIR:-}" \
+          HARNESS_LAUNCHER_OMP_HANDOFF="${omp_handoff_dir:+$omp_handoff_dir/argv}" \
+          HARNESS_LAUNCHER_OMP_UNAVAILABLE="$omp_unavailable" \
+          "$_HARNESS_LAUNCHER_BIN/launcher.sh"
+        tui_rc=$?
+        (( tui_rc == 75 )) && [[ -n "$omp_handoff_dir" ]] || return $tui_rc
+        # Fixed grammar only: another runtime could have written this file.
+        local handoff="$omp_handoff_dir/argv"
+        [[ -f "$handoff" && ! -L "$handoff" && -O "$handoff" ]] || return 2
+        omp_handoff_lines=("${(@f)$(<"$handoff")}")
+        rm -f "$handoff"
+        if [[ ${#omp_handoff_lines} -eq 1 && "$omp_handoff_lines[1]" == omp ]]; then
+          omp_native_args=()
+        elif [[ ${#omp_handoff_lines} -eq 3 && "$omp_handoff_lines[1]" == omp && "$omp_handoff_lines[2]" == --model-mode \
+                && "$omp_handoff_lines[3]" =~ '^[a-z0-9][a-z0-9-]*$' ]]; then
+          omp_native_args=(--model-mode "$omp_handoff_lines[3]")
+        else
+          echo 'harness-launcher: OMP menu handoff is invalid' >&2; return 2
+        fi
+        if _harness_launcher_omp_model_mode "${omp_native_args[@]}" \
+            && _harness_launcher_omp_check_args "${omp_native_args[@]}" \
+            && _harness_launcher_omp_projection_select && _harness_launcher_omp_validate; then
+          [[ -z "$isolated_session_id" ]] || \
+            echo "harness-launcher: isolated session $isolated_session_id; OMP continuation is not enabled on this entry" >&2
+          _harness_launcher_run_omp "${omp_native_args[@]}"
+          return $?
+        fi
+        echo '⚠️  OMP 시작 실패 — 메뉴로 돌아갑니다.' >&2
+      done
+    } always {
+      [[ -z "$omp_handoff_dir" ]] || rm -rf "$omp_handoff_dir"
+    }
   fi
 }
 
@@ -1882,11 +2727,15 @@ _harness_launcher_run_checkup() {
   harness_mode_resolve "$preset" direct || return 2
   local model="$HARNESS_MODE_MODEL" effort="$HARNESS_MODE_EFFORT"
   unset HARNESS_MODE_MODEL HARNESS_MODE_EFFORT
-  local py settings
+  local py settings agent_usage_env
   py="$(harness_python3_resolve)" || return 1
-  settings="$("$py" - "$HARNESS_DIR" "$effort" <<'PY'
+  # Company usage policy: this run starts Claude with its own --settings, so
+  # the launcher env block (telemetry off for a profile outside the policy)
+  # goes in here; ~/.claude/settings.json env would otherwise apply.
+  agent_usage_env="$(harness_agent_usage_claude_env_json "$HARNESS_DIR")"
+  settings="$("$py" - "$HARNESS_DIR" "$effort" "$agent_usage_env" <<'PY'
 import json, sys
-root, effort = sys.argv[1].rstrip("/"), sys.argv[2]
+root, effort, env = sys.argv[1].rstrip("/"), sys.argv[2], sys.argv[3]
 private = [".claude/settings*.json", ".mcp*.json", "mcp*.local.json",
            "config/.local/**", ".harness/**"]
 settings = {"permissions": {
@@ -1898,6 +2747,8 @@ settings = {"permissions": {
 }}
 if effort in ("xhigh", "max"):
     settings["alwaysThinkingEnabled"] = True
+if env:
+    settings["env"] = json.loads(env)
 print(json.dumps(settings))
 PY
 )" || return 1
@@ -1944,6 +2795,9 @@ PY
       HARNESS_CLAUDE_TITLE_BOOTSTRAP_ID HARNESS_CLAUDE_TITLE_BOOTSTRAP_VALUE \
       HARNESS_SESSION_ID HARNESS_SESSION_ROOT HARNESS_SOURCE_ROOT HARNESS_RUN_DIR
     unset -m 'OTEL_*' 'CMUX_*' 'ORCA_*' 'HERDR_*'
+    # Children of the audit do not inherit --settings: discard signals for a
+    # profile outside the company usage policy.
+    harness_agent_usage_export_discard "$HARNESS_DIR"
     # --restricted skips project settings env; keep Glob honoring .gitignore.
     export CLAUDE_CODE_GLOB_NO_IGNORE=false CLAUDE_CODE_DISABLE_AUTO_MEMORY=1
     umask 077
@@ -2042,7 +2896,20 @@ _harness_launcher_codex_restore_apply() {
   local hint=false
   restore_id="$(_harness_launcher_restore_resume_id codex "${argv[@]}")" || return 0
   _harness_launcher_restore_probe codex "$restore_id" || true
-  _harness_launcher_restore_launch_record codex "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" || hint=true
+  if [[ "${(L)HARNESS_CODEX_HISTORY_NATIVE_ID:-}" == "$restore_id" ]]; then
+    # History import: the origin record lives in the row's own state home, bound
+    # to the row's origin; a nested or unbound launch keeps default permissions.
+    local import_origin import_state import_isolation
+    import_origin="$(_harness_launcher_codex_import_origin "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$restore_id")" || import_origin=""
+    import_state="${import_origin% *}" import_isolation="${import_origin##* }"
+    if [[ -n "$import_origin" ]]; then
+      _harness_launcher_restore_launch_record_bound codex "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" "$import_state" "$import_isolation" || hint=true
+    else
+      hint=true
+    fi
+  else
+    _harness_launcher_restore_launch_record codex "$restore_id" "${HARNESS_SOURCE_ROOT:-${HARNESS_DIR:A}}" || hint=true
+  fi
   # The launched profile carries grants of its own (plan is read-only), so it is
   # reapplied, but only while the generated registry still has it; otherwise
   # keep base and say so.
@@ -2056,7 +2923,7 @@ _harness_launcher_codex_restore_apply() {
   ! $hint || _harness_launcher_restore_hint codex "$restore_id" "$restore_model"
   [[ -z "$restore_model" ]] || codex_restore_args+=(-m "$restore_model")
   [[ -z "$restore_effort" ]] || codex_restore_args+=(-c "model_reasoning_effort=\"$restore_effort\"")
-  [[ -z "$restore_context" ]] || $context_explicit || HARNESS_CODEX_CONTEXT="$restore_context"
+  $context_explicit || HARNESS_CODEX_CONTEXT="${restore_context:-272k}"
   if [[ -n "$restore_bypass" ]]; then
     codex_restore_args+=(--dangerously-bypass-approvals-and-sandbox)
   else
@@ -2131,9 +2998,11 @@ _harness_launcher_run_codex_cli() {
   export HARNESS_PREFIX
   local HARNESS_OBSERVABILITY_ACTIVE HARNESS_OBSERVABILITY_ENABLED HARNESS_OBSERVABILITY_PROFILE HARNESS_OTLP_HTTP_ENDPOINT
   local OTEL_RESOURCE_ATTRIBUTES obs_rc
+  local ${=HARNESS_AGENT_USAGE_DISCARD_VARS}
   # Per-harness GitHub identity: fail-open, never overrides with an empty token.
   local GH_TOKEN HARNESS_GH_USER
-  harness_gh_token_load "$HARNESS_DIR" || true
+  # The session worktree lacks the gitignored config/.local (team github_user).
+  harness_gh_token_load "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}" || true
   if harness_observability_load "$HARNESS_DIR"; then
     OTEL_RESOURCE_ATTRIBUTES="service.name=codex_exec,obs.runtime=codex,obs.profile=$HARNESS_OBSERVABILITY_PROFILE"
     export OTEL_RESOURCE_ATTRIBUTES
@@ -2141,11 +3010,15 @@ _harness_launcher_run_codex_cli() {
     obs_rc=$?
     [[ "$obs_rc" -eq 1 ]] || return "$obs_rc"
   fi
+  # Claude children of Codex: loopback (observed) or discard signal endpoints
+  # for a profile outside the usage policy.
+  unset ${=HARNESS_AGENT_USAGE_DISCARD_VARS}
+  harness_agent_usage_export_discard "$HARNESS_DIR" "${HARNESS_SOURCE_ROOT:-$HARNESS_DIR}"
   local profile=""
   local profile_explicit=false
   local mcp_profile=""
   local HARNESS_CODEX_APPS_ALLOWLIST="${HARNESS_CODEX_APPS_ALLOWLIST:-}"
-  local HARNESS_CODEX_CONTEXT="272k"
+  local HARNESS_CODEX_CONTEXT="auto"
   local subcmd=""
   local use_happy=false
   local freeform=false
@@ -2205,7 +3078,7 @@ _harness_launcher_run_codex_cli() {
           shift 2
         fi
         ;;
-      272k|1m)
+      auto|272k|500k|1m)
         if $freeform; then
           codex_args+=("$1")
         else
@@ -2513,6 +3386,35 @@ _harness_launcher_run_kiro_cli() {
 _harness_launcher_complete() {
   local dir="$1"
   local -a shortcuts
+  # Complete only the bounded OMP management grammar; never query a runtime.
+  local omp_i=2
+  [[ "${words[omp_i]-}" == --cwd ]] && (( omp_i += 2 ))
+  case "${words[omp_i]-}" in
+    --isolated|--no-isolated) (( omp_i += 1 )) ;;
+    --isolated-session) (( omp_i += 2 )) ;;
+  esac
+  if [[ "${words[omp_i]-}" == omp ]]; then
+    if (( CURRENT == omp_i + 1 )); then
+      compadd -- --version --help login models --model-mode
+    elif [[ "${words[CURRENT-1]-}" == --model-mode ]]; then
+      compadd -- gpt-only opus-only hybrid-gpt-lead hybrid-opus-lead
+    elif [[ "${words[omp_i+1]-}" == login ]] && (( CURRENT == omp_i + 2 )); then
+      compadd -- anthropic openai-codex
+    elif [[ "${words[omp_i+1]-}" == models ]]; then
+      case $(( CURRENT - omp_i )) in
+        2) compadd -- ls ;;
+        3) [[ "${words[omp_i+2]-}" == ls ]] && compadd -- anthropic openai-codex ;;
+        4) compadd -- --json ;;
+        5) compadd -- --kind ;;
+        6) compadd -- chat ;;
+        7) compadd -- --no-extensions ;;
+      esac
+    fi
+    return 0
+  fi
+  if [[ "${words[omp_i]-}" == codex ]] && (( CURRENT >= omp_i + 1 )); then
+    compadd -- auto 272k 500k 1m
+  fi
   local m desc codex_surface_desc="" kiro_surface_desc=""
   local HARNESS_NAME HARNESS_PREFIX HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST
   local HARNESS_MCP_SURFACE_POLICY="" mcp_surface_policy
@@ -2544,7 +3446,9 @@ _harness_launcher_complete() {
     'dontAsk:Auto-approve most actions'
     '--chrome:Enable Claude in Chrome integration'
     '--no-chrome:Disable Claude in Chrome integration'
-    "codex:Codex CLI native (272K default · 1m opt-in · profiles${codex_surface_desc}/fork/safety)"
+    'claude:Claude Code native (explicit selector; existing presets supported)'
+    'omp:Oh My Pi fresh session or bounded login/models management (explicit, pinned)'
+    "codex:Codex CLI native (Auto default · 272k/500k/1m · profiles${codex_surface_desc}/fork/safety)"
     'codex-smoke:Send one bounded metadata-only Codex verification event'
     'checkup:Headless read-only /checkup prompt-audit at the harness root'
     "kiro-cli:Kiro CLI native${kiro_surface_desc}"

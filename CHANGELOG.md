@@ -2,19 +2,479 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## 0.79.0 — 2026-10-27
+
+- Preserve 0.78.3 native-account isolation and 0.78.1 exact baseline/candidate verification while integrating release-backed sessions. Reserved creation retains lease-owned cleanup and transport cloning under the shared release deadline. Durable queue inputs snapshot overlay exclusions so accepted jobs do not follow mutable session records; the existing four-lane CI inventory remains authoritative.
 
 - Route trusted verifier clones, disposable sandbox copies and private verifier temp directories through an optional account-local, validated external-volume storage policy. Invalid configured storage refuses before copying or launching; absent policy retains existing locations. Normal repository verification now gets private temp too, and nested bounded verifiers stay within the exact admitted temp subtree. Unresolved nested lifetime leases retain verifier artifacts and refuse acceptance; public launches discard inherited verifier-only context. Agent temp, broker integration candidates and durable session state are unchanged. This source change does not activate an installed runtime or create host policy.
 - Add committed-base release selection before session cloning through the fixed measured product entry. Missing host release profiles retain legacy Git without a product dependency; invalid profiles or failed installed clients refuse rather than silently falling back. Product-selected Git fallback remains explicit.
 - Materialize verified release outputs and DB overlays with release-owned paths protected in both clone and headless trusted indexes. Pinned resume does not substitute current or repair source/index/overlay bytes; interactive drift warns and headless submission returns 12.
 - Prepare release Codex homes outside worktrees at session `runtime/codex`, with verified declaration roots shared by rendering, cold fingerprints and warm validation. Shared-root release homes remain stable per root; exact export handles bind preparation, deadlines and cleanup to one invocation without an active pointer. Recognize broker worktrees from matching private session records even without an inherited session ID, keeping pre-pin sessions on zero-write Git behavior. Preserve native auth, plugin and hook-trust boundaries without adding config keys.
 - Route TUI and direct Codex preparation through the same verified operation lifecycle and shared supported-Python resolver. Standalone pinned launches get a fresh preparation budget; broker continuations retain their exact-root deadline and clear the budget marker before native execution.
-- Refresh authority policy outside the integration sandbox before configuration scrub; restore the verified baseline ref without a remote URL. Allow read-only access only to the exact physical per-profile export subtree and enforce cache-only authority reads inside. Policy refresh/verifier exit 17 preserves identity and returns the journal to `SUBMITTED` without integration or push.
-- These entries describe source-stage behavior only: no launcher release tag, installed-generation activation, deployment approval, or final independent-review GO is implied.
+- Refresh authority policy outside the integration sandbox before configuration scrub; restore the verified baseline ref without a remote URL. Allow read-only access only to the exact physical per-profile export subtree and enforce cache-only authority reads inside. Policy refresh/verifier exit 17 preserves identity and returns the journal to `SUBMITTED` without integration or push. A subsequent explicit queue submission can replace only the matching failed policy-refusal slot after revalidating the submission under its lease; receipts remain intact and workers never retry it automatically.
+- Installing this release does not approve deployment, create host release profiles, change authority fences, or activate existing immutable session runtimes. Each operational transition retains its own approval and verification boundary.
+- Resolve broker helpers through the physical engine directory for Homebrew symlink entry points. Capture the host collector's exact bytes with combined launch-record callback approvals; changed callback bytes still refuse inheritance. Include all release launcher, sandbox and headless-overlay suites in the four-lane CI inventory.
 
 - Add the launcher half of automatic session linking. With the ssot opt-in, Codex and Claude run the launch record and then the host collector callback as one `SessionStart` command (timeout 10, was 5) and add a callback-only `SubagentStart` hook (timeout 5; for Codex only when the launch record hook is also on). The record helper keeps its single process-table read and 5 second limit, widened to `pid,ppid,lstart,comm`; an unreadable table still withholds the grant. The record is now fsynced and gains `source`, `agent_pid`, `agent_start`, `task_id` and `parent_native`. Profiles without the ssot opt-in are unchanged.
 - Add the launcher keyword `--task <uuid>` (Claude hook argument, Codex `HARNESS_LAUNCH_TASK_ID`), record the parent session of an explicit fork, and add `harness-headless --journal-board/--journal-task` for the Buzz run-start callback (inert unless both are given).
 - Codex hook trust must be approved again for ssot profiles that also enable the launch record hook: the `SessionStart` command and timeout change and a `SubagentStart` hook is added. The approval grant must carry a `callbacks` entry (with sha256) for the `harness-session-hook` path, or the row is not carried into isolated homes. `agent_start` is recorded in UTC so the process key does not change with the system time zone.
+
+## 0.78.3 — 2026-10-27
+
+- Derive native bootstrap source authority from the operating-system UID/passwd
+  home through the existing fixed, isolated system-Python interpreter. The pinned
+  native runtime's `userInfo().homedir` follows the intentionally fresh `HOME`,
+  so 0.78.2 rejected valid installed code before native approval.
+- Keep fresh native HOME/auth isolation, exact source/native/owner/once checks
+  and unknown/cleanup handling unchanged. Bound and validate the account query's
+  canonical UTF-8 result; failures never fall back to caller environment or paths.
+- Cover HOME-sensitive runtime behavior, failed/malformed/foreign account proofs,
+  non-ASCII canonical bytes and unsafe home ancestry. Read-only pinned-native
+  account/common-tree smoke is not a BIND, engine, approval or once receipt.
+
+## 0.78.2 — 2026-10-26
+
+- Repin the canonical bootstrap descriptor to the corrected published private
+  manifest and its actual seven Git blobs. The earlier releases carried a stale
+  size/hash for the shared compiler helper and correctly refused closure admission
+  with `canonical_bootstrap_content`. The seven admitted code files and native
+  binary are unchanged from the independently reviewed correction.
+- Preserve the existing verifier, policy, approval, lock and publication guards.
+  Never repair an old release or sealed cache in place. Release metadata is not
+  evidence of installation, actual canonical apply or a genuine human **once**;
+  those still require their own receipts. The 0.78.1 candidate-verifier baseline
+  prerequisite remains in force.
+
+## 0.78.1 — 2026-10-26
+
+- Bind repository verification to the exact fresh baseline and complete merged
+  candidate tree in both interactive and headless broker paths. Recheck the
+  submission, HEAD, parent, committed tree and index before publication; remote
+  retries rebuild and reverify their bindings. Scrubbed headless copies retain
+  only the fresh bound baseline ref and use cache-only authority reads, without
+  restoring remote URLs, credentials or network refresh. Force system Git
+  configuration off in the scrubbed verifier while retaining its generated
+  global config; Xcode host configuration is not a sandbox prerequisite.
+- Require trusted baseline support for verification-only `--verify-candidate`.
+  Unsupported repositories fail closed, with no submitted-verifier or path-filter
+  fallback. Baseline support must be installed through authorized maintenance
+  before adopting this launcher. Sandbox isolation and delivery recovery remain.
+
+## 0.78.0 — 2026-10-26
+
+- Add `harness-canonical-update --profile <registered-profile> --expected-base
+  <full40> --revision <full40>` as a dedicated, no-auth native approval carrier
+  for the existing private canonical transaction. Only a genuine human **once**
+  decision bound to the full profile, root, origin, base, target and expiry can
+  authorize apply; caller paths and approval overrides are not accepted.
+- Preserve the existing enrolled-profile identifier grammar, including uppercase
+  letters, underscores and names up to 64 characters. Registration and enrollment
+  remain mandatory; accepting an identifier grants no root or operation authority.
+- Require the selected immutable public runtime and its exact release-pinned
+  private code closure. The trusted installer can stage that pair before a
+  canonical update, preserving existing sessions and the legacy Homebrew keg;
+  compatible frozen verifier code does not come from the mutable target checkout.
+- Materialize the observer regression fixture's private operation ancestry
+  independently of the runner umask, preserving real directory and lease checks
+  and retaining the observer refusal category in assertion diagnostics.
+- Observe inherited FIFO EOF in the native file stream and release the reader
+  after the drained result, before waiting for exit; do not rely on Bun's socket
+  wrapper to observe anonymous-pipe closure.
+- Drain owned cancellation and report unknown results without automatic retry.
+  Document the installation prerequisite, selected-runtime entry and the
+  distinction between an interface probe and actual approval/apply evidence.
+
+## 0.77.8 — 2026-10-25
+
+- Open an enrolled host's bare runtime menu from the verified sealed launcher,
+  like explicit OMP entry. Previously the Homebrew consumer failed the OMP
+  binding check, so the menu incorrectly marked OMP unavailable. Profile commands,
+  cwd and isolation controls share this entry; source-declared model defaults
+  and explicit non-OMP routes are unchanged. A missing or invalid closure stops
+  the enrolled bare menu before allocation. Hosts without an enrollment index
+  retain the legacy menu without a new snapshot requirement.
+- Exercise actual menu selection and cancellation in owned terminal fixtures,
+  including default ordering, resumed isolation, no Native OMP invocation, and
+  preservation of source, enrollment and sealed snapshot data.
+
+## 0.77.6 — 2026-10-23
+
+- Isolated sessions now load the per-profile `GH_TOKEN` from the harness
+  source root instead of the session worktree, for OMP, Claude and Codex
+  launches alike. Team profiles keep `github_user` in gitignored
+  `config/.local`, which a worktree does not have, so team-profile sessions ran
+  without a token and `gh` used the host's global account.
+
+## 0.77.5 — 2026-10-23
+
+- Preserve the fresh workspace selected by a pure Codex history resume when
+  default isolation is enabled. A retained original workspace no longer
+  replaces that selection; its journal, heartbeat and native history remain
+  unchanged.
+
+## 0.77.4 — 2026-10-23
+
+- A shell `harness-exec <harness> omp --session-resume <handle>` whose session
+  binding still names an older launcher runtime (left by an activation) now
+  runs `harness_omp_continuation.py --rebind-stale` before taking the workspace
+  lease. It calls the existing `rebind_runtime` (same source, current selection,
+  free binding/workspace/native locks, byte re-read) only when the binding is
+  readable and its runtime differs from `current.json`; otherwise the resume
+  continues with its existing checks and errors. A failed rebind leaves the
+  binding and record unchanged and surfaces its own label (for example
+  `OMP_CONTINUATION_BUSY`).
+- The hint after an exit-time FINALIZE failure no longer prints a
+  `--rebind-runtime` command; after a launcher upgrade a plain
+  `omp --session-resume <handle>` is enough.
+
+## 0.77.3 — 2026-10-23
+
+- An enrolled OMP projection row stays valid across launcher activation.
+  Readers still require the consumer to be the current snapshot's
+  `aliases.zsh` with matching manifest hashes, but no longer compare the row's
+  stored launcher revision/hashes to the live ones. Those values remain
+  publish-time provenance, and the publisher still requires them to be true
+  when it writes the row. Profile, binary, namespace and selection checks are
+  unchanged.
+- The publisher matches a re-published profile binding through the same device
+  remapping as readers, so republishing works after a reboot renumbers APFS
+  devices. A different root still fails with `OMP_BINDING_MISMATCH`.
+- Rolling back to a launcher snapshot that predates this change still fails
+  every row with `OMP_BINDING_MISMATCH` until the row is republished.
+- `omp --session-resume <handle>` (and `--session-new`) without a trailing `--`
+  is accepted as a prompt-less launch. A prompt still has to follow `--`.
+- Native OMP's bash tool now runs the model's commands with the account home.
+  The launcher adds `PI_SHELL_PREFIX` (`export HOME='<passwd home>'; unset
+  XDG_CONFIG_HOME XDG_CACHE_HOME XDG_STATE_HOME XDG_DATA_HOME;`), so `gh auth`,
+  `~/.gitconfig` identities and credential helper, and `~/.local/state` work in
+  OMP sessions again. OMP itself keeps its namespace `HOME`. The home comes from
+  `/usr/bin/id -P`, never the caller's `$HOME`; an unsafe or missing one refuses
+  the launch with `OMP_ACCOUNT_HOME_INVALID`.
+- Native OMP launches (plain, `--session-new`, `--session-resume`) get the
+  profile's `GH_TOKEN` from `harness_gh_token_load`, like Claude and Codex
+  (fail-open, never the caller's token). The launch now clears its own exports
+  and runs `/usr/bin/env -u _` instead of `env -i`, so the token never appears
+  in `argv`.
+
+## 0.77.2 — 2026-10-23
+
+- Add the operator command `codex-hook-trust.py capture --session-id UUID [--profile]
+  [--dry-run]`, which records the owner's existing native Codex hook approval as
+  the private source approval record that fresh isolated sessions inherit. It
+  creates no approval: every hook needs a trusted, enabled native decision equal
+  to its generated hash, script blobs and callback bytes are verified, and any
+  mismatch or partial approval is refused. The session can write its own
+  profile, so its decision is only evidence: capture refuses to run with a
+  `CODEX_SANDBOX*` or inherited `HARNESS_SESSION_*` environment and records only
+  after the operator types `record` on the controlling terminal under the exact
+  hooks, scripts and callbacks. Writes are atomic and 0600 with a backup of the
+  previous record.
+- Forward the isolated-session tuple to OMP continuation launches
+  (`omp --session-new`/`--session-resume`). The continuation now sets
+  `HARNESS_SESSION_ID`/`HARNESS_SOURCE_ROOT`/`HARNESS_SESSION_ROOT`/
+  `HARNESS_RUN_DIR` from its own session record (run dir = retained cwd);
+  before, the native OMP received none of the four, or a caller's exported
+  tuple from another session.
+- `harness-session create` works through the Homebrew command link again.
+  The engine looked for its helpers beside the invoked link
+  (`<prefix>/bin`) instead of beside its target in
+  `share/harness-launcher`, so every create failed with "creation helper
+  unavailable". All helper lookups (creation, work proof, Codex history,
+  transcript archive, usage sync, Codex policy, report) now resolve the link
+  chain once through `engine_path`/`engine_dir`.
+- OMP native `PATH` appends the launcher's Homebrew bin (`/opt/homebrew/bin`
+  on arm64, `/usr/local/bin` otherwise) after `/usr/bin:/bin`, so OMP finds
+  `uv`, `gh` and other Homebrew tools. It is a launcher constant, never the
+  caller's `PATH`, and is added only as a real directory owned by the user or
+  root without other-user write (group write only for the macOS admin group).
+
+## 0.77.1 — 2026-10-22
+
+- OMP continuations accept a session header with OMP's optional fields
+  (`title`, `titleSource`, `additionalDirectories`, ...). OMP writes them once a
+  session is titled, so every titled session failed to resume with
+  `OMP_CONTINUATION_UNBOUND`. A `parentSession` still marks a native fork.
+
+## 0.77.0 — 2026-10-22
+
+- Run upstream OMP instead of the retired local fork. Required preparation
+  builds a schema-1 selection whose `runtime_version` is the enrolled binary's
+  release version (no fork contract, native release or current-projection
+  fields, no selected extensions) and no longer gates on the fork's native
+  version. The compiler's argv uses `--trusted-extension` and a bundle
+  `--config` settings overlay; caller `--trusted-extension` is refused.
+  Release metadata is a shape check; rows published for the fork stay readable.
+- Model modes stay a launcher control (`--model-mode <id>`, validated by the
+  source parser, default otherwise, also on resume) and are rendered by the
+  compiler into the settings overlay. Removed the fork-only
+  `--model-mode-check`, saved-session mode peek (`MODE_PEEK`,
+  `validate-model-mode-peek`, `--inspect-session-model-mode`) and the rule that
+  resume needs an explicit mode. `model_mode_request`/`model_mode_admit` keep
+  the call shape the installed Entry uses.
+- Continuations survive launcher and binary upgrades: origin matching ignores
+  runtime pin/manifest, binding bytes, binary and namespace-marker SHA and lock
+  size/times, and a binding may name any release under the launcher-runtimes
+  root. Resume admits READY, PENDING, IN_FLIGHT and BLOCKED records (a recorded
+  native identity must match; an unknown one adopts the handle's single session
+  file), with no size cap on the header-only native read. A nonzero native exit
+  prints the resume command once the session is recorded. When recording fails,
+  the launcher prints the `--rebind-runtime` and resume commands (a launcher
+  upgrade during the run) and says that `OMP_CONTINUATION_NOT_PERSISTED` or
+  `OMP_CONTINUATION_NATIVE_FORK` needs a new session. The unused readonly
+  `validate-required-prepared` helper verb is removed.
+- herdr's bare `harness-exec <harness> omp --session-resume <handle> --` now
+  resumes (the handle names its own session; no caller cwd is injected).
+- A continuation's native holds a per-handle `native.lock`, so a second resume
+  is refused `OMP_CONTINUATION_BUSY` even after its launcher was killed.
+- `harness_omp_continuation.py --rebind-runtime <state> <source> <session>`,
+  run from the currently selected runtime snapshot, points an OMP
+  continuation's session binding at that snapshot, so the Entry resumes it with
+  the new runtime instead of its old pin. It requires the same source and free
+  binding, workspace and native locks.
+- The synthetic OMP test source fixture now carries the upstream-OMP canonical
+  compiler, bridge, model-mode helper and OMP policy section.
+- Retired the source-bound jq CI evidence pin (inspector, validator, frozen
+  capsules and CI steps) with the fork; it pinned fork-era sources. Runtime jq
+  dependency checks remain.
+
+## 0.76.0 — 2026-10-22
+
+- Extend the OMP native environment (contract v2, decision 038): always set
+  `PI_AUTO_QA=0` so OMP stops pushing tool-issue reports to its QA service;
+  forward `HARNESS_SESSION_ID`/`HARNESS_SOURCE_ROOT`/`HARNESS_SESSION_ROOT`/
+  `HARNESS_RUN_DIR` only when the outer runner set all four validly, and
+  `HERDR_ENV`/`HERDR_SOCKET_PATH`/`HERDR_PANE_ID` only when all three are
+  valid. No other caller variable is forwarded.
+- With the HERDR triple, also set `HERDR_RESUME_ARGV`: for OMP continuation
+  launches the JSON argv of the public `harness-exec <harness-dir> omp
+  --session-resume <handle> --` command, otherwise empty. A caller's own value
+  is never forwarded.
+- Show title, model and effort of OMP panes in the herdr plugin from the
+  agent's session file under the OMP history directory or a launcher
+  continuation session directory.
+
+## 0.75.0 — 2026-10-22
+
+- Let several OMP sessions share one prepared namespace. Fresh and continuation
+  sessions now take the native-home lease shared; `login`/`models` keep it
+  exclusive and are refused while a session runs. Lock failures print one
+  launcher message instead of the raw `zsystem` error.
+- Offer "New — OMP" in the no-argument menu for profiles with a selectable OMP
+  namespace, with a model-mode picker read from the profile's canonical
+  `omp-model-modes.json`. An enrolled profile whose selection fails is listed
+  as unavailable with its `OMP_*` label. The menu hands back only `omp
+  [--model-mode <id>]` with exit status 75 through a file other runtimes never
+  see; the runner revalidates it, returns to the menu on failure, and history
+  rows replay it.
+- Tolerate concurrent first creation of the OMP continuation container.
+
+## 0.73.2 — 2026-10-22
+
+- Reuse an immutable transcript archive after SQLite rebuilds only characterized
+  WAL-index counters. Require unchanged DB, WAL, raw history and file inventory;
+  validate both SHM headers and checksums against that WAL, and retain roots for
+  every other byte difference. Existing archive contents remain unchanged and
+  complete Native/work verification still precedes retirement.
+
+## 0.73.1 — 2026-10-22
+
+- Preserve symlink modes during independent terminal-work restoration even with
+  a private umask; unsupported mode restoration still holds the original root.
+- Verify archived Native 0.163 multi-agent v2 children through the characterized
+  read-only query when direct resume is refused, retaining full raw and paginated
+  history comparisons. Other RPC errors remain blocking.
+- Read large raw history responses with linear framing and exact file-size-based
+  budgets, up to 128 MiB per raw file. Ordinary RPC limits and offline boundaries
+  remain unchanged.
+
+## 0.73.0 — 2026-10-21
+
+- Characterize Native 0.163.0 full history retirement with real offline archive
+  and restore tests, including pagination, parents, segments and SQLite WAL.
+  Verify known empty catalogs explicitly; missing history still retains roots.
+- Preserve exact workspace image bytes as manifest-bound attachments after
+  matching typed inline data in the same physical thread and turn. Verify Native
+  image readback while keeping historical read/change paths and all wire items
+  unchanged. Unknown attachments and mismatches retain the root.
+- Add explicit, exact-inventory terminal work preservation. Keep original index
+  blobs and worktree bytes independently recoverable before owner-filtered GC;
+  later changes and failed preservation remain protected. No automatic dirty
+  session cleanup or archive expiry is introduced.
+
+## 0.72.0 — 2026-10-21
+
+- Add an explicitly enabled durable integration queue with immutable submissions
+  and pinned runtimes. Asynchronous acceptance and bounded client waiting are
+  separate from verified delivery; synchronous close retains its result contract.
+- Serialize queued delivery per destination across old and profile pools, with a
+  bounded host worker/test budget. Keep every enrolled legacy integration gate
+  until owned execution groups and inherited leases finish; reconcile uncertain
+  pushes against fresh remote history instead of submitting twice.
+- Route recovery, discard and retention through the same coordinator. Provide
+  job phases, timing, logs and an explicitly installed, pinned LaunchAgent;
+  ordinary launch/close commands never install or enable a background service.
+
+- Allow read-only access to the fixed, trusted macOS system Codex requirements
+  file in headless agent sandboxes, preserving administrator policy without
+  granting sibling-file access or writes. Refuse unsafe file metadata.
+- Bootstrap Codex configuration during sandbox preflight so configuration
+  failures are reported before model requests, even when `--version` succeeds.
+
+## 0.71.1 — 2026-10-21
+
+- Allow session GC to account for untracked CPython caches after checking the
+  sibling Git source and cache fingerprint. Exact regeneration proves derived
+  bytes; serialization differences require preserving the entire original and
+  a recoverable owner/path receipt outside the retired root. Keep unsupported,
+  stale, staged, tracked or unrelated work protected. Verification never executes
+  source or loads supplied bytecode, and preservation failures retain the root.
+
+## 0.71.0 — 2026-10-21
+
+- Remove pool GC from agent startup. Add bounded report-before-apply maintenance
+  primitives for explicitly installed management jobs; report-only remains the default.
+- Recheck terminal work files, staged changes and saved discard patches under
+  the runtime lease before retirement. Live leases prevent stale abandonment.
+- Support registered profile pools for new managed sessions while retaining
+  old absolute roots and immutable bindings. Restore selected Codex raw history
+  without copying unrelated databases; unsupported parent projections refuse.
+- Use private copy-on-write snapshot/archive copies where supported. Keep unique
+  native snapshots and transcript archives without automatic expiry. Native
+  0.163 full-retirement proof remains unsupported and holds the original root.
+
+## 0.70.0 — 2026-10-20
+
+- Reserve a private session identity and creation lease before fetch or clone.
+  Preparation withholds the normal session journal until admission, including
+  standalone create and caller-owned immutable runtime bindings. Interrupted
+  creation is reconciled only with verified ownership, leases and binding readback;
+  uncertain or already admitted sessions are preserved.
+- Coordinate fetch and exact base selection per source repository with a bounded
+  wait. Clones and unrelated profiles proceed independently; existing sessions
+  retain their original journal and runtime lease semantics.
+
+## 0.69.0 — 2026-10-20
+
+- Add a usage-collection policy: only harnesses that opt in with
+  `HARNESS_AGENT_USAGE_COLLECT="1"` on an enrolled device stay visible to an
+  organization-managed collector. Other profiles disable Claude telemetry through
+  the launcher `--settings`, discard child-process OTLP signals, and publish
+  exclusion manifests in `~/.agent-usage/collection.d`; collecting profiles
+  inherit the user's Codex `[otel]` table and register isolated session roots.
+  The flag is read from the canonical source root (never an isolated clone);
+  reconcile evaluates every recorded session source root, leaves unevaluated
+  sessions untouched, sweeps only its own state home's manifests and runs under
+  a bounded cross-process lock. Codex launches with local observability point
+  Claude child processes at the loopback collector, and `checkup prompt-audit`
+  carries the policy in its own `--settings`.
+
+## 0.68.0 — 2026-10-20
+
+- Restore launch settings after a reboot for top-level launches only. A new
+  `harness_launch_context.py` decides whether a person started the launch: a
+  foreground terminal, no agent marker in the environment, and a complete
+  agent-free process ancestry. Anything unknown counts as nested.
+- Claude forks now inherit the origin's recorded permission mode, model, effort
+  and 1M context when the launch is top-level and the record is bound to the
+  verified origin owner (same source root, isolated, same session id). A nested
+  or unbound fork keeps `--permission-mode default`. The record joins the fork
+  proof, so a swapped record is refused before exec. A mode or model keyword
+  (`fast`, `base`, `plan`, `opus`, `rich`, `fable`, `ultracode`) sets its own
+  model and effort, so it suppresses the inherited ones; permission inheritance
+  is unaffected. Inheritance takes effect once the caller passes the prepared
+  `inherited` settings (the profile dispatcher change ships separately).
+- Codex history imports re-apply the origin's recorded approval/sandbox/profile
+  for top-level launches. The catalog row now carries `origin_state_home`, and
+  the record is read only from that pool and only when bound to the origin. A
+  nested (agent-run) import no longer re-applies a destination-pool record that 0.67.0
+  could pick up.
+- The exact-id Claude fork catalog lists only project directories and the target
+  name, and the Claude catalogs skip `subagents/` trees. On a large
+  `~/.claude/projects` the fork no longer fails `fork_catalog_incomplete`.
+- OMP projection and continuation records accept an APFS device renumbering when
+  the inode and every other field match and the whole directory chain to its
+  anchor moved to one new device.
+- The full Codex history catalog walks each home's stat signature twice per call
+  instead of once per row (1135 s to about 97 s on a 13 GB history). A home that
+  changes during the call is inventoried again once, then held.
+- Interactive Claude launches set `CLAUDE_CODE_TMPDIR` to an owner-private
+  `${XDG_STATE_HOME:-~/.local/state}/cct` when unset, so the scratchpad survives
+  a reboot. Headless runs keep their private temp directory and deny writes to
+  the durable one.
+
+## 0.67.0 — 2026-10-20
+
+- Make isolated-session root identity tolerant of APFS device renumbering after
+  a reboot. A recorded `root-inode` still matches when the inode is equal and the
+  root sits on the device of its `worktrees` directory; a recreated directory, a
+  different inode, a symlink, or a root on another filesystem is still refused.
+  Applies to session submit/deliver, the Codex history catalog and pool
+  protection, hook trust, native plugin inheritance and the session report.
+- Make exact-id Codex history lookups cheap: `codex-history.py catalog` accepts
+  `--native-id`, filtering before owner dedupe with an unchanged output schema;
+  each home's inventory is hashed once per call unless its stat signature
+  changes; the launcher's history selection passes `--native-id` for a UUID.
+
+## 0.66.0 — 2026-10-19
+
+- Default new native Codex launches to Auto, following Codex configuration and
+  model metadata without launcher-pinned context or compaction values.
+- Add explicit 500K context with automatic compaction at 400000 tokens alongside
+  the existing 272K and 1M policies, consistently across shortcuts, the TUI, and
+  Web launch plans.
+- Preserve saved context choices and legacy restore behavior. Record the selected
+  policy instead of inferring it from an observed runtime window. Generated
+  custom agent roles retain their independent 272K limits.
+
+## 0.60.2 — 2026-10-18
+
+- Allow owned, non-group/world-writable common receipt parents for lifecycle CLI
+  commands while keeping private receipt directories strictly mode 0700.
+
+## 0.60.1 — 2026-10-18
+
+- Preserve printable Unicode device display names in `harness-herdr-web cli devices`
+  while retaining control-character filtering and exact UUID selection.
+
+## 0.60.0 — 2026-10-17
+
+- Add explicit device-UUID queries and bounded pane reads through
+  `harness-herdr-web cli`, using the existing authenticated HTTPS peer route.
+- Add guarded text, keys, commands, agent prompts, and owned resource lifecycle
+  actions. Versioned server capabilities and exact target bindings are required;
+  private durable intents preserve status and cancellation after response loss.
+- Add explicit agent UI answers and context-checked Codex interrupt/exit requests.
+  These report observed transport effects, not provider acknowledgement or exit.
+- Add managed agent launch preflight and bounded status waiting. Ambiguous effects
+  are retained for lookup and are never automatically submitted again.
+
+## 0.59.0 — 2026-10-16
+
+- Add explicit `harness-session report --json` retention diagnostics with optional
+  bounded size and managed runtime metadata. The command preserves session state,
+  treats unverified provenance and archives conservatively, and never authorizes
+  deletion. Installed symlink entry points are covered by regression tests.
+
+## Unreleased — Trusted preservation
+
+- Add the `harness-preserve` trusted preservation command to the next release.
+- Add an opt-in, fixed GitHub SSH identity binding for the command's live
+  remote query. It disables SSH config and agents, pins host/user/identity,
+  and binds safe non-content identity metadata to the native confirmation.
+
+## 0.56.0 — 2026-10-15
+
+Routing changes apply only to profiles with `HARNESS_SESSION_ISOLATION_DEFAULT=1`; other profiles keep their behavior, including in-place restores. The one exception is the `--bg`/`--background` plus continuation-flag reclassification, which also applies in every profile when isolation is chosen explicitly (`--isolated`, `--isolated-session` or `HARNESS_SESSION_ISOLATION=1`).
+
+- A continuation of a session that lives in the canonical harness checkout no longer silently keeps running there. An isolated owner is still restored first, for every spelling. When the owner is the canonical checkout, only the pure Codex forms `codex [profile preset] resume <id>` and `codex [profile preset] --passthrough resume <id>` (presets `fast|base|sol|plan|rich|astra`, kept in the rewrite so the caller's profile still wins over the recorded grant) start a fresh isolated session through durable history; the model and effort are read from the selected history snapshot. Claude, every other Codex form (`-m`, `-s`, `-a`, `-c`, context words, prompt text, or planner argv with `--passthrough`) and a failed history preparation are refused with two quoted, copy-pasteable alternatives: start a fresh isolated session (for Codex that was refused for its form, also `<prefix> codex resume <id>`), or `<prefix> --no-isolated <original args>` for maintenance. Other Codex forms are refused rather than rewritten so a rewrite cannot drop the caller's flags and re-apply a recorded grant.
+- Behavior change: a Claude continuation (`--resume/-r`, `--continue/-c`, `--fork-session`, and `--bg` together with one of them) is now owner-checked without a TTY too, and a non-interactive continuation whose owner is not found is refused (it used to take the legacy route). The launcher keywords `resume` and `continue` are refused without a TTY the same way. Fresh runs (`--remote-control`, `--session-id`, `-w/--worktree`, `--tmux`, `--from-pr`, `--bg` alone), client/cloud commands (`attach`, `respawn`, `--teleport`), print runs (`-p`), management commands and non-TTY Codex keep their routes.
+- Known limit: non-TTY SDK hosts such as Paseo pass options like `--verbose` before `--resume`. That argv is classified invalid, so the continuation still runs in the canonical checkout, like the non-TTY fresh starts that already do; the harness write guard covers their writes.
+- Codex code mode: the peer-checkout guard hook is allowlisted for the PreToolUse adapter, receives the Codex process as its session owner (`HARNESS_HOOK_OWNER_PID`, as in the PostToolUse adapter), and is emitted for `exec|code_mode_exec` next to its direct Bash/Edit/Write/apply_patch entry. Existing Codex homes are not regenerated.
+- The bare-launcher menu labels the shared choice as maintenance for which a harness write guard may require a session lease.
+
+## 0.55.0 — 2026-10-15
+
+- Isolated Codex homes inherit natively installed plugins that both the canonical and the session `config/codex-surface.json` list in `runtime_audit.native_codex_plugins`, so a harness audit that requires such a plugin no longer always fails inside an isolated session. Only a plugin the canonical `.harness/codex` has installed and enabled is carried: its single cached version, an exact local `[marketplaces.*]` table and `[plugins."<id>"] enabled = true`. Hook trust, auth, tokens, other runtime state and unlisted plugins are never copied, so plugin hooks stay under native `/hooks` review. Session decisions always win and nothing is replaced or deleted; a native uninstall is not reversed. A missing canonical installation leaves the home unchanged and the audit still fails. Behavior is identical under `HARNESS_CODEX_GLOBAL_PLUGIN_POLICY=manage|preserve`, and `~/.codex` is neither read nor written.
 
 ## 0.54.1 — 2026-10-14
 
@@ -786,6 +1246,32 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased
 
+- Collect policy-managed OMP print denials through launcher-owned private
+  nonce/tuple/native-process/session receipts and return exit 2 for denied or
+  invalid results. Cover explicit text/JSON and implicit non-TTY print without
+  weakening native exec or continuation lock ownership. Preserve terminal stdin,
+  forward each received signal unchanged and reap native shutdown before receipt
+  collection/finalize. Caller receipt variables never enter the closed native environment.
+  Interactive preparation fixtures use real terminal stdin; source-admission
+  tests no longer pin unrelated suite counts or duplicate their execution.
+- Forward an actual incoming `HARNESS_SESSION_STATE_HOME` to OMP only after
+  validating an absolute existing non-symlink real directory; never synthesize it.
+  The paired required bridge forwards the validated directory to hook children.
+- Clone isolated-session and broker snapshots through Git's transport even
+  for local repositories, avoiding filesystem-copy races with transient Git
+  maintenance files. Explicitly fetch the selected creation commit, including
+  commits reachable only from the source's remote-tracking refs.
+  Session-isolation regression fixtures use the same snapshot semantics and join
+  concurrent children before cleanup while preserving their failure statuses.
+  Headless TOML assertions use the fixture's launcher-resolved supported Python
+  rather than an incompatible host shim.
+- Classify Codex `mcp-server` as rejecting `--profile`, matching Codex
+  0.144.1. The launcher still blocks this server entry point; `mcp` remains
+  profile-capable. Cover classification even when Codex is not installed.
+- Cover fresh OMP TUI selection of the canonical recommended mode, including
+  recipes that list `gpt-only` before the default. Explicit Codex-only selection
+  and history replay remain covered. Document that the profile's canonical
+  model-mode source, not a launcher-specific model preference, owns the default.
 - `docs/orca-integration.md` no longer recommends one Orca profile per trust
   boundary. Orca profiles share one PTY daemon and readable terminal history on
   a macOS account, so they are not a security boundary. The guide now documents

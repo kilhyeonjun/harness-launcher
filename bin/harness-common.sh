@@ -104,6 +104,11 @@ harness_claude_bootstrap_eligible() {
   return 0
 }
 
+# Source-only argv format query; no runtime or profile state is consulted.
+harness_launcher_raw_claude_contract() {
+  printf '%s\n' raw-claude-v1
+}
+
 # harness_claude_is_management_command <word>: native Claude subcommands and
 # informational flags that must run without launcher model/MCP flags.
 harness_claude_is_management_command() {
@@ -210,6 +215,7 @@ harness_launch_record_export_codex() {
   [ -z "${6:-}" ] || export HARNESS_LAUNCH_NETWORK="$6"
   if [[ "${7:-}" =~ $uuid_re ]]; then export HARNESS_LAUNCH_TASK_ID="$7"; fi
   if [[ "${8:-}" =~ $uuid_re ]]; then export HARNESS_LAUNCH_PARENT_NATIVE="$8"; fi
+  export HARNESS_LAUNCH_CONTEXT="${HARNESS_CODEX_CONTEXT:-auto}"
   export HARNESS_LAUNCH_SOURCE_ROOT="$1"
   export HARNESS_LAUNCH_ISOLATED=0
   [ -z "${HARNESS_SESSION_ROOT:-}" ] || HARNESS_LAUNCH_ISOLATED=1
@@ -228,7 +234,7 @@ harness_launch_record_export_codex() {
 #   10 instead of 5) and a callback-only SubagentStart hook. A valid task-id or
 #   parent-native UUID is recorded by the hook (P3-L auto-link).
 harness_claude_launch_settings() {
-  local hook="$1/harness-launch-record" py cmd out="" isolated=0 perm="" hooks="" optins="" config_root="${6:-$2}"
+  local hook="$1/harness-launch-record" py cmd out="" isolated=0 perm="" hooks="" optins="" env_json="" config_root="${6:-$2}"
   local ssot=0 session_timeout=5
   local uuid_re='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
   [ -z "${HARNESS_SESSION_ROOT:-}" ] || isolated=1
@@ -261,7 +267,50 @@ harness_claude_launch_settings() {
     fi
   fi
   [ -z "$hooks" ] || out="$out${out:+,}\"hooks\":{$hooks}"
+  env_json="$(harness_agent_usage_claude_env_json "$config_root" "$2")"
+  [ -z "$env_json" ] || out="$out${out:+,}\"env\":$env_json"
   [ -z "$out" ] || printf '%s\n' "{$out}"
+}
+
+# harness_claude_export_durable_tmpdir
+#   Interactive Claude only (call inside the process that execs Claude, never in
+#   the user's shell): when CLAUDE_CODE_TMPDIR is unset, export
+#   ${XDG_STATE_HOME:-$HOME/.local/state}/cct so session scratchpads survive a
+#   reboot (the default lives under /private/tmp, which macOS clears). Set only
+#   when the base path is <= 40 bytes (Claude's sockets live below it and
+#   AF_UNIX paths are short), the directory is (created) 0700, owned, not a
+#   symlink, and a write probe succeeds. A preset value is never replaced and
+#   harness-headless keeps its own private run dir. Never fails the launch.
+harness_claude_export_durable_tmpdir() {
+  [ -z "${CLAUDE_CODE_TMPDIR:-}" ] || return 0
+  [ "${HARNESS_HEADLESS:-0}" != 1 ] || return 0
+  local state base mode probe
+  state="${XDG_STATE_HOME:-}"
+  if [ -z "$state" ]; then
+    [ -n "${HOME:-}" ] || return 0
+    state="$HOME/.local/state"
+  fi
+  base="$state/cct"
+  case "$base" in /*) ;; *) return 0 ;; esac
+  [ "$(printf '%s' "$base" | wc -c | tr -d ' ')" -le 40 ] || return 0
+  [ ! -L "$base" ] || return 0
+  if [ ! -e "$base" ]; then
+    (umask 077; mkdir -p "$state" 2>/dev/null; mkdir -m 700 "$base" 2>/dev/null) || return 0
+  fi
+  [ -d "$base" ] && [ ! -L "$base" ] && [ -O "$base" ] || return 0
+  chmod 700 "$base" 2>/dev/null || return 0
+  mode="$(command stat -c %a "$base" 2>/dev/null || command stat -f %Lp "$base" 2>/dev/null)"
+  [ "$mode" = 700 ] || return 0
+  probe="$base/.probe.$$"
+  (umask 077; : > "$probe") 2>/dev/null || return 0
+  rm -f "$probe" 2>/dev/null
+  [ -e "$base/.metadata_never_index" ] || { : > "$base/.metadata_never_index"; } 2>/dev/null || true
+  # Keep scratchpads out of Time Machine backups, once (best effort).
+  if [ ! -e "$base/.tm-excluded" ] && command -v tmutil >/dev/null 2>&1; then
+    if tmutil addexclusion "$base" >/dev/null 2>&1; then { : > "$base/.tm-excluded"; } 2>/dev/null || true; fi
+  fi
+  export CLAUDE_CODE_TMPDIR="$base"
+  return 0
 }
 
 # harness_headless_session_settings <session-root>
@@ -309,10 +358,32 @@ harness_codex_subcommand() {
 harness_codex_subcommand_rejects_profile() {
   case "${1:-}" in
     'debug prompt-input') return 1 ;;
-    agents|login|logout|plugin|app-server|remote-control|app|completion|update|doctor|apply|a|migrate-rollouts|cloud|exec-server|features|help|debug|debug\ *)
+    agents|login|logout|plugin|app-server|remote-control|app|completion|update|doctor|apply|a|migrate-rollouts|cloud|exec-server|mcp-server|features|help|debug|debug\ *)
       return 0 ;;
   esac
   return 1
+}
+
+# harness_session_isolation_noninteractive_route [launcher argv...]
+# A call without a TTY keeps the legacy route except for the continuation of an
+# existing Claude session (--resume/-r, --continue/-c, --fork-session, --bg with
+# --resume): that must meet the owner check like an interactive one, otherwise a
+# headless resume silently writes in the canonical checkout. Print runs, Codex,
+# management and client commands, and fresh runs stay legacy.
+harness_session_isolation_noninteractive_route() {
+  local arg route
+  case "${1:-}" in
+    ''|--isolated|--no-isolated|--isolated-session|codex|codex-smoke|checkup|kiro|kiro-cli|codex-gateway)
+      printf '%s\n' legacy; return 0 ;;
+  esac
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      -p|-p?*|--print|--print=*) printf '%s\n' legacy; return 0 ;;
+    esac
+  done
+  route="$(harness_session_isolation_default_route 1 "$@")"
+  if [ "$route" = reject ]; then printf '%s\n' reject; else printf '%s\n' legacy; fi
 }
 
 # harness_session_isolation_default_route <interactive:0|1> [launcher argv...]
@@ -320,10 +391,25 @@ harness_codex_subcommand_rejects_profile() {
 harness_session_isolation_default_route() {
   local interactive="${1:-0}" arg passthrough=0
   shift || return 2
-  [ "$interactive" = 1 ] || { printf '%s\n' legacy; return 0; }
+  if [ "$interactive" != 1 ]; then
+    harness_session_isolation_noninteractive_route "$@"
+    return 0
+  fi
   [ "$#" -gt 0 ] || { printf '%s\n' legacy; return 0; }
 
+  # Canonical input: never strip a Claude discriminator here.
+  if harness_claude_is_management_command "$1"; then
+    printf '%s\n' legacy
+    return 0
+  fi
+
   case "$1" in
+    # OMP argv is validated by its own fresh-session adapter. Do not scan its
+    # prompt/model values with Claude's continuation grammar.
+    omp)
+      printf '%s\n' isolate
+      return 0
+      ;;
     --isolated|--no-isolated|--isolated-session)
       printf '%s\n' invalid
       return 0
@@ -348,7 +434,7 @@ harness_session_isolation_default_route() {
             printf '%s\n' reject; return 0 ;;
           agents|exec|e|review|login|logout|mcp|plugin|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help|-h|--help|-V|--version)
             printf '%s\n' legacy; return 0 ;;
-          fast|base|sol|plan|rich|astra|work|272k|1m|happy|full-auto|never|bypass)
+          fast|base|sol|plan|rich|astra|work|auto|272k|500k|1m|happy|full-auto|never|bypass)
             [ "$passthrough" = 0 ] || break ;;
           -c|--config|--enable|--disable|--remote|--remote-auth-token-env|-i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval|--app)
             [ "$#" -gt 0 ] && shift || { printf '%s\n' invalid; return 0; }
@@ -382,7 +468,18 @@ harness_session_isolation_default_route() {
         printf '%s\n' reject; return 0 ;;
       -c|--continue|-r|-r?*|--resume|--resume=*|--fork-session|--fork-session=*)
         printf '%s\n' reject; return 0 ;;
-      -h|--help|-V|--version|-p|-p?*|--print|--print=*|--background|--bg|--cloud|--cloud=*|--remote-control|--remote-control=*|--teleport|--teleport=*|attach|respawn|--bare|--safe-mode|--restricted|--from-pr|--from-pr=*|--session-id|--session-id=*|-w|-w?*|--worktree|--worktree=*|--tmux|--tmux=*|--environment|--environment=*)
+      --background|--bg)
+        # Alone it starts a fresh background session; with a continuation flag
+        # it continues an existing one.
+        for arg in "$@"; do
+          case "$arg" in
+            --) break ;;
+            -c|--continue|-r|-r?*|--resume|--resume=*|--fork-session|--fork-session=*)
+              printf '%s\n' reject; return 0 ;;
+          esac
+        done
+        printf '%s\n' legacy; return 0 ;;
+      -h|--help|-V|--version|-p|-p?*|--print|--print=*|--cloud|--cloud=*|--remote-control|--remote-control=*|--teleport|--teleport=*|attach|respawn|--bare|--safe-mode|--restricted|--from-pr|--from-pr=*|--session-id|--session-id=*|-w|-w?*|--worktree|--worktree=*|--tmux|--tmux=*|--environment|--environment=*)
         printf '%s\n' legacy; return 0 ;;
       fast|base|plan|opus|rich|fable|ultracode|low|medium|high|xhigh|max|light|bypass|acceptEdits|dontAsk)
         [ "$passthrough" = 0 ] || break ;;
@@ -1179,6 +1276,275 @@ harness_observability_load() {
 
   HARNESS_OBSERVABILITY_ACTIVE=1
   HARNESS_OBSERVABILITY_PROFILE="$prefix"
+  return 0
+}
+
+# --- company usage-collection policy --------------------------------------------
+# One decision for "may this launch's usage reach the company collector":
+#   1. the CANONICAL SOURCE ROOT's tracked config/launcher.env opts in with
+#      HARNESS_AGENT_USAGE_COLLECT="1" (a personal profile never does). An
+#      isolated clone's own launcher.env is never read: an agent editing its
+#      worktree cannot switch company collection on;
+#   2. the machine-local config/.local/agent-usage.env of that source root does
+#      not switch it off (an isolated clone has no config/.local of its own);
+#   3. this is a company device: the glider-guard registration directory exists
+#      and is root-owned, link-free and not group/other writable, holding an
+#      agent assertion. Signature and expiry are not judged: it is only the
+#      "this Mac is enrolled" signal.
+# Config files are data, parsed line by line, never sourced. A trailing CR
+# (CRLF file) is ignored; anything else after the value, inline comments
+# included, makes the flag unrecognized and the profile stays off (fail-closed).
+#   harness_agent_usage_policy <harness-dir> [<source-root>]
+#     -> HARNESS_AGENT_USAGE_ACTIVE=0|1
+#        HARNESS_AGENT_USAGE_REASON=active|profile_off|local_off|invalid_config|no_company_device
+# The guard location and uname can be redirected for tests only, and only when
+# HARNESS_AGENT_USAGE_TEST_MODE=1; a real launch ignores those variables.
+HARNESS_AGENT_USAGE_GUARD_BASE_DEFAULT="/Library/Application Support/glider-guard-user"
+
+harness_agent_usage_unquote() {
+  local value="${1%$'\r'}"
+  value="${value#\"}"; value="${value%\"}"
+  value="${value#\'}"; value="${value%\'}"
+  printf '%s' "$value"
+}
+
+# harness_agent_usage_secure_dir <dir> <trusted-uid>: real directory, owned by
+# the trusted uid, no group/other write. (Not named `path`: zsh ties that
+# parameter to PATH.)
+harness_agent_usage_secure_dir() {
+  local dir_path="$1" owner="$2" info uid mode rest
+  [ -d "$dir_path" ] && [ ! -L "$dir_path" ] || return 1
+  # The BSD tool by path: zsh's zsh/stat builtin shadows `stat` once loaded.
+  info="$(/usr/bin/stat -f '%u %Lp' "$dir_path" 2>/dev/null)" || return 1
+  uid="${info%% *}"; mode="${info#* }"
+  [ "$uid" = "$owner" ] || return 1
+  rest="${mode%?}"
+  case "${mode#"$rest"}" in 2|3|6|7) return 1 ;; esac
+  case "${rest#"${rest%?}"}" in 2|3|6|7) return 1 ;; esac
+  return 0
+}
+
+harness_agent_usage_company_device() {
+  local base="$HARNESS_AGENT_USAGE_GUARD_BASE_DEFAULT" owner=0 uname_s uid dir
+  uname_s="$(uname -s 2>/dev/null)"
+  if [ "${HARNESS_AGENT_USAGE_TEST_MODE:-0}" = 1 ]; then
+    [ -z "${HARNESS_AGENT_USAGE_GUARD_DIR:-}" ] || base="$HARNESS_AGENT_USAGE_GUARD_DIR"
+    [ -z "${HARNESS_AGENT_USAGE_TEST_OWNER_UID:-}" ] || owner="$HARNESS_AGENT_USAGE_TEST_OWNER_UID"
+    [ -z "${HARNESS_AGENT_USAGE_TEST_UNAME:-}" ] || uname_s="$HARNESS_AGENT_USAGE_TEST_UNAME"
+  fi
+  [ "$uname_s" = Darwin ] || return 1
+  uid="$(id -u)"
+  dir="$base/$uid"
+  harness_agent_usage_secure_dir "$base" "$owner" || return 1
+  harness_agent_usage_secure_dir "$dir" "$owner" || return 1
+  [ -f "$dir/agent-assertion.jwt" ] && [ ! -L "$dir/agent-assertion.jwt" ]
+}
+
+# harness_agent_usage_state_home: the isolated-session state root (same
+# resolution as session-isolation.sh).
+harness_agent_usage_state_home() {
+  printf '%s\n' "${HARNESS_SESSION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/harness-launcher}"
+}
+
+# harness_agent_usage_session_source <dir>: the recorded source root when DIR
+# is (inside) an isolated worktree of the current state home; fails otherwise.
+harness_agent_usage_session_source() {
+  local phys state id record src=""
+  state="$(cd -P -- "$(harness_agent_usage_state_home)" 2>/dev/null && pwd -P)" || return 1
+  phys="$(cd -P -- "$1" 2>/dev/null && pwd -P)" || return 1
+  case "$phys" in
+    "$state"/worktrees/?*) ;;
+    *) return 1 ;;
+  esac
+  id="${phys#"$state"/worktrees/}"; id="${id%%/*}"
+  record="$state/sessions/$id/source-root"
+  [ ! -L "$state/sessions/$id" ] && [ -f "$record" ] && [ ! -L "$record" ] || return 1
+  IFS= read -r src < "$record" || [ -n "$src" ] || return 1
+  src="${src%$'\r'}"
+  [ -n "$src" ] || return 1
+  printf '%s\n' "$src"
+}
+
+# harness_agent_usage_source_root <harness-dir> [<source-root>]
+#   The canonical source root whose tracked config decides the policy: the
+#   session record of an isolated worktree first (for the harness dir, then the
+#   given source root), else the given source root, else the harness dir.
+harness_agent_usage_source_root() {
+  harness_agent_usage_session_source "$1" && return 0
+  [ -z "${2:-}" ] || ! harness_agent_usage_session_source "$2" || return 0
+  printf '%s\n' "${2:-$1}"
+}
+
+# harness_agent_usage_session_hint <harness-dir>
+#   HARNESS_SOURCE_ROOT, but only when HARNESS_SESSION_ROOT is this harness dir:
+#   a shell inside another harness's session inherits both, and that session's
+#   source root must not decide for this harness (as codex-home-prepare.sh's
+#   trust roots).
+harness_agent_usage_session_hint() {
+  local harness session
+  [ -n "${HARNESS_SOURCE_ROOT:-}" ] && [ -n "${HARNESS_SESSION_ROOT:-}" ] || return 0
+  harness="$(cd -P -- "$1" 2>/dev/null && pwd -P)" || return 0
+  session="$(cd -P -- "$HARNESS_SESSION_ROOT" 2>/dev/null && pwd -P)" || return 0
+  [ "$harness" != "$session" ] || printf '%s\n' "$HARNESS_SOURCE_ROOT"
+}
+
+harness_agent_usage_policy() {
+  local harness_dir="$1" source_root launcher_file override line key value seen="" profile_on=0 local_value=""
+  HARNESS_AGENT_USAGE_ACTIVE=0
+  HARNESS_AGENT_USAGE_REASON=profile_off
+  source_root="$(harness_agent_usage_source_root "$harness_dir" "${2:-}")"
+
+  launcher_file="$source_root/config/launcher.env"
+  if [ -f "$launcher_file" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        HARNESS_AGENT_USAGE_COLLECT=*)
+          value="$(harness_agent_usage_unquote "${line#HARNESS_AGENT_USAGE_COLLECT=}")"
+          if [ "$value" = 1 ]; then profile_on=1; else profile_on=0; break; fi
+          ;;
+      esac
+    done < "$launcher_file"
+  fi
+  [ "$profile_on" = 1 ] || return 0
+
+  override="$source_root/config/.local/agent-usage.env"
+  if [ -f "$override" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%$'\r'}"
+      case "$line" in
+        ''|'#'*) continue ;;
+        *=*) key="${line%%=*}"; value="${line#*=}" ;;
+        *) key="" ;;
+      esac
+      case " $seen " in
+        *" $key "*) key="" ;;
+      esac
+      if [ "$key" != HARNESS_AGENT_USAGE_COLLECT ]; then
+        HARNESS_AGENT_USAGE_REASON=invalid_config
+        echo "WARN: invalid agent-usage local config (invalid_config); company usage collection disabled" >&2
+        return 0
+      fi
+      seen="$seen $key"
+      value="$(harness_agent_usage_unquote "$value")"
+      case "$value" in
+        0|1) local_value="$value" ;;
+        *)
+          HARNESS_AGENT_USAGE_REASON=invalid_config
+          echo "WARN: agent-usage local config value must be 0 or 1 (invalid_config); company usage collection disabled" >&2
+          return 0
+          ;;
+      esac
+    done < "$override"
+    if [ "$local_value" = 0 ]; then
+      HARNESS_AGENT_USAGE_REASON=local_off
+      return 0
+    fi
+  fi
+
+  if ! harness_agent_usage_company_device; then
+    HARNESS_AGENT_USAGE_REASON=no_company_device
+    return 0
+  fi
+  HARNESS_AGENT_USAGE_ACTIVE=1
+  HARNESS_AGENT_USAGE_REASON=active
+  return 0
+}
+
+# harness_agent_usage_claude_env_json <harness-dir> [<source-root>]
+#   Prints the `env` object of a launcher-owned Claude --settings, or nothing.
+#   `--settings` env beats ~/.claude/settings.json env; a shell export does not,
+#   so the company OTel of the user settings can only be switched off here.
+#   Only when the usage policy (of the canonical source root) is inactive:
+#     - local observability off: CLAUDE_CODE_ENABLE_TELEMETRY=0
+#     - local observability on:  blank company headers and pin the generic
+#       endpoint to the loopback collector (signal endpoints are exported).
+harness_agent_usage_claude_env_json() {
+  local HARNESS_AGENT_USAGE_ACTIVE HARNESS_AGENT_USAGE_REASON
+  local HARNESS_OBSERVABILITY_ACTIVE=0 HARNESS_OBSERVABILITY_PROFILE="" HARNESS_OTLP_HTTP_ENDPOINT=""
+  harness_agent_usage_policy "$1" "${2:-}" 2>/dev/null || true
+  [ "$HARNESS_AGENT_USAGE_ACTIVE" = 0 ] || return 0
+  if harness_observability_load "$1" 2>/dev/null; then
+    printf '{"OTEL_EXPORTER_OTLP_ENDPOINT":"%s","OTEL_EXPORTER_OTLP_HEADERS":""}\n' "$(harness_json_escape "$HARNESS_OTLP_HTTP_ENDPOINT")"
+  else
+    printf '{"CLAUDE_CODE_ENABLE_TELEMETRY":"0"}\n'
+  fi
+}
+
+# harness_agent_usage_export_discard <harness-dir> [<source-root>]
+#   Child `claude -p` processes (also those Codex starts) do not inherit
+#   --settings. When the policy is inactive, export signal-specific OTLP
+#   endpoints (they override the generic endpoint from user settings, which
+#   cannot override keys it does not define) and empty signal headers:
+#     - local observability on:  the same loopback collector the Claude path uses
+#     - otherwise:               a discard port
+#   Company headers are never exported. Callers unset the six variables first
+#   (HARNESS_AGENT_USAGE_DISCARD_VARS) so an inherited set never survives a
+#   collecting launch, and declare them local where the shell keeps running.
+harness_agent_usage_export_discard() {
+  local HARNESS_AGENT_USAGE_ACTIVE HARNESS_AGENT_USAGE_REASON base="http://127.0.0.1:9"
+  local HARNESS_OBSERVABILITY_ACTIVE=0 HARNESS_OBSERVABILITY_PROFILE="" HARNESS_OTLP_HTTP_ENDPOINT=""
+  harness_agent_usage_policy "$1" "${2:-}" 2>/dev/null || true
+  [ "$HARNESS_AGENT_USAGE_ACTIVE" = 0 ] || return 0
+  if harness_observability_load "$1" 2>/dev/null && [ -n "$HARNESS_OTLP_HTTP_ENDPOINT" ]; then
+    base="$HARNESS_OTLP_HTTP_ENDPOINT"
+  fi
+  OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="$base/v1/logs"
+  OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="$base/v1/metrics"
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="$base/v1/traces"
+  OTEL_EXPORTER_OTLP_LOGS_HEADERS=""
+  OTEL_EXPORTER_OTLP_METRICS_HEADERS=""
+  OTEL_EXPORTER_OTLP_TRACES_HEADERS=""
+  export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT OTEL_EXPORTER_OTLP_METRICS_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+  export OTEL_EXPORTER_OTLP_LOGS_HEADERS OTEL_EXPORTER_OTLP_METRICS_HEADERS OTEL_EXPORTER_OTLP_TRACES_HEADERS
+}
+HARNESS_AGENT_USAGE_DISCARD_VARS="OTEL_EXPORTER_OTLP_LOGS_ENDPOINT OTEL_EXPORTER_OTLP_METRICS_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_EXPORTER_OTLP_LOGS_HEADERS OTEL_EXPORTER_OTLP_METRICS_HEADERS OTEL_EXPORTER_OTLP_TRACES_HEADERS"
+
+# harness_agent_usage_reconcile <bin-dir> [<harness-dir>...]
+#   Brings ~/.agent-usage/collection.d in line with the policy: one manifest per
+#   isolated session and one exclusion manifest per non-collecting evaluated
+#   harness. The policy is evaluated for the given dirs (registry + launched)
+#   AND every distinct source root recorded in the state home, so a launch from
+#   a fresh shell (harness-exec, empty registry) never rewrites the sessions of
+#   other harnesses. Fail-open: a failure warns and the launch continues.
+harness_agent_usage_reconcile() {
+  local bin_dir="$1" dir py state roots seen=":" HARNESS_AGENT_USAGE_ACTIVE HARNESS_AGENT_USAGE_REASON
+  local -a args=() dirs=()
+  shift
+  [ -f "$bin_dir/harness_agent_usage.py" ] || return 0
+  py="$(harness_python3_resolve 2>/dev/null)" || { echo "WARN: agent-usage manifests not updated (python 3.11+ unavailable)" >&2; return 0; }
+  state="$(harness_agent_usage_state_home)"
+  dirs=("$@")
+  roots=""
+  # Only a state home under HOME has sessions this HOME's manifests describe
+  # (the helper re-checks); skip the extra interpreter start otherwise.
+  case "$(cd -P -- "$state" 2>/dev/null && pwd -P)/" in
+    "$(cd -P -- "$HOME" 2>/dev/null && pwd -P)"/?*)
+      roots="$("$py" -I "$bin_dir/harness_agent_usage.py" source-roots --state-home "$state" 2>/dev/null)" || roots="" ;;
+  esac
+  while IFS= read -r dir; do
+    [ -z "$dir" ] || dirs+=("$dir")
+  done <<< "$roots"
+  for dir in ${dirs[@]+"${dirs[@]}"}; do
+    [ -d "$dir" ] || continue
+    case "$seen" in *":$dir:"*) continue ;; esac
+    seen="$seen$dir:"
+    harness_agent_usage_policy "$dir" "$dir" 2>/dev/null || true
+    args+=(--harness "$dir=$HARNESS_AGENT_USAGE_ACTIVE")
+  done
+  "$py" -I "$bin_dir/harness_agent_usage.py" reconcile --state-home "$state" ${args[@]+"${args[@]}"} || true
+  return 0
+}
+
+# harness_agent_usage_sync_session <bin-dir> <session-id> <source-root>
+#   One session's manifest, under the policy of its source root (session
+#   creation and worktree retirement). Fail-open.
+harness_agent_usage_sync_session() {
+  local bin_dir="$1" id="$2" source_root="$3" py HARNESS_AGENT_USAGE_ACTIVE HARNESS_AGENT_USAGE_REASON
+  [ -f "$bin_dir/harness_agent_usage.py" ] || return 0
+  py="$(harness_python3_resolve 2>/dev/null)" || return 0
+  harness_agent_usage_policy "$source_root" "$source_root" 2>/dev/null || true
+  "$py" -I "$bin_dir/harness_agent_usage.py" sync-session --state-home "$(harness_agent_usage_state_home)" \
+    --session-id "$id" --active "$HARNESS_AGENT_USAGE_ACTIVE" || true
   return 0
 }
 

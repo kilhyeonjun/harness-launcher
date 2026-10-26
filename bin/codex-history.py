@@ -19,6 +19,9 @@ import tempfile
 import uuid
 import functools
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness_file_clone import clone_from_fd
+
 
 FILE_NAMES = {"history.jsonl", "session_index.jsonl", "external_agent_session_imports.json"}
 DIRECTORIES = {"sessions", "archived_sessions", "logs_2", "goals_1", "memories_1",
@@ -101,6 +104,15 @@ def native_presence(path, anchor):
 
 def presence(args):
     print('native' if native_presence(Path(args.source), Path(args.anchor)) else 'absent')
+
+
+def content_kind(args):
+    source=Path(args.source)
+    if not native_presence(source,Path(args.anchor)):
+        print('absent');return
+    # Unknown entries refuse here. A generated-only HOME has no included
+    # payload at all, rather than a guessed empty thread count.
+    print('native' if source_children(source) else 'generated')
 
 
 def secure_dir(path):
@@ -321,7 +333,10 @@ def copy_regular(source, destination):
     metadata=source.stat()
     destination.parent.mkdir(parents=True, exist_ok=True)
     mode(destination.parent, 0o700)
-    shutil.copyfile(source, destination)
+    with source.open('rb') as incoming:
+        if not clone_from_fd(incoming.fileno(), destination):
+            with destination.open('xb') as outgoing:
+                shutil.copyfileobj(incoming, outgoing)
     os.utime(destination,ns=(metadata.st_atime_ns,metadata.st_mtime_ns))
     mode(destination, 0o600)
 
@@ -449,7 +464,7 @@ def validate_provenance(args):
         if record.read_text(encoding="utf-8").strip() != str(root):
             refuse("isolated source root mismatches provenance")
         inode = record.parent/'root-inode'
-        try:valid_inode = regular(inode) and inode.read_text().strip() == root_inode(source.parent.parent)
+        try:valid_inode = regular(inode) and root_identity_matches(inode.read_text(), source.parent.parent)
         except (OSError, UnicodeError):valid_inode = False
         if not valid_inode:
             refuse('unverified Native root inode')
@@ -504,6 +519,8 @@ def snapshot(args):
         data = staging / "data"
         secure_dir(data)
         archive_children(source, children, data)
+        from codex_history_native import preserve_work_images
+        work_images=preserve_work_images(data,source)
         after = source_inventory(source, children)
         if after != before:
             refuse("source changed during snapshot")
@@ -516,6 +533,7 @@ def snapshot(args):
         base = {"schema_version": 1, "source": str(source), "source_root": str(root),
                 "isolation_id": args.isolation_id, "runtime_revision": revision,
                 "source_inventory": before, "archive_inventory": archive}
+        if work_images:base['work_image_custody']=work_images
         if imports is not None:base['native_import_provenance'] = imports
         if source == catalog.parent/'worktrees'/args.isolation_id/'.harness/codex':
             lineage=catalog.parent/'sessions'/args.isolation_id/'native-history-restore.json'
@@ -589,18 +607,105 @@ def relocate_state(database, source_home, destination):
     mode(database, 0o600)
 
 
+def selected_restore_files(data, native_id, manifest):
+    """Restore a committed physical rollout whose projection can be rebuilt.
+
+    For reverted threads SQLite is the cutover authority. Inactive physical
+    rollouts stay in the full snapshot; exposing them to a fresh index could
+    choose an uncommitted revert. Parent projections currently refuse restore.
+    Never copy the source database to a new owner.
+    """
+    if not UUID.fullmatch(native_id):
+        refuse('invalid native UUID')
+    uid = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+    pattern = re.compile(r'^(?:rollout-.*?)?('+uid+r')(?:_('+uid+r'))?(?:_([0-9]+))?\.jsonl$', re.I)
+    files = [p for p in sorted(data.rglob('*')) if p.is_file()]
+    logical, physical, parents, metadata_ids = {}, {}, {}, {}
+    for path in files:
+        if path.relative_to(data).parts[0] not in ('sessions', 'archived_sessions'):
+            continue
+        match = pattern.fullmatch(path.name)
+        if not match:
+            refuse('unknown Native rollout filename')
+        thread, rollout = match[1].lower(), (match[2] or match[1]).lower()
+        logical.setdefault(thread, set()).add(rollout)
+        physical.setdefault(rollout, []).append(path)
+        if rollout in metadata_ids and metadata_ids[rollout] != thread:
+            refuse('ambiguous physical Native rollout')
+        metadata_ids[rollout] = thread
+        with path.open('rb') as stream:
+            first = stream.readline(1048577)
+        if len(first) > 1048576:
+            refuse('native metadata exceeds restore limit')
+        try:event = json.loads(first)
+        except (ValueError, UnicodeError):refuse('invalid native restore metadata')
+        if not isinstance(event, dict):refuse('invalid native restore metadata')
+        if event.get('type') != 'session_meta':
+            continue
+        payload = event.get('payload', {})
+        if not isinstance(payload, dict) or str(payload.get('id', '')).lower() != thread:
+            refuse('native metadata identity mismatch')
+        base = payload.get('history_base')
+        parent = base.get('thread_id') if isinstance(base, dict) else None
+        if parent is not None and (not isinstance(parent, str) or not UUID.fullmatch(parent)):
+            refuse('invalid native parent identity')
+        if rollout in parents and parents[rollout] != parent:
+            refuse('conflicting physical Native metadata')
+        parents[rollout] = parent.lower() if parent else None
+
+    candidates = logical.get(native_id.lower(), set())
+    if not candidates:
+        refuse('selected native history is absent')
+    if len(candidates) == 1:
+        active = next(iter(candidates))
+    else:
+        # Snapshot databases are materialized through SQLite backup and have no
+        # live WAL. Read without repair, journal creation, or source mutations.
+        from urllib.parse import quote
+        database = data/'state_5.sqlite'
+        try:
+            connection = sqlite3.connect('file:'+quote(str(database))+'?mode=ro&immutable=1', uri=True)
+            try:rows = connection.execute('SELECT rollout_path FROM threads WHERE id=?', (native_id,)).fetchall()
+            finally:connection.close()
+            if len(rows) != 1 or not isinstance(rows[0][0], str):raise ValueError()
+            relative = Path(rows[0][0]).relative_to(Path(manifest['source']))
+            current = data/relative
+            matching = [identifier for identifier in candidates if current in physical[identifier]]
+            if len(matching) != 1:raise ValueError()
+            active = matching[0]
+        except (sqlite3.Error, ValueError, KeyError, OSError):
+            refuse('selected physical Native pointer is unverified')
+    pending, selected, visited = [active], [], set()
+    while pending:
+        rollout = pending.pop()
+        if rollout in visited:continue
+        visited.add(rollout)
+        if rollout not in physical:refuse('Native physical parent is absent')
+        if parents.get(rollout):
+            # Characterized Native 0.163 fails to reconstruct inherited
+            # projected items from raw-only history_base parents. Preserve the
+            # original full snapshot; never present a silently shortened resume.
+            refuse('Native parent projection requires a characterized restore')
+        selected.extend(physical[rollout])
+        if parents.get(rollout):pending.append(parents[rollout])
+    selected.extend(p for p in files if p.relative_to(data).parts[0] in
+                    ('attachments', 'generated_images', 'shell_snapshots', 'external_agent_session_imports.json'))
+    return sorted(set(selected))
+
+
 def restore(args):
     root, manifest = load_snapshot(args.catalog, args.snapshot)
+    data = root / "data"
+    if inventory(data) != manifest.get("archive_inventory"):
+        refuse("archived content hash mismatch")
+    selected = selected_restore_files(data, args.native_id, manifest) if args.native_id else None
     destination = Path(args.destination)
     if destination.exists():
         for path in destination.iterdir():
             if not excluded(path):
                 refuse("restore destination has native or unknown data")
     secure_dir(destination)
-    data = root / "data"
-    if inventory(data) != manifest.get("archive_inventory"):
-        refuse("archived content hash mismatch")
-    for source in sorted(data.rglob("*")):
+    for source in selected if selected is not None else sorted(data.rglob("*")):
         if source.is_dir():
             continue
         relative = source.relative_to(data)
@@ -694,8 +799,17 @@ def catalog_value(args, keep_private=False):
     source = Path(args.source_root).absolute()
     current=Path(args.state_home)
     states=[current]
+    pool_base=getattr(args,'pool_base',None) or os.environ.get('HARNESS_SESSION_POOL_BASE')
+    if pool_base:
+        from harness_session_pools import source_pools, PoolError
+        try:
+            configured=source_pools(Path(pool_base),source)
+            if current not in configured:refuse('current state does not belong to configured pool base')
+            states+=configured
+        except (OSError,ValueError) as exc:refuse('invalid profile pool: '+str(exc))
     legacy=getattr(args,'legacy_state_home',None)
-    if legacy and Path(legacy)!=current:states.append(Path(legacy))
+    if legacy:states.append(Path(legacy))
+    states=list(dict.fromkeys(states))
     entries = [];warnings=[];held_ids=set();incomplete_hints=False
     for state in states:
         quarantines=[]
@@ -711,21 +825,55 @@ def catalog_value(args, keep_private=False):
             for row in rows:row.update(_store=str(state/'native-history'),_state_home=str(state))
             entries.extend(rows)
         entries.extend(snapshot_entries(state/'native-history',source))
-    rows=dedupe_entries(entries,current/'native-history',keep_private)
+    # Only the requested id is deduped; held_ids and incomplete_hints above were
+    # already collected from every quarantined home, so the verdict is unchanged.
+    native_id=getattr(args,'native_id',None)
+    if native_id:
+        if not UUID.fullmatch(native_id):refuse("invalid selected native UUID")
+        entries=[row for row in entries if row['native_id'].lower()==native_id.lower()]
+    rows=dedupe_entries(entries,current/'native-history',True)
+    pools=states
     for row in rows:
         if incomplete_hints or row['native_id'].lower() in held_ids:
             row.update(status='ambiguous',reason='unverified_native_owner_hints_incomplete' if incomplete_hints else 'unverified_native_owner')
+        row['origin_state_home']=origin_state_home(row,source,pools,Path(legacy) if legacy else None)
+    if not keep_private:rows=[{key:value for key,value in row.items() if not key.startswith('_')} for row in rows]
     return {'schema_version':1,'entries':rows,'warnings':warnings}
 
 
+def origin_state_home(row,source,pools,legacy):
+    """State home that owns the launch record of this row's origin, or ''.
+
+    Live row: P of <P>/worktrees/<id>/.harness/codex. Snapshot row: the same rule
+    on the manifest source. Canonical origin: the legacy XDG home. P must equal
+    exactly one configured pool; anything else grants nothing."""
+    try:
+        if row['status']=='canonical':origin=source/'.harness/codex'
+        elif row['status']=='snapshot':origin=Path(row['_source_home'])
+        else:origin=Path(row['home'])
+        if origin==source/'.harness/codex':
+            return str(legacy) if legacy is not None else ''
+        isolation=row.get('isolation_id') or ''
+        if not UUID.fullmatch(isolation):return ''
+        if origin.name!='codex' or origin.parent.name!='.harness' or origin.parent.parent.name!=isolation or origin.parent.parent.parent.name!='worktrees':return ''
+        pool=origin.parent.parent.parent.parent
+        matches=[p for p in pools if p==pool]
+        return str(matches[0]) if len(matches)==1 else ''
+    except (KeyError,TypeError,ValueError):
+        return ''
+
+
 def binding_origin(state, identifier, source):
-    binding=state.parent/'bindings'/(identifier.lower()+'.json')
+    from harness_session_pools import binding_home
+    try:home=binding_home(state,source)
+    except (OSError,ValueError):refuse('invalid profile binding provenance')
+    binding=home/'bindings'/(identifier.lower()+'.json')
     if not binding.exists():return 'legacy-unknown'
     if not regular(binding) or stat.S_IMODE(binding.stat().st_mode)!=0o600:refuse('unsafe runtime binding')
     value=json.loads(binding.read_text(encoding='utf-8'))
     pin=value.get('runtime',{});rev=pin.get('revision','')
     if value.get('source_root')!=str(source) or not re.fullmatch('[0-9a-f]{40}',rev):refuse('runtime binding provenance mismatch')
-    runtime=state.parent/rev
+    runtime=home/rev
     if pin.get('path')!=str(runtime) or runtime.is_symlink():refuse('runtime binding path mismatch')
     manifest=runtime/'manifest.json'
     if not regular(manifest) or sha256(manifest)!=pin.get('manifest_sha256'):refuse('runtime binding manifest mismatch')
@@ -787,7 +935,7 @@ def isolated_homes(state, source, quarantines=None):
         reason=None
         if not inode.exists() and not inode.is_symlink():reason='root_inode_missing'
         elif not regular(inode):refuse('unsafe catalog session root inode')
-        elif inode.read_text(encoding="utf-8").strip()!=root_inode(root):reason='root_inode_mismatch'
+        elif not root_identity_matches(inode.read_text(encoding="utf-8"),root):reason='root_inode_mismatch'
         if reason:
             if quarantines is None:refuse('catalog session root inode mismatch')
             quarantines.append((native,identifier,reason));continue
@@ -876,11 +1024,65 @@ def snapshot_entries(store, source):
     return values
 
 
+def inventory_signature(home,children):
+    """Stat-only fingerprint of every artifact source_inventory reads or lists."""
+    rows=[]
+    def add(path):
+        info=path.lstat()
+        rows.append((path.relative_to(home).as_posix(),info.st_dev,info.st_ino,info.st_mode,info.st_size,info.st_mtime_ns,info.st_ctime_ns))
+    for path in home.iterdir():add(path)
+    for child in children:
+        if child.is_dir():
+            for path in child.rglob('*'):add(path)
+    return tuple(sorted(rows))
+
+
 def dedupe_entries(entries,store,keep_private=False):
+    """Decide every row; each home's stat signature is walked once when first
+    needed and once after all rows are decided. A home that changed in between
+    is inventoried again and the dedupe is redone once; a home that changes
+    again holds every row that used it."""
+    state={}
+    def inventory(home,used):
+        home=Path(home);used.add(home)
+        hit=state.get(home)
+        if hit is None:
+            try:
+                children=source_children(home)
+                signature=inventory_signature(home,children)
+                hit=state[home]=(children,signature,source_inventory(home,children))
+            except (OSError,Refusal):
+                # unreadable now: never equal to a recorded inventory, and always held as changed
+                hit=state[home]=((),None,[])
+        return hit[2]
+    def changed(home,children,signature):
+        if signature is None:return True
+        try:return inventory_signature(home,children)!=signature
+        except OSError:return True  # a home that vanished or became unreadable counts as changed
+    def changed_homes():
+        return {home for home,(children,signature,_) in state.items() if changed(home,children,signature)}
+    decided=decide_entries(entries,store,inventory)
+    unstable=changed_homes()
+    if unstable:
+        for home in unstable:del state[home]
+        decided=decide_entries(entries,store,inventory)
+        unstable=changed_homes()
+    result=[]
+    for row,used in decided:
+        if used&unstable:row.update(status='ambiguous',reason='source_changed_during_catalog')
+        result.append(row if keep_private else {key:value for key,value in row.items() if not key.startswith('_')})
+    return sorted(result,key=lambda row:row['native_id'])
+
+
+def decide_entries(entries,store,inventory_of):
+    """One dedupe pass; returns (row, homes whose inventory it consulted) pairs."""
+    used=set()
+    def inventory(home):return inventory_of(home,used)
     groups={}
     for row in entries:groups.setdefault(row['native_id'],[]).append(row)
     result=[]
     for identifier,rows in groups.items():
+        used.clear()
         superseded=set();lineage_valid=True
         for entry in rows:
             if not entry.get('_lineage'):continue
@@ -889,7 +1091,7 @@ def dedupe_entries(entries,store,keep_private=False):
             if parent['source_root']!=entry['source_root'] or parent['source']==owner:lineage_valid=False;continue
             original=Path(parent['source'])
             if original.exists():
-                current=[r for r in source_inventory(original,source_children(original)) if not r.get('excluded')]
+                current=[r for r in inventory(original) if not r.get('excluded')]
                 saved=[r for r in parent['source_inventory'] if not r.get('excluded')]
                 if current!=saved:lineage_valid=False;continue
             superseded.add(parent['source'])
@@ -914,15 +1116,15 @@ def dedupe_entries(entries,store,keep_private=False):
             matches=[a for a in archives if a.get('_source_home')==row['home'] and a['isolation_id']==row['isolation_id']]
             for archive in sorted(matches,key=lambda a:(int(a['updated_at']),a['_capture_time']),reverse=True):
                 manifest=archive['_manifest'];home=Path(row['home'])
-                if source_inventory(home,source_children(home))==manifest['source_inventory']:
+                if inventory(home)==manifest['source_inventory']:
                     row['snapshot_id']=archive['snapshot_id'];row['origin_runtime']=archive['origin_runtime'];break
         else:
             owners={(a.get('_source_home'),a['isolation_id']) for a in archives}
             row=max(archives,key=lambda a:(int(a['updated_at']),a['_capture_time'])).copy()
             if len(owners)>1:row.update(status='ambiguous',reason='duplicate_archive_owner')
         if not lineage_valid:row.update(status='ambiguous',reason='diverged_restore_origin')
-        result.append(row if keep_private else {key:value for key,value in row.items() if not key.startswith('_')})
-    return sorted(result,key=lambda row:row['native_id'])
+        result.append((row,set(used)))
+    return result
 
 
 def recorded_source(path, root):
@@ -959,7 +1161,7 @@ def protect_pool(args):
         if expected.exists() or expected.is_symlink() or not all(regular(record/name) for name in ('source-root','session-root','root-inode','journal','lease-v1','runtime.lock')):
             refuse('Native tomb owner is unverified')
         recorded_source(record/'source-root', expected)
-        if (record/'session-root').read_text().strip()!=str(expected) or (record/'root-inode').read_text().strip()!=root_inode(tomb):refuse('Native tomb binding mismatch')
+        if (record/'session-root').read_text().strip()!=str(expected) or not root_identity_matches((record/'root-inode').read_text(),tomb):refuse('Native tomb binding mismatch')
         with runtime_lease(lock):
             if not terminal_journal(record/'journal',record):refuse('Native tomb is not terminal')
             os.rename(tomb,expected)
@@ -977,7 +1179,7 @@ def protect_pool(args):
         root = Path(root_file.read_text(encoding="utf-8").strip())
         if root != worktrees / record.name or root.is_symlink() or not root.is_dir():
             refuse("session root binding mismatch")
-        if inode.read_text(encoding="utf-8").strip() != root_inode(root):
+        if not root_identity_matches(inode.read_text(encoding="utf-8"), root):
             refuse("session root inode mismatch")
         if not terminal_journal(journal,record):
             continue
@@ -986,7 +1188,7 @@ def protect_pool(args):
         if not native_presence(native, state):
             continue
         with runtime_lease(lock):
-            if not terminal_journal(journal,record) or (record/'lease-v1').read_text()!='1\n' or inode.read_text().strip()!=root_inode(root):refuse('Native candidate changed')
+            if not terminal_journal(journal,record) or (record/'lease-v1').read_text()!='1\n' or not root_identity_matches(inode.read_text(),root):refuse('Native candidate changed')
             receipt = record / ('native-history-protect-'+uuid.uuid4().hex+'.json')
             snapshot_args = argparse.Namespace(source=str(native), catalog=str(state / "native-history"), receipt=str(receipt),
                                                source_root=owner, isolation_id=record.name, runtime_revision="legacy-unknown")
@@ -1080,6 +1282,34 @@ def root_inode(path):
     return "%s %s" % (value.st_dev, value.st_ino)
 
 
+def identity_stat(path):
+    return os.lstat(path)
+
+
+def root_identity_matches(recorded, path):
+    """The record "<dev> <ino>" still names `path`, a real directory (never followed).
+
+    The inode must match. The device must match too, except that a whole-volume
+    device renumbering (reboot) is accepted when the root sits on the device of
+    its parent (the worktrees directory); a root replaced by another filesystem
+    has a different device from its parent and is refused.
+    """
+    fields = str(recorded).split()
+    if len(fields) != 2 or not all(re.fullmatch(r"[0-9]+", field) for field in fields):
+        return False
+    device, inode = int(fields[0]), int(fields[1])
+    try:
+        path = Path(path)
+        info = identity_stat(path)
+        if not stat.S_ISDIR(info.st_mode) or info.st_ino != inode:
+            return False
+        if info.st_dev == device:
+            return True
+        return identity_stat(path.parent).st_dev == info.st_dev
+    except OSError:
+        return False
+
+
 @contextlib.contextmanager
 def runtime_lease(path):
     if not regular(path):refuse('unsafe runtime lease')
@@ -1122,6 +1352,9 @@ def parser():
     presence_parser = commands.add_parser("presence")
     for name in ("source", "anchor"):
         presence_parser.add_argument("--" + name, required=True)
+    kind_parser = commands.add_parser('content-kind')
+    for name in ('source','anchor'):
+        kind_parser.add_argument('--'+name,required=True)
     snap = commands.add_parser("snapshot")
     for name in ("source", "catalog", "receipt", "source-root", "isolation-id", "runtime-revision"):
         snap.add_argument("--" + name, required=True)
@@ -1137,6 +1370,8 @@ def parser():
     catalog_parser.add_argument("--source-root", required=True)
     catalog_parser.add_argument("--state-home", required=True)
     catalog_parser.add_argument("--legacy-state-home")
+    catalog_parser.add_argument("--native-id")
+    catalog_parser.add_argument("--pool-base")
     pool = commands.add_parser("protect-pool")
     for name in ("state-home", "source-root"):
         pool.add_argument("--" + name, required=True)
@@ -1145,6 +1380,7 @@ def parser():
     for name in ("source-root", "state-home", "native-id"):
         prepare_parser.add_argument("--" + name, required=True)
     prepare_parser.add_argument('--legacy-state-home')
+    prepare_parser.add_argument('--pool-base')
     return root
 
 
@@ -1152,7 +1388,7 @@ def main(argv):
     args = parser().parse_args(argv)
     return {"snapshot": snapshot, "restore": restore, "verify": verify,
             "catalog": catalog, "protect-pool": protect_pool, "prepare": prepare,
-            "presence": presence}[args.command](args)
+            "presence": presence, 'content-kind': content_kind}[args.command](args)
 
 
 if __name__ == "__main__":

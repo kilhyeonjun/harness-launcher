@@ -14,7 +14,7 @@ git -C "$HARNESS" config user.name test
 print -r -- 'HARNESS_NAME="test"' 'HARNESS_PREFIX="test"' > "$HARNESS/config/launcher.env"
 git -C "$HARNESS" add -A && git -C "$HARNESS" commit -qm initial
 
-cp "$ROOT/bin/aliases.zsh" "$ROOT/bin/harness-common.sh" "$ROOT/bin/session-isolation.sh" "$BIN/"
+cp "$ROOT/bin/aliases.zsh" "$ROOT/bin/harness-common.sh" "$ROOT/bin/session-isolation.sh" "$ROOT/bin/harness_session_creation.py" "$BIN/"
 cp "$ROOT/bin/launcher.sh" "$ROOT/bin/harness-workspace-choice" "$BIN/"
 chmod +x "$BIN/session-isolation.sh" "$BIN/harness-workspace-choice"
 mv "$BIN/session-isolation.sh" "$BIN/session-isolation-real.sh"
@@ -45,6 +45,17 @@ catch wait result
 exit [lindex $result 3]
 EXPECT
 [[ "$(cat "$TMP/order")" == RUNTIME ]] || { echo 'FAIL: precreated interactive session ran foreground GC before runtime' >&2; cat "$TMP/order" >&2; exit 1; }
+
+# Scheduled maintenance replaces the old foreground headless sweep as well.
+created="$(HARNESS_SESSION_STATE_HOME="$STATE" "$BIN/session-isolation-real.sh" create "$HARNESS")"
+headless_id="$(print -r -- "$created" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+BIN="$BIN" HARNESS="$HARNESS" ID="$headless_id" GC_LOG="$TMP/headless-order" \
+  PATH="$BIN:/usr/bin:/bin" HARNESS_SESSION_STATE_HOME="$STATE" zsh -fc '
+  source "$BIN/aliases.zsh"
+  _harness_launcher_run_session() { printf "RUNTIME\n" >> "$GC_LOG"; }
+  _harness_launcher_run "$HARNESS" --isolated-session "$ID" base
+'
+[[ "$(cat "$TMP/headless-order")" == RUNTIME ]] || { echo 'FAIL: noninteractive launch performed foreground GC'; exit 1; }
 
 mkdir -p "$HARNESS/nested"
 : > "$HARNESS/nested/fixture"

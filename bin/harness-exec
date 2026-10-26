@@ -34,11 +34,50 @@ shift
 }
 HARNESS_DIR="${HARNESS_DIR:A}"
 
+# OMP executes the selected immutable closure, not the Homebrew spelling.
+# Enrolled bare menus need that same consumer before workspace allocation.
+# Argument exhaustion is distinct from a literal empty prompt/value.
+local_omp_selector=1
+case "${1:-}" in
+  --cwd) local_omp_selector=3 ;;
+esac
+case "${@[local_omp_selector]-}" in
+  --isolated|--no-isolated) (( local_omp_selector += 1 )) ;;
+  --isolated-session) (( local_omp_selector += 2 )) ;;
+esac
+if [[ "${@[local_omp_selector]-}" == omp ]] || {
+  (( local_omp_selector == $# + 1 )) &&
+    [[ -e "$HOME/.config/harness-launcher/omp-projection-v1/enrollment.json" ]]
+}; then
+  source "$SCRIPT_DIR/harness-common.sh"
+  omp_bootstrap_python="$(harness_python3_resolve)" || exit $?
+  omp_dispatch_bin="$("$omp_bootstrap_python" -I -S -B \
+    "$SCRIPT_DIR/harness_omp_projection.py" dispatch-source)" || exit $?
+  if [[ "${@[local_omp_selector]-}" == omp ]]; then
+    "$omp_bootstrap_python" -I -S -B "$SCRIPT_DIR/harness_omp_projection.py" \
+      model-mode-early "$HARNESS_DIR" "$omp_dispatch_bin" "${@[local_omp_selector+1,-1]}"
+    omp_mode_rc=$?
+    (( omp_mode_rc == 0 )) || exit "$omp_mode_rc"
+  fi
+  if [[ "$SCRIPT_DIR" != "$omp_dispatch_bin" ]]; then
+    exec /bin/zsh "$omp_dispatch_bin/harness-exec" "$HARNESS_DIR" "$@"
+  fi
+fi
+
 source "$SCRIPT_DIR/aliases.zsh"
 
 # Both isolated controls default to their session root; injecting the caller's
 # directory would run in the canonical checkout and fail the TUI's boundary check.
-case "${1:-}" in
+# A continuation resume (herdr's bare `omp --session-resume <h> --`) runs in
+# its recorded workspace; a caller directory would only be refused.
+omp_resume=false
+if [[ "${1:-}" == omp ]]; then
+  for omp_arg in "${@:2}"; do
+    [[ "$omp_arg" == -- ]] && break
+    [[ "$omp_arg" == --session-resume ]] && { omp_resume=true; break; }
+  done
+fi
+$omp_resume || case "${1:-}" in
   --cwd|--isolated|--isolated-session) ;;
   *)
     if HARNESS_CURRENT_DIR="$(harness_resolve_run_dir "$HARNESS_DIR" "$PWD" 2>/dev/null)"; then

@@ -12,9 +12,11 @@ git init -q -b main "$SOURCE"
 git -C "$SOURCE" config user.email test@example.invalid
 git -C "$SOURCE" config user.name test
 mkdir -p "$SOURCE/core/bin"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$SOURCE/core/bin/auto-deliver.sh"; chmod +x "$SOURCE/core/bin/auto-deliver.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'if [[ "${1:-}" == --help ]]; then echo --verify-candidate; exit 0; fi' '[[ "${6:-}" == "$(git rev-parse HEAD)" && "${7:-}" == "$(git write-tree)" ]]' > "$SOURCE/core/bin/auto-deliver.sh"; chmod +x "$SOURCE/core/bin/auto-deliver.sh"
 printf seed > "$SOURCE/seed"; git -C "$SOURCE" add seed core/bin/auto-deliver.sh; git -C "$SOURCE" commit -qm initial
 git init --bare -q "$REMOTE"; git -C "$SOURCE" remote add origin "$REMOTE"; git -C "$SOURCE" push -q -u origin main
+# This synthetic origin publishes main regardless of the host init.defaultBranch.
+git --git-dir="$REMOTE" symbolic-ref HEAD refs/heads/main
 
 ids=()
 for i in $(seq 1 20); do

@@ -25,6 +25,8 @@ LOCK="$TMP/run.lock"
 PROMPT="$TMP/prompt.txt"
 GHD="$TMP/gh"
 PY3="$(command -v python3)"
+# Use the fixture-selected Git inside the clean agent PATH, not Apple's shim.
+GIT_BIN="$(command -v git)"
 NAME=example-repo
 GITHUB=example-owner/example-repo
 TARGET_REMOTE="$TMP/remotes/$GITHUB.git"
@@ -342,10 +344,19 @@ echo 'PASS: harness-profile target add needs a TTY, shows the entry and diff, ta
 UP="$TMP/upstream"
 mkdir -p "$UP"
 printf 'stub-model\n' > "$UP/model"
-python3 "$ROOT/test/fixtures/responses_stub.py" "$UP" &
+UPSTREAM_LOG="$UP/responses-stub.log"
+"$PY3" "$ROOT/test/fixtures/responses_stub.py" "$UP" >"$UPSTREAM_LOG" 2>&1 &
 upstream=$!
 trap 'kill "$upstream" 2>/dev/null; rm -rf "$TMP"' EXIT
 for _ in $(seq 50); do [[ -s "$UP/port" ]] && break; sleep 0.1; done
+if [[ ! -s "$UP/port" ]]; then
+  if kill -0 "$upstream" 2>/dev/null; then
+    fail "responses stub did not publish a port within 5 seconds (pid $upstream is still alive)"
+  fi
+  wait "$upstream" || true
+  { echo 'responses stub exited before publishing a port'; sed 's/^/  | /' "$UPSTREAM_LOG"; } >&2
+  fail 'responses stub readiness failed'
+fi
 ENDPOINT="http://127.0.0.1:$(cat "$UP/port")/v1"
 KEY_FILE="$PROFILES/cliproxy-headless.key"
 (umask 077 && printf 'sk-fixture-%s\n' "$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" > "$KEY_FILE")
@@ -375,6 +386,7 @@ mkdir -p "$TMP/vendor"
 cat > "$TMP/vendor/codex" <<'EOF'
 #!/bin/bash
 [[ "${1:-}" != --version ]] || { echo 'codex-cli 0.0.0-fake'; exit 0; }
+[[ "$*" != 'features list' ]] || exit 0
 [[ "${1:-}" == exec ]] || exit 64
 args=("$@") out=""
 for ((i = 0; i < ${#args[@]}; i++)); do [[ "${args[i]}" != -o ]] || out="${args[i+1]}"; done
@@ -421,8 +433,8 @@ case "$mode" in
   tooluv) edit 65; sed -i '' 's/package = false/package = true/' pyproject.toml; msg 'deps: tool.uv' ;;
   gitlink)
     edit 66; msg 'feat: vendor'
-    mkdir -p vendor/sub && cd vendor/sub && git init -q && printf 'x\n' > f && git add f \
-      && git -c user.name=t -c user.email=t@example.invalid commit -qm sub && cd ../.. ;;
+    (mkdir -p vendor/sub && cd vendor/sub && GIT_CONFIG_NOSYSTEM=1 "@GIT@" init -q && printf 'x\n' > f && GIT_CONFIG_NOSYSTEM=1 "@GIT@" add f \
+      && GIT_CONFIG_NOSYSTEM=1 "@GIT@" -c user.name=t -c user.email=t@example.invalid commit -qm sub) || exit "$?" ;;
   gitmodules) edit 67; printf '[submodule "x"]\n\tpath = x\n\turl = https://example.invalid/x.git\n' > .gitmodules; msg 'feat: modules' ;;
   swaproot)
     # Replace the session root with a symlink to a sandbox-denied tree.
@@ -433,7 +445,7 @@ esac
 echo '{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":2}}'
 printf 'codex: %s' "$mode" > "$out"
 EOF
-sed -i '' "s|@STUB@|$STUB|; s|@MARK@|$TMP/marks|g; s|@LIVE@|$LIVE|" "$TMP/vendor/codex"
+sed -i '' "s|@STUB@|$STUB|; s|@MARK@|$TMP/marks|g; s|@LIVE@|$LIVE|; s|@GIT@|$GIT_BIN|g" "$TMP/vendor/codex"
 mkdir -p "$TMP/marks"
 printf '#!/bin/sh\n[ "$1" = --help ] || exit 64\necho FAKE-HOST-HELP\n' > "$TMP/vendor/codex-code-mode-host"
 chmod +x "$TMP/vendor/codex" "$TMP/vendor/codex-code-mode-host"
@@ -791,7 +803,7 @@ printf 'HOME_DIR=%s\nHARNESS_ROOT=%s\nLIVE=%s\nPROFILES=%s\nRECORD=%s\nDELIVERY=
 cat > "$STUB/target-probe.sh" <<'EOF'
 #!/bin/bash
 set -a; source "$(dirname "$0")/target-probe.env"; set +a
-python3 - <<'PY'
+"$HARNESS_TARGET_PYTHON" - <<'PY'
 import errno, os, subprocess
 E = os.environ
 venv = os.path.dirname(os.path.dirname(E['HARNESS_TARGET_PYTHON']))
