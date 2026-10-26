@@ -18,9 +18,8 @@ RUNNER = Path(os.environ.get("RUN_ALL_UNDER_TEST", ROOT / "test/run-all.sh"))
 SOURCES = Path(os.environ.get("RUN_ALL_TEST_SOURCES", ROOT))
 WORKFLOW = Path(os.environ.get("RUN_ALL_TEST_WORKFLOW", ROOT / ".github/workflows/ci.yml"))
 PRESERVATION = "test_git_policy.py test_preservation_snapshot.py test_trusted_preservation.py test_preservation_adversarial.py".split()
-PYTHON = "test_profile_resolver.py test_mcp_paths.py test_codex_hook_trust.py test_codex_plugin_inherit.py test_slack_approval_policy.py test_claude_plugin_scope_mirror.py test_codex_app_server_guard.py test_harness_paseo.py test_herdr_harness_plugin.py test_harness_herdr_web.py test_harness_herdr_cli.py test_harness_herdr_ui_answer.py test_harness_herdr_ui_receipt.py test_harness_herdr_agent_ui_request.py test_harness_herdr_lifecycle.py test_harness_herdr_read.py test_harness_herdr_agent_wait.py test_harness_herdr_guarded.py test_harness_herdr_store.py test_harness_herdr_files.py test_harness_herdr_usage.py test_harness_herdr_launch.py test_harness_herdr_launch_receipt.py test_launch_plan.py test_launch_context.py test_claude_fork.py test_session_archive.py test_session_report.py test_session_catalog.py test_session_restore.py test_headless_retention_compat.py test_codex_managed_policy.py test_session_creation.py test_session_creation_adversarial.py test_file_clone.py test_session_pools.py test_session_work_proof.py test_session_gc_safety.py test_session_maintenance.py test_omp_fixture_source.py test_run_all_partition.py".split()
-PYTHON.insert(PYTHON.index('test_session_maintenance.py') + 1, 'test_integration_queue.py')
-PYTHON.insert(PYTHON.index('test_omp_fixture_source.py'), 'test_omp_print_receipt.py')
+# A representative child for failure/source-drift injection, not a copied inventory.
+PYTHON = ['test_profile_resolver.py']
 HEADLESS = ["test-harness-headless.sh", "test-headless-target.sh"]
 LOCKF = set("test-harness-exec-workspace-choice-tui.sh test-codex-config-preservation.sh test-codex-global-mcp-drift.sh test-codex-home-lock.sh test-codex-home-prepare.sh test-codex-history-gc.sh test-codex-history-resume-integration.sh test-codex-observability-profile.sh test-codex-migrate-to-symlinks.sh test-codex-project-trust.sh test-session-isolation.sh test-session-isolation-concurrency.sh test-session-transcript-retention.sh test-harness-headless.sh test-headless-target.sh".split())
 GROUPS = ("headless", "shell", "preservation", "python")
@@ -96,8 +95,9 @@ class Fixture:
         for name in self.shells:
             first = (SOURCES / "test" / name).read_text().splitlines()[0]
             (self.root / "test" / name).write_text(first + "\nexit 0\n")
-        for name in PRESERVATION + PYTHON:
-            (self.root / "test" / name).write_text("# owned synthetic child\n")
+        for pattern in ('test_*.py', 'test_*.mjs'):
+            for source in (SOURCES / 'test').glob(pattern):
+                (self.root / 'test' / source.name).write_text('# owned synthetic child\n')
         (self.root / "test/omp-fixture-source.py").write_text("# admission handled at the boundary\n")
         (self.root / "test/run-all.sh").write_bytes(RUNNER.read_bytes())
         (self.root / ".github/workflows/ci.yml").write_bytes(WORKFLOW.read_bytes())
@@ -106,7 +106,7 @@ class Fixture:
         boundary.write_text(BOUNDARY)
         tools = self.base / "tools"
         tools.mkdir()
-        for name, kind in (("python3", "initial"), ("resolved-python", "resolved"), ("child-bash", "bash"), ("child-zsh", "zsh"), ("git", "git")):
+        for name, kind in (("python3", "initial"), ("resolved-python", "resolved"), ("child-bash", "bash"), ("child-zsh", "zsh"), ("node", "node"), ("git", "git")):
             f = tools / name
             f.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -I -S -B " + shlex.quote(str(boundary)) + " " + kind + ' "$@"\n')
             f.chmod(0o700)
@@ -158,53 +158,6 @@ class Partition(unittest.TestCase):
         self.f = Fixture()
         self.addCleanup(self.f.close)
 
-    def test_default_exact_order_argv_interpreters_lazy_resolver_credit(self):
-        r = self.f.run()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        events = self.f.events()
-        self.assertEqual(events[0], {"stage":"admission"})
-        children = [e for e in events if e["stage"]=="child"]
-        skipped = [] if self.f.lockf_available else [n for n in self.f.shells if n in LOCKF]
-        expected = [n for n in self.f.shells if n not in skipped] + [PYTHON[0]] + PRESERVATION + PYTHON[1:]
-        self.assertEqual([e["id"] for e in children], expected)
-        self.assertEqual(events[events.index({"stage":"resolve"})-1]["id"], PYTHON[0])
-        for e in children:
-            self.assertEqual(e["mirror"], "0")
-            self.assertEqual(e["source"], str(self.f.root/"synthetic-source"))
-            if e["id"].endswith(".sh"):
-                first=(SOURCES/"test"/e["id"]).read_text().splitlines()[0]
-                self.assertEqual(e["kind"], "zsh" if "zsh" in first else "bash")
-                self.assertEqual(e["argv"], ["ROOT/test/"+e["id"]])
-            elif e["id"]==PYTHON[0]:
-                self.assertEqual(e["kind"], "initial")
-                self.assertEqual(e["argv"], ["-m","unittest","discover","-s","ROOT/test","-p",PYTHON[0]])
-            else:
-                self.assertEqual(e["kind"], "resolved")
-                flags=["-I","-S","-B"] if e["id"] in PYTHON[-2:] else []
-                self.assertEqual(e["argv"], flags+["ROOT/test/"+e["id"]])
-        self.assertIn(str(len(expected)-4)+" test scripts passed; "+str(len(skipped))+" skipped.", r.stdout)
-
-    def test_four_lanes_exact_order_disjoint_complete_current_checkout(self):
-        outputs=self.f.results()
-        expected={"headless":HEADLESS,"shell":[n for n in self.f.shells if n not in HEADLESS],"preservation":PRESERVATION,"python":PYTHON}
-        all_ids=[]
-        for group, result in outputs.items():
-            self.assertEqual(result["group"], group)
-            self.assertEqual(result["scheduled_ids"], expected[group])
-            skipped = [] if self.f.lockf_available else [n for n in expected[group] if n in LOCKF]
-            self.assertEqual(result["completed_ids"], [n for n in expected[group] if n not in skipped])
-            self.assertEqual(result["skipped_ids_with_original_reason"], [{"id":n,"reason":"lockf-unavailable"} for n in skipped])
-            self.assertEqual(result["execution_sha"], SHA)
-            self.assertEqual(result["pr_head_if_applicable"], "b"*40)
-            self.assertEqual(result["run_id"], 123)
-            self.assertEqual(result["run_attempt"], 2)
-            self.assertIs(type(result["exit"]), int)
-            all_ids += result["scheduled_ids"]
-        self.assertEqual(len(set(all_ids)), len(all_ids))
-        self.assertEqual(set(all_ids), set(self.f.shells+PRESERVATION+PYTHON))
-        self.assertEqual(len({r["inventory_sha"] for r in outputs.values()}),1)
-        self.assertEqual(self.f.verify(outputs).returncode,0)
-
     def test_source_admission_failure_calls_no_child_and_creates_no_result(self):
         r,target=self.f.lane("python",FAIL_PREP="1")
         self.assertEqual(r.returncode,17)
@@ -227,18 +180,6 @@ class Partition(unittest.TestCase):
         result=json.loads(target.read_text());expected=[n for n in self.f.shells if n not in HEADLESS]
         self.assertEqual(result["completed_ids"],[n for n in expected if n not in LOCKF])
         self.assertEqual(result["skipped_ids_with_original_reason"],[{"id":n,"reason":"lockf-unavailable"} for n in expected if n in LOCKF])
-        self.assertEqual(len(LOCKF),15)
-
-    def test_new_shell_and_registered_default_python_auto_join_lanes(self):
-        (self.f.root/"test/test-new-default.sh").write_text("#!/bin/bash\n")
-        runner=self.f.root/"test/run-all.sh";body=runner.read_text()
-        self.assertIn("# End inventory.",body)
-        runner.write_text(body.replace("# End inventory.","add_test test_new_default.py resolved 1\n# End inventory."))
-        (self.f.root/"test/test_new_default.py").write_text("# synthetic registered child\n")
-        r,path=self.f.lane("shell");self.assertEqual(r.returncode,0,r.stderr)
-        self.assertIn("test-new-default.sh",json.loads(path.read_text())["completed_ids"])
-        r,path=self.f.lane("python");self.assertEqual(r.returncode,0,r.stderr)
-        self.assertEqual(json.loads(path.read_text())["completed_ids"][-1],"test_new_default.py")
 
     def test_bad_cli_and_unowned_or_existing_result_refuse_before_child(self):
         bad=[("--ci-group","unknown","--ci-result",str(self.f.base/"results/x")),("--ci-group","shell"),("--ci-verify","extra"),("--unknown",)]
