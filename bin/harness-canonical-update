@@ -1,0 +1,11 @@
+#!/bin/zsh
+set -eu
+SCRIPT_DIR="${0:A:h}"
+if [[ ! -f "$SCRIPT_DIR/harness_canonical_bootstrap.py" && -f "$SCRIPT_DIR/../share/harness-launcher/harness_canonical_bootstrap.py" ]]; then
+  SCRIPT_DIR="${SCRIPT_DIR}/../share/harness-launcher"
+fi
+if [[ "${1:-}" == _observe ]]; then
+  print -u2 'harness-canonical-update: native observer is not a public operation'
+  exit 2
+fi
+exec /usr/bin/python3 -I -S -B "$SCRIPT_DIR/harness_canonical_bootstrap.py" "$@"

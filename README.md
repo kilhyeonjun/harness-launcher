@@ -753,6 +753,22 @@ Browser support keeps the terminal-safe `browser-harness` path, materializes sup
 See [Codex integration](docs/codex-integration.md) for the generated layout, configuration translation, plugin policy, and compatibility notes.
 For large installations, see [Codex surface manifests](docs/codex-surface.md) for duplicate collapse, explicit-only skills, exact MCP profiles, and the warm prepare path.
 
+## Canonical update approval
+
+The dedicated `harness-canonical-update` command carries one registered-profile
+request into a fresh, no-auth native OMP TUI for genuine human **once** approval:
+
+```text
+harness-canonical-update --profile <registered-profile> --expected-base <full40> --revision <full40>
+```
+
+It requires the officially installed selected launcher and its exact sealed
+private-code closure; it accepts no root, source, credential or approval override.
+Installation can precede the canonical update while preserving running sessions
+and an older Homebrew keg. An unknown result must not be blindly retried. See
+[canonical update through native approval](docs/canonical-update.md) for the full
+approval scope, trusted installation prerequisite and selected-runtime entry.
+
 ## Local configuration and secrets
 
 Keep machine-specific gateway URLs, API keys, and MCP credentials out of Git:
@@ -795,8 +811,10 @@ cd harness-launcher
 ./test/run-all.sh
 ```
 
-The no-argument full runner keeps its suite invocations in order (145 total,
-including the public-dispatch wrapper and the OMP continuation-recovery suite). CI runs its four fixed groups
+The no-argument full runner keeps its suite invocations in one ordered inventory,
+including the canonical bootstrap Python and native JavaScript suites. The latter
+requires an available Node.js runtime with `node:test` support; a missing runtime
+fails rather than skipping the suite. CI runs its four fixed groups
 on separate `macos-15` jobs, each still limited to 20 minutes and retaining the
 same preparation, jq, syntax and documentation checks. The required `test`
 aggregate fails unless all four jobs succeed with complete, nonoverlapping
@@ -845,6 +863,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for project scope, test expectations, por
 - [Public-safe contract demo](https://github.com/kilhyeonjun/harness-launcher-demo)
 - [Documentation index](docs/README.md)
 - [Architecture and trust boundaries](docs/architecture.md)
+- [Canonical update through native approval](docs/canonical-update.md)
 - [Codex integration](docs/codex-integration.md)
 - [Terminal runtimes](docs/terminal-runtimes.md)
 - [Paseo integration](docs/paseo-integration.md)

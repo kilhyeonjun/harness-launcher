@@ -2,6 +2,30 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.78.0 — Unreleased
+
+- Add `harness-canonical-update --profile <registered-profile> --expected-base
+  <full40> --revision <full40>` as a dedicated, no-auth native approval carrier
+  for the existing private canonical transaction. Only a genuine human **once**
+  decision bound to the full profile, root, origin, base, target and expiry can
+  authorize apply; caller paths and approval overrides are not accepted.
+- Preserve the existing enrolled-profile identifier grammar, including uppercase
+  letters, underscores and names up to 64 characters. Registration and enrollment
+  remain mandatory; accepting an identifier grants no root or operation authority.
+- Require the selected immutable public runtime and its exact release-pinned
+  private code closure. The trusted installer can stage that pair before a
+  canonical update, preserving existing sessions and the legacy Homebrew keg;
+  compatible frozen verifier code does not come from the mutable target checkout.
+- Materialize the observer regression fixture's private operation ancestry
+  independently of the runner umask, preserving real directory and lease checks
+  and retaining the observer refusal category in assertion diagnostics.
+- Observe inherited FIFO EOF in the native file stream and release the reader
+  after the drained result, before waiting for exit; do not rely on Bun's socket
+  wrapper to observe anonymous-pipe closure.
+- Drain owned cancellation and report unknown results without automatic retry.
+  Document the installation prerequisite, selected-runtime entry and the
+  distinction between an interface probe and actual approval/apply evidence.
+
 ## 0.77.8 — 2026-10-25
 
 - Open an enrolled host's bare runtime menu from the verified sealed launcher,
