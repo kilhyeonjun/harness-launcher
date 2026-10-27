@@ -908,10 +908,11 @@ cd harness-launcher
 The no-argument full runner keeps its suite invocations in one ordered inventory,
 including the canonical bootstrap Python and native JavaScript suites. The latter
 requires an available Node.js runtime with `node:test` support; a missing runtime
-fails rather than skipping the suite. CI runs its four fixed groups
+fails rather than skipping the suite. CI runs its six fixed groups
 on separate `macos-15` jobs, each still limited to 20 minutes and retaining the
-same preparation, jq, syntax and documentation checks. The required `test`
-aggregate fails unless all four jobs succeed with complete, nonoverlapping
+same preparation, jq, syntax and documentation checks. Headless, target and
+session suites run independently instead of consuming one serial job's budget.
+The required `test` aggregate fails unless all six jobs succeed with complete, nonoverlapping
 current-source inventory coverage. This is complete-suite partitioning, not a
 reduced test selection or a native/runtime proof. See
 [CI regression partition](docs/architecture.md#ci-regression-partition).

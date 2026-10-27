@@ -71,11 +71,11 @@ the same ordered inventory, including the session-creation lease and recovery
 regressions; existing interpreter, source admission,
 conditional-skip and first-error behavior are unchanged.
 
-CI uses the same runner in four fixed groups: `headless`, `shell`,
-`preservation` and `python`. Each runs sequentially within its own isolated
+CI uses the same runner in six fixed groups: `headless`, `target`, `sessions`,
+`shell`, `preservation` and `python`. Each runs sequentially within its own isolated
 `macos-15` job with a 20-minute limit. Each job retains dependency installation,
 owned Homebrew preparation, source-bound jq proof, shell syntax and docs checks.
-The required `test` aggregate needs all four jobs to return `success` and
+The required `test` aggregate needs all six jobs to return `success` and
 verifies their current-run/source inventory coverage; failed, cancelled,
 skipped, missing or partial results cannot pass. New default tests must remain
 covered exactly once. See [CI regression

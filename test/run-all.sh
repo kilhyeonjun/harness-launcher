@@ -35,7 +35,7 @@ case "$#" in
   1) [[ "$1" == --ci-verify ]] || exit 2; mode=verify ;;
   4)
     [[ "$1" == --ci-group && "$3" == --ci-result ]] || exit 2
-    case "$2" in headless|shell|preservation|python) group="$2" ;; *) exit 2 ;; esac
+    case "$2" in headless|target|sessions|shell|preservation|python) group="$2" ;; *) exit 2 ;; esac
     mode=group; result="$4"
     ;;
   *) exit 2 ;;
@@ -47,7 +47,11 @@ add_test() {
   local name="$1" policy="$2" credit="$3" lane=python lock=0
   if [[ "$policy" == shell ]]; then
     lane=shell
-    case "$name" in test-harness-headless.sh|test-headless-target.sh) lane=headless ;; esac
+    case "$name" in
+      test-harness-headless.sh) lane=headless ;;
+      test-headless-target.sh) lane=target ;;
+      test-session-*.sh) lane=sessions ;;
+    esac
     case "$name" in
       test-harness-exec-workspace-choice-tui.sh|\
       test-codex-config-preservation.sh|test-codex-global-mcp-drift.sh|\
@@ -109,7 +113,7 @@ def require(condition):
 def main():
     action,root,lane,result,initial,completed,skipped,*rows=sys.argv[1:]
     root=Path(root).resolve()
-    groups=('headless','shell','preservation','python')
+    groups=('headless','target','sessions','shell','preservation','python')
     entries=[row.split('|') for row in rows]
     require(entries and all(len(row)==5 for row in entries))
     require(all(re.fullmatch(r'test[-_A-Za-z0-9]+\.(sh|py|mjs)',row[0]) and row[1] in groups
@@ -118,7 +122,8 @@ def main():
     ids=[row[0] for row in entries]
     require(len(ids)==len(set(ids)))
     scheduled={g:[row[0] for row in entries if row[1]==g] for g in groups}
-    require(len(scheduled['headless'])==2 and len(scheduled['preservation'])==4)
+    require(scheduled['headless']==['test-harness-headless.sh']
+            and scheduled['target']==['test-headless-target.sh'] and len(scheduled['preservation'])==4)
     allow_skip={row[0] for row in entries if row[4]=='1'}
     require(os.environ.get('GITHUB_ACTIONS')=='true')
     def number(name):
