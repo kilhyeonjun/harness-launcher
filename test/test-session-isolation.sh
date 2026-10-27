@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 # Regression coverage for opt-in isolated harness sessions.
-set -euo pipefail
+set -Eeuo pipefail
 
+# Bare assertions, tool failures and command substitutions must identify the
+# failing operation, even when the command redirects its own stderr.
+trap 'rc=$?; printf "FAIL: session-isolation line=%s case=%s exit=%s command=%s\n" "$LINENO" "${test_case:-setup}" "$rc" "$BASH_COMMAND" >&2' ERR
+
+test_case=setup
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$TMP/runtime"
 ISOLATION="$TMP/runtime/share/harness-launcher/session-isolation.sh"
 cleanup() {
   local rc=$?
-  trap - EXIT
+  trap - EXIT ERR
+  if [[ "$rc" != 0 ]]; then
+    printf 'FAIL: session-isolation case=%s exit=%s (cleanup from line %s)\n' "$test_case" "$rc" "${BASH_LINENO[0]}" >&2
+  fi
   # A failed concurrent child must not delete fixtures under its sibling.
   # Cleanup is best-effort, but must retain the original assertion/tool status.
   set +e
@@ -52,6 +60,7 @@ create() {
   HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" create "$SOURCE"
 }
 
+test_case=creation-and-recovery
 # Git maintenance metadata is not an object. A dangling transient entry makes
 # filesystem-copy clones fail deterministically without racing a real GC.
 # Creation must obtain reachable objects through Git's transport instead.
@@ -195,6 +204,7 @@ git -C "$ADVANCE_CLONE" push -q origin main
 latest_session="$(create)"
 latest_root="$(printf '%s\n' "$latest_session" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"
 [[ -f "$latest_root/remote-latest.txt" ]] || { echo 'FAIL: create must fetch and base a new session on latest origin/main'; exit 1; }
+test_case=broker-delivery
 closed="$(create)"; closed_root="$(printf '%s\n' "$closed" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; closed_id="$(printf '%s\n' "$closed" | sed -n 's/^HARNESS_SESSION_ID=//p')"
 printf close > "$closed_root/closed.txt"
 HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$closed_id"
@@ -787,6 +797,7 @@ HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$mg_id" 2>"$TMP/magic.er
 grep -qx state=DELIVERED "$STATE/sessions/$mg_id/journal" || { echo 'FAIL: magic-named path session must end DELIVERED'; exit 1; }
 git --git-dir="$REMOTE" cat-file -e 'main::magic' || { echo 'FAIL: :magic must reach the remote'; exit 1; }
 
+test_case=cross-volume-exclusions
 # The state home may sit on another volume than the source checkout the work
 # lands in. A name only the source volume folds onto an excluded entry is
 # still excluded. Needs a case-sensitive APFS image; skipped where hdiutil
@@ -797,6 +808,7 @@ if hdiutil create -quiet -size 64m -fs 'Case-sensitive APFS' -type SPARSE -volna
   CS_STATE="$TMP/csmnt/state"
   [[ ! -e "$CS_STATE" ]] && mkdir -p "$CS_STATE/x" && [[ ! -e "$CS_STATE/X" ]] || { echo 'FAIL: the image must be case-sensitive'; exit 1; }
   for mode in headless interactive; do
+    test_case="cross-volume-$mode"
     if [[ "$mode" == headless ]]; then
       out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" HARNESS_SESSION_STATE_HOME="$CS_STATE" "$ISOLATION" create "$SOURCE")"
     else
@@ -817,12 +829,14 @@ if hdiutil create -quiet -size 64m -fs 'Case-sensitive APFS' -type SPARSE -volna
     fi
     ! git --git-dir="$REMOTE" cat-file -e "main:$alias_path/x" 2>/dev/null || { echo "FAIL: $mode delivered a source-volume alias of projects/"; exit 1; }
   done
-  hdiutil detach -quiet "$TMP/csmnt" || hdiutil detach -quiet -force "$TMP/csmnt"
+  test_case=cross-volume-detach
+  hdiutil detach "$TMP/csmnt" || hdiutil detach -force "$TMP/csmnt"
   echo 'PASS: names the source volume folds onto an excluded entry are excluded across volumes'
 else
   echo 'SKIP: no case-sensitive APFS image (hdiutil unavailable)'
 fi
 
+test_case=verifier-environment
 # Headless verifiers run in a sandbox with a minimal environment; interactive
 # verifiers retain the caller environment while receiving private temp context.
 git clone -q --no-local "$REMOTE" "$TMP/vfix"

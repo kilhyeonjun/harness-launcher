@@ -53,7 +53,7 @@ class UiAnswerTest(unittest.TestCase):
                 if outer.stall:
                     if outer.stall == 'body':
                         self.send_response(200); self.send_header('Content-Length','200'); self.end_headers(); self.wfile.write(b'{'); self.wfile.flush()
-                    outer.stalled.set(); self.connection.settimeout(4)
+                    outer.stalled.set(); self.connection.settimeout(cli.local.REQUEST_DEADLINE_SECONDS + 5)
                     try:
                         if self.connection.recv(1) == b'': outer.socket_closed.set()
                     except ConnectionResetError: outer.socket_closed.set()
@@ -369,10 +369,16 @@ sys.exit(c.main(['ui-answer-step','--intent',intent,'--expected-step','0','--exp
         environment={**os.environ,'HOME':str(self.home),'PYTHONDONTWRITEBYTECODE':'1'}
         proc=subprocess.Popen([sys.executable,'-c',source,str(Path(__file__).parents[1]/'bin'),str(self.server.server_address[1]),*args],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=environment)
         try:
-            self.assertTrue(self.stalled.wait(3)); proc.send_signal(signal.SIGINT)
-            stdout,stderr=proc.communicate(timeout=3)
+            # Admission includes interpreter startup and durable receipt writes.
+            # After admission, allow one transport deadline plus shutdown/fsync
+            # grace on loaded runners, not an unrelated three-second exit race.
+            timeout = cli.local.REQUEST_DEADLINE_SECONDS + 5
+            self.assertTrue(self.stalled.wait(timeout), 'step POST was not admitted')
+            proc.send_signal(signal.SIGINT)
+            self.assertTrue(self.socket_closed.wait(timeout), 'SIGINT did not close the request socket')
+            stdout,stderr=proc.communicate(timeout=timeout)
             self.assertEqual(proc.returncode,1,(stdout,stderr)); self.assertNotIn('Traceback',stderr)
-            self.assertTrue(self.socket_closed.wait(1))
+            self.assertIn({'error': {'code': 'wait_cancelled'}}, [json.loads(line) for line in stdout.splitlines()])
         finally:
             if proc.poll() is None: proc.kill()
             proc.communicate()

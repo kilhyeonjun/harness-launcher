@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+- Synchronize the UI-answer interrupt regression with server admission and
+  observed socket closure, allowing the transport deadline plus shutdown grace
+  on loaded runners while requiring an actual cancellation result. Report the
+  command, line and case for unexpected isolated-session regression failures,
+  including case-sensitive image teardown; unavailable image setup retains
+  its existing explicit skip.
+
 ## 0.79.2 — 2026-10-27
 
 - Start native OMP owner resumes, forks and managed continuation resumes on the
