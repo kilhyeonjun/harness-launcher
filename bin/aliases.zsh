@@ -1692,11 +1692,14 @@ _harness_launcher_omp_native_resume() (
   local operation=resume
   [[ "$mode" != --session-native-fork ]] || operation=fork
   if [[ "$operation" == resume ]]; then
-    "$python" -I -S -B "$helper" --native-rebind "$HARNESS_SESSION_STATE_HOME" "${config_root:A}" "$w" "$native_id" || return 2
+    "$python" -I -S -B "$helper" --native-rebind-stale "$HARNESS_SESSION_STATE_HOME" "${config_root:A}" "$w" "$native_id" || return 2
   fi
   local HARNESS_SESSION_LEASE_FD="" namespace_fd="" selected=""
   _harness_launcher_isolated_lease_acquire "$w" || return 2
   {
+    _harness_launcher_isolated_session_create "${config_root:A}" "$w" || return 2
+    local HARNESS_RUN_DIR="$HARNESS_SESSION_ROOT"
+    export HARNESS_RUN_DIR
     _harness_launcher_omp_validate || return 2
     umask 077
     [[ ! -L "$HARNESS_OMP_ROOT/.launcher.lock" ]] || return 2
@@ -1713,19 +1716,20 @@ _harness_launcher_omp_native_resume() (
     local _harness_omp_native_lock="$locks/$native_id.lock"
     local _harness_omp_native_check_id="$native_id" _harness_omp_native_check_w="$w"
     local _harness_omp_native_check_mode="$operation" _harness_omp_native_check_sha="$fields[3]"
-    export HARNESS_SESSION_ID="$w" HARNESS_SESSION_ROOT="$HARNESS_SESSION_STATE_HOME/worktrees/$w"
-    export HARNESS_SOURCE_ROOT="${config_root:A}"
     local -a omp_required_argv
     _harness_launcher_omp_required_argv "$HARNESS_SESSION_ROOT" "$@" || return 2
+    # No supported bare native restore transport. In particular a fork's new
+    # native ID is allocated inside OMP; the source ID must never restore it.
     local _harness_omp_herdr_resume=""
-    _harness_omp_herdr_resume="$("$python" -I -S -B -c 'import json,sys;print(json.dumps(sys.argv[1:],separators=(",",":")))' \
-      harness-exec "${config_root:A}" omp --resume "$native_id")" || return 2
     local flag=--resume
     [[ "$operation" != fork ]] || flag=--fork
     _harness_launcher_omp_native "$HARNESS_SESSION_ROOT" "${omp_required_argv[@]}" --session-dir "$HARNESS_OMP_ROOT/history" "$flag" "$fields[1]"
     return $?
   } always {
     [[ -z "$namespace_fd" ]] || zsystem flock -u "$namespace_fd" 2>/dev/null
+    if [[ "$operation" == fork ]]; then
+      _harness_launcher_isolated_finish "$w" "" "$HARNESS_SESSION_LEASE_FD"
+    fi
     [[ -z "$HARNESS_SESSION_LEASE_FD" ]] || zsystem flock -u "$HARNESS_SESSION_LEASE_FD" 2>/dev/null
   }
 )

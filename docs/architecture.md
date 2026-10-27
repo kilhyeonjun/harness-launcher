@@ -331,9 +331,21 @@ workspace lease, namespace lock, per-native-id lock, then device/inode recheck a
 native execution. Native holds the id lock through `-e` even if its launcher dies.
 Only the internally validated path is injected as `--resume` or `--fork`, with
 `--session-dir <namespace>/history`; model mode uses the existing admission path.
-Herdr restore uses `harness-exec <source> omp --resume <native-uuid>`, never a bare
-native path. Parent `OMPCODE=1` remains in native's environment while its inherited
-HERDR reporting triple is suppressed; top-level pane reporting stays unchanged.
+Native resume/fork deliberately emits empty `HERDR_RESUME_ARGV`: `harness-exec`
+does not implement a bare native UUID transport, and a fork's new native ID is
+allocated inside OMP, so publishing the source ID would restore the wrong session.
+Managed continuation restore remains supported separately. Parent `OMPCODE=1`
+remains in native's environment while its inherited HERDR reporting triple is
+suppressed; top-level pane reporting stays unchanged.
+
+Native rebind uses only binding, workspace and native-ID exclusive locks, not an
+exclusive namespace lock, and shell resume rebinds only stale runtime pins. Under
+the workspace lease, native resume/fork adopts `session-isolation.sh resume`'s
+owner environment and sets `HARNESS_RUN_DIR` to the session root. SUBMITTED and
+INTEGRATING owners are refused before allocation; CLOSED, ABANDONED and CONFLICT
+owners reopen through that state machine. Fork owners finish like fresh isolated
+owners. Fork admission binds device/inode/UID/link count/mode and header SHA256,
+not tail size or timestamps, allowing the source to append while preparing a fork.
 
 ### Normal OMP continuation
 
