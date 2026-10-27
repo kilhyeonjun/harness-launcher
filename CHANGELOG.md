@@ -7,7 +7,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - Start native OMP owner resumes, forks and managed continuation resumes on the
   selected model mode's `modelRoles.default`, read from the prepared bundle's
   sealed `omp-settings.yml`, rather than the saved session's last model.
-  Refuse missing or invalid defaults instead of falling back to session history.
+  Refuse a malformed or missing `default` in a sealed role mapping; a modeless
+  source with no role mapping keeps the native session-model restore.
   Fresh launches retain their existing model-selection behavior.
 
 ## 0.79.1 — 2026-10-27

@@ -711,6 +711,9 @@ def resume_model_argv(bundle, manifest, argv):
         # Read only that mapping, never another default or the source recipe.
         sections = re.findall(r'^modelRoles:\n((?:[ \t]+[^\n]*\n)*)',
                               raw.decode('utf-8'), re.MULTILINE)
+        # A modeless source seals no role mapping: keep native session-model restore.
+        if not sections:
+            return argv
         require(len(sections) == 1, label)
         values = re.findall(r'^  default: (.+)$', sections[0], re.MULTILINE)
         require(len(values) == 1, label)

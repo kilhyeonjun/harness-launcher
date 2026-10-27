@@ -336,9 +336,10 @@ does not implement a bare native UUID transport, and a fork's new native ID is
 allocated inside OMP, so publishing the source ID would restore the wrong session.
 Native owner resume, fork and managed continuation resume start on the selected
 model mode's `modelRoles.default`, read from the prepared bundle's sealed
-`omp-settings.yml`, not the saved session's last model. A missing or invalid
-default refuses the launch rather than falling back to session history. Fresh
-launches keep their existing model-selection behavior.
+`omp-settings.yml`, not the saved session's last model. A role mapping whose
+`default` is missing or invalid refuses the launch; a modeless source that
+seals no role mapping keeps the native session-model restore. Fresh launches
+keep their existing model-selection behavior.
 
 Managed continuation restore remains supported separately. Parent `OMPCODE=1`
 remains in native's environment while its inherited HERDR reporting triple is

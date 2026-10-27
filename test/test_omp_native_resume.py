@@ -289,6 +289,11 @@ _harness_launcher_omp_native_resume "$owner" "$4" "$5"
                 self.assertEqual(projection.resume_model_argv(bundle, manifest, original),
                     original[:1]+['--model', selector]+original[1:])
                 self.assertEqual(original, ['--config='+str(settings), '--', '--model', 'prompt-only'])
+        # A modeless source seals no role mapping: native session-model restore stays in charge.
+        raw = b'contextPromotion:\n  enabled: false\n'
+        settings.write_bytes(raw)
+        manifest = {'artifacts': [{'relative_path': settings.name, 'sha256': hashlib.sha256(raw).hexdigest()}]}
+        self.assertEqual(projection.resume_model_argv(bundle, manifest, original), original)
         for raw in (b'modelRoles:\n  task: "openai-codex/gpt-6.1-sol:high"\n',
                     b'modelRoles:\n  default: "not-a-provider-selector"\n',
                     b'modelRoles:\n  default: null\n',
