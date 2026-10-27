@@ -4,8 +4,10 @@
 #
 # SDK hosts (Paseo) start `<command...> app-server [--enable goals]`. Codex
 # rejects `-p` for app-server and other non-runtime subcommands, and the
-# app-server receives each thread's cwd over JSON-RPC, so the launcher must
-# omit its profile there and put the boundary guard in front of the server.
+# app-server receives each thread's cwd over JSON-RPC. Low-level runtime-helper
+# tests below verify profile/relay assembly with a fake native executable; they
+# do not authorize public launches in registered canonical roots. Separate public
+# assertions verify canonical app-server refusal and native management exemption.
 
 set -e
 
@@ -60,7 +62,9 @@ fail() {
   exit 1
 }
 
-run_codex() {  # <stub-file> <launcher args after `codex`...>
+# Exercise only argv/guard assembly, not the public launch policy. Keep the
+# canonical registration intact, and never replace or disable the refusal guard.
+run_codex() {  # <stub-file> <runtime-helper args after `codex`...>
   local stub_file="$1"; shift
   : > "$stub_file"
   (
@@ -71,7 +75,8 @@ run_codex() {  # <stub-file> <launcher args after `codex`...>
     unset HARNESS_CODEX_MCP_PROFILE HARNESS_SESSION_ISOLATION
     source "$LAUNCHER_DIR/bin/aliases.zsh"
     _HARNESS_LAUNCHER_BIN="$TEST_BIN"
-    _harness_launcher_run "$TEST_HARNESS" codex "$@"
+    HARNESS_PREFIX=test
+    HARNESS_RUN_DIR="$TEST_HARNESS" _harness_launcher_run_codex_cli "$TEST_HARNESS" legacy "$@"
   ) </dev/null >/dev/null 2>"$stub_file.err"
 }
 
@@ -213,8 +218,8 @@ run_codex "$OUT" exec -C "$TEST_INSIDE" x || fail 'P11 legacy -C failed' "$OUT"
 exact_argv "$OUT" --cd "$TEST_HARNESS" -p base exec -C "$TEST_INSIDE" x || fail 'P11 legacy argv changed' "$OUT"
 echo 'PASS: P11 legacy freeform argv is unchanged'
 
-# P13: a Codex management-looking word after the marker stays on Codex, also
-# behind an isolation control.
+# P13: the public registered canonical route still permits native management:
+# --passthrough mcp stays on Codex, including behind --no-isolated.
 OUT="$TEST_TEMP/p13"
 : > "$OUT"
 (
@@ -227,9 +232,11 @@ OUT="$TEST_TEMP/p13"
   _harness_launcher_run "$TEST_HARNESS" --no-isolated codex --passthrough mcp list
 ) </dev/null >/dev/null 2>"$OUT.err" || fail 'P13 codex mcp failed' "$OUT"
 exact_argv "$OUT" --cd "$TEST_HARNESS" -p base mcp list || fail 'P13 codex mcp was rerouted' "$OUT"
-echo 'PASS: P13 Codex subcommands after the marker never become Claude management'
+guarded "$OUT" && fail 'P13 native management was guarded' "$OUT"
+echo 'PASS: P13 registered canonical --passthrough mcp remains exempt native management'
 
-# P14: nothing reaches stdout before the app-server, which owns the JSON-RPC stream.
+# P14: runtime-helper assembly leaves the JSON-RPC stdout clean. Public
+# registered app-server entry is separately refused below.
 OUT="$TEST_TEMP/p14"
 : > "$OUT"
 (
@@ -239,10 +246,36 @@ OUT="$TEST_TEMP/p14"
   export HARNESS_PROFILE_HOME="$TEST_PROFILE_HOME"
   source "$LAUNCHER_DIR/bin/aliases.zsh"
   _HARNESS_LAUNCHER_BIN="$TEST_BIN"
-  _harness_launcher_run "$TEST_HARNESS" codex --passthrough app-server
-) </dev/null >"$OUT.stdout" 2>"$OUT.err" || fail 'P14 app-server failed' "$OUT"
+  HARNESS_PREFIX=test
+  HARNESS_RUN_DIR="$TEST_HARNESS" _harness_launcher_run_codex_cli "$TEST_HARNESS" legacy --passthrough app-server
+) </dev/null >"$OUT.stdout" 2>"$OUT.err" || fail 'P14 app-server helper failed' "$OUT"
 [[ ! -s "$OUT.stdout" ]] || fail 'P14 launcher wrote to the JSON-RPC stdout' "$OUT.stdout"
 echo 'PASS: P14 the launcher keeps stdout clean for the app-server'
+
+# P15: registered public app-server entry refuses before relay/native launch,
+# including descendants and explicit legacy control. Registrations stay intact.
+for run_dir in "$TEST_HARNESS" "$TEST_INSIDE"; do
+  for shape in 'codex app-server' 'codex --passthrough app-server --enable goals' '--no-isolated codex --passthrough app-server'; do
+    OUT="$TEST_TEMP/p15"
+    : > "$OUT"
+    rc=0
+    (
+      export TEST_STUB_FILE="$OUT"
+      export PATH="$TEST_BIN:$PATH"
+      export HARNESS_CODEX_BIN="$TEST_BIN/codex"
+      export HARNESS_PROFILE_HOME="$TEST_PROFILE_HOME"
+      unset HARNESS_SESSION_ISOLATION
+      source "$LAUNCHER_DIR/bin/aliases.zsh"
+      _HARNESS_LAUNCHER_BIN="$TEST_BIN"
+      _harness_launcher_run "$TEST_HARNESS" --cwd "$run_dir" ${=shape}
+    ) </dev/null >"$OUT.stdout" 2>"$OUT.err" || rc=$?
+    [[ "$rc" == 2 ]] || fail "P15 $run_dir $shape expected exit 2, got $rc" "$OUT"
+    grep -Fq 'canonical_agent_refused: codex cannot run in registered canonical checkout:' "$OUT.err" || fail 'P15 missing canonical refusal' "$OUT"
+    [[ ! -s "$OUT" ]] || fail 'P15 relay or Codex ran' "$OUT"
+    [[ ! -s "$OUT.stdout" ]] || fail 'P15 refusal polluted stdout' "$OUT.stdout"
+  done
+done
+echo 'PASS: P15 registered public app-server refuses before relay/native launch'
 
 # P12: profile classification is independent of server routing and is also
 # checked without an installed Codex. P9 must still block mcp-server entirely.

@@ -18,11 +18,16 @@ for runtime in omp codex claude; do
 printf '%s:' "${0##*/}" >> "$LOG"
 printf ' <%s>' "$@" >> "$LOG"
 printf '\n' >> "$LOG"
+if [ "${HARNESS_TEST_CAPTURE_CODEX_HOME:-0}" = 1 ]; then
+  printf 'CODEX_HOME:<%s>\n' "${CODEX_HOME:-}" >> "$LOG"
+fi
 NATIVE
   chmod 755 "$TMP/native/$runtime"
 done
 export PATH="$TMP/native:/usr/bin:/bin"
 bash "$ROOT/test/lib/install-runtime-fixture.sh" "$ROOT" "$TMP/prefix"
+cp "$TMP/prefix/share/harness-launcher/harness-auto" "$TMP/real-harness-auto"
+cp "$TMP/prefix/share/harness-launcher/harness-exec" "$TMP/real-harness-exec"
 cat > "$TMP/prefix/share/harness-launcher/harness-exec" <<'BOUND'
 #!/bin/sh
 shift
@@ -34,6 +39,10 @@ cat > "$TMP/prefix/share/harness-launcher/harness-auto" <<'AUTO'
 printf 'route:' >> "$LOG"
 printf ' <%s>' "$@" >> "$LOG"
 printf '\n' >> "$LOG"
+if [ "${1:-}" = claude-management ]; then
+  shift
+  exec claude "$@"
+fi
 AUTO
 chmod 755 "$TMP/prefix/share/harness-launcher/harness-auto"
 cat > "$TMP/check.zsh" <<'CHECK'
@@ -54,6 +63,41 @@ for cwd in "$HARNESS" "$HARNESS/nested" "$TMP/canonical-link/nested"; do
     [[ ! -s "$LOG" ]] || fail 'refused agent reached native executable'
   done
 done
+# Native information/management must remain usable in a canonical checkout,
+# without entering an agent route or adding launcher argv.
+cd "$HARNESS"
+for runtime in omp codex claude; do
+  case "$runtime" in
+    omp) management_words=(--version --help login models) ;;
+    codex) management_words=(--version -V --help -h help login logout mcp completion features) ;;
+    claude) management_words=(--version --help auth mcp plugin doctor) ;;
+  esac
+  for subcommand in "${management_words[@]}"; do
+    : > "$LOG"
+    "$runtime" "$subcommand" 'native argument' || fail "$runtime $subcommand was refused"
+    if [[ "$runtime" == codex && "$subcommand" != (--version|-V|--help|-h) ]]; then
+      [[ "$(<"$LOG")" == "route: <codex> <--passthrough> <$subcommand> <native argument>" ]] || fail "codex $subcommand bypassed profile transport or changed argv"
+    else
+      [[ "$(<"$LOG")" == *"$runtime: <$subcommand> <native argument>"* ]] || fail "$runtime $subcommand did not preserve native argv"
+      [[ "$(<"$LOG")" != *' <base> '* && "$(<"$LOG")" != *' <--passthrough> '* ]] || fail 'management entered an agent route'
+    fi
+  done
+done
+# Agent-executing subcommands and post-- prompt flags are not exemptions.
+for subcommand in exec review app-server; do
+  : > "$LOG"
+  rc=0
+  codex "$subcommand" task >"$TMP/out" 2>"$TMP/err" || rc=$?
+  [[ "$rc" == 2 && ! -s "$LOG" ]] || fail "codex $subcommand bypassed canonical refusal"
+  if harness_agent_is_management codex "$subcommand" task; then fail "classified codex $subcommand as management"; fi
+done
+for runtime in omp codex claude; do
+  rc=0
+  "$runtime" -- --help >"$TMP/out" 2>"$TMP/err" || rc=$?
+  [[ "$rc" == 2 && ! -s "$LOG" ]] || fail 'post-- prompt flag bypassed canonical refusal'
+done
+: > "$LOG"
+print 'PASS: interactive native management stays native while agent subcommands remain refused'
 # Matching is path-component based, not a string prefix, and uses no external
 # commands even when the registry is missing.
 mkdir -p "$HARNESS-sibling"
@@ -118,3 +162,15 @@ rc=0
 /bin/bash -c 'source "$ROOT/bin/harness-common.sh"; harness_canonical_agent_refuse "$HARNESS/nested" claude' 2> "$TMP/bash.err" || rc=$?
 [[ "$rc" == 2 && "$(<"$TMP/bash.err")" == *canonical_agent_refused* ]] || { print -u2 'FAIL: portable guard did not refuse in Bash'; exit 1; }
 print 'PASS: noninteractive native omp and portable Bash guard'
+
+# Restore the real profile transport to prove management keeps CODEX_HOME;
+# only preparation is stubbed, never profile resolution or environment export.
+cp "$TMP/real-harness-auto" "$TMP/prefix/share/harness-launcher/harness-auto"
+cp "$TMP/real-harness-exec" "$TMP/prefix/share/harness-launcher/harness-exec"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/prefix/share/harness-launcher/codex-home-prepare.sh"
+chmod 755 "$TMP/prefix/share/harness-launcher/codex-home-prepare.sh"
+: > "$LOG"
+export HARNESS_TEST_CAPTURE_CODEX_HOME=1
+/bin/zsh -fic 'source "$TMP/prefix/share/harness-launcher/aliases.zsh"; harness_shell_enable; cd "$HARNESS"; codex login "profile argument"'
+[[ "$(<"$LOG")" == *'<login> <profile argument>'* && "$(<"$LOG")" == *"CODEX_HOME:<$HARNESS/.harness/codex>"* ]] || { print -u2 'FAIL: real Codex management lost native argv or profile CODEX_HOME'; exit 1; }
+print 'PASS: canonical Codex management retains profile CODEX_HOME through real routing'

@@ -672,9 +672,9 @@ The same command shape works for every registered prefix:
 <prefix> kiro [mode]             Claude Code through a Kiro gateway
 <prefix> codex-gateway [mode]    Claude Code through a Codex gateway
 <prefix> checkup prompt-audit [preset] [--max-budget-usd N]
-                                 headless Claude Code `/checkup prompt-audit` at the harness root
+                                 retired for registered canonical roots: canonical_agent_refused
 harness-profile checkup prompt-audit (--all | <prefix>...) [--mode <preset>] [--max-budget-usd N]
-                                 run the checkup for each selected profile, one at a time
+                                 selected canonical profiles refuse without agents or reports
 ```
 
 Extra arguments pass through to the selected runtime.
@@ -741,13 +741,29 @@ The main profile does not downgrade reviewers: reviewer subagents route independ
 
 ### Configuration checkup
 
-`<prefix> checkup prompt-audit` runs Claude Code's built-in `/checkup prompt-audit`
-(an alias of `/doctor prompt-audit`) without a TTY, always from the harness root,
-so the audit covers that project's instruction files plus the user-level
-`~/.claude` skills, commands, agents, output styles, rules, and plugins. The audit
-proposes edits; it never applies them.
+Public canonical checkup is intentionally retired: `<prefix> checkup prompt-audit`
+would start Claude Code on the source checkout, so a registered canonical root
+(or descendant) is refused with `canonical_agent_refused`. No agent starts and no
+checkup reports are created. This also applies to profiles with isolation enabled
+by default. `harness-profile checkup prompt-audit --all` (or selected prefixes)
+reports those refusals as failed runs rather than auditing the canonical trees.
+There is no isolated `checkup` route: explicit isolation is rejected before a
+session is created.
 
-The run is read-only by construction:
+For an audit, start `<prefix> --isolated claude` and ask Claude to audit the
+configuration, or invoke `/checkup prompt-audit` inside that isolated Claude
+session. This is an interactive isolated audit, not the retired headless
+checkup/report workflow; it does not inherit the helper's restrictions below.
+
+The lower-level `_harness_launcher_run_checkup` helper remains supported for
+unregistered, noncanonical fixtures. It runs Claude Code's built-in
+`/checkup prompt-audit` (an alias of `/doctor prompt-audit`) without a TTY at the
+fixture root, covering its instruction files and the user-level `~/.claude`
+skills, commands, agents, output styles, rules, and plugins. Its audit proposes
+edits rather than applying them. This helper support is not a bypass for a
+registered canonical checkout.
+
+The helper run uses these restrictions:
 
 - `--restricted` ignores user, project, and local settings files, so hooks,
   allow rules, and default permission modes from those files do not apply, and
@@ -793,17 +809,14 @@ a run can end slightly above it.
 The raw JSON result, Claude's standard error (kept only when non-empty), and the
 report are written with private permissions to
 `.harness/reports/checkup/prompt-audit-<UTC timestamp>-<pid>.{json,stderr,md}`
-inside the harness. Standard output is a single status line — report path, cost,
-duration, turns, and the number of permission denials, never report text —
-so `harness-profile checkup prompt-audit --all` can run several profiles from one
-terminal without mixing their content. `harness-profile checkup` validates every
-selected profile before the first run, runs each profile once even if it is named
-twice, and applies the budget to each run, so N profiles can spend up to N times
-the budget. A run takes several minutes; start a long fan-out in its own terminal
-or in the background. Profiles that isolate sessions by default run the checkup
-at the root; `--isolated` with `checkup` is rejected before any session is
-created. Plugins enabled in user settings are not loaded under `--restricted`;
-the audit reads their files from `~/.claude/plugins` instead.
+inside the unregistered fixture. The helper's standard output is a single status
+line — report path, cost, duration, turns, and the number of permission denials,
+never report text. These report and budget semantics describe direct helper
+runs only, not refused public canonical checkups. The public fan-out still
+validates every selected profile before attempting a run and attempts each
+profile once even if named twice. Plugins enabled in user settings are not
+loaded under `--restricted`; the helper audit reads their files from
+`~/.claude/plugins` instead.
 
 ## Project layout
 

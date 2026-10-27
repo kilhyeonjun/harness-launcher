@@ -1080,7 +1080,8 @@ typeset -gi _HARNESS_LAUNCHER_SHELL_OMP_OWNED="${_HARNESS_LAUNCHER_SHELL_OMP_OWN
 typeset -g +x _HARNESS_LAUNCHER_SHELL_OMP_OWNED
 
 _harness_launcher_auto_omp() {
-  if [[ -o interactive ]] && (( _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED )); then
+  if [[ -o interactive ]] && (( _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED )) && \
+      ! harness_agent_is_management omp "$@"; then
     _harness_launcher_canonical_agent_refuse "$PWD" omp || return $?
   fi
   command omp "$@"
@@ -1088,7 +1089,8 @@ _harness_launcher_auto_omp() {
 
 _harness_launcher_auto_runtime() {
   local runtime="$1"; shift
-  if [[ -o interactive ]] && (( _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED )); then
+  if [[ -o interactive ]] && (( _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED )) && \
+      ! harness_agent_is_management "$runtime" "$@"; then
     _harness_launcher_canonical_agent_refuse "$PWD" "$runtime" || return $?
   fi
   local harness_auto="$_HARNESS_LAUNCHER_BIN/harness-auto"
@@ -2144,8 +2146,14 @@ _harness_launcher_run() {
     case "${@[2]}" in
       kiro|kiro-cli|codex-gateway|checkup|codex-smoke|claude-management) ;;
       *) local canonical_runtime=claude
-         [[ "${@[2]}" != (codex|omp) ]] || canonical_runtime="${@[2]}"
-         _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$canonical_runtime" || return $? ;;
+         local -a canonical_native_args=("${@:2}")
+         if [[ "${@[2]}" == (codex|omp) ]]; then
+           canonical_runtime="${@[2]}"
+           canonical_native_args=("${@:3}")
+         fi
+         if ! harness_agent_is_management "$canonical_runtime" "${canonical_native_args[@]}"; then
+           _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$canonical_runtime" || return $?
+         fi ;;
     esac
   fi
 
@@ -2301,7 +2309,6 @@ _harness_launcher_run() {
           3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
              return 2 ;;
           4)
-             _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$([[ "${1:-}" == codex ]] && print codex || print claude)" || return $?
              # The session lives in the canonical checkout.  Never continue it
              # there silently.  Only the pure forms `codex [preset...] [--passthrough]
              # resume <id>` become a fresh isolated session through durable history
@@ -2340,6 +2347,7 @@ _harness_launcher_run() {
                isolated=true
                history_local_create=true
              else
+               _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$([[ "${1:-}" == codex ]] && print codex || print claude)" || return $?
                ! $canonical_pure || canonical_prepare_failed=true
                [[ -z "$isolated_source_run_dir" ]] || canonical_cwd="--cwd ${(q-)isolated_source_run_dir} "
                canonical_alt="start a fresh isolated session ('${HARNESS_PREFIX}'), or for maintenance run '${HARNESS_PREFIX} ${canonical_cwd}--no-isolated ${(j: :)${(q-)@}}'"
@@ -2362,15 +2370,20 @@ _harness_launcher_run() {
   # Kiro/gateway and management routes retain their documented legacy policy.
   if ! $isolated && (( $# )); then
     case "${1:-}" in
-      kiro|kiro-cli|codex-gateway) ;;
+      kiro|kiro-cli|codex-gateway|codex-smoke) ;;
       *) local canonical_runtime=claude
-         case "${1:-}" in codex|codex-smoke) canonical_runtime=codex ;; omp) canonical_runtime=omp ;; esac
-         _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$canonical_runtime" || return $? ;;
+         local -a canonical_native_args=("$@")
+         case "${1:-}" in
+           codex|omp) canonical_runtime="$1"; canonical_native_args=("${@:2}") ;;
+         esac
+         if ! harness_agent_is_management "$canonical_runtime" "${canonical_native_args[@]}"; then
+           _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$canonical_runtime" || return $?
+         fi ;;
     esac
   fi
   # checkup audits the harness root itself; reject before any clone exists.
   if $isolated && [[ "${1:-}" == checkup ]]; then
-    echo "harness-launcher: checkup audits the harness root and cannot run in an isolated session; use '${HARNESS_PREFIX} --no-isolated checkup prompt-audit'" >&2
+    echo "harness-launcher: checkup has no isolated route; use '${HARNESS_PREFIX} --isolated claude' for an agent-driven audit" >&2
     return 2
   fi
   if $isolated; then
@@ -2382,7 +2395,7 @@ _harness_launcher_run() {
         0) requested_session_id="$orca_resume_id"; orca_resume=true ;;
         3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
            return 2 ;;
-        *) echo "harness-launcher: continuation requires '${HARNESS_PREFIX} --isolated-session <uuid> $*' or intentional '${HARNESS_PREFIX} --no-isolated $*'" >&2
+        *) echo "harness-launcher: continuation requires '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
            return 2 ;;
       esac
     fi

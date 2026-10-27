@@ -20,8 +20,14 @@ With `harness_shell_enable`, interactive bare `claude`, `codex` and `omp`
 commands are also refused inside canonical directories; commands elsewhere and
 noninteractive scripts retain their existing routing. Bound launcher restore
 argv remains the supported continuation route. The no-argument menu sends
-supported direct-agent selections through isolation. Kiro and gateway routes
-remain legacy residual risks until they have an isolated route. Shells and manual
+supported fresh direct-agent selections through isolation. Unbound menu
+continue/resume/fork selections refuse before saving history; resume with an
+explicit `--isolated-session <uuid>` instead. Native management/info commands
+and metadata-only `codex-smoke` remain allowed. `checkup` starts a Claude agent
+against its source root and has no isolated route, so it is refused in registered
+canonical roots; use an isolated Claude session for audits. Safe durable-history
+imports may still convert a Codex resume into a fresh isolated session. Kiro and
+gateway routes remain legacy residual risks until they have an isolated route. Shells and manual
 Git are unaffected. An unavailable Web launch catalog reports `launch_unavailable`
 and its validated server `reason`; available catalogs remain strictly validated.
 

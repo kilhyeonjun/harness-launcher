@@ -37,6 +37,7 @@ cat > "$STUB_BIN/codex" <<'EOF'
 } > "$HARNESS_PROFILE_TEST_LOG"
 EOF
 chmod +x "$STUB_BIN/codex"
+cp "$STUB_BIN/codex" "$STUB_BIN/claude"
 
 HOME="$HOME_DIR" HARNESS_PROFILE_BIN_DIR="$BIN_DIR" \
   "$PREFIX/bin/harness-profile" register "$HARNESS"
@@ -66,46 +67,56 @@ PROFILE_FILE="$HOME_DIR/.config/harness-launcher/profiles/th"
 
 echo "PASS: harness-profile registers an executable profile command"
 
+WORKTREE_REAL="$(cd "$WORKTREE" && pwd -P)"
+HARNESS_REAL="$(cd "$HARNESS" && pwd -P)"
+# Registered canonical roots and subdirectories may manage native tools, but
+# agent execution must refuse even when the entrypoint defaults an outside cwd.
+for caller in "$WORKTREE" "$TMP"; do
+  for runtime in codex claude; do
+    : > "$LOG"
+    rc=0
+    (
+      cd "$caller"
+      HOME="$HOME_DIR" PATH="$STUB_BIN:/usr/bin:/bin" \
+        HARNESS_CODEX_BIN="$STUB_BIN/codex" HARNESS_PROFILE_TEST_LOG="$LOG" \
+        "$BIN_DIR/th" "$runtime" base
+    ) >"$TMP/canonical.out" 2>"$TMP/canonical.err" || rc=$?
+    [[ "$rc" == 2 && ! -s "$LOG" ]] || {
+      echo "FAIL: executable profile command did not refuse canonical $runtime before launch" >&2
+      exit 1
+    }
+    grep -Fq canonical_agent_refused "$TMP/canonical.err"
+    grep -Fq -- "--isolated $runtime" "$TMP/canonical.err"
+  done
+done
+echo "PASS: executable profile commands refuse canonical agents with an isolated alternative"
+
 (
   cd "$WORKTREE"
-  HOME="$HOME_DIR" \
-    PATH="$STUB_BIN:/usr/bin:/bin" \
-    HARNESS_CODEX_BIN="$STUB_BIN/codex" \
-    HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$TMP/missing-marketplace" \
-    HARNESS_PROFILE_TEST_LOG="$LOG" \
-    "$BIN_DIR/th" codex base
+  HOME="$HOME_DIR" PATH="$STUB_BIN:/usr/bin:/bin" HARNESS_PROFILE_TEST_LOG="$LOG" \
+    "$BIN_DIR/th" claude-management doctor
 )
-WORKTREE_REAL="$(cd "$WORKTREE" && pwd -P)"
 grep -Fqx "PWD:$WORKTREE_REAL" "$LOG" || {
-  echo "FAIL: executable profile command did not use the current workspace" >&2
-  sed 's/^/  /' "$LOG" >&2
+  echo "FAIL: native management did not use the current workspace" >&2
   exit 1
 }
-grep -Fq "ARGV: <--cd> <$WORKTREE_REAL> <-p> <base>" "$LOG" || {
-  echo "FAIL: executable profile command did not forward the workspace to Codex" >&2
-  sed 's/^/  /' "$LOG" >&2
-  exit 1
-}
-
-echo "PASS: executable profile commands use the current workspace"
+grep -Fqx 'ARGV: <doctor>' "$LOG"
+echo "PASS: executable profile management commands use the current workspace"
 
 : > "$LOG"
 (
   cd "$WORKTREE"
   HOME="$HOME_DIR" \
     PATH="$STUB_BIN:/usr/bin:/bin" \
-    HARNESS_CODEX_BIN="$STUB_BIN/codex" \
-    HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$TMP/missing-marketplace" \
     HARNESS_PROFILE_TEST_LOG="$LOG" \
-    "$BIN_DIR/th" --cwd "$HARNESS" codex base
+    "$BIN_DIR/th" --cwd "$HARNESS" claude-management doctor
 )
-HARNESS_REAL="$(cd "$HARNESS" && pwd -P)"
 grep -Fqx "PWD:$HARNESS_REAL" "$LOG" || {
-  echo "FAIL: explicit --cwd did not override the inherited workspace" >&2
+  echo "FAIL: explicit --cwd did not override the inherited management workspace" >&2
   exit 1
 }
-grep -Fq "ARGV: <--cd> <$HARNESS_REAL> <-p> <base>" "$LOG" || {
-  echo "FAIL: explicit --cwd argument order changed through the profile command" >&2
+grep -Fqx 'ARGV: <doctor>' "$LOG" || {
+  echo "FAIL: explicit --cwd changed native management arguments through the profile command" >&2
   exit 1
 }
 if HOME="$HOME_DIR" "$BIN_DIR/th" --cwd "$TMP" codex base \
@@ -113,6 +124,7 @@ if HOME="$HOME_DIR" "$BIN_DIR/th" --cwd "$TMP" codex base \
   echo "FAIL: profile command accepted an explicit cwd outside the harness" >&2
   exit 1
 fi
+grep -Fq -- '--cwd must stay inside the registered harness' "$TMP/outside-cwd.err"
 ln -s "$TMP" "$HARNESS/.worktrees/escape"
 if HOME="$HOME_DIR" "$BIN_DIR/th" --cwd "$HARNESS/.worktrees/escape" codex base \
   >"$TMP/symlink-cwd.out" 2>"$TMP/symlink-cwd.err"; then
@@ -120,6 +132,7 @@ if HOME="$HOME_DIR" "$BIN_DIR/th" --cwd "$HARNESS/.worktrees/escape" codex base 
   exit 1
 fi
 
+grep -Fq -- '--cwd must stay inside the registered harness' "$TMP/symlink-cwd.err"
 echo "PASS: profile commands preserve explicit --cwd precedence and boundary checks"
 
 : > "$LOG"
@@ -127,19 +140,17 @@ echo "PASS: profile commands preserve explicit --cwd precedence and boundary che
   cd "$TMP"
   HOME="$HOME_DIR" \
     PATH="$STUB_BIN:/usr/bin:/bin" \
-    HARNESS_CODEX_BIN="$STUB_BIN/codex" \
-    HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$TMP/missing-marketplace" \
     HARNESS_PROFILE_TEST_LOG="$LOG" \
-    "$BIN_DIR/th" codex base
+    "$BIN_DIR/th" claude-management doctor
 )
-HARNESS_REAL="$(cd "$HARNESS" && pwd -P)"
 grep -Fqx "PWD:$HARNESS_REAL" "$LOG" || {
-  echo "FAIL: profile command outside the boundary did not preserve the harness-root default" >&2
+  echo "FAIL: profile management outside the boundary did not preserve the harness-root default" >&2
   sed 's/^/  /' "$LOG" >&2
   exit 1
 }
+grep -Fqx 'ARGV: <doctor>' "$LOG"
 
-echo "PASS: executable profile commands preserve the legacy root default outside the harness"
+echo "PASS: executable profile management preserves the root default outside the harness"
 
 COLLISION_HARNESS="$HOME_DIR/collision-harness"
 mkdir -p "$COLLISION_HARNESS/config"

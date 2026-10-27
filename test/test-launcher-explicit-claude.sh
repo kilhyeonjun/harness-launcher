@@ -40,8 +40,29 @@ with tempfile.TemporaryDirectory(prefix='explicit-claude-') as tmp:
     (binary/'gum').write_text('#!/bin/sh\nexit 90\n')
     for path in binary.iterdir():path.chmod(0o700)
     env={'HOME':str(home),'PATH':str(binary)+':/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin','TMPDIR':str(base),'CLAUDE_CONFIG_DIR':str(home/'.claude'),'HARNESS_CLAUDE_PLUGIN_MIRROR':'0','FIXTURE_LOG':str(log),'PYTHONDONTWRITEBYTECODE':'1','HARNESS_POST_EDIT_CODEX_SYNC':'0','HARNESS_POST_COMMIT_CODEX_SYNC':'0','TERM':'dumb','LC_ALL':'C'}
-    def run(args,auto=False):
+    env['HARNESS_SESSION_STATE_HOME']=str(base/'session-state')
+    env['HARNESS_SESSION_HEARTBEAT_SECONDS']='0.05'
+    def fixture_command(command):
+        return subprocess.run(command,cwd=profile,env=env,input=b'',capture_output=True,timeout=20,check=True)
+    fixture_command(['git','init','-q','-b','main'])
+    fixture_command(['git','add','-f','config/launcher.env','.mcp.json'])
+    fixture_command(['git','-c','user.name=fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture'])
+    created=fixture_command([str(repo/'bin/session-isolation.sh'),'create',str(profile)])
+    session=dict(line.split('=',1) for line in created.stdout.decode().splitlines() if line.startswith('HARNESS_'))
+    session_id=session['HARNESS_SESSION_ID']
+    session_root=Path(session['HARNESS_SESSION_ROOT'])
+    assert session_root.resolve()!=profile.resolve()
+    def run(args,auto=False,isolated=True):
         log.unlink(missing_ok=True)
+        # Keep the registered source boundary intact; all agent launches use
+        # a real launcher-owned session, not a guard override or missing registry.
+        if isolated:
+            if auto:
+                args=[args[0],'--isolated-session',session_id,*args[1:]]
+            elif args[:1]==['--cwd']:
+                args=[*args[:2],'--isolated-session',session_id,*args[2:]]
+            else:
+                args=['--isolated-session',session_id,*args]
         if auto:
             command=[sys.executable,'-B',str(repo/'bin/harness_auto.py'),*args]
         else:
@@ -57,11 +78,13 @@ with tempfile.TemporaryDirectory(prefix='explicit-claude-') as tmp:
         command=shlex.split(hook)
         assert command[1:3]==[str(repo/'bin/harness-launch-record'),'claude'],command
         assert command[command.index('--source-root')+1]==str(profile.resolve()),command
-        assert command[command.index('--isolated')+1]=='0',command
+        assert command[command.index('--isolated')+1]=='1',command
+        assert command[command.index('--harness-session-id')+1]==session_id,command
         assert settings['permissions']['ask'],settings
     implicit=run(['base','--','prompt'])
     explicit=run(['claude','base','--','prompt'])
     settings_checked(explicit['argv'])
+    assert Path(explicit['cwd']).resolve()==session_root.resolve(),explicit
     assert explicit==implicit,('explicit selector changes native argv',explicit,implicit)
     assert explicit['argv'].count('claude')==0,explicit
     assert explicit['argv'][:4]==['--model','sonnet','--effort','high'],explicit
@@ -91,13 +114,26 @@ with tempfile.TemporaryDirectory(prefix='explicit-claude-') as tmp:
             assert selected['argv'].count('--permission-mode')==1,selected
         print('PASS: literal/prompt/value/passthrough token parity',repr(tail))
     assert run(['claude','claude','--','text'],auto=True)==run(['claude','claude','--','text']), 'auto consumed caller claude'
-    assert run(['claude','--cwd',str(profile),'--no-isolated','claude','--','text'],auto=True)==run(['--cwd',str(profile),'--no-isolated','claude','claude','--','text']), 'auto misplaced outer controls'
+    assert run(['claude','--cwd',str(profile),'--isolated-session',session_id,'claude','--','text'],auto=True,isolated=False)==run(['--cwd',str(profile),'--isolated-session',session_id,'claude','claude','--','text'],isolated=False), 'auto misplaced outer controls'
     print('PASS: real standalone auto preserves one caller claude and cwd/control order')
     for native in [['auth','status'],['doctor'],['mcp','list'],['mcp','--passthrough','auth'],['plugin','list'],['help'],['--help'],['--version']]:
         for prefix in [[],['--no-isolated'],['--isolated-session','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']]:
-            result=run([*prefix,'claude',*native])
+            result=run([*prefix,'claude',*native],isolated=False)
             assert result['argv']==native,('management injected session/model/MCP/settings',prefix,native,result)
         print('PASS: native management has exact argv',native)
+    for args,auto in [
+        (['base','--','prompt'],False),
+        (['claude','base','--','prompt'],False),
+        (['--no-isolated','claude','base','--','prompt'],False),
+        (['claude','--cwd',str(profile),'--no-isolated','claude','--','text'],True),
+    ]:
+        log.unlink(missing_ok=True)
+        command=([sys.executable,'-B',str(repo/'bin/harness_auto.py'),*args] if auto else
+                 ['/bin/zsh','-f','-c','source "$1/bin/aliases.zsh"; shift; _harness_launcher_run "$@"','test',str(repo),str(profile),*args])
+        done=subprocess.run(command,cwd=profile,env=env,input=b'',capture_output=True,timeout=20)
+        assert done.returncode==2 and b'canonical_agent_refused' in done.stderr,(args,done.returncode,done.stderr)
+        assert not log.exists(),('canonical refusal launched native',args)
+    print('PASS: implicit/explicit/auto canonical agents refuse without native execution')
     for args in [['claude','codex','--','text'],['claude','kiro-cli','--','text']]:
         done=subprocess.run(['/bin/zsh','-f','-c','source "$1/bin/aliases.zsh"; shift; _harness_launcher_run "$@"','test',str(repo),str(profile),*args],cwd=profile,env=env,input=b'',capture_output=True,timeout=20)
         assert done.returncode==2,('explicit Claude silently switched runtime',args,done.returncode)

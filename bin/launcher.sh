@@ -1088,6 +1088,10 @@ launch_claude() {
   if [ "$CHOICE_PROVIDER" = direct ] && ! harness_canonical_agent_refuse "$HARNESS_RUN_DIR" claude 2>/dev/null; then
     # Selection is complete; use the bound launcher rather than executing a
     # native agent in the menu's canonical working directory.
+    if [ "$CHOICE_SESSION" != new ]; then
+      echo "harness-launcher: canonical_agent_refused: menu continuation needs a bound session; use harness-exec \"$HARNESS_DIR\" --isolated-session <uuid> claude resume" >&2
+      return 2
+    fi
     if [ "$CHOICE_HAPPY" = 1 ]; then
       harness_canonical_agent_refuse "$HARNESS_RUN_DIR" claude
       return 2
@@ -1095,6 +1099,7 @@ launch_claude() {
     local isolated_prefix=()
     [ "$CHOICE_MCP_SURFACE" != light ] || isolated_prefix+=(light)
     history_save
+    launch_banner "$PLAN_SUMMARY" harness-exec "$HARNESS_DIR" --isolated claude
     exec "$LAUNCHER_BIN_DIR/harness-exec" "$HARNESS_DIR" --cwd "$HARNESS_RUN_DIR" --isolated claude "${isolated_prefix[@]}" --passthrough "${args[@]}"
   fi
 
@@ -1196,6 +1201,10 @@ launch_claude() {
 
 launch_codex() {
   if ! harness_canonical_agent_refuse "$HARNESS_RUN_DIR" codex 2>/dev/null; then
+    if [ "$CHOICE_SESSION" != new ]; then
+      echo "harness-launcher: canonical_agent_refused: menu continuation needs a bound session; use harness-exec \"$HARNESS_DIR\" --isolated-session <uuid> codex resume" >&2
+      return 2
+    fi
     local isolated_args=(codex "$CHOICE_CODEX_PROFILE" "$CHOICE_CODEX_CONTEXT")
     [ "$CHOICE_HAPPY" != 1 ] || isolated_args+=(happy)
     case "$CHOICE_CODEX_SURFACE" in work) isolated_args+=(work) ;; esac
@@ -1207,6 +1216,7 @@ launch_codex() {
     esac
     history_save
     export HARNESS_CODEX_CONTEXT="$CHOICE_CODEX_CONTEXT"
+    launch_banner "$PLAN_SUMMARY" harness-exec "$HARNESS_DIR" --isolated "${isolated_args[@]}"
     exec "$LAUNCHER_BIN_DIR/harness-exec" "$HARNESS_DIR" --cwd "$HARNESS_RUN_DIR" --isolated "${isolated_args[@]}"
   fi
   [ "$CHOICE_HAPPY" != 1 ] || harness_slack_happy_guard || return $?
@@ -1348,6 +1358,7 @@ launch_omp() {
   [ -n "$CHOICE_MODE" ] && args+=(--model-mode "$CHOICE_MODE")
   if ! harness_canonical_agent_refuse "$HARNESS_RUN_DIR" omp 2>/dev/null; then
     history_save
+    launch_banner "$PLAN_SUMMARY" harness-exec "$HARNESS_DIR" --isolated "${args[@]}"
     exec "$LAUNCHER_BIN_DIR/harness-exec" "$HARNESS_DIR" --cwd "$HARNESS_RUN_DIR" --isolated "${args[@]}"
   fi
   history_save

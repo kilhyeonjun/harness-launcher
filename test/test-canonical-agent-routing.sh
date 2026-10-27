@@ -42,6 +42,14 @@ done
 rc=0
 (cd "$HARNESS/nested"; "$TMP/prefix/bin/harness-exec" "$HARNESS" --no-isolated codex base) > "$TMP/out" 2> "$TMP/err" || rc=$?
 [[ "$rc" == 2 && ! -s "$LOG" ]] || fail 'implicit nested cwd escaped early refusal'
+# Informational/management argv must pass the predispatch refusal unchanged.
+for runtime in claude codex; do
+  : > "$LOG"
+  native_args=(--version)
+  [[ "$runtime" != claude ]] || native_args=(auth status)
+  "$TMP/prefix/bin/harness-exec" "$HARNESS" --cwd "$HARNESS/nested" --no-isolated "$runtime" "${native_args[@]}"
+  [[ "$(<"$LOG")" == $'reached-aliases\nreached-launch' ]] || fail "$runtime management blocked before alias dispatch"
+done
 # A missing registry must retain the transport route, not ban by launcher.env.
 : > "$LOG"
 HARNESS_PROFILE_HOME="$TMP/missing-registry" "$TMP/prefix/bin/harness-exec" "$HARNESS" --cwd "$HARNESS/nested" --no-isolated codex base
@@ -59,6 +67,22 @@ source "$ROOT/bin/aliases.zsh"
 _harness_launcher_run_session() { print native >> "$LOG"; }
 _harness_launcher_run_codex_cli() { print native >> "$LOG"; }
 _harness_launcher_codex_history_select() { print history >> "$LOG"; return 1; }
+for command in --version login mcp; do
+  for control in implicit explicit; do
+    : > "$LOG"
+    controls=()
+    [[ "$control" != explicit ]] || controls=(--no-isolated)
+    _harness_launcher_run "$HARNESS" --cwd "$HARNESS/nested" "${controls[@]}" codex "$command"
+    [[ "$(<"$LOG")" == native ]] || { print -u2 'FAIL: Codex management did not reach native dispatcher'; exit 1; }
+  done
+done
+: > "$LOG"
+_harness_launcher_run "$HARNESS" --cwd "$HARNESS/nested" codex-smoke
+[[ "$(<"$LOG")" == native ]] || { print -u2 'FAIL: metadata smoke refused'; exit 1; }
+: > "$LOG"
+rc=0
+_harness_launcher_run "$HARNESS" checkup prompt-audit > "$TMP/checkup.out" 2> "$TMP/checkup.err" || rc=$?
+[[ "$rc" == 2 && ! -s "$LOG" && "$(<"$TMP/checkup.err")" == *canonical_agent_refused* ]] || exit 1
 for cwd in "$HARNESS" "$HARNESS/nested"; do
   for runtime in claude codex; do
     : > "$LOG"
@@ -72,6 +96,20 @@ done
 RESUME
 /bin/zsh "$TMP/resume.zsh"
 print 'PASS: canonical Claude and Codex legacy continuations refuse in nested directories'
+# Pure canonical history imports are allowed only when they allocate isolation.
+cat > "$TMP/history-migration.zsh" <<'HISTORY'
+source "$ROOT/bin/aliases.zsh"
+harness_claude_stdio_is_tty() { return 0; }
+_harness_launcher_resolve_restore() { return 4; }
+_harness_launcher_codex_history_begin() { history_snapshot_id=fixture; history_native_id=11111111-1111-4111-8111-111111111111; history_origin_runtime=fixture; }
+_harness_launcher_isolated_session_create() { print isolated > "$LOG"; return 73; }
+print 'HARNESS_NAME=routing HARNESS_PREFIX=route HARNESS_SESSION_ISOLATION_DEFAULT=1' > "$HARNESS/config/launcher.env"
+: > "$LOG"
+rc=0
+_harness_launcher_run "$HARNESS" --cwd "$HARNESS/nested" codex base --passthrough resume 11111111-1111-4111-8111-111111111111 || rc=$?
+[[ "$rc" == 73 && "$(<"$LOG")" == isolated ]] || exit 1
+HISTORY
+/bin/zsh "$TMP/history-migration.zsh"
 
 # Load the actual final-selection assembly functions without starting an
 # interactive menu. Selection values below are what collect_* hands off.
@@ -95,7 +133,10 @@ harness_gh_token_load() { return 0; }
 harness_observability_load() { return 1; }
 harness_agent_usage_export_discard() { return 0; }
 harness_launch_source_root() { printf '%s\n' "$HARNESS"; }
-history_save() { :; }
+history_save() { printf 'saved\n' >> "$TMP/history-writes"; }
+launch_banner() { :; }
+PLAN_SUMMARY='Selected test launch'
+HARNESS_NAME='routing test' HARNESS_PREFIX=route
 HARNESS_DIR="$HARNESS" HARNESS_RUN_DIR="$HARNESS/nested" LAUNCHER_BIN_DIR="$TMP/tui-bin"
 CHOICE_PROVIDER=direct CHOICE_HAPPY=0 CHOICE_MODE=base CHOICE_SESSION=new
 CHOICE_PERM=default CHOICE_CHROME=0 CHOICE_MCP_SURFACE=light
@@ -103,8 +144,10 @@ CHOICE_CODEX_PROFILE=fast CHOICE_CODEX_SURFACE=work CHOICE_CODEX_SAFETY=never CH
 OMP_HANDOFF="$TMP/omp-handoff"
 case "$1" in
   claude) CHOICE_MODE=custom CHOICE_C_MODEL=chosen-model CHOICE_C_EFFORT=high; launch_claude ;;
-  codex) CHOICE_SESSION=continue; launch_codex ;;
-  codex-happy) CHOICE_HAPPY=1 CHOICE_SESSION=fork CHOICE_CODEX_SAFETY=bypass; launch_codex ;;
+  codex) launch_codex ;;
+  codex-happy) CHOICE_HAPPY=1 CHOICE_CODEX_SAFETY=bypass; launch_codex ;;
+  claude-continuation) CHOICE_SESSION="$2" CHOICE_MODE=custom CHOICE_C_MODEL=chosen-model CHOICE_C_EFFORT=high; launch_claude ;;
+  codex-continuation) CHOICE_SESSION="$2"; launch_codex ;;
   claude-happy) CHOICE_HAPPY=1 CHOICE_MODE=custom CHOICE_C_MODEL=chosen-model CHOICE_C_EFFORT=high; launch_claude ;;
   omp) CHOICE_MODE='mode with spaces'; launch_omp ;;
 esac
@@ -123,9 +166,9 @@ for runtime in claude codex codex-happy omp; do
   expected=("$HARNESS" --cwd "$HARNESS/nested" --isolated)
   case "$runtime" in
     claude) expected+=(claude light --passthrough --model chosen-model --effort high --exclude-dynamic-system-prompt-sections) ;;
-    codex) expected+=(codex fast 1m work never continue)
+    codex) expected+=(codex fast 1m work never)
       [[ "$(<"$TMP/context")" == 1m ]] || fail 'Codex selection lost context' ;;
-    codex-happy) expected+=(codex fast 1m happy work bypass fork) ;;
+    codex-happy) expected+=(codex fast 1m happy work bypass) ;;
     omp) expected+=(omp --model-mode 'mode with spaces') ;;
   esac
   [[ "${(j:|:)actual}" == "${(j:|:)expected}" ]] || fail "$runtime selected TUI argv changed: ${(j:|:)actual}"
@@ -135,4 +178,15 @@ rc=0
 bash "$TMP/selected.bash" claude-happy > "$TMP/happy.out" 2> "$TMP/happy.err" || rc=$?
 [[ "$rc" == 2 && ! -s "$LOG" && "$(<"$TMP/happy.err")" == *canonical_agent_refused* ]] || fail 'Claude Happy canonical selection did not refuse'
 [[ ! -e "$TMP/omp-handoff" ]] || fail 'canonical OMP used native handoff instead of isolation'
-print 'PASS: actual selected Claude/Codex/OMP TUI functions dispatch isolated argv with selected options'
+for runtime in claude codex; do
+  for session in continue resume fork; do
+    : > "$LOG"
+    : > "$TMP/history-writes"
+    rc=0
+    bash "$TMP/selected.bash" "$runtime-continuation" "$session" > "$TMP/continuation.out" 2> "$TMP/continuation.err" || rc=$?
+    [[ "$rc" == 2 ]] || fail "$runtime unbound $session returned $rc"
+    [[ ! -s "$LOG" && ! -s "$TMP/history-writes" && ! -e "$TMP/omp-handoff" ]] || fail "$runtime unbound $session dispatched or saved history"
+    [[ "$(<"$TMP/continuation.err")" == *canonical_agent_refused* && "$(<"$TMP/continuation.err")" == *'--isolated-session '* ]] || fail "$runtime unbound $session lacked bound UUID alternative"
+  done
+done
+print 'PASS: selected TUI fresh agents isolate; unbound continuations refuse without history or handoff'

@@ -150,6 +150,26 @@ harness_claude_is_management_command() {
   return 1
 }
 
+# harness_agent_is_management <runtime> [native argv...]
+# Only native management/info entrypoints bypass canonical agent refusal; agent
+# execution (including Codex exec/review/app-server) is deliberately excluded.
+harness_agent_is_management() {
+  local runtime="${1:-}"
+  [ "$#" -gt 0 ] || return 1
+  shift
+  [ "${1:-}" != --passthrough ] || shift
+  case "$runtime" in
+    claude) harness_claude_is_management_command "${1:-}"; return $? ;;
+    codex)
+      case "${1:-}" in
+        --version|-V|--help|-h|help|login|logout|mcp|completion|features) return 0 ;;
+      esac ;;
+    omp)
+      case "${1:-}" in --version|--help|login|models) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
 harness_claude_stdio_is_tty() {
   [ -t 0 ] && [ -t 1 ]
 }

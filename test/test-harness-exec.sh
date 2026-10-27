@@ -84,6 +84,7 @@ fi
 echo "PASS: harness-exec uses the current workspace when it is inside the harness boundary"
 
 : > "$LOG"
+rc=0
 PATH="$STUB_BIN:/usr/bin:/bin" \
   HARNESS_CODEX_BIN="$STUB_BIN/codex" \
   HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE="$TMP/missing-marketplace" \
@@ -95,15 +96,13 @@ PATH="$STUB_BIN:/usr/bin:/bin" \
     harness_register "$HARNESS"
     cd "$WORKTREE"
     th codex base
-  '
+  ' >"$TMP/registered.out" 2>"$TMP/registered.err" || rc=$?
+# harness_register creates a bound external transport, not a persisted profile.
+# The child intentionally retains missing-registry fail-open behavior.
+[[ "$rc" == 0 ]] || { cat "$TMP/registered.err" >&2; exit 1; }
 assert_line "PWD:$WORKTREE_REAL"
-if ! grep -Fq "ARGV: <--cd> <$WORKTREE_REAL> <-p> <base>" "$LOG"; then
-  echo "FAIL: registered profile command did not preserve the current workspace" >&2
-  sed 's/^/  /' "$LOG" >&2
-  exit 1
-fi
-
-echo "PASS: registered profile commands use the current workspace"
+grep -Fq "ARGV: <--cd> <$WORKTREE_REAL> <-p> <base>" "$LOG"
+echo "PASS: nonpersisted bound profile commands preserve the current workspace"
 
 for session in fork; do
   : > "$LOG"
@@ -231,45 +230,73 @@ grep -Fqx 'MCP_AUTH:loaded' "$CLAUDE_LOG" || {
 
 echo "PASS: harness-exec launches Claude in the explicit worktree"
 
-PROFILE_HOME="$TMP/profile-home"
-PROFILE_BIN="$TMP/profile-bin"
-HARNESS_PROFILE_HOME="$PROFILE_HOME" HARNESS_PROFILE_BIN_DIR="$PROFILE_BIN" \
-  "$PREFIX/bin/harness-profile" register "$HARNESS" >/dev/null
+# Without a registry, native workspace launches retain their argument/env contract.
 : > "$CLAUDE_LOG"
-(
-  cd "$WORKTREE"
-  PATH="$STUB_BIN:/usr/bin:/bin" \
-  HOME="$FAKE_HOME" \
-  HARNESS_PROFILE_HOME="$PROFILE_HOME" \
-  HARNESS_EXEC_CLAUDE_LOG="$CLAUDE_LOG" \
-    "$PREFIX/bin/harness-auto" claude base resume acceptEdits 'orca prompt'
-)
-if ! grep -Fqx "PWD:$WORKTREE_REAL" "$CLAUDE_LOG"; then
-  echo "FAIL: harness-auto did not launch Claude in the selected worktree" >&2
-  sed 's/^/  /' "$CLAUDE_LOG" >&2
-  exit 1
-fi
+PATH="$STUB_BIN:/usr/bin:/bin" \
+HOME="$FAKE_HOME" \
+HARNESS_EXEC_CLAUDE_LOG="$CLAUDE_LOG" \
+  "$PREFIX/bin/harness-exec" "$HARNESS" --cwd "$WORKTREE" base resume acceptEdits 'orca prompt'
+grep -Fqx "PWD:$WORKTREE_REAL" "$CLAUDE_LOG"
 grep -Fqx 'MCP_AUTH:loaded' "$CLAUDE_LOG" || {
-  echo "FAIL: harness-auto Claude did not inherit harness-local MCP credentials" >&2
+  echo "FAIL: missing-registry Claude did not inherit harness-local MCP credentials" >&2
   exit 1
 }
 grep -Fq 'ARGV: <--resume>' "$CLAUDE_LOG" || {
-  echo "FAIL: harness-auto did not preserve the Claude resume selector" >&2
+  echo "FAIL: missing-registry Claude did not preserve the resume selector" >&2
   sed 's/^/  /' "$CLAUDE_LOG" >&2
   exit 1
 }
 grep -Fq '<--permission-mode> <acceptEdits>' "$CLAUDE_LOG" || {
-  echo "FAIL: harness-auto did not preserve the Claude permission selector" >&2
+  echo "FAIL: missing-registry Claude did not preserve the permission selector" >&2
   sed 's/^/  /' "$CLAUDE_LOG" >&2
   exit 1
 }
 grep -Fq '<orca prompt>' "$CLAUDE_LOG" || {
-  echo "FAIL: harness-auto did not preserve the Claude prompt" >&2
+  echo "FAIL: missing-registry Claude did not preserve the prompt" >&2
   sed 's/^/  /' "$CLAUDE_LOG" >&2
   exit 1
 }
+echo "PASS: missing-registry Claude preserves workspace, credentials, and native selectors"
 
-echo "PASS: harness-auto launches Claude through the real shared policy path"
+PROFILE_HOME="$TMP/profile-home"
+PROFILE_BIN="$TMP/profile-bin"
+HARNESS_PROFILE_HOME="$PROFILE_HOME" HARNESS_PROFILE_BIN_DIR="$PROFILE_BIN" \
+  "$PREFIX/bin/harness-profile" register "$HARNESS" >/dev/null
+for canonical_cwd in "$HARNESS" "$WORKTREE"; do
+  for entry in exec auto; do
+    : > "$CLAUDE_LOG"
+    rc=0
+    (
+      cd "$canonical_cwd"
+      export PATH="$STUB_BIN:/usr/bin:/bin" HOME="$FAKE_HOME"
+      export HARNESS_PROFILE_HOME="$PROFILE_HOME" HARNESS_EXEC_CLAUDE_LOG="$CLAUDE_LOG"
+      if [[ "$entry" == exec ]]; then
+        "$PREFIX/bin/harness-exec" "$HARNESS" --cwd "$canonical_cwd" base resume acceptEdits 'orca prompt'
+      else
+        "$PREFIX/bin/harness-auto" claude base resume acceptEdits 'orca prompt'
+      fi
+    ) >"$TMP/canonical-$entry.out" 2>"$TMP/canonical-$entry.err" || rc=$?
+    [[ "$rc" == 2 && ! -s "$CLAUDE_LOG" ]] || {
+      echo "FAIL: harness-$entry did not refuse registered canonical Claude before launch" >&2
+      exit 1
+    }
+    grep -Fq canonical_agent_refused "$TMP/canonical-$entry.err"
+    grep -Fq -- '--isolated claude' "$TMP/canonical-$entry.err"
+  done
+done
+echo "PASS: harness-exec and harness-auto refuse registered canonical Claude roots and subdirectories"
+
+: > "$CLAUDE_LOG"
+(
+  cd "$WORKTREE"
+  PATH="$STUB_BIN:/usr/bin:/bin" HOME="$FAKE_HOME" \
+    HARNESS_PROFILE_HOME="$PROFILE_HOME" HARNESS_EXEC_CLAUDE_LOG="$CLAUDE_LOG" \
+    "$PREFIX/bin/harness-auto" claude-management doctor
+)
+grep -Fqx "PWD:$WORKTREE_REAL" "$CLAUDE_LOG"
+grep -Fqx 'MCP_AUTH:loaded' "$CLAUDE_LOG"
+grep -Fqx 'ARGV: <doctor>' "$CLAUDE_LOG"
+echo "PASS: registered canonical Claude management retains workspace, credentials, and native argv"
 
 KIRO_LOG="$TMP/kiro.log"
 cat > "$PREFIX/share/harness-launcher/kiro-home-prepare.sh" <<'EOF'

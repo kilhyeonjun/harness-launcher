@@ -5,8 +5,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
 ## 0.81.0 — Unreleased
 
 - Refuse Claude, Codex and OMP agents in registered canonical checkouts,
-  including explicit legacy and resume routes; use isolated menu launches and
-  interactive shell interception. Shell/manual Git remain allowed. Kiro and
+  including explicit legacy and resume routes; use isolated fresh menu launches
+  and interactive shell interception. Unbound menu continuations require a bound
+  session UUID. Shell/manual Git and native management remain allowed. Kiro and
   gateway routes remain documented legacy residuals.
 - Surface unavailable Web launch catalogs as `launch_unavailable` with their
   validated server reason; keep available-catalog validation strict.
