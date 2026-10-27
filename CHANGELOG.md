@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — CI regression reliability
+## Unreleased — CI lane sharding and reliability
 
 - Synchronize the UI-answer interrupt regression with server admission and
   observed socket closure, allowing the transport deadline plus shutdown grace
@@ -10,6 +10,14 @@ Notable changes are recorded here. This project follows semantic versioning for 
   command, line and case for unexpected isolated-session regression failures,
   including case-sensitive image teardown; unavailable image setup retains
   its existing explicit skip.
+- Split the complete headless regression into three deterministic scenario
+  shards, balance remaining shell work across two lanes, and move measured slow
+  shell/Python suites into existing spare lanes. All nine lanes remain required;
+  the aggregate proves complete, disjoint suite and headless-block coverage.
+- Accept successful lane receipts from earlier attempts of the same CI run when
+  rerunning failed jobs, while retaining exact run ID, execution SHA, PR head,
+  inventory and source binding. Missing, duplicate, forged and future-attempt
+  results still refuse; the no-argument local suite remains unchanged.
 
 ## 0.79.2 — 2026-10-27
 

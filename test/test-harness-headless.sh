@@ -3,6 +3,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Each scenario block belongs to exactly one CI shard; no argument runs all.
+shard=all
+if [[ "$#" != 0 ]]; then
+  [[ "$#" == 2 && "$1" == --ci-shard ]] || exit 2
+  case "$2" in delivery|security|codex) shard="$2" ;; *) exit 2 ;; esac
+fi
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
@@ -267,6 +273,8 @@ fail() {
 }
 expect_status() { [[ "$(field status)" == "$1" && "$(field version)" == 1 ]] || fail "expected status $1 (version 1)"; }
 
+# CI_SHARD_BEGIN delivery
+if [[ "$shard" == all || "$shard" == delivery ]]; then
 # --- delivered -----------------------------------------------------------------
 echo change > "$TMP/mode"
 headless --settings-file "$TMP/caller-settings.json" --model sonnet || fail 'delivered run must exit 0'
@@ -680,6 +688,11 @@ grep -q 'verifier' "$RESULT" || fail 'a verifier rejection must say so'
 ! grep -qx -e state=CLOSED -e state=DELIVERED "$STATE/sessions/$(field session_id)/journal" || fail 'a rejected session must be kept'
 echo 'PASS: harness-headless reports a verifier rejection as failed and keeps the session'
 
+fi
+# CI_SHARD_END delivery
+
+# CI_SHARD_BEGIN security
+if [[ "$shard" == all || "$shard" == security ]]; then
 # --- the verifier runs agent-written tests in a sandbox -----------------------------
 # Fixtures under the fake HOME: secrets, history, browser data, another
 # session's record, and a Docker-style socket served from outside the sandbox.
@@ -1103,6 +1116,11 @@ PY
 done
 echo 'PASS: harness-headless refuses before launch when the verifier sandbox is unavailable'
 
+fi
+# CI_SHARD_END security
+
+# CI_SHARD_BEGIN codex
+if [[ "$shard" == all || "$shard" == codex ]]; then
 # === --agent codex ===================================================================
 # Same isolated session, delivery and result contract; only the agent process
 # differs. The fake codex runs under the generated Seatbelt profile, so it can
@@ -1936,3 +1954,5 @@ PY
   [[ "$(git --git-dir="$REMOTE" show main:patched.txt)" == 'patched by apply_patch' ]] || fail 'the real codex apply_patch edit must be delivered'
   echo "PASS: the real codex ($("$REAL_CODEX" --version 2>/dev/null)) runs under the generated profile: apply_patch and in-root write allowed, secret read and outside write denied"
 fi
+fi
+# CI_SHARD_END codex

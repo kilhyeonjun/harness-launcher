@@ -22,7 +22,10 @@ PRESERVATION = "test_git_policy.py test_preservation_snapshot.py test_trusted_pr
 PYTHON = ['test_profile_resolver.py']
 HEADLESS = ["test-harness-headless.sh", "test-headless-target.sh"]
 LOCKF = set("test-harness-exec-workspace-choice-tui.sh test-codex-config-preservation.sh test-codex-global-mcp-drift.sh test-codex-home-lock.sh test-codex-home-prepare.sh test-codex-history-gc.sh test-codex-history-resume-integration.sh test-codex-observability-profile.sh test-codex-migrate-to-symlinks.sh test-codex-project-trust.sh test-session-isolation.sh test-session-isolation-concurrency.sh test-session-transcript-retention.sh test-harness-headless.sh test-headless-target.sh".split())
-GROUPS = ("headless", "target", "sessions", "shell", "preservation", "python")
+GROUPS = ("headless", "headless-security", "headless-codex", "target", "sessions", "shell", "shell-extra", "preservation", "python")
+SHARDS = ("delivery", "security", "codex")
+TARGET = set("test-headless-target.sh test-terminal-runtime-launch.sh test-omp-routing.sh test-orca-resume.sh test-launcher-isolated.sh".split())
+LOCKF.update("test-harness-headless.sh@" + shard for shard in SHARDS)
 SHA = "a" * 40
 
 
@@ -75,7 +78,8 @@ if kind=='initial' and args[-1].endswith('/omp-fixture-source.py'):
  log({'stage':'admission'});sys.exit(17) if os.environ.get('FAIL_PREP') else None
  print(root/'synthetic-source');sys.exit(0)
 if '-p' in args:name=args[args.index('-p')+1]
-else:name=pathlib.Path(args[-1]).name
+else:name=pathlib.Path(args[0] if kind in ('bash','zsh') else args[-1]).name
+if '--ci-shard' in args:name+='@'+args[args.index('--ci-shard')+1]
 normalized=[a.replace(str(root),'ROOT') for a in args]
 log({'stage':'child','id':name,'kind':kind,'argv':normalized,'source':os.environ.get('HARNESS_TEST_OMP_SOURCE'),'mirror':os.environ.get('HARNESS_CLAUDE_PLUGIN_MIRROR')})
 if os.environ.get('MUTATE_ON')==name:
@@ -94,7 +98,10 @@ class Fixture:
         self.shells = sorted(p.name for p in (SOURCES / "test").glob("test-*.sh"))
         for name in self.shells:
             first = (SOURCES / "test" / name).read_text().splitlines()[0]
-            (self.root / "test" / name).write_text(first + "\nexit 0\n")
+            markers = ""
+            if name == HEADLESS[0]:
+                markers = "".join(f"# CI_SHARD_BEGIN {shard}\n# --- {shard}\n# CI_SHARD_END {shard}\n" for shard in SHARDS)
+            (self.root / "test" / name).write_text(first + "\n" + markers + "exit 0\n")
         for pattern in ('test_*.py', 'test_*.mjs'):
             for source in (SOURCES / 'test').glob(pattern):
                 (self.root / 'test' / source.name).write_text('# owned synthetic child\n')
@@ -149,7 +156,7 @@ class Fixture:
         return outputs
 
     def verify(self, outputs):
-        env = {"CI_RESULT_"+g.upper():json.dumps(outputs[g],separators=(",",":")) for g in outputs}
+        env = {"CI_RESULT_"+g.upper().replace('-', '_'):json.dumps(outputs[g],separators=(",",":")) for g in outputs}
         return self.run("--ci-verify", **env)
 
 
@@ -175,8 +182,12 @@ class Partition(unittest.TestCase):
 
     def test_original_lockf_only_skips_and_complete_accounting(self):
         sessions=[n for n in self.f.shells if n.startswith("test-session-")]
-        partitions=(("headless",[HEADLESS[0]]),("target",[HEADLESS[1]]),
-                    ("sessions",sessions),("shell",[n for n in self.f.shells if n not in HEADLESS+sessions]))
+        remaining=[n for n in self.f.shells if n != HEADLESS[0] and n not in TARGET and n not in sessions]
+        partitions=(("headless",[HEADLESS[0]+"@delivery"]),
+                    ("headless-security",[HEADLESS[0]+"@security"]),
+                    ("headless-codex",[HEADLESS[0]+"@codex"]),
+                    ("target",[n for n in self.f.shells if n in TARGET]),
+                    ("sessions",sessions),("shell",remaining[::2]),("shell-extra",remaining[1::2]))
         for group,expected in partitions:
             with self.subTest(group=group):
                 r,target=self.f.lane(group,HARNESS_TEST_FORCE_NO_LOCKF="1")
@@ -220,6 +231,33 @@ class Partition(unittest.TestCase):
         outputs["shell"]["pr_head_if_applicable"]="b"*40
         self.assertNotEqual(self.f.verify(outputs).returncode,0)
 
+    def test_mixed_successful_attempts_accept_only_same_run_and_source(self):
+        outputs=self.f.results()
+        for group in GROUPS[::2]:
+            outputs[group]['run_attempt']=1
+        result=self.f.verify(outputs)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('CI_INVENTORY_COMPLETE',result.stdout)
+        for key,value in (('run_id',124),('execution_sha','c'*40),('pr_head_if_applicable','d'*40),
+                          ('run_attempt',0),('run_attempt',-1),('run_attempt',3)):
+            changed=copy.deepcopy(outputs)
+            changed['headless'][key]=value
+            self.assertNotEqual(self.f.verify(changed).returncode,0,(key,value))
+        del outputs['headless-codex']
+        self.assertNotEqual(self.f.verify(outputs).returncode,0)
+
+    def test_ci_union_covers_full_inventory_once_with_all_headless_cases(self):
+        result=self.f.run(HARNESS_TEST_FORCE_NO_LOCKF='1')
+        self.assertEqual(result.returncode,0,result.stderr)
+        full=[e['id'] for e in self.f.events() if e['stage']=='child']
+        # Original platform skips are represented in receipts, not executed.
+        full.extend(n for n in self.f.shells if n in LOCKF)
+        outputs=self.f.results()
+        union=[name for value in outputs.values() for name in value['scheduled_ids']]
+        self.assertEqual(len(union),len(set(union)))
+        self.assertEqual(set(union),set(full)-{HEADLESS[0]}|{HEADLESS[0]+'@'+s for s in SHARDS})
+        self.assertEqual(self.f.verify(outputs).returncode,0)
+
     def test_aggregate_rejects_typed_identity_source_and_coverage_corruption(self):
         original=self.f.results()
         mutations=[("schema",True),("run_id",True),("run_id","123"),("run_id",124),("run_attempt",True),("run_attempt",3),("execution_sha","c"*40),("pr_head_if_applicable",SHA),("pr_head_if_applicable",None),("inventory_sha","d"*64),("group","headless"),("exit",True),("exit",1),("completed_ids",[]),("completed_ids",True),("scheduled_ids",[]),("skipped_ids_with_original_reason",[{'id':PYTHON[0],'reason':'new-skip'}])]
@@ -240,8 +278,9 @@ class Partition(unittest.TestCase):
         for group in GROUPS:
             outputs=copy.deepcopy(original);del outputs[group]
             self.assertNotEqual(self.f.verify(outputs).returncode,0)
-        for raw in ("{", "null", "[]", "true", "{}", "x"*32769):
-            env={"CI_RESULT_"+g.upper():json.dumps(original[g]) for g in GROUPS}
+        duplicate_key=json.dumps(original['shell'])[:-1]+',"group":"shell"}'
+        for raw in ("{", "null", "[]", "true", "{}", "x"*32769, duplicate_key):
+            env={"CI_RESULT_"+g.upper().replace('-', '_'):json.dumps(original[g]) for g in GROUPS}
             env["CI_RESULT_SHELL"]=raw
             self.assertNotEqual(self.f.run("--ci-verify",**env).returncode,0)
 
@@ -265,10 +304,10 @@ class Workflow(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="aggregate-gate-") as tmp:
             root=Path(tmp);(root/"test").mkdir()
             stub=root/"test/run-all.sh";stub.write_text('#!/bin/sh\nprintf invoked > "$MARKER"\n');stub.chmod(0o700)
-            base={"PATH":"/usr/bin:/bin","MARKER":str(root/"marker"),**{"CI_STATUS_"+g.upper():"success" for g in GROUPS}}
+            base={"PATH":"/usr/bin:/bin","MARKER":str(root/"marker"),**{"CI_STATUS_"+g.upper().replace('-', '_'):"success" for g in GROUPS}}
             for group in GROUPS:
                 for status in ("failure","cancelled","skipped",""):
-                    env=dict(base);env["CI_STATUS_"+group.upper()]=status
+                    env=dict(base);env["CI_STATUS_"+group.upper().replace('-', '_')]=status
                     r=subprocess.run(["/bin/bash","-c",script],cwd=root,env=env,capture_output=True,timeout=5)
                     self.assertNotEqual(r.returncode,0)
                     self.assertFalse((root/"marker").exists())

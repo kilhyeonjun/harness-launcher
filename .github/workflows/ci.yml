@@ -70,6 +70,146 @@ jobs:
           BASH_BIN="$(brew --prefix)/bin/bash" ZSH_BIN=/bin/zsh ./test/run-all.sh --ci-group headless --ci-result "$result"
           printf 'result=%s\n' "$(cat "$result")" >> "$GITHUB_OUTPUT"
 
+  regression-headless-security:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      CI_PR_HEAD: ${{ github.event.pull_request.head.sha || '' }}
+    outputs:
+      result: ${{ steps.regression.outputs.result }}
+    steps:
+      - name: Check out repository
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install runtime dependencies
+        run: |
+          brew install bash python@3.13 jq
+          echo "$(brew --prefix python@3.13)/libexec/bin" >> "$GITHUB_PATH"
+      - name: Prepare owned CI Homebrew directory modes
+        run: |
+          set -euo pipefail
+          python3 -I -S -B test/test_omp_ci_owned_homebrew.py
+          python3 -I -S -B test/test_omp_ci_owned_homebrew_errors.py
+          python3 -I -S -B test/omp-ci-owned-homebrew.py
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash_bin="$(brew --prefix)/bin/bash"
+          for file in install.sh bin/*.sh test/*.sh; do
+            first_line="$(sed -n '1p' "$file")"
+            if [[ "$first_line" == *zsh* ]]; then
+              /bin/zsh -n "$file"
+            else
+              "$bash_bin" -n "$file"
+            fi
+          done
+          /bin/zsh -n bin/aliases.zsh
+      - name: Lint public documentation
+        run: npx --yes markdownlint-cli2@latest README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md 'docs/*.md' '.github/*.md'
+      - name: Run regression suite
+        id: regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/ci-headless-security.json"
+          BASH_BIN="$(brew --prefix)/bin/bash" ZSH_BIN=/bin/zsh ./test/run-all.sh --ci-group headless-security --ci-result "$result"
+          printf 'result=%s\n' "$(cat "$result")" >> "$GITHUB_OUTPUT"
+
+  regression-headless-codex:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      CI_PR_HEAD: ${{ github.event.pull_request.head.sha || '' }}
+    outputs:
+      result: ${{ steps.regression.outputs.result }}
+    steps:
+      - name: Check out repository
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install runtime dependencies
+        run: |
+          brew install bash python@3.13 jq
+          echo "$(brew --prefix python@3.13)/libexec/bin" >> "$GITHUB_PATH"
+      - name: Prepare owned CI Homebrew directory modes
+        run: |
+          set -euo pipefail
+          python3 -I -S -B test/test_omp_ci_owned_homebrew.py
+          python3 -I -S -B test/test_omp_ci_owned_homebrew_errors.py
+          python3 -I -S -B test/omp-ci-owned-homebrew.py
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash_bin="$(brew --prefix)/bin/bash"
+          for file in install.sh bin/*.sh test/*.sh; do
+            first_line="$(sed -n '1p' "$file")"
+            if [[ "$first_line" == *zsh* ]]; then
+              /bin/zsh -n "$file"
+            else
+              "$bash_bin" -n "$file"
+            fi
+          done
+          /bin/zsh -n bin/aliases.zsh
+      - name: Lint public documentation
+        run: npx --yes markdownlint-cli2@latest README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md 'docs/*.md' '.github/*.md'
+      - name: Run regression suite
+        id: regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/ci-headless-codex.json"
+          BASH_BIN="$(brew --prefix)/bin/bash" ZSH_BIN=/bin/zsh ./test/run-all.sh --ci-group headless-codex --ci-result "$result"
+          printf 'result=%s\n' "$(cat "$result")" >> "$GITHUB_OUTPUT"
+
+  regression-shell-extra:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      CI_PR_HEAD: ${{ github.event.pull_request.head.sha || '' }}
+    outputs:
+      result: ${{ steps.regression.outputs.result }}
+    steps:
+      - name: Check out repository
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Fetch pinned public-dispatch test baseline
+        run: git fetch --no-tags --depth=1 origin 5faf9b91411faeb33f48beb0ab8b69a8575a0813
+      - name: Install runtime dependencies
+        run: |
+          brew install bash python@3.13 jq
+          echo "$(brew --prefix python@3.13)/libexec/bin" >> "$GITHUB_PATH"
+      - name: Prepare owned CI Homebrew directory modes
+        run: |
+          set -euo pipefail
+          python3 -I -S -B test/test_omp_ci_owned_homebrew.py
+          python3 -I -S -B test/test_omp_ci_owned_homebrew_errors.py
+          python3 -I -S -B test/omp-ci-owned-homebrew.py
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash_bin="$(brew --prefix)/bin/bash"
+          for file in install.sh bin/*.sh test/*.sh; do
+            first_line="$(sed -n '1p' "$file")"
+            if [[ "$first_line" == *zsh* ]]; then
+              /bin/zsh -n "$file"
+            else
+              "$bash_bin" -n "$file"
+            fi
+          done
+          /bin/zsh -n bin/aliases.zsh
+      - name: Lint public documentation
+        run: npx --yes markdownlint-cli2@latest README.md CONTRIBUTING.md SECURITY.md CHANGELOG.md 'docs/*.md' '.github/*.md'
+      - name: Run regression suite
+        id: regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/ci-shell-extra.json"
+          BASH_BIN="$(brew --prefix)/bin/bash" ZSH_BIN=/bin/zsh ./test/run-all.sh --ci-group shell-extra --ci-result "$result"
+          printf 'result=%s\n' "$(cat "$result")" >> "$GITHUB_OUTPUT"
+
   regression-target:
     runs-on: macos-15
     timeout-minutes: 20
@@ -342,7 +482,7 @@ jobs:
 
   test:
     if: ${{ always() }}
-    needs: [regression-headless, regression-target, regression-sessions, regression-shell, regression-preservation, regression-python]
+    needs: [regression-headless, regression-headless-security, regression-headless-codex, regression-target, regression-sessions, regression-shell, regression-shell-extra, regression-preservation, regression-python]
     runs-on: macos-15
     timeout-minutes: 20
     env:
@@ -360,12 +500,18 @@ jobs:
       - name: Verify complete regression results
         env:
           CI_STATUS_HEADLESS: ${{ needs.regression-headless.result }}
+          CI_STATUS_HEADLESS_SECURITY: ${{ needs.regression-headless-security.result }}
+          CI_STATUS_HEADLESS_CODEX: ${{ needs.regression-headless-codex.result }}
+          CI_STATUS_SHELL_EXTRA: ${{ needs.regression-shell-extra.result }}
           CI_STATUS_TARGET: ${{ needs.regression-target.result }}
           CI_STATUS_SESSIONS: ${{ needs.regression-sessions.result }}
           CI_STATUS_SHELL: ${{ needs.regression-shell.result }}
           CI_STATUS_PRESERVATION: ${{ needs.regression-preservation.result }}
           CI_STATUS_PYTHON: ${{ needs.regression-python.result }}
           CI_RESULT_HEADLESS: ${{ needs.regression-headless.outputs.result }}
+          CI_RESULT_HEADLESS_SECURITY: ${{ needs.regression-headless-security.outputs.result }}
+          CI_RESULT_HEADLESS_CODEX: ${{ needs.regression-headless-codex.outputs.result }}
+          CI_RESULT_SHELL_EXTRA: ${{ needs.regression-shell-extra.outputs.result }}
           CI_RESULT_TARGET: ${{ needs.regression-target.outputs.result }}
           CI_RESULT_SESSIONS: ${{ needs.regression-sessions.outputs.result }}
           CI_RESULT_SHELL: ${{ needs.regression-shell.outputs.result }}
@@ -374,6 +520,9 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$CI_STATUS_HEADLESS" == success ]] || exit 1
+          [[ "$CI_STATUS_HEADLESS_SECURITY" == success ]] || exit 1
+          [[ "$CI_STATUS_HEADLESS_CODEX" == success ]] || exit 1
+          [[ "$CI_STATUS_SHELL_EXTRA" == success ]] || exit 1
           [[ "$CI_STATUS_TARGET" == success ]] || exit 1
           [[ "$CI_STATUS_SESSIONS" == success ]] || exit 1
           [[ "$CI_STATUS_SHELL" == success ]] || exit 1

@@ -1711,16 +1711,22 @@ suites count toward coverage even though the old summary did not increment its
 passed counter for them.
 
 CI reuses that inventory and executor through
-`./test/run-all.sh --ci-group GROUP --ci-result OWNED_FILE`. Only six literal
+`./test/run-all.sh --ci-group GROUP --ci-result OWNED_FILE`. Nine literal
 groups are accepted:
 
-- `headless`: `test-harness-headless.sh`.
-- `target`: `test-headless-target.sh`.
+- `headless`, `headless-security`, `headless-codex`: the delivery, security/lifecycle
+  and Codex scenario blocks of `test-harness-headless.sh`, respectively. Every
+  block is selected exactly once; shared fixture setup is fresh per shard.
+  Running the script without `--ci-shard` still runs every block in order.
+- `target`: `test-headless-target.sh` and the measured slow terminal-runtime-launch,
+  OMP routing, Orca resume and launcher-isolated shell suites.
 - `sessions`: all `test-session-*.sh` suites, in their existing relative order.
-- `shell`: all other default shell suites, in their existing relative order.
-- `preservation`: the existing four preservation Python suites, in order.
+- `shell`, `shell-extra`: alternating remaining shell suites from the sorted
+  canonical inventory, preserving relative order within each lane.
+- `preservation`: the existing four preservation Python suites plus the measured
+  slow integration-queue and Codex hook-trust suites, in inventory order.
 - `python`: profile, MCP, remaining Python and portable-source tests, in order,
-  followed by the new partition regression.
+  followed by the partition regression.
 
 New default shell and Python entries remain covered by the same inventory; no
 independent CI allowlist may silently omit them. Each group runs serially on an
@@ -1731,12 +1737,17 @@ syntax and documentation checks. No preparation result or fixture state is
 borrowed from another job. Existing guard, native environment and negative
 oracles remain unchanged.
 
-The original required `test` job is an `always()` aggregate with all six fixed
-regression jobs in `needs`. All six must have the literal result `success`.
-`./test/run-all.sh --ci-verify` checks the fixed typed inputs
-`CI_RESULT_HEADLESS`, `CI_RESULT_TARGET`, `CI_RESULT_SESSIONS`, `CI_RESULT_SHELL`,
-`CI_RESULT_PRESERVATION` and `CI_RESULT_PYTHON`. They must match the current run, attempt, actual execution
-checkout and source/inventory digests. A PR head is distinct from its merge
+The original required `test` job is an `always()` aggregate with all nine fixed
+regression jobs in `needs`. All nine must have the literal result `success`.
+`./test/run-all.sh --ci-verify` checks one fixed typed `CI_RESULT_*` input per
+lane (uppercase, with hyphens replaced by underscores). They must match the
+current run ID, actual execution checkout and source/inventory digests.
+Successful lanes from earlier attempts of that same run are accepted: each
+receipt's attempt must be a positive integer no newer than the aggregate's.
+GitHub's `needs` supplies each lane's latest successful job result when only
+failed jobs are rerun; the verifier never accepts a receipt from another run.
+The aggregate prints `CI_INVENTORY_COMPLETE` with suite, entry, lane and headless
+shard counts and zero duplicates after checking the complete disjoint union. A PR head is distinct from its merge
 checkout; neither may substitute for the other. Scheduled and actually completed
 IDs, including only the original permitted conditional skips, must form the
 ordered, disjoint full inventory exactly once. Missing, duplicate, extra,
