@@ -75,7 +75,7 @@ class IsolatedTrustIntegrationTests(unittest.TestCase):
         record.mkdir(parents=True)
         for name,value in {'source-root':str(source),'session-root':str(target),'base-sha':subprocess.check_output(['git','-C',str(target),'rev-parse','HEAD'],text=True).strip(),'root-inode':f'{target.stat().st_dev} {target.stat().st_ino}','journal':'state=OPEN'}.items():
             (record/name).write_text(value+'\n')
-        approvals=state/'hook-approvals';approvals.mkdir()
+        approvals=state/'hook-approvals';approvals.mkdir(mode=0o700)
         grant=approvals/(hashlib.sha256(str(source).encode()).hexdigest()+'.json')
         grant.write_text(json.dumps({'schema_version':1,'source':str(source),'algorithm':'codex-0.161-command-hooks','approval_receipt_sha256':'a'*64,'approved_snapshot':{'base_sha':(record/'base-sha').read_text().strip(),'audit_raw_hooks_sha256':hashlib.sha256(hook_file.read_bytes()).hexdigest()},'hooks':json.loads(hook_file.read_text()),'normalization':'literal-core-and-approved-callback-paths-v1','normalized_hooks_sha256':hashlib.sha256(json.dumps(json.loads(hook_file.read_text()),sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest(),'codex_binary_sha256':hashlib.sha256(fixture.codex_bin.read_bytes()).hexdigest(),'codex_version':'codex-cli 0.153.2','callbacks':{str(package/name):hashlib.sha256((package/name).read_bytes()).hexdigest() for name in ('codex-hook-adapter.sh','codex-pretool-adapter.py','codex-cmux-title-sync.py','harness-launch-record')},'scripts':{'core/hooks/session-start.sh':{'sha256':hashlib.sha256(script.read_bytes()).hexdigest(),'base_blob_sha256':hashlib.sha256(script.read_bytes()).hexdigest()}}}))
         grant.chmod(0o600)
@@ -269,6 +269,51 @@ class CaptureApprovalTests(unittest.TestCase):
             self.assertEqual(version, 'codex-cli 1')
 
     """Operator capture records only an approval the owner already gave natively."""
+
+    def test_capture_combined_callback_and_reject_later_byte_drift(self):
+        def scenario(fixture, source, target, record):
+            package = fixture.tmp.resolve() / 'launcher-bin'
+            spec = importlib.util.spec_from_file_location('combined_capture', package / 'codex-hook-trust.py')
+            module = importlib.util.module_from_spec(spec)
+            with mock.patch.object(sys, 'dont_write_bytecode', True):
+                spec.loader.exec_module(module)
+            home = target / '.harness/codex'
+            source_home = source / '.harness/codex'
+            profile = home / 'base.config.toml'
+            grant_path = record.parents[1] / 'hook-approvals' / (hashlib.sha256(str(source).encode()).hexdigest() + '.json')
+            paths = [home / 'hooks.json', source_home / 'hooks.json', source_home / 'config.toml', profile, grant_path]
+            before = {path: path.read_bytes() if path.exists() else None for path in paths}
+            hook = fixture.home / '.local/share/harness-service/bin/harness-session-hook'
+            hook.parent.mkdir(parents=True, exist_ok=True)
+            hook.write_text('#!/bin/sh\nexit 0\n')
+            handler = {'type': 'command', 'command': 'python3 ' + str(package / 'harness-launch-record') + ' codex --callback', 'timeout': 10}
+            hooks = {'hooks': {'SessionStart': [{'hooks': [handler]}]}}
+            digest = module.fingerprint('SessionStart', None, handler)
+            try:
+                for directory in (home, source_home):
+                    (directory / 'hooks.json').write_text(json.dumps(hooks))
+                    config = profile if directory == home else directory / 'config.toml'
+                    base = module.split_profile_state(config.read_text() if config.exists() else '')[0]
+                    key = str(directory / 'hooks.json') + ':session_start:0:0'
+                    config.write_text(base + '\n[hooks.state.' + json.dumps(key) + ']\ntrusted_hash = ' + json.dumps(digest) + '\nenabled = true\n')
+                env = {'HOME': str(fixture.home), 'HARNESS_SESSION_STATE_HOME': str(record.parents[1]),
+                       'HARNESS_SESSION_ID': record.name, 'HARNESS_SOURCE_ROOT': str(source),
+                       'HARNESS_SESSION_ROOT': str(target), 'HARNESS_CODEX_BIN': str(fixture.codex_bin)}
+                with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(operator_main(module, ['capture', '--session-id', record.name]), 0)
+                    key = str(home / 'hooks.json') + ':session_start:0:0'
+                    inherited = tomllib.loads(module.inherit('', home / 'hooks.json', home))
+                    self.assertIn(key, inherited.get('hooks', {}).get('state', {}))
+                    hook.write_text('#!/bin/sh\nexit 42\n')
+                    refused = tomllib.loads(module.inherit('', home / 'hooks.json', home))
+                    self.assertNotIn(key, refused.get('hooks', {}).get('state', {}))
+            finally:
+                for path, contents in before.items():
+                    if contents is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_bytes(contents)
+        IsolatedTrustIntegrationTests.build(self, post_prepare=scenario)
 
     def test_capture_records_only_complete_native_approval(self):
         self.ran = False
@@ -530,5 +575,36 @@ class CallbackMappingSafetyTests(unittest.TestCase):
             with self.assertRaises((OSError,ValueError)):m.approved_package_command(command,duplicate)
             (current/name).write_bytes(b'changed callback')
             with self.assertRaises((OSError,ValueError)):m.approved_package_command(command,grant)
+
+    def test_launch_record_callback_shape_is_accepted_only_exactly(self):
+        spec=importlib.util.spec_from_file_location('callback_shape',ROOT/'bin/codex-hook-trust.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+        path=ROOT/'bin/harness-launch-record'
+        grant={'callbacks':{str(path):hashlib.sha256(path.read_bytes()).hexdigest()}}
+        for tail in ('codex','codex --callback'):
+            command='python3 '+str(path)+' '+tail
+            self.assertEqual(m.approved_package_command(command,grant),command)
+        for tail in ('codex --callback extra','codex --other','claude --callback','--callback'):
+            with self.assertRaises((OSError,ValueError)):
+                m.approved_package_command('python3 '+str(path)+' '+tail,grant)
+
+    def test_callback_row_needs_the_approved_host_callback_bytes(self):
+        spec=importlib.util.spec_from_file_location('callback_host',ROOT/'bin/codex-hook-trust.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+        path=ROOT/'bin/harness-launch-record'
+        with tempfile.TemporaryDirectory() as home:
+            hook=Path(home)/'.local/share/harness-service/bin/harness-session-hook'
+            hook.parent.mkdir(parents=True);hook.write_text('#!/bin/sh\nexit 0\n')
+            base={str(path):hashlib.sha256(path.read_bytes()).hexdigest()}
+            digest=hashlib.sha256(hook.read_bytes()).hexdigest()
+            carried='python3 '+str(path)+' codex --callback'
+            plain='python3 '+str(path)+' codex'
+            def carry(command,callbacks):
+                with mock.patch.dict(os.environ,{'HOME':home}):
+                    return m.equivalent_command(command,command,Path('/nonexistent-source'),Path('/nonexistent-target'),'0'*40,{'callbacks':callbacks})
+            self.assertTrue(carry(carried,{**base,str(hook):digest}))
+            self.assertFalse(carry(carried,base),'missing host callback grant entry')
+            self.assertFalse(carry(carried,{**base,str(hook):'0'*64}),'wrong host callback hash')
+            hook.write_text('#!/bin/sh\necho changed\n')
+            self.assertFalse(carry(carried,{**base,str(hook):digest}),'host callback bytes changed after the grant')
+            self.assertTrue(carry(plain,base),'rows without --callback are unchanged')
 
 if __name__ == '__main__': unittest.main()

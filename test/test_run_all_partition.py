@@ -22,7 +22,7 @@ PRESERVATION = "test_git_policy.py test_preservation_snapshot.py test_trusted_pr
 PYTHON = ['test_profile_resolver.py']
 HEADLESS = ["test-harness-headless.sh", "test-headless-target.sh"]
 LOCKF = set("test-harness-exec-workspace-choice-tui.sh test-codex-config-preservation.sh test-codex-global-mcp-drift.sh test-codex-home-lock.sh test-codex-home-prepare.sh test-codex-history-gc.sh test-codex-history-resume-integration.sh test-codex-observability-profile.sh test-codex-migrate-to-symlinks.sh test-codex-project-trust.sh test-session-isolation.sh test-session-isolation-concurrency.sh test-session-transcript-retention.sh test-harness-headless.sh test-headless-target.sh".split())
-GROUPS = ("headless", "shell", "preservation", "python")
+GROUPS = ("headless", "target", "sessions", "shell", "preservation", "python")
 SHA = "a" * 40
 
 
@@ -174,12 +174,18 @@ class Partition(unittest.TestCase):
         self.assertIn("REGRESSION_CHILD_FAILED",r.stderr)
 
     def test_original_lockf_only_skips_and_complete_accounting(self):
-        r,target=self.f.lane("shell",HARNESS_TEST_FORCE_NO_LOCKF="1")
-        self.assertEqual(r.returncode,0,r.stderr)
-        self.assertTrue(target.is_file(),"missing lane accounting")
-        result=json.loads(target.read_text());expected=[n for n in self.f.shells if n not in HEADLESS]
-        self.assertEqual(result["completed_ids"],[n for n in expected if n not in LOCKF])
-        self.assertEqual(result["skipped_ids_with_original_reason"],[{"id":n,"reason":"lockf-unavailable"} for n in expected if n in LOCKF])
+        sessions=[n for n in self.f.shells if n.startswith("test-session-")]
+        partitions=(("headless",[HEADLESS[0]]),("target",[HEADLESS[1]]),
+                    ("sessions",sessions),("shell",[n for n in self.f.shells if n not in HEADLESS+sessions]))
+        for group,expected in partitions:
+            with self.subTest(group=group):
+                r,target=self.f.lane(group,HARNESS_TEST_FORCE_NO_LOCKF="1")
+                self.assertEqual(r.returncode,0,r.stderr)
+                self.assertTrue(target.is_file(),"missing lane accounting")
+                result=json.loads(target.read_text())
+                self.assertEqual(result["scheduled_ids"],expected)
+                self.assertEqual(result["completed_ids"],[n for n in expected if n not in LOCKF])
+                self.assertEqual(result["skipped_ids_with_original_reason"],[{"id":n,"reason":"lockf-unavailable"} for n in expected if n in LOCKF])
 
     def test_bad_cli_and_unowned_or_existing_result_refuse_before_child(self):
         bad=[("--ci-group","unknown","--ci-result",str(self.f.base/"results/x")),("--ci-group","shell"),("--ci-verify","extra"),("--unknown",)]

@@ -17,7 +17,8 @@ values. These keys share one parsing rule: an optional ``export``, an optional
 matching pair of quotes, the last assignment wins, and only the value ``1``
 opts in.
 
-Command line: ``runtime_hooks_optin.py HARNESS_DIR`` prints the resolved pair
+Command line: ``runtime_hooks_optin.py HARNESS_DIR [--ssot-file FILE]``
+uses the explicit SSOT source when supplied (without worktree fallback) and prints the resolved pair
 as one line, ``orca=<0|1> herdr=<0|1> launch_record=<0|1> ssot=<0|1>`` (for example
 ``orca=1 herdr=0 launch_record=0 ssot=0``),
 followed by a newline. The shell caller passes that line to the hook generator
@@ -42,8 +43,12 @@ _LINES = {
 }
 
 
-def resolve(harness_dir):
-    """Return {row name: bool} from literal profile-owned configuration."""
+def resolve(harness_dir, *, ssot_file=None):
+    """Resolve literal profile opt-ins, optionally using a verified SSOT file.
+
+    An explicit missing/malformed file disables SSOT; it never falls back to
+    the worktree. Other rows still read the profile's launcher.env.
+    """
     values = {name: "" for name in KEYS}
     try:
         with open(os.path.join(harness_dir, "config", "launcher.env"), encoding="utf-8") as stream:
@@ -60,8 +65,10 @@ def resolve(harness_dir):
     except (OSError, UnicodeDecodeError):
         values = {name: "" for name in KEYS}
     resolved = {name: value == "1" for name, value in values.items()}
+    if ssot_file is None:
+        ssot_file = os.path.join(harness_dir, "config", "ssot-session-hooks.json")
     try:
-        with open(os.path.join(harness_dir, "config", "ssot-session-hooks.json"), encoding="utf-8") as stream:
+        with open(ssot_file, encoding="utf-8") as stream:
             raw = stream.read(4097)
         if len(raw) > 4096:
             return resolved
@@ -78,6 +85,10 @@ def render(resolved):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: runtime_hooks_optin.py HARNESS_DIR")
-    sys.stdout.write(render(resolve(sys.argv[1])) + "\n")
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("harness_dir")
+    parser.add_argument("--ssot-file", help="Explicit verified SSOT opt-in source (no worktree fallback)")
+    args = parser.parse_args()
+    sys.stdout.write(render(resolve(args.harness_dir, ssot_file=args.ssot_file)) + "\n")

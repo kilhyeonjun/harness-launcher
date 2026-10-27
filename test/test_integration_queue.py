@@ -319,7 +319,119 @@ exit 0
         other,_=self.create(source=other_source); good=self.enqueue(other)
         self.drain()
         self.assertEqual(self.status(bad)['state'],'failed')
+        self.assertNotEqual(self.status(bad)['returncode'], 17)
+        self.assertIn('state=CONFLICT', (self.state/'sessions'/owner/'journal').read_text())
+        duplicate = json.loads(self.cli('queue', 'enqueue', owner, '--home', self.queue).stdout)
+        self.assertEqual((duplicate['job_id'], duplicate['state']), (bad, 'failed'))
+        self.assertEqual(self.status(bad)['attempt'], 1)
         self.assertEqual(self.status(good)['state'],'delivered')
+
+    def policy_refusal(self):
+        (self.source/'config').mkdir()
+        (self.source/'config/launcher.env').write_text('HARNESS_PREFIX=sample\n')
+        self.run_command(['git', '-C', self.source, 'add', 'config/launcher.env'])
+        self.run_command(['git', '-C', self.source, 'commit', '-qm', 'declare release profile'])
+        self.run_command(['git', '-C', self.source, 'push', '-q', 'origin', 'main'])
+        self.enable()
+        owner, _ = self.create({'work': 'policy retry'},
+                               env=dict(self.env, HARNESS_HEADLESS='1', HARNESS_PYTHON_BIN=sys.executable))
+        job = self.enqueue(owner)
+        record = self.state/'sessions'/owner
+        journal = dict(line.split('=', 1) for line in (record/'journal').read_text().splitlines())
+        identity = journal['identity']
+        baseline = self.remote_oid()
+        host = self.home/'.config/harness-launcher/release/sample.json'
+        host.parent.mkdir(parents=True)
+        host.write_text('{not json')
+        self.drain()
+        self.assertEqual((self.status(job)['state'], self.status(job)['returncode']), ('failed', 17))
+        self.assertIn('verifier_policy_unavailable', (self.queue/'logs'/(job+'.log')).read_text())
+        refused = dict(line.split('=', 1) for line in (record/'journal').read_text().splitlines())
+        self.assertEqual((refused['state'], refused['identity']), ('SUBMITTED', identity))
+        self.assertEqual(self.remote_oid(), baseline)
+        self.assertFalse((record/'pending-sha').exists())
+        host.unlink()
+        return owner, job, record, identity, baseline
+
+    def test_policy_refusal_explicit_retry_delivers_same_submission(self):
+        owner, first, record, identity, baseline = self.policy_refusal()
+        # Restoring policy is not permission for an automatic worker retry.
+        self.drain()
+        self.assertEqual(self.status(first)['attempt'], 1)
+        self.assertEqual(self.remote_oid(), baseline)
+        self.assertEqual(self.cli('queue', 'wait', first, '--home', self.queue,
+                                  '--timeout', '0', check=False).returncode, 17)
+        second = self.enqueue(owner)
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.status(second)['state'], 'queued')
+        self.assertEqual(self.enqueue(owner), second)
+        accepted = dict(line.split('=', 1) for line in (record/'journal').read_text().splitlines())
+        self.assertEqual((accepted['state'], accepted['identity']), ('SUBMITTED', identity))
+        self.drain()
+        self.assertEqual(self.status(second)['state'], 'delivered')
+        self.assertEqual((self.status(first)['state'], self.status(first)['returncode']), ('failed', 17))
+        self.assertEqual(self.status(first)['attempt'], 1)
+        self.assertEqual(self.run_command(['git', '--git-dir='+str(self.remote), 'show', 'main:work']).stdout,
+                         'policy retry')
+        self.assertEqual(json.loads(self.cli('close', '--enqueue', owner).stdout)['job_id'], second)
+
+    def test_policy_retry_identity_mismatch_keeps_failed_receipt(self):
+        owner, first, record, identity, baseline = self.policy_refusal()
+        original = (record/'journal').read_text()
+        changed = ('0' if identity[0] != '0' else '1') + identity[1:]
+        (record/'journal').write_text(original.replace('identity='+identity, 'identity='+changed))
+        result = self.cli('queue', 'enqueue', owner, '--home', self.queue, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('submission identity changed', result.stderr)
+        self.assertEqual(self.status(first)['state'], 'failed')
+        self.assertEqual(self.remote_oid(), baseline)
+        (record/'journal').write_text(original)
+        patch = record/'submission.patch'
+        original_patch = patch.read_bytes()
+        patch.chmod(0o600)
+        patch.write_bytes(original_patch + b'changed accepted input\n')
+        result = self.cli('queue', 'enqueue', owner, '--home', self.queue, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('submission identity changed', result.stderr)
+        self.assertEqual(self.status(first)['state'], 'failed')
+        patch.write_bytes(original_patch)
+        patch.chmod(0o400)
+        # Neither a forged journal nor changed input retires the dedup slot.
+        second = self.enqueue(owner)
+        self.assertNotEqual(first, second)
+        self.drain()
+        self.assertEqual(self.status(second)['state'], 'delivered')
+
+    def test_policy_retry_cannot_bypass_accepted_control(self):
+        owner, first, _, _, baseline = self.policy_refusal()
+        control = json.loads(self.cli('queue', 'control', 'discard', owner,
+                                      '--home', self.queue).stdout)['job_id']
+        result = self.cli('queue', 'enqueue', owner, '--home', self.queue, check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('an accepted job owns this session', result.stderr)
+        self.assertEqual(self.status(first)['state'], 'failed')
+        self.assertEqual(self.status(control)['state'], 'queued')
+        self.assertEqual(self.remote_oid(), baseline)
+        self.drain()
+        # Discard itself still refuses SUBMITTED; retrying integration must not
+        # bypass that queued control operation before its explicit result.
+        self.assertEqual((self.status(control)['state'], self.status(control)['returncode']), ('failed', 2))
+        self.assertIn('state=SUBMITTED', (self.state/'sessions'/owner/'journal').read_text())
+        second = self.enqueue(owner)
+        self.assertNotEqual(first, second)
+        self.drain()
+        self.assertEqual(self.status(second)['state'], 'delivered')
+
+    def test_overlay_exclusions_follow_accepted_snapshot_not_live_record(self):
+        self.enable(); owner,_=self.create()
+        overlay=self.state/'sessions'/owner/'overlay-paths'
+        overlay.write_bytes(b'release-owned\0')
+        job=self.enqueue(owner)
+        overlay.write_bytes(b'work\0')
+        self.drain()
+        self.assertEqual(self.status(job)['state'],'delivered')
+        self.assertEqual(self.run_command(['git','--git-dir='+str(self.remote),
+                         'show','main:work']).stdout.strip(),'accepted')
 
     def test_snapshot_tampering_fails_without_publishing(self):
         # Break caught: replaying an accepted job from mutable/tampered inputs.

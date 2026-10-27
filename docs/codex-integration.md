@@ -45,7 +45,78 @@ precede the management subcommand.
 
 ## Generated layout
 
-Before launch, `codex-home-prepare.sh` converges:
+Before launch, `codex-home-prepare.sh` converges the Git-mode home shown below.
+In release mode the same managed layout lives in the private session record's
+`runtime/codex`, outside the worktree; worktree `.harness` is not its writable
+runtime home.
+
+Release selection or pinned resume, followed by verified export, happens before
+preparation. The verified export supplies the surface manifest and SSOT runtime
+hook declarations, while executable code remains rooted in the session's code
+snapshot. Rendering, the cold fingerprint (`--ssot-file`), and the warm validator
+use those same explicit code/declaration roots; the warm validator requires both
+`HARNESS_DIR` and `SSOT_FILE`. It does not infer the declaration from a mutable
+checkout. Auth links, existing hook-trust decisions, plugins, and native hooks
+retain their normal guards; release selection adds no native `config.toml` keys.
+Git and explicit `git_fallback` selection retain canonical compilation.
+
+The release shell bridge uses the launcher's shared `harness_python3_resolve`,
+including an explicit supported `HARNESS_PYTHON_BIN`; a broken override refuses
+before preparation or native launch. `runtime-source ROOT` returns an exact
+operation-owned verified export (empty for Git), which is passed unchanged to
+`runtime-home EXPORT`, `runtime-run EXPORT COMMAND...`, and `runtime-cleanup EXPORT`.
+There is no shared active-export pointer. Concurrent shared-root launches have
+separate operation contexts but retain the same persistent native Codex home;
+cleanup removes the operation context, not history or native configuration.
+Private session records and the physical worktree identify resumed sessions
+even without `HARNESS_SESSION_ID`; an old record cannot trigger fresh selection.
+A standalone pinned preparation gets a new 120-second budget without changing
+its pin. The aliases broker create/resume handoff sets
+`HARNESS_RELEASE_OPERATION_ROOT` only for that exact physical worktree, so its
+preparation consumes the existing deadline rather than renewing it. New wrapper
+invocations clear inherited markers, and successful preparation clears the marker
+before native execution. The TUI and non-Codex routes also clear it before any
+human interaction or native child: menu time cannot expire a completed broker
+operation or trap retries. This budget hint never establishes session identity.
+
+The launcher derives the generic profile prefix from committed
+`BASE:config/launcher.env`. Missing host release configuration means legacy Git;
+present but invalid configuration or a failed fixed installed client is a
+refusal, not fallback. Its product bridge permits only `release select`,
+`resume`, `verify-local`, `verify-overlay`, and `export`, through the fixed
+`$HOME/.local/share/harness-service/bin/harness-service` entry. The product
+session command contract is:
+
+```text
+release select --profile <prefix> --source <repo> --base <commit> --deadline-seconds <1..120> [--pin-out <file>] [--overlay-paths-out <file>]
+release resume --profile <prefix> --pin <file> --deadline-seconds <1..120>
+```
+
+Success is one five-field line:
+`mode release_id manifest_sha256 base_fence_state banner`, with `-` for null and
+mode `git`, `release`, or `git_fallback`. Selection reads committed base bytes,
+modes, fence and ancestry rather than mutable worktree content. Release pins
+and DB overlay-paths are create-once private `0400` files. Export names the
+pinned release explicitly, never `--require-current`, and its four-field identity
+must match the pin before copying. Resume never reselects current or repairs
+tracked source, either index, overlay-paths, or worktree `.harness`; only the
+outside-worktree runtime is prepared. Interactive drift is reported without
+repair, while headless submit returns 12. Both clone and headless trusted indexes
+protect release-owned overlay paths.
+
+Before a sandboxed integration verifier runs, the trusted outside helper refreshes
+authority policy, then repository configuration is scrubbed and the verified
+baseline ref is restored without a remote URL. Sandbox authority access is
+read-only and limited to the exact physical
+`$HOME/.local/state/harness-service/<prefix>-dev/release-export` subtree.
+`HARNESS_AUTHORITY_NO_REFRESH=1` only tightens the inside helper to cache-only;
+it does not grant session identity or authorization. Outside refresh failure or
+verifier exit 17 returns `INTEGRATING` to `SUBMITTED` with the same identity and
+`verifier_policy_unavailable`, without integration or push.
+
+These are source-stage contracts, not an installed-launcher activation or a
+published-tag claim. Independent source review and final runtime proof remain
+separate from deployment approval.
 
 ```text
 <project>/.harness/codex/
@@ -358,7 +429,10 @@ position and attributes. Only literal `core/hooks/*.sh` arguments may move from
 the canonical root to the isolated root; their bytes must match both the source
 and the recorded Git snapshot. The four registered launcher callbacks may move only to the currently verified
 package's exact script token when both old and current files match the approved
-SHA. Every other argument, matcher and handler attribute remains exact; Orca and
+SHA. A launch-record row ending in `--callback` (ssot profiles) also needs a
+`callbacks` entry in the approval grant for
+`$HOME/.local/share/harness-service/bin/harness-session-hook` whose sha256
+matches the file. Every other argument, matcher and handler attribute remains exact; Orca and
 Herdr host commands stay literal. The derived native hash is written inside the existing
 atomic config publication, without changing global config or plugin approvals.
 

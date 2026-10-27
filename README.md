@@ -180,6 +180,61 @@ remain on the legacy path. Claude continuation and fork commands require the exa
 UUID shown at session start, or explicit `--no-isolated` for canonical history. This
 profile setting is a bounded canary switch; it does not change other profiles.
 
+The v0.79.0 release adds source/client capability only. Installing the
+launcher or measured product client does not create host release profiles,
+approve deployment, change authority fences, or activate existing immutable
+session runtimes; each retains its ordinary trusted update/activation boundary.
+
+For release-backed sessions, the launcher parses `HARNESS_PREFIX` from the
+selected committed base's `config/launcher.env`; it does not source that file
+to select a release profile. Without a host release profile, sessions retain the
+legacy Git path without invoking a release client. A present but invalid host
+profile, or an unavailable/invalid installed client, refuses the launch rather
+than silently falling back to Git. A product-selected `git_fallback` remains a
+separate, explicit selection result.
+
+The sole product entry is
+`$HOME/.local/share/harness-service/bin/harness-service`: an executable regular
+file owned by the current user and not group/other writable. Calls use only
+`HOME`, `PATH=/usr/bin:/bin`, and `LC_ALL=C`, with stdin closed. No product
+checkout imports, `uv`, or inherited `PYTHONPATH` are used. The source-stage
+product installer measures an exact committed source and locked environment;
+its installation receipt does not approve a host profile or publish a release.
+
+Selection precedes cloning under one 120-second budget. A verified export is
+required before copying release outputs. DB overlays remove nonmember selector
+files and protect release-owned paths in both the clone and headless trusted
+indexes. Resume retains the exact release pin: it neither substitutes current
+nor repairs tracked source, indexes, overlay-paths, or worktree `.harness`.
+Interactive overlay drift warns without repair; headless submission refuses
+with exit 12. Release Codex preparation writes only to the outside-worktree
+session `runtime/codex` home, using verified export declarations. Shared roots
+with host release profiles likewise keep a stable per-root
+`release-runtime/<root-hash>/runtime/codex` home, so selection/export cleanup
+never deletes native state. They retain release-first selection; the shared-root
+overlay notice is not a launch prohibition. Git and explicit Git fallback keep
+the compiler path.
+
+The internal wrapper interface is `runtime-source ROOT` → verified export path
+(or empty for Git), then `runtime-home EXPORT`, `runtime-run EXPORT COMMAND...`,
+and `runtime-cleanup EXPORT`. An empty export handle runs legacy preparation
+without a release deadline. Each nonempty export binds one private operation,
+its original 120-second budget and stable home; overlapping launches never
+consult a mutable active-operation pointer. Cleanup removes only that operation,
+not the stable home. Recorded `worktrees/<uuid>` are matched to their private
+`sessions/<uuid>/session-root` without requiring `HARNESS_SESSION_ID`; an old
+record without release state stays Git with no new selection or writes.
+
+Integration refreshes authority policy outside the sandbox before scrubbing
+trusted repository configuration. The sandbox reads only the exact physical
+`$HOME/.local/state/harness-service/<prefix>-dev/release-export` subtree, not
+its parent or siblings, and uses `HARNESS_AUTHORITY_NO_REFRESH=1` to prohibit
+refresh inside it. Failed outside refresh or verifier exit 17 preserves the
+submission identity and returns `INTEGRATING` to `SUBMITTED`, without integration
+or push. These source contracts do not identify a published launcher tag or
+prove that an installed launcher has been activated. See
+[Codex integration](docs/codex-integration.md#generated-layout) for runtime roots.
+
 Codex history is discovered locally across source-bound canonical, isolated and
 archived homes. `ex codex resume --list` returns metadata JSON without a model
 or network call; `ex codex resume <native-uuid>` restores history into a fresh
@@ -228,6 +283,36 @@ reopens the same workspace for repair. `harness-session discard <uuid>` retires
 an `ABANDONED` or `CONFLICT` session whose work will not be delivered: it keeps
 the work as `discarded.patch` in the session record, then marks it terminal
 `DISCARDED`.
+
+Verification scratch can use an owner-managed external APFS volume on macOS.
+The optional account-local `~/.config/harness/verification-storage.json` is a
+JSON object with `"version": 1`, `mount`, `volume_uuid`, and `root` fields (for example,
+mount `/Volumes/Verification` and private root `/Volumes/Verification/scratch`).
+Use the actual mounted volume UUID, an existing owner-only root (0700), and an
+owner-owned policy file that is not group/world writable; symlinks are rejected.
+The resolver checks the live mounted volume, ownership, permissions and paths
+before creating verifier copies or launching verifier commands. A present but
+invalid or unavailable policy refuses verification; it never falls back to the
+internal disk. An absent policy retains the original copy/temp locations.
+
+The broker's trusted verifier clone, disposable sandbox candidate copy, and
+private verifier temp directory use distinct children of that root. Normal
+(non-headless) repository verification also gets a private temp directory.
+Headless target verification routes its disposable copy and temp in the same
+way; agent temp, session state, and the broker's integration candidate remain
+in their existing locations. Sandboxes receive only exact allocated child paths,
+not the storage root or mount. Nested bounded verifiers receive an
+already-admitted private temp context; this does not grant additional access.
+Normal public launches scrub inherited verifier context. Nested runners publish
+parent-facing lifetime leases; unresolved leases retain verifier artifacts and
+refuse verification acceptance instead of deleting files still in use. The
+shared resolver's `--settled PRIVATE_DIRECTORY` mode only observes these leases.
+Mount ancestors must have safe ownership and no group/world write, except
+root-owned sticky temporary directories; an unsafe administrator-owned mount
+must be corrected by its administrator, not exempted from admission.
+No profile config or global `TMPDIR` change is needed. This is source-stage
+support: existing immutable installed runtimes require their ordinary trusted
+release/update before adopting it.
 
 Delivery requires the trusted remote baseline verifier's
 [`--verify-candidate BASE_OID TREE_OID` capability](docs/session-integration-queue.md#bound-candidate-verification).
@@ -823,10 +908,11 @@ cd harness-launcher
 The no-argument full runner keeps its suite invocations in one ordered inventory,
 including the canonical bootstrap Python and native JavaScript suites. The latter
 requires an available Node.js runtime with `node:test` support; a missing runtime
-fails rather than skipping the suite. CI runs its four fixed groups
+fails rather than skipping the suite. CI runs its six fixed groups
 on separate `macos-15` jobs, each still limited to 20 minutes and retaining the
-same preparation, jq, syntax and documentation checks. The required `test`
-aggregate fails unless all four jobs succeed with complete, nonoverlapping
+same preparation, jq, syntax and documentation checks. Headless, target and
+session suites run independently instead of consuming one serial job's budget.
+The required `test` aggregate fails unless all six jobs succeed with complete, nonoverlapping
 current-source inventory coverage. This is complete-suite partitioning, not a
 reduced test selection or a native/runtime proof. See
 [CI regression partition](docs/architecture.md#ci-regression-partition).

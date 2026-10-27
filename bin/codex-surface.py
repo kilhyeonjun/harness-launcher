@@ -55,7 +55,7 @@ def runtime_hook_fields() -> set:
     return {f"{name}_agent_hooks" for name in runtime_hooks_optin.KEYS}
 
 
-def runtime_agent_hooks(repo_root) -> dict:
+def runtime_agent_hooks(repo_root, *, ssot_file=None) -> dict:
     """Return each runtime hook registry opt-in as "1" or "" for the fingerprint.
 
     Keys are the fingerprint field names: `<row>_agent_hooks` for every row of
@@ -66,7 +66,7 @@ def runtime_agent_hooks(repo_root) -> dict:
         import runtime_hooks_optin
     finally:
         sys.path.pop(0)
-    resolved = runtime_hooks_optin.resolve(str(repo_root))
+    resolved = runtime_hooks_optin.resolve(str(repo_root), ssot_file=ssot_file)
     return {f"{name}_agent_hooks": "1" if resolved[name] else "" for name in runtime_hooks_optin.KEYS}
 
 
@@ -1589,7 +1589,7 @@ def fingerprint_payload(args: argparse.Namespace) -> dict:
         "global_mcp_digest": global_resolution.digest,
         "apps_allowlist": apps_allowlist(),
         "slack_apps": os.environ.get("HARNESS_CODEX_SLACK_APPS", ""),
-        **runtime_agent_hooks(repo_root),
+        **runtime_agent_hooks(repo_root, ssot_file=getattr(args, "ssot_file", None)),
         "bundled_marketplace_path": (
             os.path.realpath(args.bundled_marketplace)
             if args.bundled_marketplace
@@ -2142,6 +2142,7 @@ def parser() -> argparse.ArgumentParser:
     fingerprint_parser = subcommands.add_parser("fingerprint", help="calculate the launcher-owned input fingerprint")
     fingerprint_parser.add_argument("--manifest", required=True)
     fingerprint_parser.add_argument("--repo-root", required=True)
+    fingerprint_parser.add_argument("--ssot-file", help="Verified SSOT hook source; never falls back when supplied")
     fingerprint_parser.add_argument("--codex-home", required=True)
     fingerprint_parser.add_argument("--home", default=str(Path.home()))
     fingerprint_parser.add_argument("--skill-profile")

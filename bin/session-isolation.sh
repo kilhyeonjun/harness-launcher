@@ -86,6 +86,111 @@ for _excluded in "${EXCLUDED_PATHS[@]}"; do
   EXCLUDED_PATHSPEC+=(":(exclude,icase)$_excluded"); EXCLUDED_ICASE+=(":(icase)$_excluded")
 done
 unset _excluded
+# Release overlays are per-session and are deliberately kept out of the
+# bootstrap filesystem-alias probe above.  The helper is the single source of
+# truth for Unicode folding, literal pathspecs and the fixed argv cap.
+OVERLAY_PATH_HELPER="$(engine_dir)" || {
+  echo 'harness-session: cannot resolve helper directory' >&2; exit 2;
+}
+OVERLAY_PATH_HELPER="$OVERLAY_PATH_HELPER/harness-overlay-paths.py"
+OVERLAY_PATHS_FILE=""
+RELEASE_CLIENT="$(dirname "$OVERLAY_PATH_HELPER")/harness-release-client.sh"
+delivery_exclusions_file() {
+  local output="$1" path
+  : > "$output"
+  for path in "${EXCLUDED_PATHS[@]}"; do printf '%s\0' "$path" >> "$output"; done
+  [[ -z "$OVERLAY_PATHS_FILE" || ! -f "$OVERLAY_PATHS_FILE" || -L "$OVERLAY_PATHS_FILE" ]] || cat "$OVERLAY_PATHS_FILE" >> "$output"
+  printf '.harness/\0' >> "$output"
+}
+delivery_pathspecs() {
+  local list="$1" mode="$2"
+  "$OVERLAY_PATH_HELPER" pathspecs --paths "$list" --mode "$mode"
+}
+delivery_uses_argv() { "$OVERLAY_PATH_HELPER" within-argv-limit --paths "$1" --mode exclude; }
+delivery_read_pathspecs() {
+  local list="$1" mode="$2" path
+  DELIVERY_PATHSPECS=()
+  while IFS= read -r -d '' path; do DELIVERY_PATHSPECS+=("$path"); done < <(delivery_pathspecs "$list" "$mode")
+}
+overlay_path_in_submission() {
+  local paths="$1" list
+  list="$(mktemp "$(state_home)/overlay-exclusions.XXXXXX")" || return 2
+  delivery_exclusions_file "$list"
+  python3 -c '
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("overlay_paths", sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+excluded = module.read_nul_paths(__import__("pathlib").Path(sys.argv[2]))
+for raw in sys.stdin.buffer.read().split(b"\0"):
+    if raw and module.path_matches(os.fsdecode(raw), excluded):
+        sys.exit(0)
+sys.exit(1)
+' "$OVERLAY_PATH_HELPER" "$list" < "$paths"
+  local rc=$?
+  rm -f "$list"
+  [[ "$rc" == 0 ]] && { echo 'harness-session: refused: overlay_path_in_submission' >&2; return 0; }
+  [[ "$rc" == 1 ]] && return 1
+  return 2
+}
+delivery_filter_statuses() {
+  # porcelain=v1 -z --no-renames emits one `XY path` record per NUL.
+  local input="$1" exclusions="$2"
+  python3 -c '
+import importlib.util, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("overlay_paths", sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+excluded = module.read_nul_paths(Path(sys.argv[2]))
+for record in sys.stdin.buffer.read().split(b"\0"):
+    if len(record) < 4:
+        continue
+    status, path = record[:3], record[3:]
+    if path and not module.path_matches(os.fsdecode(path), excluded):
+        sys.stdout.buffer.write(status + b"\0" + path + b"\0")
+' "$OVERLAY_PATH_HELPER" "$exclusions" < "$input"
+}
+delivery_matching_paths() {
+  local input="$1" exclusions="$2"
+  python3 -c '
+import importlib.util, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("overlay_paths", sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+excluded = module.read_nul_paths(Path(sys.argv[2]))
+for raw in sys.stdin.buffer.read().split(b"\0"):
+    if raw and module.path_matches(os.fsdecode(raw), excluded):
+        sys.stdout.buffer.write(raw + b"\0")
+' "$OVERLAY_PATH_HELPER" "$exclusions" < "$input"
+}
+delivery_cached_diff() {
+  # delivery_cached_diff <root> <base> <output> <git diff args...>
+  local root="$1" base="$2" output="$3" list reset_specs tmp index changed matching rc=0 active_index="${GIT_INDEX_FILE:-}"; shift 3
+  list="$(mktemp "$(state_home)/delivery-paths.XXXXXX")" || return 1
+  delivery_exclusions_file "$list"
+  if delivery_uses_argv "$list"; then
+    delivery_read_pathspecs "$list" exclude || { rm -f "$list"; return 1; }
+    root_git "$root" diff "$@" "$base" -- . "${DELIVERY_PATHSPECS[@]}" > "$output" || rc=$?
+  else
+    # The real index is never changed: reset exclusions only in a copy.
+    index="$active_index"
+    [[ -n "$index" ]] || index="${ROOT_GIT_DIR:+$ROOT_GIT_DIR/index}"
+    [[ -n "$index" ]] || index="$(session_git -C "$root" rev-parse --path-format=absolute --git-path index)" || { rm -f "$list"; return 1; }
+    tmp="$(mktemp -d "$(state_home)/overlay-index.XXXXXX")" || { rm -f "$list"; return 1; }
+    reset_specs="$tmp/reset-pathspecs"
+    delivery_pathspecs "$list" reset > "$reset_specs" || { rm -rf "$tmp"; rm -f "$list"; return 1; }
+    export GIT_INDEX_FILE="$tmp/index"
+    changed="$tmp/changed-paths"; matching="$tmp/matching-paths"
+    { cp "$index" "$GIT_INDEX_FILE" && root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only -z "$base" > "$changed" \
+        && delivery_matching_paths "$changed" "$list" > "$matching" \
+        && { [[ ! -s "$matching" ]] || root_git "$root" reset -q "$base" --pathspec-from-file="$matching" --pathspec-file-nul; } \
+        && root_git "$root" reset -q "$base" --pathspec-from-file="$reset_specs" --pathspec-file-nul \
+        && root_git "$root" diff "$@" "$base" -- . > "$output"; } || rc=1
+    unset GIT_INDEX_FILE
+    rm -rf "$tmp"
+  fi
+  rm -f "$list"
+  return "$rc"
+}
 # stage_worktree <root> <base>: stage the session work tree. `add` never names
 # the excluded paths: an exclude pathspec that names a gitignored file (the
 # copied or linked machine-local files are usually ignored) makes `add -A`
@@ -94,14 +199,19 @@ unset _excluded
 # ignores them through info/exclude), interactive ones to HEAD so submit can
 # still refuse excluded paths the session committed.
 stage_worktree() {
-  local list path
+  local list path reset_list reset_specs
   local -a aliases=()
   root_git "$1" add -A -- . || return 1
+  reset_list="$(mktemp "$(state_home)/reset-paths.XXXXXX")" || return 1
+  delivery_exclusions_file "$reset_list"
+  reset_specs="$(mktemp "$(state_home)/reset-pathspecs.XXXXXX")" || { rm -f "$reset_list"; return 1; }
+  delivery_pathspecs "$reset_list" reset > "$reset_specs" || { rm -f "$reset_list" "$reset_specs"; return 1; }
   if [[ -n "$ROOT_GIT_DIR" ]]; then
-    root_git "$1" reset -q "$2" -- "${EXCLUDED_ICASE[@]}" || return 1
+    root_git "$1" reset -q "$2" --pathspec-from-file="$reset_specs" --pathspec-file-nul || { rm -f "$reset_list" "$reset_specs"; return 1; }
   else
-    session_git -C "$1" reset -q -- "${EXCLUDED_ICASE[@]}" || return 1
+    session_git -C "$1" reset -q HEAD --pathspec-from-file="$reset_specs" --pathspec-file-nul || { rm -f "$reset_list" "$reset_specs"; return 1; }
   fi
+  rm -f "$reset_list" "$reset_specs"
   # Names git's ASCII-only icase misses but the filesystem folds onto an
   # excluded entry (projectſ is projects on APFS) are reset the same way.
   list="$(mktemp "$(state_home)/aliases.XXXXXX")" || return 1
@@ -199,6 +309,7 @@ root_intact() {
 }
 use_session_git() {
   local dir; dir="$(session_dir "$1")"; ROOT_GIT_DIR=""
+  OVERLAY_PATHS_FILE="$dir/overlay-paths"
   # Exit 10: the session root was replaced; the record is kept, nothing staged.
   root_intact "$dir" "$(<"$dir/session-root")" || {
     echo "harness-session: refused: the session root of $1 was replaced (a symlink or another directory); nothing staged" >&2
@@ -270,7 +381,8 @@ headless_local_files() {
   done
 }
 create() {
-  local source="$1" local_only="${2:-0}" reserved_id="${3:-}" root state id base sha dir local_file has_origin=0 helper=""
+  local source="$1" local_only="${2:-0}" reserved_id="${3:-}" root state id base sha dir local_file has_origin=0 helper="" deadline
+  deadline="$(( $(date +%s) + 120 ))"
   source="$(cd "$source" && pwd -P)"
   git -C "$source" rev-parse --is-inside-work-tree >/dev/null
   state="$(state_home)"
@@ -298,24 +410,26 @@ create() {
   fi
   [[ -f "$helper" && ! -L "$helper" ]] || { echo 'harness-session: creation helper unavailable' >&2; return 2; }
   if [[ "$local_only" == 1 ]]; then
-    sha="$(python3 -I "$helper" source-base --source "$source" --local)" || {
+    sha="$("$RELEASE_CLIENT" budget "$deadline" python3 -I "$helper" source-base --source "$source" --local)" || {
       echo 'harness-session: offline restore requires a cached origin/main' >&2; return 2;
     }
   else
-    sha="$(python3 -I "$helper" source-base --source "$source")" || return 2
+    sha="$("$RELEASE_CLIENT" budget "$deadline" python3 -I "$helper" source-base --source "$source")" || return 2
   fi
   if [[ -z "$reserved_id" ]]; then
     id="$(new_id)"; dir="$state/sessions/$id"; root="$state/worktrees/$id"
-    mkdir -p "$dir"
+    (umask 077; mkdir -p "$dir")
   fi
-  # Local filesystem copies race Git maintenance (including transient MIDX
-  # locks). The transport reads an object snapshot and never shares hardlinks.
-  git clone -q --no-local --no-checkout "$source" "$root"
-  # The selected origin/main may be newer than every local source branch.
-  # A transport clone does not fetch remote-tracking-only commits by default.
-  git -C "$root" fetch -q --no-tags origin "$sha"
-  git -C "$root" remote remove origin
-  git -C "$root" checkout -q --detach "$sha"
+  "$RELEASE_CLIENT" select "$source" "$sha" "$dir" "$deadline" || {
+    local rc=$?; [[ -n "$reserved_id" ]] || rm -rf "$dir"; return "$rc";
+  }
+  # Transport cloning avoids maintenance races and shared hardlinks. Fetch the
+  # selected origin/main explicitly, including remote-tracking-only commits.
+  "$RELEASE_CLIENT" run "$dir" git clone -q --no-local --no-checkout "$source" "$root" \
+    && "$RELEASE_CLIENT" run "$dir" git -C "$root" fetch -q --no-tags origin "$sha" \
+    && "$RELEASE_CLIENT" run "$dir" git -C "$root" remote remove origin \
+    && "$RELEASE_CLIENT" run "$dir" git -C "$root" checkout -q --detach "$sha" \
+    || { local rc=$?; [[ -n "$reserved_id" ]] || rm -rf "$root" "$dir"; return "$rc"; }
   rm -rf "$root/config/.local"
   if [[ "${HARNESS_HEADLESS:-0}" == 1 ]]; then
     headless_local_files "$source" "$root" || {
@@ -359,6 +473,7 @@ create() {
     printf '/%s\n' "${EXCLUDED_PATHS[@]}" >> "$dir/trusted.git/info/exclude"
     : > "$dir/headless"
   fi
+  "$RELEASE_CLIENT" materialize "$dir" "$root" || { local rc=$?; [[ -n "$reserved_id" ]] || rm -rf "$root" "$dir"; return "$rc"; }
   printf '1\n' > "$dir/lease-v1"
   : > "$dir/runtime.lock"
   [[ -n "$reserved_id" ]] || write_journal "$dir" OPEN ""
@@ -685,6 +800,8 @@ resume_session() {
     return 2
   }
   journal_valid "$dir/journal" || { echo "cannot resume $id: invalid session journal" >&2; return 2; }
+  "$RELEASE_CLIENT" resume "$dir" || return $?
+  "$RELEASE_CLIENT" check "$dir" || echo 'harness-session: release overlay changed; resume does not repair it' >&2
   state="$(field "$dir/journal" state)"
   case "$state" in
     OPEN)
@@ -779,14 +896,32 @@ session_has_changes() {
   if [[ -n "$ROOT_GIT_DIR" ]]; then
     # The work tree holds the final content, committed or not.
     stage_worktree "$1" "$2" || return 2
-    root_git "$1" diff --no-ext-diff --ignore-submodules=all --cached --quiet "$2" -- . "${EXCLUDED_PATHSPEC[@]}" || rc=$?
+    local diff_output
+    diff_output="$(mktemp "$(state_home)/has-changes.XXXXXX")" || return 2
+    delivery_cached_diff "$1" "$2" "$diff_output" --no-ext-diff --ignore-submodules=all --cached || { rm -f "$diff_output"; return 2; }
+    [[ -s "$diff_output" ]] && rc=1
+    rm -f "$diff_output"
     case "$rc" in 0) return 1 ;; 1) return 0 ;; *) return 2 ;; esac
   fi
   if [[ -n "${2:-}" ]]; then
     head="$(session_git -C "$1" rev-parse HEAD)" || return 2
     [[ "$head" == "$2" ]] || return 0
   fi
-  out="$(session_git -C "$1" status --porcelain --ignore-submodules=all --untracked-files=all -- . "${EXCLUDED_PATHSPEC[@]}")" || return 2
+  local list status_raw status_filtered
+  list="$(mktemp "$(state_home)/status-paths.XXXXXX")" || return 2
+  delivery_exclusions_file "$list"
+  if delivery_uses_argv "$list"; then
+    delivery_read_pathspecs "$list" exclude || { rm -f "$list"; return 2; }
+    out="$(session_git -C "$1" status --porcelain --ignore-submodules=all --untracked-files=all -- . "${DELIVERY_PATHSPECS[@]}")" || { rm -f "$list"; return 2; }
+  else
+    status_raw="$(mktemp "$(state_home)/status-raw.XXXXXX")" || { rm -f "$list"; return 2; }
+    status_filtered="$(mktemp "$(state_home)/status-filtered.XXXXXX")" || { rm -f "$list" "$status_raw"; return 2; }
+    session_git -C "$1" status --porcelain=v1 -z --ignore-submodules=all --untracked-files=all --no-renames > "$status_raw" \
+      && delivery_filter_statuses "$status_raw" "$list" > "$status_filtered" || { rm -f "$list" "$status_raw" "$status_filtered"; return 2; }
+    [[ -s "$status_filtered" ]] && out=changed || out=""
+    rm -f "$status_raw" "$status_filtered"
+  fi
+  rm -f "$list"
   [[ -n "$out" ]] || return 1
 }
 write_exit_reason() {
@@ -889,7 +1024,7 @@ list() {
 }
 write_index_manifest() {
   local root="$1" base="$2" output="$3" status path mode oid stage path2 entry
-  root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$output.paths" || return 1
+  delivery_cached_diff "$root" "$base" "$output.paths" --no-ext-diff --ignore-submodules=all --cached --name-status --no-renames -z || return 1
   : > "$output"
   while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     if [[ "$status" == D* ]]; then printf 'D\0-\0-\0%s\0' "$path" >> "$output"; continue; fi
@@ -908,20 +1043,44 @@ submit() {
   dir="$(session_dir "$id")"; root="$(<"$dir/session-root")"; base="$(<"$dir/base-sha")"; state="$(field "$dir/journal" state)"
   [[ "$state" == SUBMITTED ]] && return 0
   [[ "$state" == OPEN ]] || { echo "cannot submit $state session" >&2; return 2; }
+  if ! "$RELEASE_CLIENT" check "$dir"; then
+    [[ ! -e "$dir/headless" ]] || return 12
+    echo 'harness-session: warning: release overlay changed; no repair performed' >&2
+  fi
   use_session_git "$id" || return $?
   stage_worktree "$root" "$base"
   if [[ -z "$ROOT_GIT_DIR" ]]; then
     # Interactive: committed work is in the index already, so staged excluded
     # paths are only unstaged back to HEAD; committed ones refuse instead of
     # being silently dropped. A headless index is reset to the base there.
-    local touched aliases
-    touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${EXCLUDED_ICASE[@]}")" \
-      && aliases="$(excluded_aliases "$root" "$base" | tr '\0' '\n')" \
-      || { echo 'harness-session: refused: could not check the submission for excluded paths' >&2; return 2; }
+    local touched aliases list changed matching
+    list="$(mktemp "$(state_home)/touched-paths.XXXXXX")" || return 2
+    delivery_exclusions_file "$list"
+    if delivery_uses_argv "$list"; then
+      delivery_read_pathspecs "$list" reset || { rm -f "$list"; return 2; }
+      touched="$(session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only "$base" -- "${DELIVERY_PATHSPECS[@]}")"
+    else
+      changed="$(mktemp "$(state_home)/touched-changed.XXXXXX")" || { rm -f "$list"; return 2; }
+      matching="$(mktemp "$(state_home)/touched-matching.XXXXXX")" || { rm -f "$list" "$changed"; return 2; }
+      session_git -C "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only -z "$base" > "$changed" \
+        && delivery_matching_paths "$changed" "$list" > "$matching" \
+        || { rm -f "$list" "$changed" "$matching"; echo 'harness-session: refused: could not check the submission for excluded paths' >&2; return 2; }
+      touched="$(tr '\0' '\n' < "$matching")"
+      rm -f "$changed" "$matching"
+    fi
+    aliases="$(excluded_aliases "$root" "$base" | tr '\0' '\n')" \
+      || { rm -f "$list"; echo 'harness-session: refused: could not check the submission for excluded paths' >&2; return 2; }
+    rm -f "$list"
     touched="$touched${aliases:+$'\n'$aliases}"
     [[ -z "$touched" ]] || { printf 'harness-session: refused: submission touches excluded path(s):\n%s\n' "$touched" >&2; return 7; }
   fi
-  root_git "$root" diff --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$dir/submission.patch"
+  local unfiltered
+  unfiltered="$(mktemp "$(state_home)/submission-paths.XXXXXX")" || return 2
+  root_git "$root" diff --no-ext-diff --ignore-submodules=all --cached --name-only -z "$base" > "$unfiltered" || { rm -f "$unfiltered"; return 2; }
+  if overlay_path_in_submission "$unfiltered"; then rm -f "$unfiltered"; return 7
+  elif [[ $? != 1 ]]; then rm -f "$unfiltered"; return 2; fi
+  rm -f "$unfiltered"
+  delivery_cached_diff "$root" "$base" "$dir/submission.patch" --no-ext-diff --no-textconv --ignore-submodules=all --cached --binary || return 2
   [[ -s "$dir/submission.patch" ]] || { echo 'empty submission' >&2; return 2; }
   write_index_manifest "$root" "$base" "$dir/.manifest"
   mv -f "$dir/.manifest" "$dir/manifest"
@@ -1008,6 +1167,11 @@ verifier_sandbox_profile() {
   copy="$(phys "$1")"; tmp="$(phys "$2")"; home="$(phys "$3")"; trusted="$(phys "$5")"; state="$(phys "$(state_home)")"
   local -a read=("${SANDBOX_SYSTEM_READ[@]}" "${SANDBOX_ETC_READ[@]}" "$copy" "$tmp" "$trusted"
     "$home/.config/mise/config.toml" "$home/.local/share/mise" "$home/.cache/mise" "$home/.CFUserTextEncoding")
+  local release_prefix="${6:-}"
+  if [[ "$release_prefix" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+    # Exact physical export only: never authorize ancestor data or siblings.
+    read+=("$home/.local/state/harness-service/$release_prefix-dev/release-export")
+  fi
   local -a exec=("${SANDBOX_SYSTEM_EXEC[@]}" "$copy" "$tmp" "$trusted" "$home/.local/share/mise") deny=() etc_allow=()
   for prefix in "${SANDBOX_TOOL_PREFIXES[@]}"; do
     [[ -d "$prefix" ]] || continue
@@ -1130,30 +1294,40 @@ codex_sandbox_profile() {
     "$(sbpl_str "$codex_home/config.toml")" "$(sbpl_str "$codex_home/AGENTS.md")"
 }
 run_repository_verifier() {
-  local candidate="$1" id="$2" remote="$3" baseline="$4" tree="$5" trusted verifier help_output
+  local candidate="$1" id="$2" remote="$3" baseline="$4" tree="$5" trusted verifier help_output storage_root vtmp resolved_vtmp
   local -a verifier_args
-  trusted="$(mktemp -d "$(state_home)/verifier.XXXXXX")" || return 2
+  # Resolve host policy outside the verifier sandbox, before any verifier copy.
+  storage_root="$(python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py")" || return 2
+  trusted="$(mktemp -d "${storage_root:-$(state_home)}/verifier.XXXXXX")" || return 2
   { git clone -q --no-local "$remote" "$trusted" && git -C "$trusted" checkout -q --detach "$baseline"; } || { rm -rf "$trusted"; return 2; }
   verifier="$trusted/core/bin/auto-deliver.sh"
   [[ -f "$verifier" ]] || { echo 'ERROR: repository-owned core/bin/auto-deliver.sh verifier is required' >&2; rm -rf "$trusted"; return 2; }
   verifier_args=("verify isolated session $id" --staged-only --dry-run --no-push --verify-candidate "$baseline" "$tree")
   if integration_headless "$id"; then
-    run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "$baseline" "${verifier_args[@]}"
+    run_sandboxed_verifier "$candidate" "$id" "$trusted" "$verifier" "$baseline" "$storage_root" "${verifier_args[@]}"
     return
   fi
-  help_output="$(verifier_exec bash "$verifier" --help 2>/dev/null || true)"
-  grep -q -- '--verify-candidate' <<< "$help_output" || { echo 'ERROR: trusted baseline lacks bound candidate verification' >&2; rm -rf "$trusted"; return 2; }
+  vtmp="$(mktemp -d "${storage_root:-/private/tmp}/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
+  resolved_vtmp="$(phys "$vtmp")" || { rm -rf "$trusted" "$vtmp"; return 2; }
+  vtmp="$resolved_vtmp"
+  help_output="$(TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" verifier_exec bash "$verifier" --help 2>/dev/null || true)"
+  grep -q -- '--verify-candidate' <<< "$help_output" || { echo 'ERROR: trusted baseline lacks bound candidate verification' >&2; rm -rf "$trusted" "$vtmp"; return 2; }
   if grep -q -- '--contract-checked' <<< "$help_output"; then
     verifier_args+=(--contract-checked 'broker candidate cascade verified')
   fi
   local rc=0
   (if [[ -z "${INTEGRATION_INPUT_DIR:-}" ]]; then unset HARNESS_SESSION_ID HARNESS_SOURCE_ROOT HARNESS_SESSION_ROOT HARNESS_RUN_DIR HARNESS_SESSION_STATE_HOME; fi
-    cd "$candidate" && TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 \
+    cd "$candidate" && TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 \
     verifier_exec bash "$verifier" "${verifier_args[@]}") || rc=$?
-  rm -rf "$trusted"
+  if python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py" --settled "$vtmp"; then
+    rm -rf "$trusted" "$vtmp"
+  else
+    echo "harness-session: verifier artifacts retained; nested lifetime unresolved: $vtmp" >&2
+    [[ "$rc" -ne 0 ]] || rc=2
+  fi
   return "$rc"
 }
-# run_sandboxed_verifier <candidate> <id> <trusted> <verifier> <baseline> <args...>:
+# run_sandboxed_verifier <candidate> <id> <trusted> <verifier> <baseline> <storage-root> <args...>:
 # headless sessions only. The verifier gets a copy of the candidate (index
 # included, no hard links), a minimal environment (no agent sockets, tokens or
 # GitHub variables), a fresh temp dir outside HOME and a generated global git
@@ -1179,20 +1353,30 @@ write_verifier_gitconfig() {
     printf '[core]\n\texcludesFile = /dev/null\n\tattributesFile = /dev/null\n'; } > "$1"
 }
 run_sandboxed_verifier() {
-  local candidate="$1" id="$2" trusted="$3" verifier="$4" baseline="$5" source vtmp vcopy profile help_output name rc=0
-  shift 5
+  local candidate="$1" id="$2" trusted="$3" verifier="$4" baseline="$5" storage_root="$6" source vtmp vcopy profile help_output name rc=0 release_prefix
+  shift 6
   local -a args=("$@") venv=()
+  local resolved_vtmp resolved_vcopy
+  release_prefix="$("$RELEASE_CLIENT" host-profile "$trusted" "$baseline")" || { echo verifier_policy_unavailable >&2; rm -rf "$trusted"; return 17; }
+  if [[ -n "$release_prefix" ]]; then
+    session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" || { rm -rf "$trusted"; return 17; }
+    if ! (unset HARNESS_AUTHORITY_NO_REFRESH HARNESS_SESSION_ID; PATH="$HOME/.local/share/harness-service/bin:/usr/bin:/bin" \
+      python3 -I "$trusted/core/scripts/authority_fence.py" surface --repo "$trusted" --profile "$release_prefix" --path core/config/auto-delivery-policy.yaml); then
+      echo 'verifier_policy_unavailable' >&2
+      rm -rf "$trusted"
+      return 17
+    fi
+  fi
   [[ -x "$SANDBOX_EXEC" ]] || { echo "harness-session: refused: $SANDBOX_EXEC is required to verify a headless session" >&2; rm -rf "$trusted"; return 2; }
   source="$(<"$(session_dir "$id")/source-root")" || { rm -rf "$trusted"; return 2; }
-  vtmp="$(mktemp -d /private/tmp/verifier-tmp.XXXXXX)" || { rm -rf "$trusted"; return 2; }
-  vcopy="$(mktemp -d "$(state_home)/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
-  { vtmp="$(phys "$vtmp")" && vcopy="$(phys "$vcopy")" && cp -R "$candidate/." "$vcopy/" \
-      && scrub_remotes "$vcopy" && session_git -C "$vcopy" update-ref refs/remotes/origin/main "$baseline" \
-      && scrub_remotes "$trusted" && session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" \
-      && write_verifier_gitconfig "$vtmp/gitconfig" \
-      && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted")"; } \
+  vtmp="$(mktemp -d "${storage_root:-/private/tmp}/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
+  vcopy="$(mktemp -d "${storage_root:-$(state_home)}/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
+  { resolved_vtmp="$(phys "$vtmp")" && resolved_vcopy="$(phys "$vcopy")" \
+      && vtmp="$resolved_vtmp" && vcopy="$resolved_vcopy" && cp -R "$candidate/." "$vcopy/" \
+      && scrub_remotes "$vcopy" && session_git -C "$vcopy" update-ref refs/remotes/origin/main "$baseline" && scrub_remotes "$trusted" && session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" && write_verifier_gitconfig "$vtmp/gitconfig" \
+      && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted" "$release_prefix")"; } \
     || { rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
-  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HARNESS_AUTHORITY_NO_REFRESH=1)
+  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HARNESS_AUTHORITY_NO_REFRESH=1)
   if [[ -n "${INTEGRATION_INPUT_DIR:-}" ]]; then
     [[ "${HARNESS_DELIVER_TEST_JOBS:-}" =~ ^([1-9]|1[0-6])$ ]] || return 2
     venv+=(HARNESS_DELIVER_TEST_JOBS="$HARNESS_DELIVER_TEST_JOBS" HARNESS_TEST_CASE_JOBS_LIMIT="$HARNESS_DELIVER_TEST_JOBS")
@@ -1206,7 +1390,12 @@ run_sandboxed_verifier() {
   fi
   (cd "$vcopy" && verifier_exec env -i "${venv[@]}" TEST_HARNESS_DIR="$vcopy" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 \
     HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 "$SANDBOX_EXEC" -p "$profile" bash "$verifier" "${args[@]}") || rc=$?
-  rm -rf "$trusted" "$vtmp" "$vcopy"
+  if python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py" --settled "$vtmp"; then
+    rm -rf "$trusted" "$vtmp" "$vcopy"
+  else
+    echo "harness-session: verifier artifacts retained; nested lifetime unresolved: $vtmp" >&2
+    [[ "$rc" -ne 0 ]] || rc=2
+  fi
   return "$rc"
 }
 write_manifest_pathset() {
@@ -1228,6 +1417,7 @@ integrate_unlocked() {
   local id="$1" dir input source remote attempt candidate current candidate_tree delivered readback kind mode hash path actual_mode actual_type actual_oid actual_path entry
   dir="$(session_dir "$id")"; source="$(<"$dir/source-root")"
   input="${INTEGRATION_INPUT_DIR:-$dir}"
+  OVERLAY_PATHS_FILE="$input/overlay-paths"
   remote="$(git -C "$source" remote get-url origin)"
   [[ "$remote" == "$(<"$dir/remote-url")" ]] || { transition "$id" INTEGRATING "$(field "$dir/journal" identity)"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 2; }
   transition "$id" INTEGRATING "$(field "$dir/journal" identity)"
@@ -1239,13 +1429,27 @@ integrate_unlocked() {
     git -C "$candidate" checkout -q main
     current="$(git -C "$candidate" rev-parse HEAD)"
     if ! git -C "$candidate" apply --3way --index "$input/submission.patch"; then rm -rf "$candidate"; transition "$id" CONFLICT; return 3; fi
+    git -C "$candidate" diff --cached --name-only -z "$current" > "$dir/.candidate-unfiltered"
+    if overlay_path_in_submission "$dir/.candidate-unfiltered"; then
+      rm -f "$dir/.candidate-unfiltered"; rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3
+    elif [[ $? != 1 ]]; then
+      rm -f "$dir/.candidate-unfiltered"; rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3
+    fi
+    rm -f "$dir/.candidate-unfiltered"
     write_manifest_pathset "$input/manifest" "$dir/.submitted-pathset"
     write_index_pathset "$candidate" "$current" "$dir/.candidate-pathset"
     cmp -s "$dir/.submitted-pathset" "$dir/.candidate-pathset" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
     candidate_tree="$(session_git -C "$candidate" write-tree)" || { rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"; return 3; }
     integration_phase verifying || return $?
     run_repository_verifier "$candidate" "$id" "$remote" "$current" "$candidate_tree" || {
-      rm -rf "$candidate"; transition "$id" CONFLICT "$(field "$dir/journal" identity)"
+      local verifier_rc=$?
+      rm -rf "$candidate"
+      if [[ "$verifier_rc" == 17 ]]; then
+        transition "$id" SUBMITTED "$(field "$dir/journal" identity)"
+        echo verifier_policy_unavailable >&2
+        return 17
+      fi
+      transition "$id" CONFLICT "$(field "$dir/journal" identity)"
       # Headless: exit 9, the verifier rejected the candidate (not a merge conflict).
       if integration_headless "$id"; then return 9; fi
       return 3
@@ -1359,6 +1563,7 @@ close_session() {
 write_discard_patch() {
   local id="$1" dir="$2" root base tmp patch index rc=0
   root="$(<"$dir/session-root")" && base="$(<"$dir/base-sha")" || return 1
+  OVERLAY_PATHS_FILE="$dir/overlay-paths"
   [[ -d "$root" && ! -L "$root" ]] || return 1
   ROOT_GIT_DIR=""
   if [[ -e "$dir/headless" ]]; then
@@ -1381,8 +1586,8 @@ write_discard_patch() {
   # Fixed output format: no user color, prefix or external diff setting
   # changes the patch.
   { cp "$index" "$GIT_INDEX_FILE" && root_git "$root" add -A -- . \
-      && root_git "$root" diff --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ \
-        --ignore-submodules=all --cached --binary "$base" -- . "${EXCLUDED_PATHSPEC[@]}" > "$patch"
+      && delivery_cached_diff "$root" "$base" "$patch" --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ \
+        --ignore-submodules=all --cached --binary
   } || rc=1
   unset GIT_INDEX_FILE
   rm -rf "$tmp"
@@ -1509,7 +1714,7 @@ case "${1:-}" in
   release-hold) shift; [[ $# -eq 2 ]] || exit 2; release_hold "$@" ;;
   sandbox-check) shift; [[ $# -eq 1 ]] || exit 2; sandbox_check "$1" ;;
   codex-sandbox-profile) shift; [[ $# -eq 8 ]] || exit 2; codex_sandbox_profile "$@" ;;
-  verifier-sandbox-profile) shift; [[ $# -eq 5 ]] || exit 2; verifier_sandbox_profile "$@" ;;
+  verifier-sandbox-profile) shift; [[ $# -eq 5 || $# -eq 6 ]] || exit 2; verifier_sandbox_profile "$@" ;;
   submit) shift; submit "$1" ;;
   integrate) shift; [[ $# -eq 1 ]] || exit 2; integrate "$1" ;;
   close)

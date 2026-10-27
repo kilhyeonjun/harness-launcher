@@ -36,6 +36,7 @@ BIN = Path(__file__).resolve().parent
 sys.path.insert(0, str(BIN))
 import harness_target  # noqa: E402
 from harness_target import Refused  # noqa: E402
+from verification_storage import VerificationStorageError, configured_root, nested_lifetimes_settled  # noqa: E402
 UUID = r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
 SESSION_LINE = re.compile(r'^harness-launcher: isolated session (' + UUID + r');', re.M)
 # Caller environment kept for the launcher and Claude. Everything else
@@ -133,9 +134,49 @@ def parse_args(argv):
     parser.add_argument('--model')
     # Validated in validate_agent_args, so a bad value still writes a result.
     for name in ('--agent', '--effort', '--model-endpoint', '--endpoint-key-file', '--max-model-requests',
-                 '--target', '--target-digest', '--task-id', '--approval-sha'):
+                 '--target', '--target-digest', '--task-id', '--approval-sha',
+                 '--journal-board', '--journal-task'):
         parser.add_argument(name)
     return parser.parse_args(argv)
+
+
+JOURNAL_HOOK = '.local/share/harness-service/bin/harness-session-hook'
+JOURNAL_BOARD = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}')
+JOURNAL_TASK = re.compile(r't_[0-9a-f]{8}')
+JOURNAL_TIMEOUT = 3
+
+
+def validate_journal_args(args):
+    """The Kanban board and task of this run (P3-L auto-link): both or neither."""
+    board, task = args.journal_board, args.journal_task
+    if board is None and task is None:
+        return
+    if board is None or task is None:
+        raise Refused('--journal-board and --journal-task go together')
+    if not JOURNAL_BOARD.fullmatch(board) or not JOURNAL_TASK.fullmatch(task):
+        raise Refused('--journal-board/--journal-task have an invalid format')
+
+
+def journal_run_start(args, home):
+    """Tell the optional host collector callback that a Kanban-bound run starts.
+
+    Without both journal arguments nothing happens, so Buzz capture stays off
+    until the caller passes them (and the collector enables the runtime). The
+    payload holds ids only. Fail-open: output is discarded and nothing here can
+    change the run.
+    """
+    if args.journal_board is None or args.journal_task is None:
+        return
+    script = os.path.join(home, JOURNAL_HOOK)
+    if not (os.path.isfile(script) and os.access(script, os.X_OK)):
+        return
+    payload = json.dumps({'hook_event_name': 'RunStart', 'run_id': str(uuid.uuid4()),
+                          'board': args.journal_board, 'task': args.journal_task})
+    try:
+        subprocess.run(['/bin/sh', script, '--runtime', 'buzz'], input=payload.encode(),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=JOURNAL_TIMEOUT, check=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
 
 
 def validate_agent_args(args):
@@ -489,12 +530,20 @@ def deliver(sid, state, env, cwd, log, message=None):
 
 def _deliver(sid, state, env, cwd, log, message):
     iso = str(BIN / 'session-isolation.sh')
+    close_stderr = ''
 
     def session(*args):
+        nonlocal close_stderr
         # A new session: the repository verifier the broker runs has no
         # controlling terminal, so /dev/tty never reaches the operator's.
-        return subprocess.run([iso, *args, sid], env=env, cwd=cwd, stdin=subprocess.DEVNULL,
-                              stdout=log, stderr=log, start_new_session=True).returncode
+        closing = args == ('close',)
+        completed = subprocess.run([iso, *args, sid], env=env, cwd=cwd, stdin=subprocess.DEVNULL,
+                                   stdout=log, stderr=subprocess.PIPE if closing else log,
+                                   text=True, start_new_session=True)
+        if closing:
+            close_stderr = getattr(completed, 'stderr', '') or ''
+            print(close_stderr, end='', file=log if log is not None else sys.stderr, flush=True)
+        return completed.returncode
 
     def delivered():
         sha = (state / 'sessions' / sid / 'delivered-sha').read_text().strip()
@@ -509,6 +558,18 @@ def _deliver(sid, state, env, cwd, log, message):
     reason = record_commit_message(state, sid, message) if message else 'no usable message file'
     print(f'harness-headless: commit message: {"agent" if not reason else f"generic ({reason})"}', file=log, flush=True)
     rc = session('close')
+    if rc == 12:
+        for line in close_stderr.splitlines():
+            try:
+                payload = json.loads(line.removeprefix('overlay_drift ').strip())
+            except ValueError:
+                continue
+            paths = payload.get('drift_paths') if isinstance(payload, dict) else None
+            if isinstance(paths, list) and paths and all(isinstance(path, str) for path in paths):
+                return 'failed', None, 'overlay_drift ' + json.dumps({'drift_paths': paths})
+        return 'failed', None, 'overlay_drift'
+    if rc == 17:
+        return 'failed', None, 'verifier_policy_unavailable'
     after = journal_state(state, sid)
     if after == 'INTEGRATING':
         # Indeterminate integration (readback outage, exit 4 or a git 128):
@@ -943,6 +1004,7 @@ def run(args, result, run_tmp):
     if target:
         result.update(target=target['name'], branch=target['branch'], base_sha=None, pr_url=None)
     codex = validate_agent_args(args)
+    validate_journal_args(args)
     if target:
         load_target(target, os.environ['HOME'])
     if not os.access(LOCKF, os.X_OK):
@@ -970,6 +1032,7 @@ def run(args, result, run_tmp):
         try:env['HARNESS_SESSION_STATE_HOME']=str(initialize_pool(Path(env['HARNESS_SESSION_POOL_BASE']),hdir))
         except (KeyError,OSError,ValueError) as exc:raise Refused('profile pool unavailable: '+str(exc))
     state = state_home(env)
+    journal_run_start(args, os.environ['HOME'])
     log_path = args.result_file + '.log'
     with open(log_path, 'w') as log, tempfile.TemporaryFile('w+') as stdin:
         stdin.write(prompt.rstrip('\n') + '\n\n' + DELIVERY_NOTE + (target_note(target) if target else ''))
@@ -1584,13 +1647,18 @@ def run_target_verifier(session, candidate, log, env):
     """test.run (argv[0] is the env python) on a copy of the candidate under
     the verifier profile plus the read-only env; True when it exits 0."""
     test = session.target['entry']['test']
-    vcopy = tempfile.mkdtemp(prefix='verifier-copy.', dir=session.run_dir)
-    vtmp = os.path.realpath(tempfile.mkdtemp(prefix='verifier-tmp.', dir='/private/tmp'))
     try:
+        storage_root = configured_root()
+    except VerificationStorageError as exc:
+        raise Refused(f'verification storage unavailable: {exc}') from exc
+    vcopy = vtmp = None
+    try:
+        vcopy = tempfile.mkdtemp(prefix='verifier-copy.', dir=storage_root or session.run_dir)
+        vtmp = os.path.realpath(tempfile.mkdtemp(prefix='verifier-tmp.', dir=storage_root or '/private/tmp'))
         shutil.copytree(candidate, vcopy, symlinks=True, dirs_exist_ok=True)
         profile = verifier_profile(session, vcopy, vtmp, env)
         venv = {k: v for k, v in env.items() if k in ('HOME', 'LANG') or k.startswith('LC_')}
-        venv.update(PATH='/usr/bin:/bin', TMPDIR=vtmp)
+        venv.update(PATH='/usr/bin:/bin', TMPDIR=vtmp, HARNESS_VERIFICATION_TMPDIR=vtmp)
         print(f'harness-headless: verifier: {shlex.join(test["run"])} (timeout {test["timeout_min"]} min)', file=log, flush=True)
         proc = subprocess.Popen([SANDBOX_EXEC, '-p', profile, session.python, *test['run'][1:]], cwd=vcopy, env=venv,
                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
@@ -1601,11 +1669,24 @@ def run_target_verifier(session, candidate, log, env):
         finally:
             kill_group(proc.pid)
         proc.wait()
-        return proc.returncode == 0
+        accepted = proc.returncode == 0
     finally:
-        kill_lingering(vcopy, vtmp)
-        shutil.rmtree(vcopy, ignore_errors=True)
-        shutil.rmtree(vtmp, ignore_errors=True)
+        if vcopy is not None and vtmp is not None:
+            kill_lingering(vcopy, vtmp)
+        retained = False
+        if vtmp is not None:
+            try:
+                retained = not nested_lifetimes_settled(Path(vtmp))
+            except VerificationStorageError as exc:
+                retained = True
+                print(f'harness-headless: verifier storage retained: {exc}', file=log, flush=True)
+        if retained:
+            print(f'harness-headless: nested lifetime unresolved; verifier artifacts retained: {vtmp}', file=log, flush=True)
+        else:
+            for owned in (vcopy, vtmp):
+                if owned is not None:
+                    shutil.rmtree(owned, ignore_errors=True)
+    return accepted and not retained
 
 
 def pr_body(target, base, message):

@@ -117,7 +117,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
 
-server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # Numeric loopback fixtures must not wait on HTTPServer's reverse DNS.
+        from socketserver import TCPServer
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
+
+
+server = LoopbackHTTPServer(('127.0.0.1', 0), Handler)
 with open(os.path.join(DIR, 'port.tmp'), 'w') as f:
     f.write(str(server.server_address[1]))
 os.replace(os.path.join(DIR, 'port.tmp'), os.path.join(DIR, 'port'))

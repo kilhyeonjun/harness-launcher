@@ -168,7 +168,7 @@ def approved_package_command(command, grant):
     shapes = {"codex-hook-adapter.sh": (len(tokens) == 4 and tokens[0] == "bash"),
               "codex-pretool-adapter.py": len(tokens) == 3,
               "codex-cmux-title-sync.py": len(tokens) == 2,
-              "harness-launch-record": (len(tokens) == 3 and tokens[2] == "codex")}
+              "harness-launch-record": tokens[2:] in (["codex"], ["codex", "--callback"])}
     if not shapes[name] or path not in {Path(__file__).parent / name, Path(__file__).resolve().parent / name}:
         raise ValueError(f"callback outside current verified package {Path(__file__).resolve().parent}")
     approved = [p for p in grant["callbacks"] if Path(p).name == name]
@@ -277,9 +277,14 @@ def equivalent_command(command, desired, source, target, base, grant):
     for script, argument in STATUS_SCRIPTS:
         if command == status_command(script, argument):
             return callback_approved(Path(script.replace("$HOME", str(Path.home()))), grant)
-    return (len(tokens) in (2, 3) and callback_approved(Path(tokens[1]), grant) and
+    carried_callback = len(tokens) == 4
+    return (len(tokens) in (2, 3, 4) and callback_approved(Path(tokens[1]), grant) and
             Path(tokens[1]).name in {"codex-cmux-title-sync.py", "harness-launch-record"} and
-            (len(tokens) == 2 or tokens[2] == "codex"))
+            (len(tokens) == 2 or tokens[2] == "codex") and
+            (not carried_callback or
+             (tokens[3] == "--callback" and Path(tokens[1]).name == "harness-launch-record" and
+              # The row also runs the host collector callback: its bytes need the same grant as the orca/herdr scripts.
+              callback_approved(Path.home() / ".local/share/harness-service/bin/harness-session-hook", grant))))
 
 
 def status_command(script, argument):
@@ -394,7 +399,12 @@ def callback_paths(command):
     for script, argument in STATUS_SCRIPTS:
         if command == status_command(script, argument):
             return [Path(script.replace("$HOME", str(Path.home())))]
-    return [Path(token) for token in shlex.split(command) if Path(token).name in PACKAGE_CALLBACKS]
+    tokens = shlex.split(command)
+    paths = [Path(token) for token in tokens if Path(token).name in PACKAGE_CALLBACKS]
+    if (len(tokens) == 4 and Path(tokens[1]).name == 'harness-launch-record' and
+            tokens[2:] == ['codex', '--callback']):
+        paths.append(Path.home() / '.local/share/harness-service/bin/harness-session-hook')
+    return paths
 
 
 def native_decisions(home, target, profile, hooks):

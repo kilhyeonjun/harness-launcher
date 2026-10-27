@@ -1479,6 +1479,8 @@ sandbox grant from a launch record. The two sources have different trust:
 - The launch record is written by the launcher's own `SessionStart` hook from the
   grant the launcher exported for that launch, under
   `<state>/launch-records/<agent>-<session_id>` with mode 0600.
+  A fork launch also leaves one empty `.parent-<hash>` marker beside the records (the
+  fork parent applies to the process's first record only); neither is pruned.
   The launcher never escalates: without a record it keeps the default grant and
   prints the command that relaunches with bypass. A record is honoured only for its own harness root,
   and it is also the only proof that a Claude session lives outside an isolated
@@ -1653,15 +1655,18 @@ sources. The runtime jq dependency checks remain.
 `./test/run-all.sh` without arguments still executes the full suite in its
 original order, with declared interpreters, source admission, environment,
 conditional skips and first-error status preserved. The current partition keeps
-every suite invocation in order (145 total, including the public-dispatch wrapper
-and the OMP continuation-recovery suite). The four preservation suites count toward coverage even though the old
-summary did not increment its passed counter for them.
+every suite invocation in order, including the public-dispatch wrapper, OMP
+continuation-recovery and release/sandbox/overlay suites. The four preservation
+suites count toward coverage even though the old summary did not increment its
+passed counter for them.
 
 CI reuses that inventory and executor through
-`./test/run-all.sh --ci-group GROUP --ci-result OWNED_FILE`. Only four literal
+`./test/run-all.sh --ci-group GROUP --ci-result OWNED_FILE`. Only six literal
 groups are accepted:
 
-- `headless`: `test-harness-headless.sh` and `test-headless-target.sh`.
+- `headless`: `test-harness-headless.sh`.
+- `target`: `test-headless-target.sh`.
+- `sessions`: all `test-session-*.sh` suites, in their existing relative order.
 - `shell`: all other default shell suites, in their existing relative order.
 - `preservation`: the existing four preservation Python suites, in order.
 - `python`: profile, MCP, remaining Python and portable-source tests, in order,
@@ -1676,11 +1681,11 @@ syntax and documentation checks. No preparation result or fixture state is
 borrowed from another job. Existing guard, native environment and negative
 oracles remain unchanged.
 
-The original required `test` job is an `always()` aggregate with all four fixed
-regression jobs in `needs`. All four must have the literal result `success`.
+The original required `test` job is an `always()` aggregate with all six fixed
+regression jobs in `needs`. All six must have the literal result `success`.
 `./test/run-all.sh --ci-verify` checks the fixed typed inputs
-`CI_RESULT_HEADLESS`, `CI_RESULT_SHELL`, `CI_RESULT_PRESERVATION` and
-`CI_RESULT_PYTHON`. They must match the current run, attempt, actual execution
+`CI_RESULT_HEADLESS`, `CI_RESULT_TARGET`, `CI_RESULT_SESSIONS`, `CI_RESULT_SHELL`,
+`CI_RESULT_PRESERVATION` and `CI_RESULT_PYTHON`. They must match the current run, attempt, actual execution
 checkout and source/inventory digests. A PR head is distinct from its merge
 checkout; neither may substitute for the other. Scheduled and actually completed
 IDs, including only the original permitted conditional skips, must form the

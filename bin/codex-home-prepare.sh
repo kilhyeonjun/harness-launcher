@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# codex-home-prepare.sh — populate $HARNESS_DIR/.harness/codex/ for Codex CLI native launch.
+# codex-home-prepare.sh — prepare the Codex CLI native runtime home.
 #
-# Usage: codex-home-prepare.sh <harness-dir>
+# Usage: codex-home-prepare.sh <harness-dir> [--release-root DIR --runtime-home DIR]
+# Release roots are verified exports supplied by the launcher release bridge.
 #
 # Idempotent: re-runs only rewrite config.toml when content would change, so
 # launchers can call this on every invocation without touching mtimes unnecessarily.
@@ -10,6 +11,36 @@ set -euo pipefail
 
 HARNESS_DIR="${1:?HARNESS_DIR required (positional arg 1)}"
 [[ -d "$HARNESS_DIR" ]] || { echo "harness dir not found: $HARNESS_DIR" >&2; exit 1; }
+shift
+RELEASE_ROOT=""
+RUNTIME_HOME=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --release-root|--runtime-home)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "ERROR: $1 requires a directory" >&2; exit 2; }
+      case "$1" in
+        --release-root) RELEASE_ROOT="$2" ;;
+        --runtime-home) RUNTIME_HOME="$2" ;;
+      esac
+      shift 2
+      ;;
+    *) echo "ERROR: unknown prepare argument: $1" >&2; exit 2 ;;
+  esac
+done
+if [[ -n "$RELEASE_ROOT" || -n "$RUNTIME_HOME" ]]; then
+  [[ -d "$RELEASE_ROOT" && "$RUNTIME_HOME" == /* ]] || {
+    echo "ERROR: release preparation requires --release-root DIR and absolute --runtime-home DIR" >&2
+    exit 2
+  }
+  [[ -f "$RELEASE_ROOT/config/codex-surface.json" ]] || {
+    echo "ERROR: release export has no Codex surface manifest" >&2
+    exit 1
+  }
+  [[ -f "$RELEASE_ROOT/.harness/codex/AGENTS.md" ]] || {
+    echo "ERROR: release export has no compiled Codex AGENTS.md" >&2
+    exit 1
+  }
+fi
 GLOBAL_PLUGIN_POLICY="${HARNESS_CODEX_GLOBAL_PLUGIN_POLICY:-manage}"
 case "$GLOBAL_PLUGIN_POLICY" in
   manage|preserve) ;;
@@ -76,6 +107,17 @@ python3() {
 }
 
 FINAL_CODEX_HOME="$HARNESS_DIR/.harness/codex"
+if [[ -n "$RELEASE_ROOT" ]]; then
+  python3 - "$HARNESS_DIR" "$RUNTIME_HOME" "$RELEASE_ROOT" <<'PY'
+import os
+import sys
+
+source, runtime, release = map(os.path.realpath, sys.argv[1:])
+if any(os.path.commonpath((root, runtime)) == root for root in (source, release)):
+    raise SystemExit("ERROR: release runtime home must be outside the worktree and export")
+PY
+  FINAL_CODEX_HOME="$RUNTIME_HOME"
+fi
 CODEX_HOME="$FINAL_CODEX_HOME"
 PROJECT_CODEX_DIR="$HARNESS_DIR/.codex"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -231,7 +273,10 @@ quarantine_project_codex_dir() {
 }
 
 acquire_codex_home_lock
-quarantine_project_codex_dir
+# Resuming a pinned release must not rename or rewrite worktree paths.
+if [[ -z "$RELEASE_ROOT" ]]; then
+  quarantine_project_codex_dir
+fi
 if [[ -n "${HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE+x}" ]]; then
   CODEX_BUNDLED_MARKETPLACE_SOURCE="$HARNESS_CODEX_BUNDLED_MARKETPLACE_SOURCE"
 else
@@ -251,7 +296,9 @@ TITLE_SYNC_PATH="$SCRIPT_DIR/codex-cmux-title-sync.py"
 SURFACE_RESOLVER="$SCRIPT_DIR/codex-surface.py"
 SURFACE_WARM_PROBE="$SCRIPT_DIR/codex-surface-warm.py"
 GLOBAL_MCP_RESOLVER="$SCRIPT_DIR/codex_global_mcp.py"
-SURFACE_MANIFEST="$HARNESS_DIR/config/codex-surface.json"
+RUNTIME_CONFIG_ROOT="${RELEASE_ROOT:-$HARNESS_DIR}"
+SURFACE_MANIFEST="$RUNTIME_CONFIG_ROOT/config/codex-surface.json"
+SSOT_HOOKS_SOURCE="$RUNTIME_CONFIG_ROOT/config/ssot-session-hooks.json"
 SURFACE_STAMP="$CODEX_HOME/.surface-success.json"
 SURFACE_FINGERPRINT_CACHE="$CODEX_HOME/.surface-fingerprint-cache.json"
 SURFACE_ENABLED=0
@@ -288,7 +335,12 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     exit 1
   }
   SURFACE_ENABLED=1
-  if SURFACE_FINGERPRINT_JSON="$(python3 "$SURFACE_WARM_PROBE" \
+  # The native warm probe receives the live profile root explicitly.
+  # Release preparation still builds a candidate from the verified export;
+  # its manifest root and live runtime-hook opt-in root are distinct.
+  if [[ -n "$RELEASE_ROOT" ]]; then
+    :
+  elif SURFACE_FINGERPRINT_JSON="$(python3 "$SURFACE_WARM_PROBE" \
       "$SURFACE_STAMP" \
       "$SURFACE_FINGERPRINT_CACHE" \
       "$CODEX_HOME" \
@@ -298,7 +350,8 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
       "${HARNESS_OBSERVABILITY_PROFILE:-}" \
       "$CODEX_BUNDLED_MARKETPLACE_SOURCE" \
       "$CODEX_CONTEXT_WINDOW" \
-      "$CODEX_AUTO_COMPACT_TOKEN_LIMIT" 2>/dev/null)"; then
+      "$CODEX_AUTO_COMPACT_TOKEN_LIMIT" \
+      "$HARNESS_DIR" "$SSOT_HOOKS_SOURCE" 2>/dev/null)"; then
     if codex_otel_state_current; then
       repair_auth_link_no_clobber
       inherit_native_codex_plugins
@@ -341,6 +394,7 @@ if [[ -f "$SURFACE_MANIFEST" ]]; then
     fingerprint
     --manifest "$SURFACE_MANIFEST"
     --repo-root "$HARNESS_DIR"
+    --ssot-file "$SSOT_HOOKS_SOURCE"
     --codex-home "$FINAL_CODEX_HOME"
     --home "$HOME"
     --skill-profile "$SURFACE_SKILL_PROFILE"
@@ -424,7 +478,14 @@ if [[ -e "$agents_md" || -L "$agents_md" ]]; then
 fi
 compiler="$HARNESS_DIR/core/scripts/harness_compile.py"
 compiled_agents=0
-if [[ -f "$compiler" && -f "$HARNESS_DIR/.claude/source/runtime-contract.yaml" ]]; then
+if [[ -n "$RELEASE_ROOT" ]]; then
+  # Generated release bytes are already compiled and verified by the bridge.
+  # Copy into the external candidate, never invoke code from the export.
+  tmp_agents="$(mktemp "$CODEX_HOME/.AGENTS.md.XXXXXX")"
+  cp "$RELEASE_ROOT/.harness/codex/AGENTS.md" "$tmp_agents"
+  mv -f "$tmp_agents" "$agents_md"
+  compiled_agents=1
+elif [[ -f "$compiler" && -f "$HARNESS_DIR/.claude/source/runtime-contract.yaml" ]]; then
   compiler_root="$HARNESS_DIR"
   if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
     # Capability discovery does not validate source; an advertised renderer's
@@ -1831,7 +1892,7 @@ hooks_file="$CODEX_HOME/hooks.json"
 tmp_hooks="$(mktemp "$CODEX_HOME/.hooks.json.XXXXXX")"
 ADAPTER_PATH="$SCRIPT_DIR/codex-hook-adapter.sh"
 PRETOOL_ADAPTER_PATH="$SCRIPT_DIR/codex-pretool-adapter.py"
-python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$PRETOOL_ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" "$(python3 "$SCRIPT_DIR/runtime_hooks_optin.py" "$HARNESS_DIR")" "$SCRIPT_DIR/harness-launch-record" > "$tmp_hooks" <<'PY'
+python3 - "$HARNESS_DIR" "$ADAPTER_PATH" "$PRETOOL_ADAPTER_PATH" "$TITLE_SYNC_PATH" "$HARNESS_PYTHON3_BIN" "$(python3 "$SCRIPT_DIR/runtime_hooks_optin.py" "$HARNESS_DIR" --ssot-file "$SSOT_HOOKS_SOURCE")" "$SCRIPT_DIR/harness-launch-record" > "$tmp_hooks" <<'PY'
 import json, os, re, shlex, sys
 harness = sys.argv[1]
 adapter = sys.argv[2]
@@ -2081,7 +2142,10 @@ RUNTIME_HOOK_REGISTRY = (
         "name": "ssot",
         "script": "$HOME/.local/share/harness-service/bin/harness-session-hook",
         "argument": "--runtime codex",
-        "events": ("UserPromptSubmit", "Stop"),
+        # SessionStart is the tail of the launch_record command (record, then
+        # callback, one sequential command), never a row of its own; SubagentStart
+        # is emitted only together with launch_record (capture needs the record).
+        "events": ("UserPromptSubmit", "Stop", "SessionStart", "SubagentStart"),
         "timeout": 5,
     },
 )
@@ -2093,13 +2157,24 @@ def runtime_hook_command(script, argument):
         f"[ -x \"$s\" ] && {{ {invoke} >/dev/null 2>&1; exit 0; }}; cat >/dev/null'"
     )
 
+combined = runtime_optins.get("launch_record", False) and runtime_optins.get("ssot", False)
 for row in RUNTIME_HOOK_REGISTRY:
     if not runtime_optins.get(row["name"], False):
         continue
     row_command = row.get("command") or runtime_hook_command(row["script"], row["argument"])
+    row_timeout = row["timeout"]
+    if combined and row["name"] == "launch_record":
+        # Record, then host callback, in the helper itself. Its `ps` read keeps
+        # its own 5s limit, so the hook gets 10s.
+        row_command += " --callback"
+        row_timeout = 10
     for event in row["events"]:
+        if row["name"] == "ssot" and (event == "SessionStart" or (event == "SubagentStart" and not combined)):
+            # SessionStart rides the launch_record command; session/subagent
+            # capture needs that record, so ssot alone adds neither row.
+            continue
         config["hooks"].setdefault(event, []).append(
-            {"hooks": [{"type": "command", "command": row_command, "timeout": row["timeout"]}]}
+            {"hooks": [{"type": "command", "command": row_command, "timeout": row_timeout}]}
         )
 
 json.dump(config, sys.stdout, indent=2)
@@ -2315,7 +2390,8 @@ if [[ "$SURFACE_ENABLED" -eq 1 ]]; then
     "${HARNESS_OBSERVABILITY_PROFILE:-}" \
     "$CODEX_BUNDLED_MARKETPLACE_SOURCE" \
     "$CODEX_CONTEXT_WINDOW" \
-    "$CODEX_AUTO_COMPACT_TOKEN_LIMIT" >/dev/null
+    "$CODEX_AUTO_COMPACT_TOKEN_LIMIT" \
+    "$HARNESS_DIR" "$SSOT_HOOKS_SOURCE" >/dev/null
 
   # Candidate-only absolute paths are never published. Re-project the two
   # generated text surfaces to the stable live CODEX_HOME, then regenerate the

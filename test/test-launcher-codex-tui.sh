@@ -5,8 +5,8 @@
 #   1. Prompt: Select runtime (Claude Code / Codex CLI)
 #   2. If Codex selected → Session menu, Mode menu, Safety menu
 #   3. exec codex with: subcmd (if any), --cd, -p <profile>, safety flags
-#   4. CODEX_HOME=$HARNESS_DIR/.harness/codex
-#   5. Always run codex-home-prepare.sh first
+#   4. CODEX_HOME is the bridge-returned stable native home (local home for Git)
+#   5. Verify/export before preparation, then clean the operation before launch
 #
 # When `codex` is missing, the runtime menu must auto-skip → existing Claude flow.
 
@@ -22,6 +22,7 @@ cleanup() { [[ -n "${TEST_TEMP:-}" && -d "$TEST_TEMP" ]] && rm -rf "$TEST_TEMP";
 trap cleanup EXIT
 
 TEST_TEMP="$(mktemp -d)"
+TEST_TEMP="$(cd -P "$TEST_TEMP" && pwd -P)"
 TEST_HARNESS="$TEST_TEMP/fake-harness"
 TEST_BIN="$TEST_TEMP/bin"
 TEST_LAUNCHER_BIN="$TEST_TEMP/launcher-bin"
@@ -42,13 +43,35 @@ mkdir -p "$TEST_WORKTREE"
 TEST_WORKTREE_REAL="$(cd -P "$TEST_WORKTREE" && pwd -P)"
 cp "$LAUNCHER_DIR/bin/launcher.sh" "$TEST_LAUNCHER_BIN/launcher.sh"
 cp "$LAUNCHER_DIR/bin/harness-common.sh" "$TEST_LAUNCHER_BIN/harness-common.sh"
+cp "$LAUNCHER_DIR/bin/harness-release-client.sh" "$TEST_LAUNCHER_BIN/harness-release-client.sh"
+cp "$LAUNCHER_DIR/bin/harness_release_client.py" "$TEST_LAUNCHER_BIN/harness_release_client.py"
 cp "$LAUNCHER_DIR/bin/slack-approval-policy.py" "$TEST_LAUNCHER_BIN/slack-approval-policy.py"
 cp "$LAUNCHER_DIR/bin/mcp_paths.py" "$TEST_LAUNCHER_BIN/mcp_paths.py"
 cat > "$TEST_LAUNCHER_BIN/codex-home-prepare.sh" <<'EOF'
 #!/usr/bin/env bash
 set -e
-mkdir -p "$1/.harness/codex"
-printf '# prepared by test stub\n' > "$1/.harness/codex/AGENTS.md"
+root="$1"
+shift
+runtime_home="$root/.harness/codex"
+release_root=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --release-root) release_root="$2"; shift 2 ;;
+    --runtime-home) runtime_home="$2"; shift 2 ;;
+    *) exit 64 ;;
+  esac
+done
+if [ -n "$release_root" ]; then
+  # Consume a real exported member; a bridge call without the verified export
+  # or with the worktree substituted cannot satisfy preparation.
+  [ "$(cat "$release_root/release-member")" = "verified pinned TUI source" ]
+  printf '%s\n' "$release_root" > "$TEST_STUB_FILE.release-root"
+fi
+mkdir -p "$runtime_home"
+if [ -n "$release_root" ]; then
+  cp "$release_root/release-member" "$runtime_home/release-member"
+fi
+printf '# prepared by test stub\n' > "$runtime_home/AGENTS.md"
 echo "PREPARE_MCP_PROFILE:${HARNESS_CODEX_MCP_PROFILE:-<UNSET>}" >> "$TEST_STUB_FILE"
 echo "PREPARE_GLOBAL_MCP_ALLOWLIST:${HARNESS_CODEX_GLOBAL_MCP_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
 echo "PREPARE_APPS_ALLOWLIST:${HARNESS_CODEX_APPS_ALLOWLIST:-<UNSET>}" >> "$TEST_STUB_FILE"
@@ -80,6 +103,13 @@ chmod +x "$TEST_BIN/claude"
 
 cat > "$TEST_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
+if [[ -f "$TEST_STUB_FILE.release-root" ]]; then
+  [[ -z "${HARNESS_RELEASE_OPERATION_ROOT:-}" ]] || exit 67
+  [[ "$(cat "$CODEX_HOME/release-member")" = 'verified pinned TUI source' ]] || exit 65
+  release_export="$(cat "$TEST_STUB_FILE.release-root")"
+  [[ ! -e "${release_export%/runtime/*}" ]] || exit 66
+  touch "$TEST_STUB_FILE.native-consumed-release"
+fi
 {
   echo "EXEC:codex"
   echo "ARGS:$*"
@@ -672,4 +702,109 @@ launch_env_is "$STUB_SLACK" slack APPROVAL:on-request SANDBOX:danger-full-access
 STUB_SLACK_NEVER="$TEST_TEMP/out-slack-never-record.txt"; : > "$STUB_SLACK_NEVER"
 run_tui $'2\n1\n5\n3\n1\n' "$STUB_SLACK_NEVER"
 launch_env_is "$STUB_SLACK_NEVER" slack-never APPROVAL:on-request SANDBOX:'<UNSET>' BYPASS:'<UNSET>' PROFILE:rich
+# Exercise the installed bridge, not a mock bridge that merely echoes paths.
+# Only the external producer and preparation payload are fixtures.
+TUI_RELEASE_HOME="$TEST_TEMP/release-home"
+TUI_RELEASE_STATE="$TEST_TEMP/release-state"
+TUI_RELEASE_ID="11111111-1111-4111-8111-111111111111"
+TUI_RELEASE_RECORD="$TUI_RELEASE_STATE/sessions/$TUI_RELEASE_ID"
+TUI_RELEASE_ROOT="$TUI_RELEASE_STATE/worktrees/$TUI_RELEASE_ID"
+mkdir -p "$TUI_RELEASE_HOME/.local/share/harness-service/bin" "$TUI_RELEASE_ROOT/config"
+mkdir -p "$TUI_RELEASE_RECORD"
+chmod 700 "$TUI_RELEASE_RECORD"
+printf '%s\n' 'HARNESS_NAME="test harness"' 'HARNESS_PREFIX="test"' > "$TUI_RELEASE_ROOT/config/launcher.env"
+mkdir -p "$TUI_RELEASE_ROOT/.harness/codex"
+printf 'worktree home must stay untouched\n' > "$TUI_RELEASE_ROOT/.harness/codex/AGENTS.md"
+printf 'tracked baseline\n' > "$TUI_RELEASE_ROOT/tracked.txt"
+git -C "$TUI_RELEASE_ROOT" init -q
+git -C "$TUI_RELEASE_ROOT" add config/launcher.env tracked.txt
+cp "$TUI_RELEASE_ROOT/.git/index" "$TEST_TEMP/release-index.before"
+printf '%s\n' "$TUI_RELEASE_ROOT" > "$TUI_RELEASE_RECORD/session-root"
+printf '{}\n' > "$TUI_RELEASE_RECORD/release-pin.json"
+"$TEST_PYTHON_FIXTURE" - "$TUI_RELEASE_RECORD/release-state.json" <<'PY'
+import json, sys, time
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({
+    'mode': 'release', 'profile': 'test', 'release_id': 'pinned-tui',
+    'manifest_sha256': 'a' * 64, 'deadline': time.time() - 120,
+}))
+PY
+cat > "$TUI_RELEASE_HOME/.local/share/harness-service/bin/harness-service" <<'EOF'
+#!/bin/bash
+set -eu
+[ "$1" = release ]
+command="$2"
+shift 2
+case "$command" in
+  resume)
+    [ ! -e "$HOME/refuse-release" ] || exit 11
+    printf 'release pinned-tui %064d - -\n' 0 | tr 0 a
+    ;;
+  export)
+    destination=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --dir) destination="$2"; shift 2 ;; *) shift ;; esac
+    done
+    [ -n "$destination" ]
+    mkdir -p "$destination"
+    printf 'verified pinned TUI source\n' > "$destination/release-member"
+    printf 'pinned-tui %064d exported verified\n' 0 | tr 0 a
+    ;;
+  *) exit 64 ;;
+esac
+EOF
+chmod +x "$TUI_RELEASE_HOME/.local/share/harness-service/bin/harness-service"
+TEST_HARNESS="$TUI_RELEASE_ROOT"
+TUI_RELEASE_NATIVE_HOME="$TUI_RELEASE_RECORD/runtime/codex"
+STUB_RELEASE="$TEST_TEMP/out-release-tui.txt"
+HOME="$TUI_RELEASE_HOME" HARNESS_SESSION_STATE_HOME="$TUI_RELEASE_STATE" \
+  HARNESS_RELEASE_OPERATION_ROOT="$TUI_RELEASE_ROOT" \
+  run_tui $'2\n1\n2\n1\n1\n' "$STUB_RELEASE"
+grep -qxF "CODEX_HOME:$TUI_RELEASE_NATIVE_HOME" "$STUB_RELEASE" || {
+  echo 'FAIL: pinned TUI must launch with the bridge-returned stable home'; cat "$STUB_RELEASE"; exit 1;
+}
+[[ -f "$TUI_RELEASE_NATIVE_HOME/AGENTS.md" && -s "$STUB_RELEASE.release-root" &&
+   -e "$STUB_RELEASE.native-consumed-release" ]] || {
+  echo 'FAIL: pinned TUI must prepare from the verified export into native home'; exit 1;
+}
+release_export="$(cat "$STUB_RELEASE.release-root")"
+[[ ! -e "${release_export%/runtime/*}" ]] || {
+  echo 'FAIL: successful TUI preparation leaked its operation export'; exit 1;
+}
+
+# A refused pinned release must never reach preparation or native Codex.
+touch "$TUI_RELEASE_HOME/refuse-release"
+STUB_RELEASE_REFUSED="$TEST_TEMP/out-release-refused.txt"
+: > "$STUB_RELEASE_REFUSED"
+HOME="$TUI_RELEASE_HOME" HARNESS_SESSION_STATE_HOME="$TUI_RELEASE_STATE" \
+  run_tui $'2\n1\n2\n1\n1\n' "$STUB_RELEASE_REFUSED" || true
+[[ ! -s "$STUB_RELEASE_REFUSED" && ! -e "$STUB_RELEASE_REFUSED.release-root" ]] || {
+  echo 'FAIL: release refusal must prevent preparation and native execution'; cat "$STUB_RELEASE_REFUSED"; exit 1;
+}
+rm "$TUI_RELEASE_HOME/refuse-release"
+
+# Preparation failure must also delete that exact operation and not launch.
+STUB_RELEASE_FAILED="$TEST_TEMP/out-release-prepare-failed.txt"
+: > "$STUB_RELEASE_FAILED"
+touch "$STUB_RELEASE_FAILED.fail-prepare-once"
+HOME="$TUI_RELEASE_HOME" HARNESS_SESSION_STATE_HOME="$TUI_RELEASE_STATE" \
+  run_tui $'2\n1\n2\n1\n1\n' "$STUB_RELEASE_FAILED" || true
+[[ -s "$STUB_RELEASE_FAILED.release-root" ]] || {
+  echo 'FAIL: preparation failure case did not consume the verified export'; exit 1;
+}
+release_export="$(cat "$STUB_RELEASE_FAILED.release-root")"
+[[ ! -e "${release_export%/runtime/*}" ]] || {
+  echo 'FAIL: failed TUI preparation leaked its operation export'; exit 1;
+}
+if grep -q '^EXEC:' "$STUB_RELEASE_FAILED"; then
+  echo 'FAIL: preparation failure must prevent native execution'; exit 1
+fi
+cmp "$TEST_TEMP/release-index.before" "$TUI_RELEASE_ROOT/.git/index" || {
+  echo 'FAIL: pinned TUI preparation changed the worktree index'; exit 1;
+}
+[[ "$(cat "$TUI_RELEASE_ROOT/.harness/codex/AGENTS.md")" = 'worktree home must stay untouched' &&
+   "$(cat "$TUI_RELEASE_ROOT/tracked.txt")" = 'tracked baseline' ]] || {
+  echo 'FAIL: pinned TUI preparation changed worktree payloads'; exit 1;
+}
+echo 'PASS: TUI pinned release export, stable home, refusal and cleanup preserve worktree'
 echo "✓ All codex TUI tests passed"

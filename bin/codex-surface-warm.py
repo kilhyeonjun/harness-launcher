@@ -57,19 +57,15 @@ def apps_allowlist():
     return os.environ.get("HARNESS_CODEX_APPS_ALLOWLIST", "")
 
 
-MANIFEST_PATH = ""
-
-
-def runtime_agent_hooks():
-    # Manifest lives at <harness>/config/codex-surface.json. Keys are the
-    # fingerprint field names: <row>_agent_hooks for every registry row.
-    harness_dir = os.path.dirname(os.path.dirname(os.path.abspath(MANIFEST_PATH)))
+def runtime_agent_hooks(harness_dir, ssot_file):
+    # Code and verified declaration roots can differ in a pinned release.
+    # Keep the same explicit inputs as the candidate fingerprint and renderer.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
         import runtime_hooks_optin
     finally:
         sys.path.pop(0)
-    resolved = runtime_hooks_optin.resolve(harness_dir)
+    resolved = runtime_hooks_optin.resolve(harness_dir, ssot_file=ssot_file)
     return {f"{name}_agent_hooks": "1" if resolved[name] else "" for name in runtime_hooks_optin.KEYS}
 
 
@@ -477,9 +473,9 @@ def output_signatures(codex_home, external_prefixes=()):
 
 
 def main():
-    if len(sys.argv) != 11:
+    if len(sys.argv) != 13:
         print(
-            "usage: codex-surface-warm.py STAMP CACHE CODEX_HOME MANIFEST SKILL_PROFILE MCP_PROFILE EXPECTED_PROFILE BUNDLED_MARKETPLACE CONTEXT_WINDOW AUTO_COMPACT_LIMIT",
+            "usage: codex-surface-warm.py STAMP CACHE CODEX_HOME MANIFEST SKILL_PROFILE MCP_PROFILE EXPECTED_PROFILE BUNDLED_MARKETPLACE CONTEXT_WINDOW AUTO_COMPACT_LIMIT HARNESS_DIR SSOT_FILE",
             file=sys.stderr,
         )
         return 2
@@ -494,9 +490,9 @@ def main():
         bundled_marketplace,
         context_window_raw,
         auto_compact_limit_raw,
+        harness_dir,
+        ssot_file,
     ) = sys.argv[1:]
-    global MANIFEST_PATH
-    MANIFEST_PATH = manifest_path
     try:
         expected_context_window = int(context_window_raw) if context_window_raw else None
         expected_auto_compact_limit = int(auto_compact_limit_raw) if auto_compact_limit_raw else None
@@ -547,7 +543,7 @@ def main():
         cold()
     if fingerprint.get("slack_apps", "") != os.environ.get("HARNESS_CODEX_SLACK_APPS", ""):
         cold()
-    for key, expected in runtime_agent_hooks().items():
+    for key, expected in runtime_agent_hooks(harness_dir, ssot_file).items():
         if fingerprint.get(key, "") != expected or stamp.get(key, "") != expected:
             cold()
     for path, expected in watch.items():

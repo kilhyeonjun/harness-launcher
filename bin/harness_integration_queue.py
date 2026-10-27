@@ -344,25 +344,33 @@ class Queue:
         record = state/'sessions'/owner
         # A retrying caller only reads the durable receipt. It need not take
         # the execution lease held by the worker that already owns this input.
-        identity = journal(record)['identity']
-        old = self.db.execute('SELECT job_id FROM jobs WHERE state_root=? AND owner=? AND operation=? AND identity=?',
+        current = journal(record)
+        identity = current['identity']
+        old = self.db.execute('SELECT job_id,state,returncode FROM jobs WHERE state_root=? AND owner=? AND operation=? AND identity=?',
                               (str(state), owner, operation, identity)).fetchone()
-        if old: return old[0]
+        if old and not (operation == 'integrate' and current['state'] == 'SUBMITTED'
+                        and old['state'] == 'failed' and old['returncode'] == 17):
+            return old['job_id']
         with acquired(record/'broker.lock'):
             current = journal(record)
             if operation == 'integrate' and current['state'] not in ('SUBMITTED', 'INTEGRATING', 'DELIVERED'):
                 raise QueueError('only a submitted session may enter the integration queue')
             identity = current['identity']
-            old = self.db.execute('SELECT job_id FROM jobs WHERE state_root=? AND owner=? AND operation=? AND identity=?',
+            old = self.db.execute('SELECT job_id,state,returncode FROM jobs WHERE state_root=? AND owner=? AND operation=? AND identity=?',
                                   (str(state), owner, operation, identity)).fetchone()
-            if old: return old[0]
+            if old and not (operation == 'integrate' and current['state'] == 'SUBMITTED'
+                            and old['state'] == 'failed' and old['returncode'] == 17):
+                return old['job_id']
             if current['state'] != 'SUBMITTED' and operation == 'integrate':
                 raise QueueError('existing integration needs explicit recovery before adoption')
+            if old and self.db.execute("SELECT 1 FROM jobs WHERE state_root=? AND owner=? AND state IN ('queued','running','needs_reconcile')",
+                                       (str(state), owner)).fetchone():
+                raise QueueError('an accepted job owns this session; inspect that job first')
             files = {name: read(record/name) for name in INPUTS}
             check = ''.join(digest(files[name]) + '  ' + str(record/name) + '\n' for name in INPUTS)
             if operation == 'integrate' and digest(check.encode()) != identity:
                 raise QueueError('submission identity changed')
-            for name in ('commit-message', 'headless'):
+            for name in ('commit-message', 'headless', 'overlay-paths'):
                 if (record/name).exists(): files[name] = read(record/name)
             source = absolute(files['source-root'].decode().strip())
             remote = files['remote-url'].decode().strip()
@@ -377,6 +385,11 @@ class Queue:
             pin = self.pin(engine)
             lane = destination(remote, source)
             with self.admission(state):
+                if old:
+                    # An explicit retry of the same valid SUBMITTED input may
+                    # retire only a policy refusal's dedup slot. Keep its receipt
+                    # and snapshot; job-id identities also bind control history.
+                    self.db.execute('UPDATE jobs SET identity=job_id WHERE job_id=?', (old['job_id'],))
                 self.db.execute('INSERT INTO jobs(job_id,state_root,owner,operation,identity,destination,pin,input_digest,state,created) VALUES(?,?,?,?,?,?,?,?,?,?)',
                                 (job, str(state), owner, operation, identity, lane, pin,
                                  digest(canonical_json({'files': hashes, 'arguments': {}})), 'queued', time.time()))

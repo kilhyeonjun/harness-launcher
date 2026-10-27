@@ -635,9 +635,7 @@ class SessionCreationAdversarialTest(unittest.TestCase):
             base = Path(temporary)
             runtime = base / "runtime"
             runtime_bin = runtime / "bin"
-            runtime_bin.mkdir(parents=True)
-            for filename in ("session-isolation.sh", "harness_session_creation.py", "harness-common.sh"):
-                shutil.copy2(ROOT / "bin" / filename, runtime_bin / filename)
+            shutil.copytree(ROOT / "bin", runtime_bin, ignore=shutil.ignore_patterns('__pycache__'))
             source = _source(base / "engine")
             state = base / "state-engine"
             engine = runtime_bin / "session-isolation.sh"
