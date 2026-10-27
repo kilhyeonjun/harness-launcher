@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## Unreleased — CI regression reliability
 
 - Synchronize the UI-answer interrupt regression with server admission and
   observed socket closure, allowing the transport deadline plus shutdown grace
