@@ -39,7 +39,6 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - Add the launcher keyword `--task <uuid>` (Claude hook argument, Codex `HARNESS_LAUNCH_TASK_ID`), record the parent session of an explicit fork, and add `harness-headless --journal-board/--journal-task` for the Buzz run-start callback (inert unless both are given).
 - Codex hook trust must be approved again for ssot profiles that also enable the launch record hook: the `SessionStart` command and timeout change and a `SubagentStart` hook is added. The approval grant must carry a `callbacks` entry (with sha256) for the `harness-session-hook` path, or the row is not carried into isolated homes. `agent_start` is recorded in UTC so the process key does not change with the system time zone.
 
-
 ## 0.78.3 — 2026-10-27
 
 - Derive native bootstrap source authority from the operating-system UID/passwd
