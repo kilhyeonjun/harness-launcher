@@ -65,7 +65,11 @@ before using this launcher; this interface does not grant a maintenance lease.
 Verification cannot commit or push. It checks the full frozen candidate under
 the baseline's policy, including protected source changes, while ordinary
 staged-only delivery retains its protected-file refusal. Headless verification
-still runs against a scrubbed sandbox copy with no verifier state copied back.
+still runs against a scrubbed sandbox copy with no candidate state copied back.
+The only readback is bounded, allowlisted JSONL timing metadata from the private
+verifier temp directory into the session's `verifier-timing.jsonl`; see the
+[verifier environment contract](architecture.md#headless-isolated-runs) for toolchain
+negotiation and timing import restrictions.
 After removing remotes, the broker restores only `refs/remotes/origin/main` at
 its fresh bound baseline in the copy and trusted clone, and forces cache-only
 authority reads. This retains committed authority history without restoring a

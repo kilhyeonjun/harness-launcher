@@ -4,6 +4,14 @@ Notable changes are recorded here. This project follows semantic versioning for 
 
 ## Unreleased — CI lane sharding and reliability
 
+- Negotiate an advertised trusted-baseline `--toolchain-env` before headless
+  verification, strictly validate its absolute PATH/Python response, and use
+  the same toolchain for sandbox grants and execution. Resolution failure
+  refuses before candidate verification; older baselines remain unchanged.
+  Persist GATE 2 JSONL timing in each session's `verifier-timing.jsonl`, with
+  bounded, no-follow, allowlisted metadata import from headless verifiers and
+  no additional sandbox access or candidate-state readback.
+
 - Synchronize the UI-answer interrupt regression with server admission and
   observed socket closure, allowing the transport deadline plus shutdown grace
   on loaded runners while requiring an actual cancellation result. Report the
