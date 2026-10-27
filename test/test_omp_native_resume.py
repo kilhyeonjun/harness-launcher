@@ -143,6 +143,9 @@ class NativeResumeTests(unittest.TestCase):
         bound.write_text(old)
         (self.owner/'runtime.lock').write_text('')
         (self.namespace/'.launcher.lock').write_text('')
+        # Launcher-written private state is 0600; do not inherit the runner's umask.
+        for path in (runtimes/'current.json', bound, self.owner/'runtime.lock', self.namespace/'.launcher.lock'):
+            path.chmod(0o600)
         locks = self.namespace/'launcher-native-locks'; locks.mkdir(mode=0o700)
         lock = locks/(NATIVE+'.lock'); lock.write_text(''); lock.chmod(0o600)
         self.context.stop()
