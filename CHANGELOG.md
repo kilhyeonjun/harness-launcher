@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## Unreleased — CI lane sharding
 
 - Split the complete headless regression into three deterministic scenario
   shards, balance remaining shell work across two lanes, and move measured slow
