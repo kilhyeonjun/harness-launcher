@@ -1291,8 +1291,10 @@ options behaves exactly as before.
   `verifier-timing.jsonl`. Supporting headless baselines receive that variable
   pointing into their private temp dir instead. After verifier success or
   failure, the broker imports only JSON objects with gate_start, suite_start,
-  suite_end or gate_end events and contract timing fields into the same session
-  file. Import opens without following symlinks and requires a regular,
+  suite_end or gate_end events and event-specific contract timing fields into
+  the same session file. Numeric fields reject booleans and nonfinite values;
+  strings are capped at 256 characters and failed-suite lists at 512 entries.
+  Import opens without following symlinks and requires a regular,
   single-link file no larger than 1 MiB; malformed or extra-field records are
   skipped. Unsafe files produce a warning, never a delivery failure. No suite
   output, candidate state or additional sandbox access is imported.

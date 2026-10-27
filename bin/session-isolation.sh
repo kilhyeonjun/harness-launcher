@@ -1355,12 +1355,29 @@ write_verifier_gitconfig() {
 # Import only bounded timing metadata, never candidate output or filesystem links.
 copy_verifier_timing() {
   python3 -I - "$1" "$2" <<'PY'
-import json, os, stat, sys
+import json, math, os, stat, sys
 source, destination = sys.argv[1:]
-fields = {'event', 'run', 'ts', 'suites', 'workers', 'worker_reason', 'host_slots',
-          'load1', 'cpus', 'suite', 'worker_wait_s', 'host_wait_s', 'host_slot',
-          'status', 'rc', 'elapsed_s', 'warnings', 'failed', 'wall_s', 'suite_sum_s'}
-events = {'gate_start', 'suite_start', 'suite_end', 'gate_end'}
+common = {'event', 'run', 'ts'}
+allowed = {
+    'gate_start': {'suites', 'workers', 'worker_reason', 'host_slots', 'load1', 'cpus'},
+    'suite_start': {'suite', 'worker_wait_s', 'host_wait_s', 'host_slot'},
+    'suite_end': {'suite', 'status', 'rc', 'elapsed_s', 'warnings'},
+    'gate_end': {'status', 'failed', 'wall_s', 'suite_sum_s'},
+}
+numbers = {'worker_wait_s', 'host_wait_s', 'elapsed_s', 'wall_s', 'suite_sum_s', 'load1', 'ts'}
+integers = {'suites', 'workers', 'cpus', 'rc', 'warnings'}
+def short_string(value):
+    return isinstance(value, str) and len(value) <= 256
+def valid_field(name, value):
+    if name in numbers:
+        return type(value) in (int, float) and (type(value) is int or math.isfinite(value))
+    if name in integers:
+        return type(value) is int
+    if name == 'host_slots':
+        return type(value) is int or short_string(value)
+    if name == 'failed':
+        return isinstance(value, list) and len(value) <= 512 and all(short_string(item) for item in value)
+    return short_string(value)
 try:
     fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
 except FileNotFoundError:
@@ -1376,7 +1393,9 @@ records = []
 for line in data.splitlines():
     try:
         value = json.loads(line)
-        if isinstance(value, dict) and isinstance(value.get('event'), str) and value['event'] in events and value.keys() <= fields:
+        if (isinstance(value, dict) and isinstance(value.get('event'), str)
+                and value['event'] in allowed and value.keys() <= allowed[value['event']] | common
+                and all(valid_field(name, item) for name, item in value.items())):
             records.append(json.dumps(value, allow_nan=False) + '\n')
     except (ValueError, UnicodeError, RecursionError):
         continue
@@ -1406,10 +1425,10 @@ run_sandboxed_verifier() {
   vtmp="$(mktemp -d "${storage_root:-/private/tmp}/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
   vcopy="$(mktemp -d "${storage_root:-$(state_home)}/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
   local tc_path="${PATH:-/usr/bin:/bin}" tc_python tc_python_bin tc_supported=0
-  help_output="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin bash "$verifier" --help 2>/dev/null || true)"
+  help_output="$(verifier_exec env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin bash "$verifier" --help 2>/dev/null || true)"
   if grep -q -- '--toolchain-env' <<< "$help_output"; then
     tc_supported=1
-    if ! env -i HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" bash "$verifier" --toolchain-env > "$vtmp/toolchain.env" 2> "$vtmp/toolchain.err" \
+    if ! verifier_exec env -i HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" bash "$verifier" --toolchain-env > "$vtmp/toolchain.env" 2> "$vtmp/toolchain.err" \
         || ! python3 -I - "$vtmp/toolchain.env" > "$vtmp/toolchain.values" <<'PY'
 import os, sys
 with open(sys.argv[1], 'rb') as stream:

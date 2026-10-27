@@ -911,7 +911,11 @@ test_case=verifier-toolchain-timing
 # The trusted baseline advertises the optional contract; its committed mode
 # selects deterministic failure and untrusted timing-file shapes.
 cp "$TMP/vfix/core/bin/auto-deliver.sh" "$TMP/legacy-verifier"
-TC_PATH="${PY_ABS%/*}:/usr/bin:/bin:/usr/sbin:/sbin"
+# As in the full headless fixture, avoid /usr/bin/git entering an Xcode
+# application outside the existing sandbox toolchain boundary.
+TC_GIT="$(command -v git)"
+[[ ! -x /Library/Developer/CommandLineTools/usr/bin/git ]] || TC_GIT=/Library/Developer/CommandLineTools/usr/bin/git
+TC_PATH="${PY_ABS%/*}:${TC_GIT%/*}:/usr/bin:/bin:/usr/sbin:/sbin"
 printf 'TC_PATH=%q\nTC_PYTHON=%q\n' "$TC_PATH" "$PY_ABS" > "$TMP/tc-header"
 cat >> "$TMP/tc-header" <<'EOF'
 mode="$(cat "$(dirname "$0")/toolchain-mode")"
@@ -935,8 +939,11 @@ case "$mode" in
   symlink)
     printf '%s\n' '{"event":"gate_end","run":"symlink"}' > "$TMPDIR/timing-target"
     ln -s "$TMPDIR/timing-target" "$HARNESS_DELIVERY_TIMING_LOG" ;;
-  oversized) "$HARNESS_PYTHON" -I -c 'import os; open(os.environ["HARNESS_DELIVERY_TIMING_LOG"], "w").write(" " * 1048577)' ;;
-  garbage) printf '%s\n' 'garbage' '[]' '{"event":"secret"}' '{"event":"gate_end","output":"secret"}' '{"event":[]}' > "$HARNESS_DELIVERY_TIMING_LOG" ;;
+  oversized) "$HARNESS_PYTHON" -I -c 'import os; open(os.environ["HARNESS_DELIVERY_TIMING_LOG"], "w").write("{\"event\":\"gate_end\",\"run\":\"big\"}\n" * 40000)' || exit 104 ;;
+  garbage)
+    printf '%s\n' 'garbage' '[]' '{"event":"secret"}' '{"event":"gate_end","output":"secret"}' '{"event":[]}' '{"event":"suite_start","failed":["not-a-suite-start-field"]}' '{"event":"gate_start","workers":true}' > "$HARNESS_DELIVERY_TIMING_LOG"
+    "$HARNESS_PYTHON" -I -c 'import json, os; f = open(os.environ["HARNESS_DELIVERY_TIMING_LOG"], "a"); f.write(json.dumps({"event": "gate_end", "status": "x" * 10240}) + "\n")' || exit 104
+    ;;
   *) printf '%s\n' '{"event":"gate_start","run":"headless","ts":1,"suites":1,"workers":1}' 'garbage' '{"event":"gate_end","run":"headless","ts":2,"status":"passed","wall_s":0}' > "$HARNESS_DELIVERY_TIMING_LOG" ;;
 esac
 [[ "$mode" != verifier-failure ]] || exit 103
@@ -962,7 +969,13 @@ for tc_mode in valid symlink oversized garbage verifier-failure unavailable dupl
       [[ "$tc_mode" != unavailable ]] || grep -q 'fixture toolchain missing' "$TMP/tc-$tc_mode.err"
       ;;
     *)
-      if [[ "$tc_mode" == verifier-failure ]]; then [[ "$tc_rc" != 0 ]]; else [[ "$tc_rc" == 0 ]]; fi
+      if [[ "$tc_mode" == verifier-failure ]]; then
+        [[ "$tc_rc" != 0 ]] || { echo 'FAIL: verifier failure accepted'; exit 1; }
+      elif [[ "$tc_rc" != 0 ]]; then
+        cat "$TMP/tc-$tc_mode.out" "$TMP/tc-$tc_mode.err"
+        echo "FAIL: $tc_mode toolchain verifier close exited $tc_rc"
+        exit 1
+      fi
       grep -qx "TOOLCHAIN-ENV PATH=$TC_PATH" "$TMP/tc-$tc_mode.out"
       grep -qx "TOOLCHAIN-ENV HARNESS_PYTHON=$PY_ABS" "$TMP/tc-$tc_mode.out"
       grep -qx "TOOLCHAIN-ENV HARNESS_PYTHON_BIN=$PY_ABS" "$TMP/tc-$tc_mode.out"
