@@ -603,8 +603,181 @@ def rebind_stale(state, source, w):
     return rebind_runtime(state, source, w) if stale else None
 
 
+def native_request(args):
+    """Parse only the public native-resume grammar, before allocating an owner."""
+    args = list(args)
+    if not args or args[0] != 'omp': return None
+    tail = args[1:]
+    if not any(type(arg) is str and (arg.startswith('--resume') or arg.startswith('--fork-session')) for arg in tail): return None
+    require(len(tail) >= 2 and tail[0] == '--resume', 'runtime_resume_invalid_request')
+    native_id = tail[1]
+    try: require(str(uuid.UUID(native_id)) == native_id, 'runtime_resume_invalid_id')
+    except (ValueError, TypeError, AttributeError): raise ContinuationError('runtime_resume_invalid_id') from None
+    tail = tail[2:]; fork = False; model = None
+    while tail:
+        flag = tail.pop(0)
+        if flag == '--fork-session' and not fork: fork = True
+        elif flag == '--model-mode' and model is None and tail:
+            model = tail.pop(0)
+            require(type(model) is str and bool(re.fullmatch('[a-z][a-z0-9-]{0,63}', model)), 'runtime_resume_invalid_request')
+        else: raise ContinuationError('runtime_resume_invalid_request')
+    return {'id': native_id, 'fork': fork, 'model_mode': model}
+
+
+def _native_owner(state, source, w, live=True):
+    workspace_id(w)
+    state = p.physical(state); source = p.physical(source)
+    directory = state/'sessions'/w; work = state/'worktrees'/w
+    for item in (state, state/'sessions', directory, source): owned_directory(item)
+    require(read_metadata(directory/'source-root').decode().strip() == str(source) and
+            read_metadata(directory/'session-root').decode().strip() == str(work), 'runtime_resume_owner_mismatch')
+    states = [line[6:] for line in read_metadata(directory/'journal').decode().splitlines() if line.startswith('state=')]
+    require(len(states) == 1, 'runtime_resume_owner_invalid')
+    retired = states[0] in ('DELIVERED', 'DISCARDED') or not work.exists()
+    if live: require(not retired, 'runtime_resume_owner_retired')
+    if os.path.lexists(work): owned_directory(work)
+    return work, retired
+
+
+def native_resolve(state, source, native_id, consumer, fork=False, _check_binding=True):
+    """Find one regular owned history file in the current runtime namespace only."""
+    try:
+        require(str(uuid.UUID(native_id)) == native_id, 'runtime_resume_invalid_id')
+        context = current_context(source, consumer)
+        namespace = p.physical(context['namespace_path']); owned_directory(namespace, True)
+        history = namespace/'history'; owned_directory(history)
+        matches = []
+        # Do not descend into launcher-continuations or follow directory links.
+        for root, dirs, files in os.walk(history, followlinks=False):
+            for name in dirs:
+                require(not (Path(root)/name).is_symlink(), 'runtime_resume_history_symlink')
+                owned_directory(Path(root)/name)
+            for name in files:
+                if name.endswith('_'+native_id+'.jsonl'):
+                    matches.append(Path(root)/name)
+        require(len(matches) == 1, 'runtime_resume_missing_or_ambiguous')
+        path = matches[0]; before = path.lstat()
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and before.st_nlink == 1 and
+                not before.st_mode & 0o022, 'runtime_resume_history_invalid')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            require(p.stamp(before) == p.stamp(os.fstat(fd)), 'runtime_resume_identity_changed')
+            header_line(fd)  # native title precedes the JSON session header
+            raw = header_line(fd)
+            require(p.stamp(before) == p.stamp(os.fstat(fd)) == p.stamp(path.lstat()), 'runtime_resume_identity_changed')
+        finally: os.close(fd)
+        row = p.decode(raw)
+        require(type(row) is dict and row.get('type') == 'session' and type(row.get('version')) is int and
+                row['version'] == 3 and row.get('id') == native_id, 'runtime_resume_header_invalid')
+        cwd = Path(row['cwd']); w = cwd.name
+        require(cwd == Path(state)/'worktrees'/w, 'runtime_resume_cwd_mismatch')
+        work, retired = _native_owner(state, source, w, live=not fork)
+        require(cwd == work, 'runtime_resume_cwd_mismatch')
+        if fork: require('additionalDirectories' not in row, 'runtime_resume_additional_directories')
+        elif _check_binding: binding(state, source, w, consumer, context)
+        return {'launcher_session_id': w, 'workspace_root': str(work), 'session_root': str(work),
+                'source_root': str(p.physical(source)), 'native_path': str(path), 'namespace_path': str(namespace),
+                'native_id': native_id, 'retired': retired, 'header_sha256': p.digest(raw),
+                'file_identity': file_identity(before)}
+    except ContinuationError: raise
+    except (p.ProjectionError, OSError, ValueError, TypeError, KeyError, OverflowError):
+        raise ContinuationError('runtime_resume_unbound') from None
+
+
+def native_rebind_runtime(state, source, w, native_id):
+    """Rebind a live owner only from the verified current launcher snapshot."""
+    fds = []
+    try:
+        consumer = p.physical(Path(__file__).resolve().with_name('aliases.zsh'))
+        context = current_context(source, consumer)
+        selected = native_resolve(state, source, native_id, consumer)
+        require(selected['launcher_session_id'] == w, 'runtime_resume_owner_mismatch')
+        runtimes = consumer.parent.parent.parent
+        current = p.decode(p.read_file(runtimes/'current.json')[0])
+        keys(current, 'version revision path manifest_sha256')
+        require(current['path'] == str(consumer.parent.parent) and current['revision'] == context['snapshot_revision'],
+                'runtime_resume_not_current_runtime')
+        bindings = runtimes/'bindings'; owned_directory(bindings, True)
+        owned_directory(runtimes/'binding-locks', True)
+        path = bindings/(w.lower()+'.json'); old = p.read_file(path, limit=LIMIT)[0]
+        fds.append(_exclusive(runtimes/'binding-locks'/(w.lower()+'.lock'), True))
+        fds.append(_exclusive(Path(state)/'sessions'/w/'runtime.lock'))
+        fds.append(_exclusive(Path(context['namespace_path'])/'.launcher.lock'))
+        locks = Path(context['namespace_path'])/'launcher-native-locks'
+        try: locks.mkdir(mode=0o700)
+        except FileExistsError: pass
+        owned_directory(locks, True)
+        native_lock = locks/(native_id+'.lock')
+        fd = os.open(native_lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        os.close(fd)
+        fds.append(_exclusive(native_lock))
+        require(native_resolve(state, source, native_id, consumer, _check_binding=False) == selected and p.read_file(path, limit=LIMIT)[0] == old,
+                'runtime_resume_identity_changed')
+        value = {'source_root': str(p.physical(source)), 'runtime': current}
+        if p.decode(old) != value:
+            temp = bindings/('.'+uuid.uuid4().hex+'.tmp')
+            fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(json.dumps(value, sort_keys=True).encode()); stream.flush(); os.fsync(stream.fileno())
+                os.replace(temp, path); p.sync_directory(bindings)
+            finally: temp.unlink(missing_ok=True)
+        return current
+    except ContinuationError: raise
+    except (p.ProjectionError, OSError, ValueError, TypeError, KeyError):
+        raise ContinuationError('runtime_resume_rebind_failed') from None
+    finally:
+        for fd in reversed(fds): os.close(fd)
+
+
+def native_admit(state, source, w, native_id, fork=False, expected=None):
+    consumer = Path(__file__).resolve().with_name('aliases.zsh')
+    selected = native_resolve(state, source, native_id, consumer, fork)
+    require(fork or selected['launcher_session_id'] == w, 'runtime_resume_owner_mismatch')
+    context = current_context(source, consumer)
+    binding(state, source, w, consumer, context)
+    if fork:
+        require(w != selected['launcher_session_id'], 'runtime_resume_fork_owner_reused')
+    namespace = Path(selected['namespace_path'])
+    locks = namespace/'launcher-native-locks'
+    try: locks.mkdir(mode=0o700)
+    except FileExistsError: pass
+    owned_directory(locks, True)
+    lock = locks/(native_id+'.lock')
+    if os.path.lexists(lock):
+        meta = lock.lstat()
+        require(stat.S_ISREG(meta.st_mode) and meta.st_uid == os.getuid() and meta.st_nlink == 1 and
+                stat.S_IMODE(meta.st_mode) == 0o600, 'runtime_resume_lock_invalid')
+    fingerprint = p.digest(p.canonical(selected))
+    if expected is not None:
+        require(fingerprint == expected, 'runtime_resume_identity_changed')
+        if fork:
+            lineage = Path(state)/'sessions'/w/'omp-native-lineage.json'
+            raw = p.canonical({'schema': 'omp-native-lineage/v1', 'native_id': native_id,
+                               'source_owner': selected['launcher_session_id'], 'owner': w,
+                               'source_root': selected['source_root'], 'namespace_path': selected['namespace_path'],
+                               'native_path': selected['native_path'], 'header_sha256': selected['header_sha256']})
+            temporary = lineage.parent/('.'+uuid.uuid4().hex+'.tmp')
+            fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(raw); stream.flush(); os.fchmod(stream.fileno(), 0o400); os.fsync(stream.fileno())
+                os.link(temporary, lineage, follow_symlinks=False)
+                p.sync_directory(lineage.parent)
+            finally: temporary.unlink(missing_ok=True)
+    return selected, fingerprint
+
+
 def main(argv):
     try:
+        if len(argv) in (7, 8) and argv[1] == '--native-admit':
+            state, source, w, native_id, mode = argv[2:7]
+            require(mode in ('resume', 'fork'), 'runtime_resume_invalid_request')
+            selected, fingerprint = native_admit(state, source, w, native_id, mode == 'fork', argv[7] if len(argv) == 8 else None)
+            print('\n'.join((selected['native_path'], selected['namespace_path'], fingerprint)))
+            return 0
+        if len(argv) == 6 and argv[1] == '--native-rebind':
+            native_rebind_runtime(*argv[2:]); return 0
         if len(argv) == 5 and argv[1] in ('--rebind-runtime', '--rebind-stale'):
             rebind = rebind_runtime if argv[1] == '--rebind-runtime' else rebind_stale
             sys.stdout.buffer.write(p.canonical(rebind(*argv[2:]))+b'\n'); return 0
@@ -619,9 +792,13 @@ def main(argv):
         require(len(output) <= LIMIT); sys.stdout.buffer.write(output+b'\n')
         return 0
     except (ContinuationError, p.ProjectionError) as exc:
-        print('harness-launcher: '+exc.label, file=sys.stderr); return 2
+        label = exc.label
+        if len(argv) > 1 and argv[1].startswith('--native-') and not label.startswith('runtime_'):
+            label = 'runtime_resume_busy' if label == 'OMP_CONTINUATION_BUSY' else 'runtime_resume_unbound'
+        print('harness-launcher: '+label, file=sys.stderr); return 2
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
-        print('harness-launcher: OMP_CONTINUATION_UNBOUND', file=sys.stderr); return 2
+        label = 'runtime_resume_unbound' if len(argv) > 1 and argv[1].startswith('--native-') else 'OMP_CONTINUATION_UNBOUND'
+        print('harness-launcher: '+label, file=sys.stderr); return 2
 
 
 if __name__ == '__main__':

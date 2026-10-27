@@ -293,8 +293,8 @@ and booleans `-p`, `--print`, `--no-tools`, `--no-lsp`, `--no-pty`,
 and `--no-prewalk`. Separate option values must be present and not start with
 `-`; use the equals form for those values. Other native management subcommands
 and flags, including direct state/auth/path overrides and native
-restore/resume/fork flags, remain refused. The explicit managed continuation
-modes below are a separate bounded transport. Neither route claims full CLI
+restore/resume/fork paths, remain refused. The exact native-UUID resume route
+and explicit managed continuation modes below are separate bounded transports. Neither route claims full CLI
 or cross-runtime history support. Literal text after `--` is not scanned as a
 launcher command.
 
@@ -304,6 +304,36 @@ The routing fixture checks the outgoing environment separately from its
 interpreter's startup-added environment. Source implementation and
 fake proof do not activate an installed launcher or prove interactive OMP,
 account authentication, provider calls, or full session restoration.
+
+### Native OMP owner resume and fork
+
+The paired dispatcher accepts only `omp --resume <native-uuid>` with optional
+`--fork-session` and `--model-mode <id>` controls. It skips Claude's request
+classifier for OMP and rejects unsupported resume forms before session creation.
+The selected runtime's continuation context supplies the single prepared
+namespace; discovery never searches or copies another namespace's history.
+Exactly one owned regular, non-symlink `history/*_<uuid>.jsonl` must have the
+matching header id and an exact `<pool>/worktrees/<owner>` cwd. The owner's
+source-root and session-root must agree; canonical roots and subdirectories do
+not establish ownership.
+
+Live owners retain their worktree and are rebound to the selected runtime only
+under source, selection and free-lock checks. Delivered/discarded owners require
+explicit `--fork-session`; the new isolated owner records source lineage and
+native `--fork` leaves the source history unchanged. Additional directory grants
+in the source header are refused for forks. Missing capabilities fail with coded
+errors instead of using legacy history. Legacy integrity checks are unchanged.
+
+The dispatcher alone emits internal `omp --session-native-resume <uuid>` or
+`omp --session-native-fork <uuid>` immediately after its isolated-owner control.
+The runtime repeats namespace, header and owner admission itself. Lock order is
+workspace lease, namespace lock, per-native-id lock, then device/inode recheck and
+native execution. Native holds the id lock through `-e` even if its launcher dies.
+Only the internally validated path is injected as `--resume` or `--fork`, with
+`--session-dir <namespace>/history`; model mode uses the existing admission path.
+Herdr restore uses `harness-exec <source> omp --resume <native-uuid>`, never a bare
+native path. Parent `OMPCODE=1` remains in native's environment while its inherited
+HERDR reporting triple is suppressed; top-level pane reporting stays unchanged.
 
 ### Normal OMP continuation
 

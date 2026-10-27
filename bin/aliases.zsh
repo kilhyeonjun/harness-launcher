@@ -1594,8 +1594,20 @@ _harness_launcher_omp_native_exec() {
     : >> "$_harness_omp_native_lock" || return 2
     zmodload zsh/system || return 2
     zsystem flock -t 0 -e -f native_lock_fd "$_harness_omp_native_lock" 2>/dev/null || {
-      echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2; return 2
+      if [[ "${(t)_harness_omp_native_check_id-}" == *local* ]]; then
+        echo 'harness-launcher: runtime_resume_busy' >&2
+      else
+        echo 'harness-launcher: OMP_CONTINUATION_BUSY' >&2
+      fi
+      return 2
     }
+  fi
+  if [[ "${(t)_harness_omp_native_check_id-}" == *local* ]]; then
+    local check_python
+    check_python="$(harness_python3_resolve)" || return 2
+    "$check_python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_continuation.py" --native-admit \
+      "$HARNESS_SESSION_STATE_HOME" "${config_root:A}" "$_harness_omp_native_check_w" \
+      "$_harness_omp_native_check_id" "$_harness_omp_native_check_mode" "$_harness_omp_native_check_sha" >/dev/null || return 2
   fi
   # Env contract v2 (decision 038): the 13 fixed fields, PI_AUTO_QA=0,
   # PI_SHELL_PREFIX, two optional groups that are forwarded whole or not at all,
@@ -1630,7 +1642,8 @@ _harness_launcher_omp_native_exec() {
   if [[ "${(t)_harness_omp_print_receipt-}" == *local* && "${(t)_harness_omp_print_nonce-}" == *local* && "$_harness_omp_print_receipt" == /* && "$_harness_omp_print_nonce" =~ $_HARNESS_LAUNCHER_UUID_RE ]]; then
     extra+=(HARNESS_OMP_PRINT_RECEIPT="$_harness_omp_print_receipt" HARNESS_OMP_PRINT_NONCE="$_harness_omp_print_nonce")
   fi
-  if [[ "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
+  [[ "${OMPCODE-}" != 1 ]] || extra+=(OMPCODE=1)
+  if [[ "${OMPCODE-}" != 1 && "${HERDR_ENV-}" == 1 && "${HERDR_SOCKET_PATH-}" == /* && -n "${HERDR_PANE_ID-}" ]]; then
     extra+=(HERDR_ENV=1 HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" HERDR_PANE_ID="$HERDR_PANE_ID")
     # Only the continuation caller's own local sets the resume argv; an inherited
     # value (including a caller's HERDR_RESUME_ARGV) never passes. It is always
@@ -1756,6 +1769,57 @@ except Exception:
     print("harness-launcher: OMP_CONTINUATION_UNBOUND",file=sys.stderr);raise SystemExit(2)
 '
 }
+
+# Internal native history transport: admission is repeated independently of Entry.
+_harness_launcher_omp_native_resume() (
+  local w="$1" mode="$2" native_id="$3"; shift 3
+  [[ "$mode" == (--session-native-resume|--session-native-fork) && "$native_id" =~ '^[0-9a-f-]{36}$' ]] || return 2
+  _harness_launcher_omp_check_args "$@" || return 2
+  local python helper="$_HARNESS_LAUNCHER_BIN/harness_omp_continuation.py"
+  python="$(harness_python3_resolve)" || return 2
+  "$python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
+    select-continuation-source "${config_root:A}" "$HOME/.config/harness-launcher/profiles" \
+    "${config_root:A}" "$_HARNESS_LAUNCHER_BIN/aliases.zsh" >/dev/null || return 2
+  local operation=resume
+  [[ "$mode" != --session-native-fork ]] || operation=fork
+  if [[ "$operation" == resume ]]; then
+    "$python" -I -S -B "$helper" --native-rebind "$HARNESS_SESSION_STATE_HOME" "${config_root:A}" "$w" "$native_id" || return 2
+  fi
+  local HARNESS_SESSION_LEASE_FD="" namespace_fd="" selected=""
+  _harness_launcher_isolated_lease_acquire "$w" || return 2
+  {
+    _harness_launcher_omp_validate || return 2
+    umask 077
+    [[ ! -L "$HARNESS_OMP_ROOT/.launcher.lock" ]] || return 2
+    : >> "$HARNESS_OMP_ROOT/.launcher.lock" || return 2
+    zmodload zsh/system || return 2
+    zsystem flock -t 0 -r -f namespace_fd "$HARNESS_OMP_ROOT/.launcher.lock" 2>/dev/null || return 2
+    selected="$("$python" -I -S -B "$helper" --native-admit "$HARNESS_SESSION_STATE_HOME" "${config_root:A}" "$w" "$native_id" "$operation")" || return 2
+    local -a fields=("${(@f)selected}")
+    [[ ${#fields} == 3 && "$fields[2]" == "$HARNESS_OMP_ROOT" ]] || return 2
+    local locks="$HARNESS_OMP_ROOT/launcher-native-locks"
+    [[ ! -L "$locks" ]] || return 2
+    [[ -d "$locks" ]] || mkdir -m 700 "$locks" || return 2
+    [[ -O "$locks" ]] || return 2
+    local _harness_omp_native_lock="$locks/$native_id.lock"
+    local _harness_omp_native_check_id="$native_id" _harness_omp_native_check_w="$w"
+    local _harness_omp_native_check_mode="$operation" _harness_omp_native_check_sha="$fields[3]"
+    export HARNESS_SESSION_ID="$w" HARNESS_SESSION_ROOT="$HARNESS_SESSION_STATE_HOME/worktrees/$w"
+    export HARNESS_SOURCE_ROOT="${config_root:A}"
+    local -a omp_required_argv
+    _harness_launcher_omp_required_argv "$HARNESS_SESSION_ROOT" "$@" || return 2
+    local _harness_omp_herdr_resume=""
+    _harness_omp_herdr_resume="$("$python" -I -S -B -c 'import json,sys;print(json.dumps(sys.argv[1:],separators=(",",":")))' \
+      harness-exec "${config_root:A}" omp --resume "$native_id")" || return 2
+    local flag=--resume
+    [[ "$operation" != fork ]] || flag=--fork
+    _harness_launcher_omp_native "$HARNESS_SESSION_ROOT" "${omp_required_argv[@]}" --session-dir "$HARNESS_OMP_ROOT/history" "$flag" "$fields[1]"
+    return $?
+  } always {
+    [[ -z "$namespace_fd" ]] || zsystem flock -u "$namespace_fd" 2>/dev/null
+    [[ -z "$HARNESS_SESSION_LEASE_FD" ]] || zsystem flock -u "$HARNESS_SESSION_LEASE_FD" 2>/dev/null
+  }
+)
 
 _harness_launcher_omp_continuation() (
   setopt localoptions pipefail
@@ -2015,6 +2079,14 @@ _harness_launcher_run() {
     _harness_launcher_omp_model_mode "${omp_native_args[@]}" || return 2
     local -a omp_prefix=("${@[1,selector_i]}")
     set -- "${omp_prefix[@]}" "${omp_native_args[@]}"
+    if [[ "${omp_native_args[1]-}" == (--session-native-resume|--session-native-fork) ]]; then
+      [[ -z "$isolated_source_run_dir" && "$1" == --isolated-session && "$selector_i" == 3 && ${#omp_native_args} -ge 2 ]] || {
+        echo 'harness-launcher: runtime_resume_unbound' >&2; return 2
+      }
+      _harness_launcher_omp_projection_select || return 2
+      _harness_launcher_omp_native_resume "$2" "${omp_native_args[@]}"
+      return $?
+    fi
     if [[ "${omp_native_args[1]-}" == (--session-new|--session-resume) ]]; then
       # Entry alone supplies this exact internal transport after origin/store
       # verification. Raw public outer controls are refused by Entry pre-begin.

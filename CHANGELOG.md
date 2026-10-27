@@ -2,6 +2,20 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.79.1 — 2026-10-27
+
+- Keep OMP UUID resumes out of Claude's fork classifier. Add a paired-dispatcher
+  native owner resume/fork route with exact prepared-namespace and header checks,
+  current-runtime rebind, explicit retired-owner fork opt-in and recorded lineage.
+  Refuse unsupported requests before workspace allocation; preserve legacy
+  integrity checks and refuse inherited extra-directory grants on forks.
+- Hold native identity locks through native process lifetime after workspace and
+  namespace admission, recheck file identity before exec, and provide launcher-owned
+  Herdr restore argv. Preserve parent `OMPCODE=1` while suppressing nested Herdr
+  reporting variables, without changing top-level pane reporting.
+- These source changes require a reviewed release, tap update and paired private
+  dispatcher publication/activation; they do not modify installed snapshots.
+
 ## 0.79.0 — 2026-10-27
 
 - Preserve 0.78.3 native-account isolation and 0.78.1 exact baseline/candidate verification while integrating release-backed sessions. Reserved creation retains lease-owned cleanup and transport cloning under the shared release deadline. Durable queue inputs snapshot overlay exclusions so accepted jobs do not follow mutable session records; the complete CI inventory remains authoritative.
@@ -18,6 +32,7 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - Add the launcher half of automatic session linking. With the ssot opt-in, Codex and Claude run the launch record and then the host collector callback as one `SessionStart` command (timeout 10, was 5) and add a callback-only `SubagentStart` hook (timeout 5; for Codex only when the launch record hook is also on). The record helper keeps its single process-table read and 5 second limit, widened to `pid,ppid,lstart,comm`; an unreadable table still withholds the grant. The record is now fsynced and gains `source`, `agent_pid`, `agent_start`, `task_id` and `parent_native`. Profiles without the ssot opt-in are unchanged.
 - Add the launcher keyword `--task <uuid>` (Claude hook argument, Codex `HARNESS_LAUNCH_TASK_ID`), record the parent session of an explicit fork, and add `harness-headless --journal-board/--journal-task` for the Buzz run-start callback (inert unless both are given).
 - Codex hook trust must be approved again for ssot profiles that also enable the launch record hook: the `SessionStart` command and timeout change and a `SubagentStart` hook is added. The approval grant must carry a `callbacks` entry (with sha256) for the `harness-session-hook` path, or the row is not carried into isolated homes. `agent_start` is recorded in UTC so the process key does not change with the system time zone.
+
 
 ## 0.78.3 — 2026-10-27
 
