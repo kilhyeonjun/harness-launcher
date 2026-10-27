@@ -35,7 +35,7 @@ case "$#" in
   1) [[ "$1" == --ci-verify ]] || exit 2; mode=verify ;;
   4)
     [[ "$1" == --ci-group && "$3" == --ci-result ]] || exit 2
-    case "$2" in headless|target|sessions|shell|preservation|python) group="$2" ;; *) exit 2 ;; esac
+    case "$2" in headless|headless-security|headless-codex|target|sessions|shell|shell-extra|preservation|python) group="$2" ;; *) exit 2 ;; esac
     mode=group; result="$4"
     ;;
   *) exit 2 ;;
@@ -43,13 +43,21 @@ esac
 
 # One ordered inventory feeds both the full run and every CI group.
 inventory=()
+shell_index=0
 add_test() {
   local name="$1" policy="$2" credit="$3" lane=python lock=0
+  if [[ "$name" == test-harness-headless.sh && "$mode" != full ]]; then
+    inventory+=("$name@delivery|headless|shell|1|1"
+                 "$name@security|headless-security|shell|1|1"
+                 "$name@codex|headless-codex|shell|1|1")
+    return
+  fi
   if [[ "$policy" == shell ]]; then
     lane=shell
     case "$name" in
       test-harness-headless.sh) lane=headless ;;
-      test-headless-target.sh) lane=target ;;
+      test-headless-target.sh|test-terminal-runtime-launch.sh|test-omp-routing.sh|\
+      test-orca-resume.sh|test-launcher-isolated.sh) lane=target ;;
       test-session-*.sh) lane=sessions ;;
     esac
     case "$name" in
@@ -63,8 +71,13 @@ add_test() {
       test-harness-headless.sh|test-headless-target.sh) lock=1 ;;
     esac
   fi
+  if [[ "$lane" == shell ]]; then
+    if (( shell_index % 2 )); then lane=shell-extra; fi
+    shell_index=$((shell_index + 1))
+  fi
   case "$name" in
-    test_git_policy.py|test_preservation_snapshot.py|test_trusted_preservation.py|test_preservation_adversarial.py) lane=preservation ;;
+    test_git_policy.py|test_preservation_snapshot.py|test_trusted_preservation.py|test_preservation_adversarial.py|\
+    test_integration_queue.py|test_codex_hook_trust.py) lane=preservation ;;
   esac
   inventory+=("$name|$lane|$policy|$credit|$lock")
 }
@@ -114,17 +127,27 @@ def require(condition):
 def main():
     action,root,lane,result,initial,completed,skipped,*rows=sys.argv[1:]
     root=Path(root).resolve()
-    groups=('headless','target','sessions','shell','preservation','python')
+    groups=('headless','headless-security','headless-codex','target','sessions','shell','shell-extra','preservation','python')
     entries=[row.split('|') for row in rows]
     require(entries and all(len(row)==5 for row in entries))
-    require(all(re.fullmatch(r'test[-_A-Za-z0-9]+\.(sh|py|mjs)',row[0]) and row[1] in groups
+    require(all(re.fullmatch(r'test[-_A-Za-z0-9]+\.(sh|py|mjs)(@(?:delivery|security|codex))?',row[0]) and row[1] in groups
                 and row[2] in ('shell','profile','resolved','isolated','node') and row[3] in ('0','1')
                 and row[4] in ('0','1') for row in entries))
     ids=[row[0] for row in entries]
     require(len(ids)==len(set(ids)))
     scheduled={g:[row[0] for row in entries if row[1]==g] for g in groups}
-    require(scheduled['headless']==['test-harness-headless.sh']
-            and scheduled['target']==['test-headless-target.sh'] and len(scheduled['preservation'])==4)
+    shards={'delivery':'headless','security':'headless-security','codex':'headless-codex'}
+    for case,g in shards.items():
+        require(scheduled[g]==['test-harness-headless.sh@'+case])
+    headless=(root/'test/test-harness-headless.sh').read_text()
+    require(re.findall(r'^# CI_SHARD_BEGIN ([a-z]+)$',headless,re.M)==list(shards))
+    require(re.findall(r'^# CI_SHARD_END ([a-z]+)$',headless,re.M)==list(shards))
+    spans=[(headless.index('# CI_SHARD_BEGIN '+case+'\n'),
+            headless.index('# CI_SHARD_END '+case+'\n')) for case in shards]
+    cases=[match.start() for match in re.finditer(r'^# (?:---|===) ',headless,re.M)]
+    require(cases and all(sum(start<position<end for start,end in spans)==1 for position in cases))
+    require(all(any(start<position<end for position in cases) for start,end in spans))
+    require('test-headless-target.sh' in scheduled['target'] and len(scheduled['preservation'])==6)
     allow_skip={row[0] for row in entries if row[4]=='1'}
     require(os.environ.get('GITHUB_ACTIONS')=='true')
     def number(name):
@@ -144,7 +167,7 @@ def main():
     raw=subprocess.check_output(['git','-C',str(root),'ls-files','-z'],timeout=15)
     require(len(raw)<=1048576)
     paths=set(os.fsdecode(item) for item in raw.split(b'\0') if item)
-    paths.update('test/'+name for name in ids)
+    paths.update('test/'+name.split('@',1)[0] for name in ids)
     source=[]
     for name in sorted(paths):
         relative=Path(name)
@@ -176,7 +199,10 @@ def main():
         fields=set(common)|{'group','scheduled_ids','completed_ids','skipped_ids_with_original_reason','exit'}
         require(type(value) is dict and set(value)==fields)
         for key,want in common.items():
-            require(type(value[key]) is type(want) and value[key]==want)
+            if key=='run_attempt' and action=='verify':
+                require(type(value[key]) is int and 1<=value[key]<=attempt)
+            else:
+                require(type(value[key]) is type(want) and value[key]==want)
         require(type(value['exit']) is int and value['exit']==0 and value['group']==g)
         expected=scheduled[g]
         require(type(value['scheduled_ids']) is list and value['scheduled_ids']==expected)
@@ -205,14 +231,21 @@ def main():
             out.write(encoded);out.flush();os.fsync(out.fileno())
         return
     require(action=='verify')
+    def unique_object(pairs):
+        value={}
+        for key,item in pairs:
+            require(key not in value)
+            value[key]=item
+        return value
     union=[]
     for g in groups:
-        encoded=os.environ.get('CI_RESULT_'+g.upper(),'')
+        encoded=os.environ.get('CI_RESULT_'+g.upper().replace('-','_'),'')
         require(0<len(encoded.encode())<=32768)
-        value=json.loads(encoded)
+        value=json.loads(encoded,object_pairs_hook=unique_object)
         check(value,g)
         union.extend(value['scheduled_ids'])
     require(len(union)==len(set(union)) and set(union)==set(ids))
+    print(f'CI_INVENTORY_COMPLETE suites={len(set(name.split("@",1)[0] for name in ids))} entries={len(ids)} lanes={len(groups)} headless_shards={len(shards)} headless_cases={len(cases)} duplicates=0')
     print('CI_VERIFY_COMPLETE')
 
 try:
@@ -236,7 +269,7 @@ preservation_header=0
 for entry in "${inventory[@]}"; do
   IFS='|' read -r test_name lane policy credit needs_lockf <<< "$entry"
   if [[ "$mode" == group && "$lane" != "$group" ]]; then continue; fi
-  test_file="$ROOT/test/$test_name"
+  test_file="$ROOT/test/${test_name%%@*}"
   if [[ "$has_lockf" -eq 0 && "$needs_lockf" -eq 1 ]]; then
     printf '==> %s (SKIP: /usr/bin/lockf unavailable)\n' "$test_name"
     skipped=$((skipped + 1))
@@ -249,6 +282,7 @@ for entry in "${inventory[@]}"; do
       if [[ "$first_line" == *zsh* ]]; then interpreter="$ZSH_BIN"; else interpreter="$BASH_BIN"; fi
       printf '==> %s (%s)\n' "$test_name" "$interpreter"
       command_argv=("$interpreter" "$test_file")
+      if [[ "$test_name" == *@* ]]; then command_argv+=(--ci-shard "${test_name##*@}"); fi
       ;;
     node)
       interpreter="$(command -v node)" || {

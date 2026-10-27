@@ -71,13 +71,17 @@ the same ordered inventory, including the session-creation lease and recovery
 regressions; existing interpreter, source admission,
 conditional-skip and first-error behavior are unchanged.
 
-CI uses the same runner in six fixed groups: `headless`, `target`, `sessions`,
-`shell`, `preservation` and `python`. Each runs sequentially within its own isolated
-`macos-15` job with a 20-minute limit. Each job retains dependency installation,
+CI uses the same runner in nine fixed groups: `headless`, `headless-security`,
+`headless-codex`, `target`, `sessions`, `shell`, `shell-extra`, `preservation` and
+`python`. Headless scenario blocks are disjoint deterministic shards; the full
+local command still runs the original complete suite in order. Each group runs
+sequentially within its own isolated `macos-15` job with a 20-minute limit. Each job retains dependency installation,
 owned Homebrew preparation, source-bound jq proof, shell syntax and docs checks.
-The required `test` aggregate needs all six jobs to return `success` and
-verifies their current-run/source inventory coverage; failed, cancelled,
-skipped, missing or partial results cannot pass. New default tests must remain
+The required `test` aggregate needs all nine jobs to return `success` and
+verifies their current-run/source inventory coverage. Successful lanes from
+prior attempts of the same run can be reused when rerunning failed jobs; run ID,
+execution SHA and PR head must still match exactly. Failed, cancelled, skipped,
+missing or partial results cannot pass. New default tests must remain
 covered exactly once. See [CI regression
 partition](docs/architecture.md#ci-regression-partition) for the CI-only
 interfaces. This does not replace the full local command above.
