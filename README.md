@@ -278,7 +278,7 @@ Profile, host, projection and native ownership checks run in that closure;
 metadata help does not establish model, required-policy, approval or restore
 acceptance.
 
-The explicit `ex omp` route starts a fresh Oh My Pi session using a separately
+By default, the explicit `ex omp` route starts a fresh Oh My Pi session using a separately
 prepared native home and a SHA-256-pinned executable. Configure
 `HARNESS_OMP_BIN`, `HARNESS_OMP_SHA256`, and `HARNESS_OMP_ROOT` in the trusted
 `config/launcher.env` only after preparing that owned namespace. There is no
@@ -299,8 +299,19 @@ including with outer workspace controls. These exact argument arrays permit no
 extra flags or suffixes. Native login may open a browser and persist credentials;
 listing may refresh provider catalogs or credentials before filtering. Neither
 command proves a model response. Other native management, direct native
-restore/resume/fork flags and unbound native flags remain refused; this is
+restore/resume/fork paths and unbound native flags remain refused; this is
 bounded support, not complete OMP CLI compatibility.
+
+The paired current dispatcher also supports `ex omp --resume <native-uuid>
+[--fork-session] [--model-mode <id>]` for sessions in the selected prepared
+namespace's `history/`. A live isolated owner resumes in its original worktree,
+rebound to the currently selected runtime after admission. A delivered or discarded
+owner requires explicit `--fork-session`: the launcher creates a new isolated
+owner and uses native fork without modifying the source transcript. Forks with
+additional directory grants are refused. Missing, duplicate, symlinked or foreign
+namespace histories and non-owner working directories fail before new workspace
+allocation. No raw transcript path is accepted; older runtimes without this
+capability refuse rather than falling back to Claude or legacy history.
 
 Policy-managed OMP print accepts `-p`/`--print` and `--mode text|json`
 (including `--mode=value`). Positional and `@file` startup prompts require an

@@ -2,6 +2,20 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+- Keep OMP UUID resumes out of Claude's fork classifier. Add a paired-dispatcher
+  native owner resume/fork route with exact prepared-namespace and header checks,
+  current-runtime rebind, explicit retired-owner fork opt-in and recorded lineage.
+  Refuse unsupported requests before workspace allocation; preserve legacy
+  integrity checks and refuse inherited extra-directory grants on forks.
+- Hold native identity locks through native process lifetime after workspace and
+  namespace admission, recheck file identity before exec, and provide launcher-owned
+  Herdr restore argv. Preserve parent `OMPCODE=1` while suppressing nested Herdr
+  reporting variables, without changing top-level pane reporting.
+- These source changes require a reviewed release, tap update and paired private
+  dispatcher publication/activation; they do not modify installed snapshots.
+
 ## 0.78.3 — 2026-10-27
 
 - Derive native bootstrap source authority from the operating-system UID/passwd

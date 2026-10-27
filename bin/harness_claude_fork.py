@@ -402,7 +402,7 @@ def _request(args: list[str]) -> dict | None:
     """Recognize direct Claude exact resumes; reject ambiguous fork controls."""
     if not isinstance(args, list) or len(args) > 4096 or any(not isinstance(arg, str) or len(arg) > 65536 for arg in args):
         raise ForkError('invalid_claude_request')
-    if args and args[0] in {'codex', 'kiro', 'kiro-cli', 'codex-gateway', 'gateway', 'checkup', 'codex-smoke'}:
+    if args and args[0] in {'omp', 'codex', 'kiro', 'kiro-cli', 'codex-gateway', 'gateway', 'checkup', 'codex-smoke'}:
         return None
     resumes = []; forks = 0; permission = False; unknown = False; conflict = False
     model = effort = False

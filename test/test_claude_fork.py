@@ -135,7 +135,7 @@ os.execv(sys.executable,[sys.executable,'-c','import sys; print("ready",flush=Tr
                 result = mod.request(args)
                 self.assertEqual(result['native_id'],NATIVE)
                 self.assertEqual(result['fork'],'--fork-session' in args)
-        for args in (['codex','resume',NATIVE], ['kiro','--resume',NATIVE,'--fork-session'], ['--model','--resume='+NATIVE], ['--','--resume',NATIVE,'--fork-session'], ['--settings','--fork-session']):
+        for args in (['omp','--resume',NATIVE], ['omp','--resume',NATIVE,'--fork-session'], ['omp','--model-mode','hybrid-opus-lead','--resume',NATIVE], ['codex','resume',NATIVE], ['kiro','--resume',NATIVE,'--fork-session'], ['--model','--resume='+NATIVE], ['--','--resume',NATIVE,'--fork-session'], ['--settings','--fork-session']):
             with self.subTest(args=args): self.assertIsNone(mod.request(args))
         for args in (['--fork-session'], ['--resume','bad','--fork-session'], ['--resume',NATIVE,'-r',NATIVE], ['--unknown','value','--resume',NATIVE,'--fork-session'], ['--resume',NATIVE,'--fork-session','--continue']):
             with self.subTest(args=args), self.assertRaises(ValueError): mod.request(args)
