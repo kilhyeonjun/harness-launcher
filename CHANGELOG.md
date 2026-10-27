@@ -2,6 +2,26 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.79.1 — 2026-10-27
+
+- Keep OMP UUID resumes out of Claude's fork classifier. Add a paired-dispatcher
+  native owner resume/fork route with exact prepared-namespace and header checks,
+  current-runtime rebind, explicit retired-owner fork opt-in and recorded lineage.
+  Refuse unsupported requests before workspace allocation; preserve legacy
+  integrity checks and refuse inherited extra-directory grants on forks.
+- Hold native identity locks through native process lifetime after workspace and
+  namespace admission and recheck file identity before exec. Native resume/fork
+  leaves Herdr restore empty rather than publishing an unsupported command or a
+  fork's source ID. Adopt the isolated resume state machine and full environment,
+  refuse submitted/integrating owners before allocation, finalize both resumed
+  and fork owners even on post-reopen admission/lock failure,
+  permit source-tail appends during fork admission, and avoid exclusive namespace
+  locking on rebind (only stale bindings are rebound).
+  Preserve parent `OMPCODE=1` while suppressing nested Herdr
+  reporting variables, without changing top-level pane reporting.
+- These source changes require a reviewed release, tap update and paired private
+  dispatcher publication/activation; they do not modify installed snapshots.
+
 ## 0.79.0 — 2026-10-27
 
 - Preserve 0.78.3 native-account isolation and 0.78.1 exact baseline/candidate verification while integrating release-backed sessions. Reserved creation retains lease-owned cleanup and transport cloning under the shared release deadline. Durable queue inputs snapshot overlay exclusions so accepted jobs do not follow mutable session records; the complete CI inventory remains authoritative.
