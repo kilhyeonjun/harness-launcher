@@ -1429,6 +1429,10 @@ _harness_launcher_omp_required_argv() {
     mode_prepare=(prepare-required-mode)
     mode_values=("$omp_model_mode" "$omp_model_recipe")
   fi
+  if [[ "${_harness_omp_resume_model:-false}" == true ]]; then
+    if [[ "${omp_model_mode:--}" == - ]]; then mode_prepare=(prepare-resume)
+    else mode_prepare=(prepare-resume-mode); fi
+  fi
   framed="$("$python" -I -S -B "$_HARNESS_LAUNCHER_BIN/harness_omp_projection.py" \
     "${mode_prepare[@]}" "${config_root:A}" "$_HARNESS_LAUNCHER_BIN/aliases.zsh" \
     "$workspace" "$HARNESS_OMP_BIN" "$HARNESS_OMP_ROOT" "${mode_values[@]}" "$@")" || return 2
@@ -1809,6 +1813,7 @@ _harness_launcher_omp_native_resume() (
     local _harness_omp_native_check_id="$native_id" _harness_omp_native_check_w="$w"
     local _harness_omp_native_check_mode="$operation" _harness_omp_native_check_sha="$fields[3]"
     local -a omp_required_argv
+    local _harness_omp_resume_model=true
     _harness_launcher_omp_required_argv "$HARNESS_SESSION_ROOT" "$@" || return 2
     # No supported bare native restore transport. In particular a fork's new
     # native ID is allocated inside OMP; the source ID must never restore it.
@@ -1924,6 +1929,8 @@ PYREQUEST
       return 2
     }
     local -a omp_required_argv
+    local _harness_omp_resume_model=false
+    [[ "$continuation_mode" != --session-resume ]] || _harness_omp_resume_model=true
     _harness_launcher_omp_required_argv "$retained_c" "${native_options[@]}" -- "${native_prompt[@]}" || {
       _harness_launcher_omp_continuation_metadata FINALIZE "$expected_sha" "$own_nonce" 2 >/dev/null
       return 2

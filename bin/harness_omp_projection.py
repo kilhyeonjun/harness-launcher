@@ -694,7 +694,39 @@ def model_mode_early(source, target, argv):
     return 0
 
 
-def required_preparation(source, consumer, workspace, binary, namespace, caller_argv, model_mode=None, recipe_sha256=None):
+def resume_model_argv(bundle, manifest, argv):
+    """Pin restores to the default in the exact compiler-sealed native overlay."""
+    label = 'OMP_RESUME_MODEL_DEFAULT_INVALID'
+    settings = bundle / 'omp-settings.yml'
+    split = argv.index('--') if '--' in argv else len(argv)
+    require([v for v in argv[:split] if v.startswith('--config=')] ==
+            ['--config=' + str(settings)], label)
+    entries = [row for row in manifest['artifacts']
+               if row['relative_path'] == 'omp-settings.yml']
+    require(len(entries) == 1, label)
+    raw, _ = read_file(settings, None, 262144)
+    require(digest(raw) == entries[0]['sha256'], label)
+    try:
+        # The compiler emits JSON-quoted scalar roles in this YAML mapping.
+        # Read only that mapping, never another default or the source recipe.
+        sections = re.findall(r'^modelRoles:\n((?:[ \t]+[^\n]*\n)*)',
+                              raw.decode('utf-8'), re.MULTILINE)
+        # A modeless source seals no role mapping: keep native session-model restore.
+        if not sections:
+            return argv
+        require(len(sections) == 1, label)
+        values = re.findall(r'^  default: (.+)$', sections[0], re.MULTILINE)
+        require(len(values) == 1, label)
+        selector = json.loads(values[0])
+    except (ValueError, UnicodeError):
+        raise ProjectionError(label) from None
+    require(type(selector) is str and re.fullmatch(
+        r'[a-z0-9][a-z0-9._-]*/[A-Za-z0-9._-]+(?::(?:off|minimal|low|medium|high|xhigh|max|auto))?',
+        selector), label)
+    return argv[:split] + ['--model', selector] + argv[split:]
+
+
+def required_preparation(source, consumer, workspace, binary, namespace, caller_argv, model_mode=None, recipe_sha256=None, resume_model=False):
     """Re-derive current canonical expectation, never an actual Skill inventory.
 
     No native/helper subprocess,
@@ -744,6 +776,8 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
         compiler.validate_omp_caller_argv(manifest, caller_argv)
         require(compiler.write_omp_bundle(source, data, selection) == relative, BINDING)
         prepared, argv = compiler.prepare_omp_bundle(bundle, manifest, caller_argv)
+        if resume_model:
+            argv = resume_model_argv(bundle, manifest, argv)
         require(read_file(compiler_path, None, 262144)[0] == compiler_raw, BINDING)
         fresh_current = select_continuation_source(str(source), str(registry_dir()), str(source), consumer)
         require(all(fresh_current.get(k) == v for k,v in expected.items()), BINDING)
@@ -1013,17 +1047,19 @@ def main(argv):
                       artifact['recipe_sha256'] if artifact else '-', *values, 'END']
             sys.stdout.buffer.write(b''.join(v.encode('utf-8') + b'\0' for v in fields))
             return 0
-        if len(argv) >= 9 and argv[1] == 'prepare-required-mode':
+        if len(argv) >= 9 and argv[1] in ('prepare-required-mode', 'prepare-resume-mode'):
             prepared, values = required_preparation(*argv[2:7], argv[9:],
-                model_mode=argv[7], recipe_sha256=argv[8])
+                model_mode=argv[7], recipe_sha256=argv[8],
+                resume_model=argv[1] == 'prepare-resume-mode')
             sys.stdout.buffer.write(b'REQUIRED_ARGV\0' +
                 b''.join(v.encode('utf-8') + b'\0' for v in values) + b'END\0')
             return 0
         if len(argv) == 2 and argv[1] == 'dispatch-source':
             print(dispatch_source())
             return 0
-        if len(argv) >= 7 and argv[1] == 'prepare-required':
-            value = prepare_required(*argv[2:7], argv[7:])
+        if len(argv) >= 7 and argv[1] in ('prepare-required', 'prepare-resume'):
+            value = required_preparation(*argv[2:7], argv[7:],
+                resume_model=argv[1] == 'prepare-resume')[1]
             sys.stdout.buffer.write(b'REQUIRED_ARGV\0' + b''.join(a.encode('utf-8')+b'\0' for a in value) + b'END\0')
             return 0
         if len(argv) == 6 and argv[1] == 'select-continuation-source':

@@ -323,6 +323,16 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
     def native_calls(self):
         return [json.loads(x) for x in self.calls.read_text().splitlines()] if self.calls.exists() else []
 
+    def assert_resume_model(self, argv, selector):
+        controls = argv[:argv.index('--')] if '--' in argv else argv
+        self.assertEqual(controls.count('--model'), 1)
+        self.assertEqual(controls[controls.index('--model')+1], selector)
+        bundle = Path(next(a.split('=', 1)[1] for a in controls if a.startswith('--config='))).parent
+        settings = (bundle/'omp-settings.yml').read_text()
+        self.assertIn('  default: '+json.dumps(selector), settings)
+        self.assertFalse(any(a.startswith('--model=') for a in controls))
+        return bundle
+
     def test_installed_entry_model_mode_plan_admits_new_explicit_and_resume(self):
         # Verbatim body of the harness's installed Entry omp_model_mode_plan (core/scripts/herdr_launcher_entry.py);
         # only the store and helper loader are stubbed to the snapshot under test.
@@ -379,6 +389,7 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
         calls = self.native_calls(); self.assertEqual(len(calls), 1)
         argv = calls[0]['argv']
         self.assertEqual(calls[0]['cwd'], str(self.work))
+        self.assert_resume_model(argv, 'anthropic/claude-opus-5-5:high')
         self.assertEqual(argv[-5:], ['--session-dir', str(self.sessions), '--resume', str(native), '--'])
         self.assertFalse(any(a.startswith('--harness-required-bundle') for a in argv))
         self.assertFalse(any(a.startswith('--model-mode') for a in argv))
@@ -398,9 +409,62 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
                 '--session-resume', H, '--']
         done = subprocess.run(argv, cwd=self.base, env=self.env, capture_output=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr.decode())
-        bundle = Path(next(a.split('=', 1)[1] for a in self.native_calls()[0]['argv']
-                           if a.startswith('--append-system-prompt='))).parent
+        bundle = self.assert_resume_model(self.native_calls()[0]['argv'], 'openai-codex/gpt-6.1-sol:high')
         self.assertIn('model-mode:gpt-only', json.loads((bundle/'selection.json').read_text())['bundle_ids'])
+
+    def fresh_mode(self, mode):
+        self.public_fixture()
+        done = subprocess.run(['/bin/zsh', str(self.snapshot/'bin/harness-exec'), str(self.profile),
+            '--isolated-session', W, 'omp', '--model-mode', mode, '--session-new', '--', 'fresh prompt'],
+            cwd=self.base, env=self.env, capture_output=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr.decode())
+        calls = self.native_calls(); self.assertEqual(len(calls), 1)
+        argv = calls[0]['argv']; controls = argv[:argv.index('--')]
+        self.assertNotIn('--model', controls)
+        self.assertFalse(any(a.startswith('--model=') for a in controls))
+        self.assertNotIn('--resume', controls); self.assertNotIn('--fork', controls)
+        self.assertEqual(argv[-2:], ['--', 'fresh prompt'])
+        bundle = Path(next(a.split('=', 1)[1] for a in controls if a.startswith('--config='))).parent
+        self.assertIn('model-mode:'+mode, json.loads((bundle/'selection.json').read_text())['bundle_ids'])
+
+    def test_fresh_gpt_session_does_not_gain_resume_model_flag(self):
+        self.fresh_mode('gpt-only')
+
+    def test_fresh_hybrid_session_does_not_gain_resume_model_flag(self):
+        self.fresh_mode('hybrid-opus-lead')
+
+    def test_resume_rejects_caller_model_before_native_exec(self):
+        self.public_fixture(); self.op('NEW_PREPARE'); self.native_file(); self.op('FINALIZE', 0)
+        for model in (['--model', 'openai-codex/gpt-6.1-sol:high'],
+                      ['--model=anthropic/claude-opus-5-5:high']):
+            with self.subTest(model=model):
+                done = subprocess.run(['/bin/zsh', str(self.snapshot/'bin/harness-exec'), str(self.profile),
+                    'omp', '--session-resume', H, *model, '--'], cwd=self.base, env=self.env,
+                    capture_output=True, timeout=60)
+                self.assertEqual(done.returncode, 2, done.stderr.decode())
+                self.assertEqual(self.native_calls(), [])
+
+    def invalid_sealed_default(self, replacement):
+        self.public_fixture(); self.op('NEW_PREPARE'); self.native_file(); self.op('FINALIZE', 0)
+        # Produce an honestly sealed compiler overlay with a bad/missing default,
+        # rather than tampering with a bundle and only exercising its hash check.
+        compiler = self.profile/'core/scripts/harness_compile.py'
+        compiler.write_text(compiler.read_text()+'''\n
+_fixture_render_settings = render_omp_launch_settings
+def render_omp_launch_settings(*args, **kwargs):
+    value = _fixture_render_settings(*args, **kwargs)
+    return value.replace('  default: "anthropic/claude-opus-5-5:high"\\n', '''+repr(replacement)+''')
+''')
+        done = self.herdr()
+        self.assertEqual(done.returncode, 2, done.stderr.decode())
+        self.assertIn(b'OMP_RESUME_MODEL_DEFAULT_INVALID', done.stderr)
+        self.assertEqual(self.native_calls(), [])
+
+    def test_resume_refuses_missing_sealed_default_before_native_exec(self):
+        self.invalid_sealed_default('')
+
+    def test_resume_refuses_invalid_sealed_default_before_native_exec(self):
+        self.invalid_sealed_default('  default: "not-a-provider-selector"\n')
 
     def test_native_nonzero_prints_resumable_hint_and_resume_recovers(self):
         self.public_fixture(); self.op('NEW_PREPARE'); self.native_file()
