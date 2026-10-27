@@ -633,6 +633,7 @@ def _native_owner(state, source, w, live=True):
             read_metadata(directory/'session-root').decode().strip() == str(work), 'runtime_resume_owner_mismatch')
     states = [line[6:] for line in read_metadata(directory/'journal').decode().splitlines() if line.startswith('state=')]
     require(len(states) == 1, 'runtime_resume_owner_invalid')
+    require(states[0] not in ('SUBMITTED', 'INTEGRATING'), 'runtime_resume_owner_busy')
     retired = states[0] in ('DELIVERED', 'DISCARDED') or not work.exists()
     if live: require(not retired, 'runtime_resume_owner_retired')
     if os.path.lexists(work): owned_directory(work)
@@ -661,10 +662,14 @@ def native_resolve(state, source, native_id, consumer, fork=False, _check_bindin
                 not before.st_mode & 0o022, 'runtime_resume_history_invalid')
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
-            require(p.stamp(before) == p.stamp(os.fstat(fd)), 'runtime_resume_identity_changed')
+            def stamp(meta):
+                if fork:
+                    return (meta.st_dev, meta.st_ino, meta.st_uid, meta.st_nlink, meta.st_mode)
+                return p.stamp(meta)
+            require(stamp(before) == stamp(os.fstat(fd)), 'runtime_resume_identity_changed')
             header_line(fd)  # native title precedes the JSON session header
             raw = header_line(fd)
-            require(p.stamp(before) == p.stamp(os.fstat(fd)) == p.stamp(path.lstat()), 'runtime_resume_identity_changed')
+            require(stamp(before) == stamp(os.fstat(fd)) == stamp(path.lstat()), 'runtime_resume_identity_changed')
         finally: os.close(fd)
         row = p.decode(raw)
         require(type(row) is dict and row.get('type') == 'session' and type(row.get('version')) is int and
@@ -702,7 +707,6 @@ def native_rebind_runtime(state, source, w, native_id):
         path = bindings/(w.lower()+'.json'); old = p.read_file(path, limit=LIMIT)[0]
         fds.append(_exclusive(runtimes/'binding-locks'/(w.lower()+'.lock'), True))
         fds.append(_exclusive(Path(state)/'sessions'/w/'runtime.lock'))
-        fds.append(_exclusive(Path(context['namespace_path'])/'.launcher.lock'))
         locks = Path(context['namespace_path'])/'launcher-native-locks'
         try: locks.mkdir(mode=0o700)
         except FileExistsError: pass
@@ -730,6 +734,18 @@ def native_rebind_runtime(state, source, w, native_id):
         for fd in reversed(fds): os.close(fd)
 
 
+def native_rebind_stale(state, source, w, native_id):
+    """Leave current/unreadable bindings to admission, just like continuation resume."""
+    runtimes = Path(__file__).resolve().parent.parent.parent
+    try:
+        current = p.decode(p.read_file(runtimes/'current.json')[0])
+        bound = p.decode(p.read_file(runtimes/'bindings'/(workspace_id(w).lower()+'.json'), limit=LIMIT)[0])
+        stale = type(bound) is dict and bound.get('runtime') != current
+    except (p.ProjectionError, OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        stale = False
+    return native_rebind_runtime(state, source, w, native_id) if stale else None
+
+
 def native_admit(state, source, w, native_id, fork=False, expected=None):
     consumer = Path(__file__).resolve().with_name('aliases.zsh')
     selected = native_resolve(state, source, native_id, consumer, fork)
@@ -748,7 +764,13 @@ def native_admit(state, source, w, native_id, fork=False, expected=None):
         meta = lock.lstat()
         require(stat.S_ISREG(meta.st_mode) and meta.st_uid == os.getuid() and meta.st_nlink == 1 and
                 stat.S_IMODE(meta.st_mode) == 0o600, 'runtime_resume_lock_invalid')
-    fingerprint = p.digest(p.canonical(selected))
+    identity = selected
+    if fork:
+        # A source may keep appending while the destination bundle is prepared.
+        # Bind the inode, permissions and immutable header, not mutable tail stats.
+        identity = {key: selected['file_identity'][key] for key in ('dev', 'ino', 'uid', 'nlink', 'mode')}
+        identity['header_sha256'] = selected['header_sha256']
+    fingerprint = p.digest(p.canonical(identity))
     if expected is not None:
         require(fingerprint == expected, 'runtime_resume_identity_changed')
         if fork:
@@ -776,8 +798,9 @@ def main(argv):
             selected, fingerprint = native_admit(state, source, w, native_id, mode == 'fork', argv[7] if len(argv) == 8 else None)
             print('\n'.join((selected['native_path'], selected['namespace_path'], fingerprint)))
             return 0
-        if len(argv) == 6 and argv[1] == '--native-rebind':
-            native_rebind_runtime(*argv[2:]); return 0
+        if len(argv) == 6 and argv[1] in ('--native-rebind', '--native-rebind-stale'):
+            rebind = native_rebind_runtime if argv[1] == '--native-rebind' else native_rebind_stale
+            rebind(*argv[2:]); return 0
         if len(argv) == 5 and argv[1] in ('--rebind-runtime', '--rebind-stale'):
             rebind = rebind_runtime if argv[1] == '--rebind-runtime' else rebind_stale
             sys.stdout.buffer.write(p.canonical(rebind(*argv[2:]))+b'\n'); return 0

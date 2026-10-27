@@ -158,8 +158,83 @@ class NativeResumeTests(unittest.TestCase):
                 self.assertEqual(bound.read_text(), old)
             finally:
                 child.communicate('\n', timeout=5)
-            self.assertEqual(m.native_rebind_runtime(self.state, self.source, OWNER, NATIVE), pin)
+            shared = script.replace('fcntl.LOCK_EX', 'fcntl.LOCK_SH')
+            child = subprocess.Popen([sys.executable, '-c', shared, str(self.namespace/'.launcher.lock')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(child.stdout.readline().strip(), 'ready')
+                self.assertEqual(m.native_rebind_runtime(self.state, self.source, OWNER, NATIVE), pin)
+            finally:
+                child.communicate('\n', timeout=5)
+            with patch.object(m, 'native_rebind_runtime') as rebind:
+                m.native_rebind_stale(self.state, self.source, OWNER, NATIVE)
+                rebind.assert_not_called()
+                bound.write_text(old)
+                m.native_rebind_stale(self.state, self.source, OWNER, NATIVE)
+                rebind.assert_called_once_with(self.state, self.source, OWNER, NATIVE)
+            bound.write_text(json.dumps(dict(source_root=str(self.source), runtime=pin)))
         self.assertEqual(json.loads(bound.read_text()), dict(source_root=str(self.source), runtime=pin))
+
+    def test_submitted_and_integrating_refused_before_owner_selection(self):
+        for state in ('SUBMITTED', 'INTEGRATING'):
+            (self.owner/'journal').write_text('state='+state+'\n')
+            for fork in (False, True):
+                with self.subTest(state=state, fork=fork), self.assertRaisesRegex(m.ContinuationError, 'runtime_resume_owner_busy'):
+                    self.resolve(fork)
+
+    def test_fork_allows_appends_but_rejects_header_and_inode_changes(self):
+        target = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+        (self.state/'sessions'/target).mkdir(mode=0o700)
+        _, fingerprint = m.native_admit(self.state, self.source, target, NATIVE, fork=True)
+        with self.path.open('a') as stream:
+            stream.write('{"type":"message","text":"concurrent source write"}\n')
+        m.native_admit(self.state, self.source, target, NATIVE, fork=True, expected=fingerprint)
+        self.header['timestamp'] = '2026-10-28T00:00:00Z'; self.persist()
+        with self.assertRaisesRegex(m.ContinuationError, 'runtime_resume_identity_changed'):
+            m.native_admit(self.state, self.source, target, NATIVE, fork=True, expected=fingerprint)
+        self.header['timestamp'] = '2026-10-27T00:00:00Z'; self.persist()
+        replacement = self.path.with_suffix('.replacement')
+        replacement.write_bytes(self.path.read_bytes()); replacement.chmod(0o600); replacement.replace(self.path)
+        with self.assertRaisesRegex(m.ContinuationError, 'runtime_resume_identity_changed'):
+            m.native_admit(self.state, self.source, target, NATIVE, fork=True, expected=fingerprint)
+
+    def test_shell_native_adopts_resume_environment_and_finalizes_only_forks(self):
+        shim = self.root/'python-shim'
+        # The shim returns the namespace from an explicit environment value;
+        # all admission/identity behavior is covered by real helper tests above.
+        shim.write_text('#!'+sys.executable+'\nimport os,sys\nif "--native-admit" in sys.argv: print("/history/native.jsonl\\n"+os.environ["TEST_NAMESPACE"]+"\\n"+"a"*64)\n')
+        shim.chmod(0o700)
+        shell = r'''
+source "$1/bin/aliases.zsh"
+config_root="$2/source" HARNESS_SESSION_STATE_HOME="$2/state" HARNESS_OMP_ROOT="$2/namespace"
+export TEST_NAMESPACE="$HARNESS_OMP_ROOT"
+harness_python3_resolve() { print -r -- "$fixture/python-shim"; }
+_harness_launcher_omp_check_args() { :; }
+_harness_launcher_isolated_lease_acquire() { :; }
+_harness_launcher_isolated_session_create() {
+  print -r -- "resume:$1:$2" >> "$fixture/trace"
+  export HARNESS_SESSION_ID="$2" HARNESS_SOURCE_ROOT="$1" HARNESS_SESSION_ROOT="$fixture/state/worktrees/$2"
+}
+_harness_launcher_omp_validate() { :; }
+_harness_launcher_omp_required_argv() { omp_required_argv=(); }
+_harness_launcher_omp_native() {
+  [[ "$HARNESS_SESSION_ID" == "$owner" && "$HARNESS_SOURCE_ROOT" == "$fixture/source" ]] || return 90
+  [[ "$HARNESS_SESSION_ROOT" == "$fixture/state/worktrees/$owner" && "$HARNESS_RUN_DIR" == "$HARNESS_SESSION_ROOT" ]] || return 91
+  [[ -z "$_harness_omp_herdr_resume" ]] || return 92
+  print -r -- "native:$HARNESS_SESSION_ID" >> "$fixture/trace"
+}
+_harness_launcher_isolated_finish() { print -r -- "finish:$1" >> "$fixture/trace"; }
+fixture="$2" owner="$3"
+_harness_launcher_omp_native_resume "$owner" "$4" "$5"
+'''
+        repo = Path(__file__).resolve().parents[1]
+        for operation in ('resume', 'fork'):
+            trace = self.root/'trace'; trace.unlink(missing_ok=True)
+            result = subprocess.run(['/bin/zsh', '-f', '-c', shell, 'test', str(repo), str(self.root), OWNER,
+                                     '--session-native-'+operation, NATIVE], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = ['resume:'+str(self.source)+':'+OWNER, 'native:'+OWNER]
+            if operation == 'fork': expected.append('finish:'+OWNER)
+            self.assertEqual(trace.read_text().splitlines(), expected)
 
     def test_other_namespace_and_continuation_not_searched(self):
         self.path.unlink()

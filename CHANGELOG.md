@@ -10,8 +10,13 @@ Notable changes are recorded here. This project follows semantic versioning for 
   Refuse unsupported requests before workspace allocation; preserve legacy
   integrity checks and refuse inherited extra-directory grants on forks.
 - Hold native identity locks through native process lifetime after workspace and
-  namespace admission, recheck file identity before exec, and provide launcher-owned
-  Herdr restore argv. Preserve parent `OMPCODE=1` while suppressing nested Herdr
+  namespace admission and recheck file identity before exec. Native resume/fork
+  leaves Herdr restore empty rather than publishing an unsupported command or a
+  fork's source ID. Adopt the isolated resume state machine and full environment,
+  refuse submitted/integrating owners before allocation, finalize fork owners,
+  permit source-tail appends during fork admission, and avoid exclusive namespace
+  locking on rebind (only stale bindings are rebound).
+  Preserve parent `OMPCODE=1` while suppressing nested Herdr
   reporting variables, without changing top-level pane reporting.
 - These source changes require a reviewed release, tap update and paired private
   dispatcher publication/activation; they do not modify installed snapshots.
