@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — CI lane sharding and reliability
+## 0.80.0 — 2026-10-27
 
 - Negotiate an advertised trusted-baseline `--toolchain-env` before headless
   verification, strictly validate its absolute PATH/Python response, and use

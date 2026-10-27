@@ -944,7 +944,7 @@ case "$mode" in
     printf '%s\n' 'garbage' '[]' '{"event":"secret"}' '{"event":"gate_end","output":"secret"}' '{"event":[]}' '{"event":"suite_start","failed":["not-a-suite-start-field"]}' '{"event":"gate_start","workers":true}' > "$HARNESS_DELIVERY_TIMING_LOG"
     "$HARNESS_PYTHON" -I -c 'import json, os; f = open(os.environ["HARNESS_DELIVERY_TIMING_LOG"], "a"); f.write(json.dumps({"event": "gate_end", "status": "x" * 10240}) + "\n")' || exit 104
     ;;
-  *) printf '%s\n' '{"event":"gate_start","run":"headless","ts":1,"suites":1,"workers":1}' 'garbage' '{"event":"gate_end","run":"headless","ts":2,"status":"passed","wall_s":0}' > "$HARNESS_DELIVERY_TIMING_LOG" ;;
+  *) printf '%s\n' '{"event":"gate_start","run":"headless","ts":1,"suites":1,"workers":1,"load1":null}' 'garbage' '{"event":"gate_end","run":"headless","ts":2,"status":"passed","wall_s":0}' > "$HARNESS_DELIVERY_TIMING_LOG" ;;
 esac
 [[ "$mode" != verifier-failure ]] || exit 103
 EOF
@@ -992,6 +992,7 @@ with open(sys.argv[1]) as stream:
     records = [json.loads(line) for line in stream]
 assert [r['event'] for r in records] == ['gate_start', 'gate_end'], records
 assert all(r['run'] == 'headless' for r in records), records
+assert records[0]['load1'] is None, records
 PY
       else
         [[ ! -s "$STATE/sessions/$tc_id/verifier-timing.jsonl" ]] || { echo "FAIL: unsafe timing imported: $tc_mode"; exit 1; }

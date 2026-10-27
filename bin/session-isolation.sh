@@ -1369,6 +1369,8 @@ integers = {'suites', 'workers', 'cpus', 'rc', 'warnings'}
 def short_string(value):
     return isinstance(value, str) and len(value) <= 256
 def valid_field(name, value):
+    if name == 'load1' and value is None:
+        return True
     if name in numbers:
         return type(value) in (int, float) and (type(value) is int or math.isfinite(value))
     if name in integers:
