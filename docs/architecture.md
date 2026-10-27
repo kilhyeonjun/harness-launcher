@@ -1226,7 +1226,8 @@ options behaves exactly as before.
   candidate's tests, which the agent may have written. For headless sessions
   the broker runs it under `/usr/bin/sandbox-exec` with a generated Seatbelt
   profile, on a throwaway copy of the candidate that the broker deletes and
-  never reads back; the broker commits and pushes from the candidate itself
+  never reads back (only bounded timing metadata from the private temp dir is
+  imported as described below); the broker commits and pushes from the candidate itself
   (no hooks, fsmonitor or external drivers), so nothing a test writes into
   the copy's `.git` or work tree runs or is delivered. The profile denies by
   default and allows only: fork, and exec of binaries under `/usr`, `/bin`,
@@ -1277,7 +1278,27 @@ options behaves exactly as before.
   verifier's own switches plus `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`;
   agent sockets, askpass
   helpers, `GH_*`, `GITHUB_*`, `ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*` and
-  tokens are not passed. Interactive sessions run the verifier as before.
+  tokens are not passed. Before generating the headless profile, the broker
+  probes the trusted baseline's `--help` outside the sandbox with only HOME and
+  a system PATH. Only an advertised `--toolchain-env` is invoked, with HOME and
+  the caller PATH: its exact three-line absolute-path response supplies PATH,
+  HARNESS_PYTHON and HARNESS_PYTHON_BIN to the verifier and PATH read/exec grants
+  to the profile. Invalid output or resolution failure refuses verification
+  with `verifier_toolchain_unavailable`; candidate code never runs. Older
+  baselines retain the caller PATH and receive neither Python nor timing vars.
+  Interactive verifiers retain the caller environment and PATH, with the added
+  `HARNESS_DELIVERY_TIMING_LOG` pointing to the session record's
+  `verifier-timing.jsonl`. Supporting headless baselines receive that variable
+  pointing into their private temp dir instead. After verifier success or
+  failure, the broker imports only JSON objects with gate_start, suite_start,
+  suite_end or gate_end events and event-specific contract timing fields into
+  the same session file. Numeric fields reject booleans and nonfinite values
+  (unavailable host load may be null);
+  strings are capped at 256 characters and failed-suite lists at 512 entries.
+  Import opens without following symlinks and requires a regular,
+  single-link file no larger than 1 MiB; malformed or extra-field records are
+  skipped. Unsafe files produce a warning, never a delivery failure. No suite
+  output, candidate state or additional sandbox access is imported.
 - **Result.** Written atomically (temp file and rename) to `R`, always with
   `"version": 1`:
   `{"version":1,"status":"delivered|no_changes|conflict|failed|timeout|budget|refused","session_id":<launcher UUID|null>,"commit":<sha|null>,"cost_usd":<float|null>,"num_turns":<int|null>,"summary":<Claude result or Codex -o file, at most 3000 chars>,"transcript":<path|null>,"exit_code":<int>,"started_at":<epoch>,"ended_at":<epoch>}`,

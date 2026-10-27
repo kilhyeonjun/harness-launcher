@@ -1315,9 +1315,9 @@ run_repository_verifier() {
   if grep -q -- '--contract-checked' <<< "$help_output"; then
     verifier_args+=(--contract-checked 'broker candidate cascade verified')
   fi
-  local rc=0
+  local rc=0 timing_log="$(session_dir "$id")/verifier-timing.jsonl"
   (if [[ -z "${INTEGRATION_INPUT_DIR:-}" ]]; then unset HARNESS_SESSION_ID HARNESS_SOURCE_ROOT HARNESS_SESSION_ROOT HARNESS_RUN_DIR HARNESS_SESSION_STATE_HOME; fi
-    cd "$candidate" && TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 \
+    cd "$candidate" && HARNESS_DELIVERY_TIMING_LOG="$timing_log" TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" TEST_HARNESS_DIR="$candidate" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 \
     verifier_exec bash "$verifier" "${verifier_args[@]}") || rc=$?
   if python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py" --settled "$vtmp"; then
     rm -rf "$trusted" "$vtmp"
@@ -1333,7 +1333,7 @@ run_repository_verifier() {
 # GitHub variables), a fresh temp dir outside HOME and a generated global git
 # config (identity only); neither the copy nor the trusted clone keeps a
 # remote, so no URL with credentials is readable. The copy and the temp dir
-# are removed afterwards and nothing is read back. The broker commits and
+# are removed afterwards; only bounded timing metadata is read back. The broker commits and
 # pushes from the candidate itself, which the sandbox never touched.
 # scrub_remotes <repo>: drop every remote (and url rewrites) from a clone the
 # sandbox can read.
@@ -1351,6 +1351,61 @@ write_verifier_gitconfig() {
   email="$(git config --global --get user.email | tr -d '\n\\"' || true)"
   { printf '[user]\n\tname = %s\n\temail = %s\n' "${name:-harness-verifier}" "${email:-verifier@invalid}"
     printf '[core]\n\texcludesFile = /dev/null\n\tattributesFile = /dev/null\n'; } > "$1"
+}
+# Import only bounded timing metadata, never candidate output or filesystem links.
+copy_verifier_timing() {
+  python3 -I - "$1" "$2" <<'PY'
+import json, math, os, stat, sys
+source, destination = sys.argv[1:]
+common = {'event', 'run', 'ts'}
+allowed = {
+    'gate_start': {'suites', 'workers', 'worker_reason', 'host_slots', 'load1', 'cpus'},
+    'suite_start': {'suite', 'worker_wait_s', 'host_wait_s', 'host_slot'},
+    'suite_end': {'suite', 'status', 'rc', 'elapsed_s', 'warnings'},
+    'gate_end': {'status', 'failed', 'wall_s', 'suite_sum_s'},
+}
+numbers = {'worker_wait_s', 'host_wait_s', 'elapsed_s', 'wall_s', 'suite_sum_s', 'load1', 'ts'}
+integers = {'suites', 'workers', 'cpus', 'rc', 'warnings'}
+def short_string(value):
+    return isinstance(value, str) and len(value) <= 256
+def valid_field(name, value):
+    if name == 'load1' and value is None:
+        return True
+    if name in numbers:
+        return type(value) in (int, float) and (type(value) is int or math.isfinite(value))
+    if name in integers:
+        return type(value) is int
+    if name == 'host_slots':
+        return type(value) is int or short_string(value)
+    if name == 'failed':
+        return isinstance(value, list) and len(value) <= 512 and all(short_string(item) for item in value)
+    return short_string(value)
+try:
+    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+except FileNotFoundError:
+    sys.exit(0)
+with os.fdopen(fd, 'rb') as stream:
+    info = os.fstat(stream.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 1048576:
+        raise ValueError('unsafe timing log')
+    data = stream.read(1048577)
+    if len(data) > 1048576:
+        raise ValueError('oversized timing log')
+records = []
+for line in data.splitlines():
+    try:
+        value = json.loads(line)
+        if (isinstance(value, dict) and isinstance(value.get('event'), str)
+                and value['event'] in allowed and value.keys() <= allowed[value['event']] | common
+                and all(valid_field(name, item) for name, item in value.items())):
+            records.append(json.dumps(value, allow_nan=False) + '\n')
+    except (ValueError, UnicodeError, RecursionError):
+        continue
+if records:
+    fd = os.open(destination, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        stream.writelines(records)
+PY
 }
 run_sandboxed_verifier() {
   local candidate="$1" id="$2" trusted="$3" verifier="$4" baseline="$5" storage_root="$6" source vtmp vcopy profile help_output name rc=0 release_prefix
@@ -1371,12 +1426,48 @@ run_sandboxed_verifier() {
   source="$(<"$(session_dir "$id")/source-root")" || { rm -rf "$trusted"; return 2; }
   vtmp="$(mktemp -d "${storage_root:-/private/tmp}/verifier-tmp.XXXXXX")" || { rm -rf "$trusted"; return 2; }
   vcopy="$(mktemp -d "${storage_root:-$(state_home)}/verifier-copy.XXXXXX")" || { rm -rf "$trusted" "$vtmp"; return 2; }
+  local tc_path="${PATH:-/usr/bin:/bin}" tc_python tc_python_bin tc_supported=0
+  help_output="$(verifier_exec env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin bash "$verifier" --help 2>/dev/null || true)"
+  if grep -q -- '--toolchain-env' <<< "$help_output"; then
+    tc_supported=1
+    if ! verifier_exec env -i HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" bash "$verifier" --toolchain-env > "$vtmp/toolchain.env" 2> "$vtmp/toolchain.err" \
+        || ! python3 -I - "$vtmp/toolchain.env" > "$vtmp/toolchain.values" <<'PY'
+import os, sys
+with open(sys.argv[1], 'rb') as stream:
+    text = stream.read().decode('utf-8')
+lines = text.split('\n')
+if len(lines) != 4 or lines[-1] != '':
+    raise ValueError('expected exactly three toolchain lines')
+values = {}
+for line in lines[:-1]:
+    if any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in line):
+        raise ValueError('control character in toolchain')
+    name, value = line.split('=', 1)
+    if name not in {'PATH', 'HARNESS_PYTHON', 'HARNESS_PYTHON_BIN'} or name in values or not os.path.isabs(value):
+        raise ValueError('invalid toolchain variable')
+    values[name] = value
+if len(values) != 3 or any(not os.path.isabs(p) for p in values['PATH'].split(':')) or values['HARNESS_PYTHON'] != values['HARNESS_PYTHON_BIN']:
+    raise ValueError('invalid toolchain paths')
+for name in ('PATH', 'HARNESS_PYTHON', 'HARNESS_PYTHON_BIN'):
+    print(values[name])
+PY
+    then
+      echo verifier_toolchain_unavailable >&2
+      cat "$vtmp/toolchain.err" >&2
+      rm -rf "$trusted" "$vtmp" "$vcopy"
+      return 2
+    fi
+    { IFS= read -r tc_path; IFS= read -r tc_python; IFS= read -r tc_python_bin; } < "$vtmp/toolchain.values"
+  fi
   { resolved_vtmp="$(phys "$vtmp")" && resolved_vcopy="$(phys "$vcopy")" \
       && vtmp="$resolved_vtmp" && vcopy="$resolved_vcopy" && cp -R "$candidate/." "$vcopy/" \
       && scrub_remotes "$vcopy" && session_git -C "$vcopy" update-ref refs/remotes/origin/main "$baseline" && scrub_remotes "$trusted" && session_git -C "$trusted" update-ref refs/remotes/origin/main "$baseline" && write_verifier_gitconfig "$vtmp/gitconfig" \
-      && profile="$(verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted" "$release_prefix")"; } \
+      && profile="$(PATH="$tc_path" verifier_sandbox_profile "$vcopy" "$vtmp" "${HOME:?}" "$source" "$trusted" "$release_prefix")"; } \
     || { rm -rf "$trusted" "$vtmp" "$vcopy"; return 2; }
-  venv=(HOME="$HOME" PATH="${PATH:-/usr/bin:/bin}" TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HARNESS_AUTHORITY_NO_REFRESH=1)
+  venv=(HOME="$HOME" PATH="$tc_path" TMPDIR="$vtmp" HARNESS_VERIFICATION_TMPDIR="$vtmp" GIT_CONFIG_GLOBAL="$vtmp/gitconfig" GIT_CONFIG_NOSYSTEM=1 HARNESS_AUTHORITY_NO_REFRESH=1)
+  if [[ "$tc_supported" == 1 ]]; then
+    venv+=(HARNESS_PYTHON="$tc_python" HARNESS_PYTHON_BIN="$tc_python_bin" HARNESS_DELIVERY_TIMING_LOG="$vtmp/verifier-timing.jsonl")
+  fi
   if [[ -n "${INTEGRATION_INPUT_DIR:-}" ]]; then
     [[ "${HARNESS_DELIVER_TEST_JOBS:-}" =~ ^([1-9]|1[0-6])$ ]] || return 2
     venv+=(HARNESS_DELIVER_TEST_JOBS="$HARNESS_DELIVER_TEST_JOBS" HARNESS_TEST_CASE_JOBS_LIMIT="$HARNESS_DELIVER_TEST_JOBS")
@@ -1390,6 +1481,10 @@ run_sandboxed_verifier() {
   fi
   (cd "$vcopy" && verifier_exec env -i "${venv[@]}" TEST_HARNESS_DIR="$vcopy" HARNESS_POST_COMMIT_PUSH=0 HARNESS_POST_COMMIT_CODEX_SYNC=0 \
     HARNESS_RAG_ENABLED=0 HARNESS_SESSION_BACKLINK=0 "$SANDBOX_EXEC" -p "$profile" bash "$verifier" "${args[@]}") || rc=$?
+  if [[ "$tc_supported" == 1 ]]; then
+    copy_verifier_timing "$vtmp/verifier-timing.jsonl" "$(session_dir "$id")/verifier-timing.jsonl" \
+      || echo 'harness-session: warning: verifier timing log could not be imported' >&2
+  fi
   if python3 -I "$(dirname "$OVERLAY_PATH_HELPER")/verification_storage.py" --settled "$vtmp"; then
     rm -rf "$trusted" "$vtmp" "$vcopy"
   else

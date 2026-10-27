@@ -841,6 +841,9 @@ test_case=verifier-environment
 # verifiers retain the caller environment while receiving private temp context.
 git clone -q --no-local "$REMOTE" "$TMP/vfix"
 cat >> "$TMP/vfix/core/bin/auto-deliver.sh" <<'EOF'
+if [[ -n "${HARNESS_DELIVERY_TIMING_LOG:-}" && -n "$(git remote)" ]]; then
+  printf '%s\n' '{"event":"gate_end","run":"ordinary","ts":1,"status":"passed","wall_s":0}' >> "$HARNESS_DELIVERY_TIMING_LOG"
+fi
 if [[ -e verifier-env-probe ]]; then
   if [[ -z "$(git remote)" ]]; then
     [[ "${HARNESS_AUTHORITY_NO_REFRESH:-}" == 1 ]] || exit 97
@@ -893,13 +896,115 @@ for mode in headless interactive; do
     ! grep -q VERIFIER-WROTE-HOME "$TMP/venv-$mode.out" && [[ ! -e "$VHOME/verifier-wrote-home" ]] || { echo 'FAIL: the headless verifier wrote to HOME'; exit 1; }
     grep -qx 'VERIFIER-MP VERIFIER-MP-OK' "$TMP/venv-$mode.out" \
       || { echo 'FAIL: the headless verifier must allow multiprocessing semaphores'; grep '^VERIFIER-MP' "$TMP/venv-$mode.out"; exit 1; }
+    ! grep -qE '^VERIFIER-ENV (HARNESS_PYTHON|HARNESS_PYTHON_BIN|HARNESS_DELIVERY_TIMING_LOG)=' "$TMP/venv-$mode.out" || { echo 'FAIL: old baseline environment changed'; exit 1; }
+    [[ ! -e "$STATE/sessions/$v_id/verifier-timing.jsonl" ]] || { echo 'FAIL: old headless baseline received timing context'; exit 1; }
   else
+    grep -qx '{"event":"gate_end","run":"ordinary","ts":1,"status":"passed","wall_s":0}' "$STATE/sessions/$v_id/verifier-timing.jsonl" || { echo 'FAIL: ordinary timing was not persisted'; exit 1; }
     grep -qx 'VERIFIER-ENV GIT_CONFIG_NOSYSTEM=0' "$TMP/venv-$mode.out" || { echo 'FAIL: interactive Git configuration changed'; exit 1; }
     grep -qx 'VERIFIER-ENV GH_TOKEN=leak-gh' "$TMP/venv-$mode.out" && grep -q VERIFIER-WROTE-HOME "$TMP/venv-$mode.out" \
       || { echo 'FAIL: the interactive verifier must run as before'; exit 1; }
   fi
 done
 echo 'PASS: headless verifiers run sandboxed with a minimal environment; interactive verifiers are unchanged'
+
+test_case=verifier-toolchain-timing
+# The trusted baseline advertises the optional contract; its committed mode
+# selects deterministic failure and untrusted timing-file shapes.
+cp "$TMP/vfix/core/bin/auto-deliver.sh" "$TMP/legacy-verifier"
+# As in the full headless fixture, avoid /usr/bin/git entering an Xcode
+# application outside the existing sandbox toolchain boundary.
+TC_GIT="$(command -v git)"
+[[ ! -x /Library/Developer/CommandLineTools/usr/bin/git ]] || TC_GIT=/Library/Developer/CommandLineTools/usr/bin/git
+TC_PATH="${PY_ABS%/*}:${TC_GIT%/*}:/usr/bin:/bin:/usr/sbin:/sbin"
+printf 'TC_PATH=%q\nTC_PYTHON=%q\n' "$TC_PATH" "$PY_ABS" > "$TMP/tc-header"
+cat >> "$TMP/tc-header" <<'EOF'
+mode="$(cat "$(dirname "$0")/toolchain-mode")"
+if [[ "${1:-}" == --help ]]; then echo '--verify-candidate --contract-checked --toolchain-env'; exit 0; fi
+if [[ "${1:-}" == --toolchain-env ]]; then
+  case "$mode" in
+    unavailable) echo 'fixture toolchain missing' >&2; exit 69 ;;
+    duplicate) printf 'PATH=/usr/bin\nPATH=/bin\nHARNESS_PYTHON=/usr/bin/python3\n'; exit 0 ;;
+    relative) printf 'PATH=/usr/bin:relative\nHARNESS_PYTHON=/usr/bin/python3\nHARNESS_PYTHON_BIN=/usr/bin/python3\n'; exit 0 ;;
+    control) printf 'PATH=/usr/bin\r\nHARNESS_PYTHON=/usr/bin/python3\nHARNESS_PYTHON_BIN=/usr/bin/python3\n'; exit 0 ;;
+  esac
+  printf 'PATH=%s\nHARNESS_PYTHON=%s\nHARNESS_PYTHON_BIN=%s\n' "$TC_PATH" "$TC_PYTHON" "$TC_PYTHON"
+  exit 0
+fi
+printf 'VERIFIER-BODY-RAN\n'
+printf 'ran\n' > "$TMPDIR/verifier-body-ran"
+[[ "$PATH" == "$TC_PATH" && "$HARNESS_PYTHON" == "$TC_PYTHON" && "$HARNESS_PYTHON_BIN" == "$TC_PYTHON" ]] || exit 101
+[[ "$HARNESS_DELIVERY_TIMING_LOG" == "$TMPDIR/verifier-timing.jsonl" ]] || exit 102
+env | sed 's/^/TOOLCHAIN-ENV /'
+case "$mode" in
+  symlink)
+    printf '%s\n' '{"event":"gate_end","run":"symlink"}' > "$TMPDIR/timing-target"
+    ln -s "$TMPDIR/timing-target" "$HARNESS_DELIVERY_TIMING_LOG" ;;
+  oversized) "$HARNESS_PYTHON" -I -c 'import os; open(os.environ["HARNESS_DELIVERY_TIMING_LOG"], "w").write("{\"event\":\"gate_end\",\"run\":\"big\"}\n" * 40000)' || exit 104 ;;
+  garbage)
+    printf '%s\n' 'garbage' '[]' '{"event":"secret"}' '{"event":"gate_end","output":"secret"}' '{"event":[]}' '{"event":"suite_start","failed":["not-a-suite-start-field"]}' '{"event":"gate_start","workers":true}' > "$HARNESS_DELIVERY_TIMING_LOG"
+    "$HARNESS_PYTHON" -I -c 'import json, os; f = open(os.environ["HARNESS_DELIVERY_TIMING_LOG"], "a"); f.write(json.dumps({"event": "gate_end", "status": "x" * 10240}) + "\n")' || exit 104
+    ;;
+  *) printf '%s\n' '{"event":"gate_start","run":"headless","ts":1,"suites":1,"workers":1,"load1":null}' 'garbage' '{"event":"gate_end","run":"headless","ts":2,"status":"passed","wall_s":0}' > "$HARNESS_DELIVERY_TIMING_LOG" ;;
+esac
+[[ "$mode" != verifier-failure ]] || exit 103
+EOF
+cat "$TMP/vfix/core/bin/auto-deliver.sh" >> "$TMP/tc-header"
+git -C "$TMP/vfix" pull -q --ff-only origin main
+cp "$TMP/tc-header" "$TMP/vfix/core/bin/auto-deliver.sh"
+for tc_mode in valid symlink oversized garbage verifier-failure unavailable duplicate relative control; do
+  git -C "$TMP/vfix" pull -q --ff-only origin main
+  printf '%s\n' "$tc_mode" > "$TMP/vfix/core/bin/toolchain-mode"
+  git -C "$TMP/vfix" add core/bin/auto-deliver.sh core/bin/toolchain-mode
+  git -C "$TMP/vfix" -c user.name=t -c user.email=t@example.invalid commit -qm "toolchain fixture $tc_mode"
+  git -C "$TMP/vfix" push -q origin HEAD:main
+  out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"
+  tc_root="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ROOT=//p')"; tc_id="$(printf '%s\n' "$out" | sed -n 's/^HARNESS_SESSION_ID=//p')"
+  printf '%s\n' "$tc_mode" > "$tc_root/toolchain-change"
+  tc_rc=0
+  HOME="$VHOME" HARNESS_SESSION_STATE_HOME="$STATE" "$ISOLATION" close "$tc_id" > "$TMP/tc-$tc_mode.out" 2> "$TMP/tc-$tc_mode.err" || tc_rc=$?
+  case "$tc_mode" in
+    unavailable|duplicate|relative|control)
+      [[ "$tc_rc" != 0 ]] && grep -q verifier_toolchain_unavailable "$TMP/tc-$tc_mode.err" || { echo "FAIL: invalid toolchain accepted: $tc_mode"; exit 1; }
+      ! grep -q VERIFIER-BODY-RAN "$TMP/tc-$tc_mode.out" || { echo 'FAIL: candidate verifier ran after failed toolchain probe'; exit 1; }
+      [[ "$tc_mode" != unavailable ]] || grep -q 'fixture toolchain missing' "$TMP/tc-$tc_mode.err"
+      ;;
+    *)
+      if [[ "$tc_mode" == verifier-failure ]]; then
+        [[ "$tc_rc" != 0 ]] || { echo 'FAIL: verifier failure accepted'; exit 1; }
+      elif [[ "$tc_rc" != 0 ]]; then
+        cat "$TMP/tc-$tc_mode.out" "$TMP/tc-$tc_mode.err"
+        echo "FAIL: $tc_mode toolchain verifier close exited $tc_rc"
+        exit 1
+      fi
+      grep -qx "TOOLCHAIN-ENV PATH=$TC_PATH" "$TMP/tc-$tc_mode.out"
+      grep -qx "TOOLCHAIN-ENV HARNESS_PYTHON=$PY_ABS" "$TMP/tc-$tc_mode.out"
+      grep -qx "TOOLCHAIN-ENV HARNESS_PYTHON_BIN=$PY_ABS" "$TMP/tc-$tc_mode.out"
+      for key in $(sed -n 's/^TOOLCHAIN-ENV \([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$TMP/tc-$tc_mode.out"); do
+        case "$key" in
+          HOME|PATH|LANG|LC_*|TMPDIR|HARNESS_VERIFICATION_TMPDIR|GIT_CONFIG_GLOBAL|GIT_CONFIG_NOSYSTEM|HARNESS_AUTHORITY_NO_REFRESH|HARNESS_PYTHON|HARNESS_PYTHON_BIN|HARNESS_DELIVERY_TIMING_LOG|TEST_HARNESS_DIR|HARNESS_POST_COMMIT_PUSH|HARNESS_POST_COMMIT_CODEX_SYNC|HARNESS_RAG_ENABLED|HARNESS_SESSION_BACKLINK|PWD|OLDPWD|SHLVL|_) ;;
+          *) echo "FAIL: unexpected toolchain environment key $key"; exit 1 ;;
+        esac
+      done
+      if [[ "$tc_mode" == valid || "$tc_mode" == verifier-failure ]]; then
+        python3 -I - "$STATE/sessions/$tc_id/verifier-timing.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1]) as stream:
+    records = [json.loads(line) for line in stream]
+assert [r['event'] for r in records] == ['gate_start', 'gate_end'], records
+assert all(r['run'] == 'headless' for r in records), records
+assert records[0]['load1'] is None, records
+PY
+      else
+        [[ ! -s "$STATE/sessions/$tc_id/verifier-timing.jsonl" ]] || { echo "FAIL: unsafe timing imported: $tc_mode"; exit 1; }
+      fi
+      ;;
+  esac
+done
+# Restore an old baseline for the remaining unrelated scenarios.
+cp "$TMP/legacy-verifier" "$TMP/vfix/core/bin/auto-deliver.sh"
+git -C "$TMP/vfix" -c user.name=t -c user.email=t@example.invalid commit -qam restore-legacy-verifier
+git -C "$TMP/vfix" push -q origin HEAD:main
+echo 'PASS: verified headless toolchain, fail-closed probes and bounded timing imports'
 
 # A moved source checkout has its own exit code and keeps the session.
 out="$(HARNESS_HEADLESS=1 HARNESS_PYTHON_BIN="$PY_ABS" create)"
