@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.81.0 — Unreleased
+
+- Refuse Claude, Codex and OMP agents in registered canonical checkouts,
+  including explicit legacy and resume routes; use isolated menu launches and
+  interactive shell interception. Shell/manual Git remain allowed. Kiro and
+  gateway routes remain documented legacy residuals.
+- Surface unavailable Web launch catalogs as `launch_unavailable` with their
+  validated server reason; keep available-catalog validation strict.
+
 ## 0.80.0 — 2026-10-27
 
 - Negotiate an advertised trusted-baseline `--toolchain-env` before headless

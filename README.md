@@ -6,6 +6,10 @@
 
 A profile-aware Zsh launcher for Claude Code, OpenAI Codex CLI, and Kiro CLI. Register one or more project directories, give each a short command, and keep runtime state isolated per project.
 
+Claude, Codex and OMP require isolated sessions rather than execution in
+registered canonical checkouts. See the
+[canonical checkout agent boundary](docs/terminal-runtimes.md#canonical-checkout-agent-boundary).
+
 Optional profile-scoped response collection is documented in
 [Native response collection](docs/session-collector.md).
 

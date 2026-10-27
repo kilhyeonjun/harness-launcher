@@ -34,6 +34,26 @@ shift
 }
 HARNESS_DIR="${HARNESS_DIR:A}"
 
+# Explicit legacy agents must be refused before OMP dispatch/probes as well.
+source "$SCRIPT_DIR/harness-common.sh"
+legacy_i=1
+legacy_cwd="$HARNESS_DIR"
+if [[ "${1:-}" == --cwd ]]; then
+  [[ $# -ge 2 ]] || { echo 'harness-exec: --cwd requires a directory' >&2; exit 2; }
+  legacy_cwd="$(harness_resolve_run_dir "$HARNESS_DIR" "$2")" || exit $?
+  legacy_i=3
+elif harness_resolve_run_dir "$HARNESS_DIR" "$PWD" >/dev/null 2>&1; then
+  legacy_cwd="${PWD:A}"
+fi
+if [[ "${@[legacy_i]-}" == --no-isolated && -n "${@[legacy_i+1]-}" ]]; then
+  case "${@[legacy_i+1]}" in
+    kiro|kiro-cli|codex-gateway|checkup|codex-smoke|claude-management) ;;
+    *) legacy_runtime=claude
+       [[ "${@[legacy_i+1]}" != (omp|codex) ]] || legacy_runtime="${@[legacy_i+1]}"
+       harness_canonical_agent_refuse "$legacy_cwd" "$legacy_runtime" || exit $? ;;
+  esac
+fi
+
 # OMP executes the selected immutable closure, not the Homebrew spelling.
 # Enrolled bare menus need that same consumer before workspace allocation.
 # Argument exhaustion is distinct from a literal empty prompt/value.

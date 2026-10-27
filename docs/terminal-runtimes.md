@@ -7,6 +7,24 @@ every other host's variables, and enables host-specific features only for the
 detected host. This guide is the runtime-generic reference; Orca-only material
 stays in [Orca ADE integration](orca-integration.md).
 
+## Canonical checkout agent boundary
+
+Registered canonical roots and their subdirectories are shell/manual-Git
+workspaces, not Claude, Codex or OMP execution directories. Legacy launches,
+including `--no-isolated` and canonical resumes, refuse with
+`canonical_agent_refused` and an isolated `harness-exec` alternative. Inherited
+session environment variables do not exempt a canonical launch. Missing profile
+registrations remain fail-open. Existing agents are not automatically stopped.
+
+With `harness_shell_enable`, interactive bare `claude`, `codex` and `omp`
+commands are also refused inside canonical directories; commands elsewhere and
+noninteractive scripts retain their existing routing. Bound launcher restore
+argv remains the supported continuation route. The no-argument menu sends
+supported direct-agent selections through isolation. Kiro and gateway routes
+remain legacy residual risks until they have an isolated route. Shells and manual
+Git are unaffected. An unavailable Web launch catalog reports `launch_unavailable`
+and its validated server `reason`; available catalogs remain strictly validated.
+
 ## Detection
 
 Detection order is `herdr > orca > cmux > plain`. The first match wins and

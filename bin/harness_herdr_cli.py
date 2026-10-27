@@ -443,7 +443,10 @@ def main(argv):
             print(json.dumps(result, separators=(",", ":")))
         return 0
     except (CommandError, local.DiscoveryError, local.TransportError, launch.LaunchError, ui_answer.UIAnswerError, ui_receipt.ReceiptError, agent_ui_request.RequestError, agent_ui_receipt.ReceiptError, lifecycle.LifecycleError, lifecycle_store.LifecycleStoreError, pane_read.ReadError) as error:
-        print(json.dumps({"error": {"code": str(error)}}))
+        detail = {"code": str(error)}
+        if isinstance(error, launch.LaunchError) and error.reason is not None:
+            detail["reason"] = error.reason
+        print(json.dumps({"error": detail}))
         return 1
     except KeyboardInterrupt:
         print(json.dumps({"error": {"code": "wait_cancelled"}}))

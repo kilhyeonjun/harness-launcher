@@ -50,6 +50,37 @@ harness_resolve_run_dir() {
   esac
 }
 
+# harness_canonical_agent_refuse <physical-cwd> <runtime> [registered-root...]
+# Registry roots are physical absolute paths written by harness-profile. Missing
+# registries fail open; matching uses shell builtins only, including the common
+# no-registry path. Callers resolve logical cwd spellings before entering here.
+harness_canonical_agent_refuse() {
+  local cwd="$1" runtime="$2" root entry registry
+  if [ -n "${ZSH_VERSION:-}" ]; then setopt local_options nonomatch; fi
+  shift 2
+  case "$runtime" in omp|codex|claude) ;; *) return 0 ;; esac
+  for registry in "$HOME/.config/harness-launcher/profiles" "${HARNESS_PROFILE_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/harness-launcher}/profiles"; do
+    for entry in "$registry"/*; do
+      [ -f "$entry" ] && [ ! -L "$entry" ] && [ -r "$entry" ] || continue
+      root=""
+      IFS= read -r root < "$entry" || [ -n "$root" ] || continue
+      [ -d "$root" ] && [ -f "$root/config/launcher.env" ] || continue
+      set -- "$@" "$root"
+    done
+  done
+  for root in "$@"; do
+    [ -n "$root" ] || continue
+    case "$cwd" in
+      "$root"|"${root%/}"/*)
+        printf 'harness-launcher: canonical_agent_refused: %s cannot run in registered canonical checkout: %s\n' "$runtime" "$root" >&2
+        printf 'Use an isolated session: harness-exec %q --isolated %s\n' "$root" "$runtime" >&2
+        return 2
+        ;;
+    esac
+  done
+  return 0
+}
+
 harness_python3_resolve() {
   local candidate
   if [ -n "${HARNESS_PYTHON_BIN:-}" ]; then

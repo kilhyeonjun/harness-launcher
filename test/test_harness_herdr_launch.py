@@ -270,6 +270,62 @@ class LaunchCliTest(unittest.TestCase):
         self.assertNotIn("SECRET", output.getvalue())
         self.assertEqual(json.loads(output.getvalue())["profiles"][0]["id"], "sample")
 
+    def test_unavailable_catalog_raises_launch_error_with_reason(self):
+        client = Client()
+        client.request_json = lambda path: {"available": False, "revision": "", "profiles": [], "reason": "canonical_agent_ban"}
+        with self.assertRaisesRegex(cli.launch.LaunchError, "^launch_unavailable$") as caught:
+            cli.launch.catalog(client, DEVICE, DEVICE)
+        self.assertEqual(caught.exception.reason, "canonical_agent_ban")
+
+    def test_main_unavailable_catalog_surfaces_reason_without_post_or_receipt(self):
+        remote = "22222222-2222-4222-8222-222222222222"
+        for device in (DEVICE, remote):
+            for revision in ("", "r1"):
+                for command in ("launch-catalog", "launch-preview", "launch"):
+                    with self.subTest(device=device, revision=revision, command=command):
+                        client, output, calls = Client(), io.StringIO(), []
+                        reason = "Canonical agent launch is unavailable — 실행 금지"
+                        response = {"available": False, "revision": revision, "profiles": [], "reason": reason}
+                        client.request_json = lambda path: (calls.append(path) or response)
+                        client.post_json = lambda *args: self.fail("unavailable catalog must not POST")
+                        argv = [command, "--device", device]
+                        if command != "launch-catalog":
+                            argv += ["--catalog-revision", "r1", "--profile", "sample", "--runtime", "codex", "--preset", "base"]
+                        if command == "launch":
+                            argv += ["--plan-digest", "a" * 64, "--new-request"]
+                        with patch.object(cli.local, "discover", return_value=client), patch.object(cli, "read_identity", return_value={"device_id": DEVICE}), patch.object(cli.receipt, "LaunchReceiptStore", side_effect=AssertionError("unavailable catalog must not create receipt")), patch("sys.stdout", output):
+                            self.assertEqual(cli.main(argv), 1)
+                        self.assertEqual(json.loads(output.getvalue()), {"error": {"code": "launch_unavailable", "reason": reason}})
+                        expected = "/api/workspace/launch-catalog" if device == DEVICE else f"/api/machines/{device}/workspace/launch-catalog"
+                        self.assertEqual(calls, [expected])
+
+    def test_main_unavailable_catalog_without_reason_keeps_code_only_error(self):
+        client, output = Client(), io.StringIO()
+        client.request_json = lambda path: {"available": False, "revision": "", "profiles": []}
+        with patch.object(cli.local, "discover", return_value=client), patch.object(cli, "read_identity", return_value={"device_id": DEVICE}), patch("sys.stdout", output):
+            self.assertEqual(cli.main(["launch-catalog", "--device", DEVICE]), 1)
+        self.assertEqual(json.loads(output.getvalue()), {"error": {"code": "launch_unavailable"}})
+
+    def test_main_catalog_rejects_malformed_unavailable_and_empty_available_revision(self):
+        unavailable = {"available": False, "revision": "", "profiles": [], "reason": "canonical_agent_ban"}
+        malformed = [
+            {**unavailable, "available": True},
+            {**unavailable, "available": 0},
+            {**unavailable, "revision": None},
+            {key: value for key, value in unavailable.items() if key != "revision"},
+            {**unavailable, "profiles": [{}]},
+            {**unavailable, "profiles": None},
+            {**unavailable, "extra": "SECRET"},
+        ]
+        malformed.extend({**unavailable, "reason": reason} for reason in (None, [], "", "SECRET\n", "SECRET\0", "x" * 4097, "한" * 1366))
+        for response in malformed:
+            with self.subTest(response=response):
+                client, output = Client(), io.StringIO()
+                client.request_json = lambda path: response
+                with patch.object(cli.local, "discover", return_value=client), patch.object(cli, "read_identity", return_value={"device_id": DEVICE}), patch("sys.stdout", output):
+                    self.assertEqual(cli.main(["launch-catalog", "--device", DEVICE]), 1)
+                self.assertEqual(json.loads(output.getvalue()), {"error": {"code": "invalid_response"}})
+
     def test_preview_rejects_unknown_selection_and_projects_secret_fields(self):
         client = Client()
         client.request_json = lambda path: {"available": True, "revision": "r1", "profiles": [{"id": "sample", "label": "Sample", "directory": "/SECRET", "runtimes": [{"id": "codex", "label": "Codex", "presets": [{"id": "base", "label": "Base", "model": "m", "effort": "medium"}]}]}]}

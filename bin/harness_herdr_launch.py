@@ -9,7 +9,9 @@ import harness_herdr_local as local
 import harness_herdr_launch_receipt as receipt
 
 class LaunchError(Exception):
-    pass
+    def __init__(self, code, reason=None):
+        super().__init__(code)
+        self.reason = reason
 
 
 def _fail():
@@ -28,7 +30,9 @@ def _text(value, limit=256):
 def catalog(client, device, local_device):
     path = "/api/workspace/launch-catalog" if device == local_device else f"/api/machines/{device}/workspace/launch-catalog"
     value = client.request_json(path)
-    if not isinstance(value, dict) or set(value) - {"available", "reason", "revision", "profiles"} or type(value.get("available")) is not bool or not _text(value.get("revision")) or not isinstance(value.get("profiles"), list):
+    if not isinstance(value, dict) or set(value) - {"available", "reason", "revision", "profiles"} or type(value.get("available")) is not bool or not (_text(value.get("revision")) or (value["available"] is False and value.get("revision") == "")) or not isinstance(value.get("profiles"), list):
+        _fail()
+    if not value["available"] and "reason" in value and not _text(value["reason"], 4096):
         _fail()
     profiles = []
     profile_ids = set()
@@ -69,6 +73,8 @@ def catalog(client, device, local_device):
                 advanced = {key: advanced[key] for key in fields if key in advanced}
             runtimes.append({"id": runtime["id"], "label": runtime["label"], "presets": presets, **({"advanced": advanced} if advanced is not None else {})})
         profiles.append({"id": profile["id"], "label": profile["label"], "runtimes": runtimes})
+    if not value["available"]:
+        raise LaunchError("launch_unavailable", reason=value.get("reason"))
     return {"device_id": device, "available": value["available"], "revision": value["revision"], "profiles": profiles}
 
 
