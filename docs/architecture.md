@@ -343,8 +343,9 @@ exclusive namespace lock, and shell resume rebinds only stale runtime pins. Unde
 the workspace lease, native resume/fork adopts `session-isolation.sh resume`'s
 owner environment and sets `HARNESS_RUN_DIR` to the session root. SUBMITTED and
 INTEGRATING owners are refused before allocation; CLOSED, ABANDONED and CONFLICT
-owners reopen through that state machine. Fork owners finish like fresh isolated
-owners. Fork admission binds device/inode/UID/link count/mode and header SHA256,
+owners reopen through that state machine. Both resumed and fork owners finish
+like fresh isolated owners after a successful reopen, including admission or lock
+failure before native execution. Fork admission binds device/inode/UID/link count/mode and header SHA256,
 not tail size or timestamps, allowing the source to append while preparing a fork.
 
 ### Normal OMP continuation

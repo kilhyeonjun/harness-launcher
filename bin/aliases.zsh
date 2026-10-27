@@ -1785,10 +1785,11 @@ _harness_launcher_omp_native_resume() (
   if [[ "$operation" == resume ]]; then
     "$python" -I -S -B "$helper" --native-rebind-stale "$HARNESS_SESSION_STATE_HOME" "${config_root:A}" "$w" "$native_id" || return 2
   fi
-  local HARNESS_SESSION_LEASE_FD="" namespace_fd="" selected=""
+  local HARNESS_SESSION_LEASE_FD="" namespace_fd="" selected="" owner_reopened=false
   _harness_launcher_isolated_lease_acquire "$w" || return 2
   {
     _harness_launcher_isolated_session_create "${config_root:A}" "$w" || return 2
+    owner_reopened=true
     local HARNESS_RUN_DIR="$HARNESS_SESSION_ROOT"
     export HARNESS_RUN_DIR
     _harness_launcher_omp_validate || return 2
@@ -1818,7 +1819,7 @@ _harness_launcher_omp_native_resume() (
     return $?
   } always {
     [[ -z "$namespace_fd" ]] || zsystem flock -u "$namespace_fd" 2>/dev/null
-    if [[ "$operation" == fork ]]; then
+    if $owner_reopened; then
       _harness_launcher_isolated_finish "$w" "" "$HARNESS_SESSION_LEASE_FD"
     fi
     [[ -z "$HARNESS_SESSION_LEASE_FD" ]] || zsystem flock -u "$HARNESS_SESSION_LEASE_FD" 2>/dev/null

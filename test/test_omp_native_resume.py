@@ -197,7 +197,7 @@ class NativeResumeTests(unittest.TestCase):
         with self.assertRaisesRegex(m.ContinuationError, 'runtime_resume_identity_changed'):
             m.native_admit(self.state, self.source, target, NATIVE, fork=True, expected=fingerprint)
 
-    def test_shell_native_adopts_resume_environment_and_finalizes_only_forks(self):
+    def test_shell_native_adopts_environment_and_finalizes_reopened_owners(self):
         shim = self.root/'python-shim'
         # The shim returns the namespace from an explicit environment value;
         # all admission/identity behavior is covered by real helper tests above.
@@ -211,10 +211,12 @@ harness_python3_resolve() { print -r -- "$fixture/python-shim"; }
 _harness_launcher_omp_check_args() { :; }
 _harness_launcher_isolated_lease_acquire() { :; }
 _harness_launcher_isolated_session_create() {
+  [[ "$failure" != create ]] || return 2
   print -r -- "resume:$1:$2" >> "$fixture/trace"
+  print OPEN > "$fixture/owner-state"
   export HARNESS_SESSION_ID="$2" HARNESS_SOURCE_ROOT="$1" HARNESS_SESSION_ROOT="$fixture/state/worktrees/$2"
 }
-_harness_launcher_omp_validate() { :; }
+_harness_launcher_omp_validate() { [[ "$failure" != admission ]]; }
 _harness_launcher_omp_required_argv() { omp_required_argv=(); }
 _harness_launcher_omp_native() {
   [[ "$HARNESS_SESSION_ID" == "$owner" && "$HARNESS_SOURCE_ROOT" == "$fixture/source" ]] || return 90
@@ -222,19 +224,31 @@ _harness_launcher_omp_native() {
   [[ -z "$_harness_omp_herdr_resume" ]] || return 92
   print -r -- "native:$HARNESS_SESSION_ID" >> "$fixture/trace"
 }
-_harness_launcher_isolated_finish() { print -r -- "finish:$1" >> "$fixture/trace"; }
-fixture="$2" owner="$3"
+_harness_launcher_isolated_finish() {
+  print -r -- "finish:$1" >> "$fixture/trace"
+  print CLOSED > "$fixture/owner-state"
+}
+fixture="$2" owner="$3" failure="$6"
+[[ "$failure" != lock ]] || ln -s "$fixture/missing" "$HARNESS_OMP_ROOT/.launcher.lock"
 _harness_launcher_omp_native_resume "$owner" "$4" "$5"
 '''
         repo = Path(__file__).resolve().parents[1]
         for operation in ('resume', 'fork'):
-            trace = self.root/'trace'; trace.unlink(missing_ok=True)
-            result = subprocess.run(['/bin/zsh', '-f', '-c', shell, 'test', str(repo), str(self.root), OWNER,
-                                     '--session-native-'+operation, NATIVE], text=True, capture_output=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            expected = ['resume:'+str(self.source)+':'+OWNER, 'native:'+OWNER]
-            if operation == 'fork': expected.append('finish:'+OWNER)
-            self.assertEqual(trace.read_text().splitlines(), expected)
+            for failure in ('none', 'create', 'admission', 'lock'):
+                with self.subTest(operation=operation, failure=failure):
+                    trace = self.root/'trace'; trace.write_text('')
+                    owner_state = self.root/'owner-state'; owner_state.write_text('CLOSED\n')
+                    (self.namespace/'.launcher.lock').unlink(missing_ok=True)
+                    result = subprocess.run(['/bin/zsh', '-f', '-c', shell, 'test', str(repo), str(self.root), OWNER,
+                                             '--session-native-'+operation, NATIVE, failure], text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0 if failure == 'none' else 2, result.stderr)
+                    expected = []
+                    if failure != 'create':
+                        expected.append('resume:'+str(self.source)+':'+OWNER)
+                        if failure == 'none': expected.append('native:'+OWNER)
+                        expected.append('finish:'+OWNER)
+                    self.assertEqual(trace.read_text().splitlines(), expected)
+                    self.assertEqual(owner_state.read_text(), 'CLOSED\n')
 
     def test_other_namespace_and_continuation_not_searched(self):
         self.path.unlink()

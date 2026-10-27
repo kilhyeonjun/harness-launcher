@@ -13,7 +13,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
   namespace admission and recheck file identity before exec. Native resume/fork
   leaves Herdr restore empty rather than publishing an unsupported command or a
   fork's source ID. Adopt the isolated resume state machine and full environment,
-  refuse submitted/integrating owners before allocation, finalize fork owners,
+  refuse submitted/integrating owners before allocation, finalize both resumed
+  and fork owners even on post-reopen admission/lock failure,
   permit source-tail appends during fork admission, and avoid exclusive namespace
   locking on rebind (only stale bindings are rebound).
   Preserve parent `OMPCODE=1` while suppressing nested Herdr
