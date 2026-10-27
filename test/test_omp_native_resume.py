@@ -1,4 +1,5 @@
 """Native history admission uses real files; no native CLI or credential access."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -204,7 +205,21 @@ class NativeResumeTests(unittest.TestCase):
         shim = self.root/'python-shim'
         # The shim returns the namespace from an explicit environment value;
         # all admission/identity behavior is covered by real helper tests above.
-        shim.write_text('#!'+sys.executable+'\nimport os,sys\nif "--native-admit" in sys.argv: print("/history/native.jsonl\\n"+os.environ["TEST_NAMESPACE"]+"\\n"+"a"*64)\n')
+        shim.write_text('#!'+sys.executable+'\n'+r'''
+import os,sys
+if "--native-admit" in sys.argv:
+    print("/history/native.jsonl\n"+os.environ["TEST_NAMESPACE"]+"\n"+"a"*64)
+elif any(a.startswith("prepare-") for a in sys.argv):
+    assert "prepare-resume-mode" in sys.argv or "prepare-resume" in sys.argv, sys.argv
+    if "prepare-resume-mode" in sys.argv:
+        i = sys.argv.index("prepare-resume-mode")
+        mode = sys.argv[i+6]
+    else:
+        mode = "hybrid-opus-lead"
+    selector = {"gpt-only": "openai-codex/gpt-6.1-sol:high",
+                "hybrid-opus-lead": "anthropic/claude-opus-5-5:high"}[mode]
+    sys.stdout.buffer.write(b"REQUIRED_ARGV\0--model\0"+selector.encode()+b"\0END\0")
+''')
         shim.chmod(0o700)
         shell = r'''
 source "$1/bin/aliases.zsh"
@@ -220,30 +235,36 @@ _harness_launcher_isolated_session_create() {
   export HARNESS_SESSION_ID="$2" HARNESS_SOURCE_ROOT="$1" HARNESS_SESSION_ROOT="$fixture/state/worktrees/$2"
 }
 _harness_launcher_omp_validate() { [[ "$failure" != admission ]]; }
-_harness_launcher_omp_required_argv() { omp_required_argv=(); }
 _harness_launcher_omp_native() {
   [[ "$HARNESS_SESSION_ID" == "$owner" && "$HARNESS_SOURCE_ROOT" == "$fixture/source" ]] || return 90
   [[ "$HARNESS_SESSION_ROOT" == "$fixture/state/worktrees/$owner" && "$HARNESS_RUN_DIR" == "$HARNESS_SESSION_ROOT" ]] || return 91
   [[ -z "$_harness_omp_herdr_resume" ]] || return 92
+  [[ "$2" == --model && "$3" == "$selector" && "$4" == --session-dir ]] || return 93
+  [[ "$6" == "$native_flag" && "$7" == /history/native.jsonl && $# == 7 ]] || return 94
   print -r -- "native:$HARNESS_SESSION_ID" >> "$fixture/trace"
 }
 _harness_launcher_isolated_finish() {
   print -r -- "finish:$1" >> "$fixture/trace"
   print CLOSED > "$fixture/owner-state"
 }
-fixture="$2" owner="$3" failure="$6"
+fixture="$2" owner="$3" failure="$6" omp_model_mode="$7" omp_model_recipe=fixture selector="$8"
+native_flag=--resume
+[[ "$4" != --session-native-fork ]] || native_flag=--fork
 [[ "$failure" != lock ]] || ln -s "$fixture/missing" "$HARNESS_OMP_ROOT/.launcher.lock"
 _harness_launcher_omp_native_resume "$owner" "$4" "$5"
 '''
         repo = Path(__file__).resolve().parents[1]
-        for operation in ('resume', 'fork'):
+        modes = (('gpt-only', 'openai-codex/gpt-6.1-sol:high'),
+                 ('hybrid-opus-lead', 'anthropic/claude-opus-5-5:high'),
+                 ('-', 'anthropic/claude-opus-5-5:high'))
+        for operation, (mode, selector) in ((operation, mode) for operation in ('resume', 'fork') for mode in modes):
             for failure in ('none', 'create', 'admission', 'lock'):
-                with self.subTest(operation=operation, failure=failure):
+                with self.subTest(operation=operation, failure=failure, mode=mode):
                     trace = self.root/'trace'; trace.write_text('')
                     owner_state = self.root/'owner-state'; owner_state.write_text('CLOSED\n')
                     (self.namespace/'.launcher.lock').unlink(missing_ok=True)
                     result = subprocess.run(['/bin/zsh', '-f', '-c', shell, 'test', str(repo), str(self.root), OWNER,
-                                             '--session-native-'+operation, NATIVE, failure], text=True, capture_output=True)
+                                             '--session-native-'+operation, NATIVE, failure, mode, selector], text=True, capture_output=True)
                     self.assertEqual(result.returncode, 0 if failure == 'none' else 2, result.stderr)
                     expected = []
                     if failure != 'create':
@@ -252,6 +273,31 @@ _harness_launcher_omp_native_resume "$owner" "$4" "$5"
                         expected.append('finish:'+OWNER)
                     self.assertEqual(trace.read_text().splitlines(), expected)
                     self.assertEqual(owner_state.read_text(), 'CLOSED\n')
+
+    def test_sealed_resume_model_default_is_inserted_before_prompt_separator(self):
+        spec = importlib.util.spec_from_file_location('resume_projection',
+            Path(__file__).resolve().parents[1]/'bin/harness_omp_projection.py')
+        projection = importlib.util.module_from_spec(spec); spec.loader.exec_module(projection)
+        bundle = self.root/'bundle'; bundle.mkdir()
+        settings = bundle/'omp-settings.yml'
+        original = ['--config='+str(settings), '--', '--model', 'prompt-only']
+        for selector in ('openai-codex/gpt-6.1-sol:high', 'anthropic/claude-opus-5-5:high'):
+            with self.subTest(selector=selector):
+                raw = ('modelRoles:\n  default: '+json.dumps(selector)+'\n').encode()
+                settings.write_bytes(raw); settings.chmod(0o600)
+                manifest = {'artifacts': [{'relative_path': settings.name, 'sha256': hashlib.sha256(raw).hexdigest()}]}
+                self.assertEqual(projection.resume_model_argv(bundle, manifest, original),
+                    original[:1]+['--model', selector]+original[1:])
+                self.assertEqual(original, ['--config='+str(settings), '--', '--model', 'prompt-only'])
+        for raw in (b'modelRoles:\n  task: "openai-codex/gpt-6.1-sol:high"\n',
+                    b'modelRoles:\n  default: "not-a-provider-selector"\n',
+                    b'modelRoles:\n  default: null\n',
+                    b'modelRoles:\n  default: "anthropic/claude-opus-5-5:high"\n  default: "openai-codex/gpt-6.1-sol:high"\n'):
+            with self.subTest(raw=raw):
+                settings.write_bytes(raw)
+                manifest = {'artifacts': [{'relative_path': settings.name, 'sha256': hashlib.sha256(raw).hexdigest()}]}
+                with self.assertRaisesRegex(projection.ProjectionError, 'OMP_RESUME_MODEL_DEFAULT_INVALID'):
+                    projection.resume_model_argv(bundle, manifest, original)
 
     def test_other_namespace_and_continuation_not_searched(self):
         self.path.unlink()

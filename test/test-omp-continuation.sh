@@ -460,7 +460,8 @@ raise SystemExit(EXIT_CODE)
             source_file('.claude/source/'+kind+'.yaml',kind+':\n  source: .claude/'+kind+'\n')
         source_file('.claude/source/settings.yaml',
             (kernel/'.claude/source/settings.yaml').read_text().split('\nhooks:',1)[0]+'\nhooks:\n  entries:\n')
-        for name in ('core/scripts/harness_compile.py','core/scripts/omp_required_extension.ts','core/omp/policy-omp.md'):
+        for name in ('core/scripts/harness_compile.py','core/scripts/omp_required_extension.ts','core/omp/policy-omp.md',
+                     'core/omp/model_modes.py','.claude/source/omp-model-modes.json'):
             source_file(name,(kernel/name).read_text())
         (self.profile/'.claude/rules').mkdir()
         self.kernel()
@@ -478,7 +479,8 @@ raise SystemExit(EXIT_CODE)
         calls=[json.loads(x) for x in self.calls.read_text().splitlines()]
         bundle=next(p for p in (self.profile/'.harness/omp').iterdir() if p.is_dir())
         required=['--append-system-prompt='+str(bundle/'policy.md'),'--no-extensions',
-                  '--trusted-extension='+str(bundle/'required-extension.ts')]
+                  '--trusted-extension='+str(bundle/'required-extension.ts'),
+                  '--config='+str(bundle/'omp-settings.yml')]
         self.assertEqual(len(calls),1);self.assertEqual(calls[0]['argv'],['--print',*required,'--session-dir',str(self.sessions),'--',prompt])
         self.assertEqual(calls[0]['cwd'],str(self.work));self.assertEqual(calls[0]['held'],[True,True])
         self.assertEqual(self.events.read_text(),'finish\n')
@@ -490,7 +492,8 @@ raise SystemExit(EXIT_CODE)
         self.assertNotIn(token.encode(),done.stdout+done.stderr)
         calls=[json.loads(x) for x in self.calls.read_text().splitlines()]
         native=str(self.sessions/'fixture_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.jsonl')
-        self.assertEqual(calls[1]['argv'],['--print',*required,'--session-dir',str(self.sessions),'--resume',native,'--',prompt])
+        self.assertEqual(calls[1]['argv'],['--print',*required,'--model','anthropic/claude-opus-5-5:high','--session-dir',str(self.sessions),'--resume',native,'--',prompt])
+        print('RESUME_TRACE='+json.dumps(calls[1]['argv']))
         self.assertEqual(calls[1]['cwd'],str(self.work));self.assertEqual(calls[1]['held'],[True,True])
         self.assertEqual(self.events.read_text(),'finish\n')
         expected_env={'HOME':str(self.ns/'home'),'PATH':omp_native_path(),'LANG':'C','LC_ALL':'C',

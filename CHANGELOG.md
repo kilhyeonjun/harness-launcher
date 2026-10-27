@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.79.2 — 2026-10-27
+
+- Start native OMP owner resumes, forks and managed continuation resumes on the
+  selected model mode's `modelRoles.default`, read from the prepared bundle's
+  sealed `omp-settings.yml`, rather than the saved session's last model.
+  Refuse missing or invalid defaults instead of falling back to session history.
+  Fresh launches retain their existing model-selection behavior.
+
 ## 0.79.1 — 2026-10-27
 
 - Keep OMP UUID resumes out of Claude's fork classifier. Add a paired-dispatcher
