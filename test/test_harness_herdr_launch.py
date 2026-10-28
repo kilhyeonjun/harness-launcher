@@ -30,7 +30,7 @@ class Client:
 class LaunchCliTest(unittest.TestCase):
     def deployed_catalog(self):
         # Captured from the authenticated Web catalog on 2026-10-28; only
-        # private directories and the opaque revision are sanitized.
+        # private directories, profile aliases and opaque revision are sanitized.
         runtimes = [
             {"id": "claude", "label": "Claude", "presets": [
                 {"id": "base", "label": "base", "model": "sonnet", "effort": "high"},
@@ -58,7 +58,7 @@ class LaunchCliTest(unittest.TestCase):
                 "approvals": ["on-request", "never"], "sandboxes": ["read-only", "workspace-write", "danger-full-access"],
                 "networks": ["enabled", "disabled"]}}]
         profiles = [{"id": name, "label": name, "directory": "/PRIVATE/" + name,
-                     "runtimes": json.loads(json.dumps(runtimes))} for name in ("kh", "gp", "gd")]
+                     "runtimes": json.loads(json.dumps(runtimes))} for name in ("sample-one", "sample-two", "sample-three")]
         for profile in profiles[1:]:
             profile["runtimes"][1]["advanced"]["approvals"] = ["on-request"]
         return {"available": True, "revision": "r1", "profiles": profiles}
@@ -297,14 +297,14 @@ class LaunchCliTest(unittest.TestCase):
             with patch.object(cli.local, "discover", return_value=client), patch.object(cli, "read_identity", return_value={"device_id": DEVICE}), patch("sys.stdout", output):
                 self.assertEqual(cli.main(["launch-catalog", "--device", device]), 0)
             value = json.loads(output.getvalue())
-            self.assertEqual([p["id"] for p in value["profiles"]], ["kh", "gp", "gd"])
+            self.assertEqual([p["id"] for p in value["profiles"]], ["sample-one", "sample-two", "sample-three"])
             self.assertEqual(value["profiles"][0]["runtimes"][0]["presets"][-1]["model"], "opus[1m]")
             self.assertNotIn("/PRIVATE", output.getvalue())
 
     def test_deployed_rich_effort_uses_qualified_presets_base_model(self):
         client = Client(); client.request_json = lambda path: self.deployed_catalog()
         current = cli.launch.catalog(client, DEVICE, DEVICE)
-        request = {"catalog_revision": "r1", "profile": "kh", "runtime": "claude", "preset": "rich"}
+        request = {"catalog_revision": "r1", "profile": "sample-one", "runtime": "claude", "preset": "rich"}
         self.assertIs(cli.launch._validate_selection(current, {**request, "options": {"effort": "xhigh"}}), current)
         with self.assertRaisesRegex(cli.launch.LaunchError, "invalid_selection"):
             cli.launch._validate_selection(current, {**request, "options": {"effort": "low"}})
