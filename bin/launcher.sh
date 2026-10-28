@@ -1206,7 +1206,9 @@ launch_codex() {
       return 2
     fi
     local isolated_args=(codex "$CHOICE_CODEX_PROFILE" "$CHOICE_CODEX_CONTEXT")
-    [ "$CHOICE_HAPPY" != 1 ] || isolated_args+=(happy)
+    if [ "$CHOICE_HAPPY" = 1 ]; then
+      isolated_args=(codex "$CHOICE_CODEX_CONTEXT" happy)
+    fi
     case "$CHOICE_CODEX_SURFACE" in work) isolated_args+=(work) ;; esac
     case "$CHOICE_CODEX_SAFETY" in
       full-auto|never|bypass) isolated_args+=("$CHOICE_CODEX_SAFETY") ;;

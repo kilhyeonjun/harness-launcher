@@ -13,6 +13,9 @@ Notable changes are recorded here. This project follows semantic versioning for 
   its registered source root or raw model-mode selector, so bound herdr resumes
   execute in their recorded isolated workspace. Explicit canonical legacy
   entries remain refused before runtime probes.
+- Apply the same canonical ban to non-management arguments passed through the
+  internal Claude management selector. Keep isolated Happy Codex menu handoffs
+  free of an explicit launcher profile so valid Happy selections remain usable.
 - Surface unavailable Web launch catalogs as `launch_unavailable` with their
   validated server reason; keep available-catalog validation strict.
 

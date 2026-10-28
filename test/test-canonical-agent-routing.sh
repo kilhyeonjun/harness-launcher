@@ -38,12 +38,19 @@ for cwd in "$HARNESS" "$HARNESS/nested"; do
     [[ ! -s "$LOG" ]] || fail "$runtime reached preparation before refusal"
   done
 done
+# Internal management spelling is not authority for an agent invocation.
+for operand in -p --resume; do
+  : > "$LOG"
+  rc=0
+  "$TMP/prefix/bin/harness-exec" "$HARNESS" --cwd "$HARNESS/nested" --no-isolated claude-management "$operand" fixture > "$TMP/out" 2> "$TMP/err" || rc=$?
+  [[ "$rc" == 2 && ! -s "$LOG" && "$(<"$TMP/err")" == *canonical_agent_refused* ]] || fail 'internal management selector escaped transport refusal'
+done
 # Exercise implicit nested cwd resolution at the transport boundary too.
 rc=0
 (cd "$HARNESS/nested"; "$TMP/prefix/bin/harness-exec" "$HARNESS" --no-isolated codex base) > "$TMP/out" 2> "$TMP/err" || rc=$?
 [[ "$rc" == 2 && ! -s "$LOG" ]] || fail 'implicit nested cwd escaped early refusal'
 # Informational/management argv must pass the predispatch refusal unchanged.
-for runtime in claude codex; do
+for runtime in claude codex claude-management; do
   : > "$LOG"
   native_args=(--version)
   [[ "$runtime" != claude ]] || native_args=(auth status)
@@ -58,12 +65,30 @@ print 'PASS: explicit canonical legacy entry refuses before aliases and OMP prob
 
 # Actual launcher classification must refuse legacy continuations even when
 # the profile's isolation default is off; no native launch may happen.
+mkdir -p "$TMP/management-bin"
+cat > "$TMP/management-bin/claude" <<'CLAUDE'
+#!/bin/sh
+printf 'native\n' >> "$LOG"
+CLAUDE
+chmod 755 "$TMP/management-bin/claude"
 cat > "$TMP/resume.zsh" <<'RESUME'
 set -eu
 unset HARNESS_SESSION_ISOLATION HARNESS_SESSION_ROOT HARNESS_SESSION_ID
 unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM CLAUDECODE CODEX_THREAD_ID
 unset -m 'HERDR_*' 'ORCA_*' 'CMUX_*' || true
+export PATH="$TMP/management-bin:$PATH"
 source "$ROOT/bin/aliases.zsh"
+for cwd in "$HARNESS" "$HARNESS/nested"; do
+  for operand in -p --resume; do
+    : > "$LOG"
+    rc=0
+    _harness_launcher_run "$HARNESS" --cwd "$cwd" claude-management "$operand" fixture > "$TMP/management.out" 2> "$TMP/management.err" || rc=$?
+    [[ "$rc" == 2 && ! -s "$LOG" && "$(<"$TMP/management.err")" == *canonical_agent_refused* ]] || { print -u2 'FAIL: internal management selector launched canonical agent'; exit 1; }
+  done
+  : > "$LOG"
+  _harness_launcher_run "$HARNESS" --cwd "$cwd" claude-management auth status
+  [[ "$(<"$LOG")" == native ]] || { print -u2 'FAIL: internal native management command refused'; exit 1; }
+done
 # Even a bound native handoff must refuse if its final execution cwd is canonical.
 HARNESS_OMP_ROOT="$TMP/omp-owner" HARNESS_OMP_BIN=/usr/bin/false
 for cwd in "$HARNESS" "$HARNESS/nested"; do
@@ -128,7 +153,7 @@ source "$ROOT/bin/harness-common.sh"
 : > "$TMP/selected-functions.bash"
 inside=0
 while IFS= read -r line; do
-  case "$line" in 'launch_claude() {'|'launch_codex() {'|'launch_omp() {') inside=1 ;; esac
+  case "$line" in 'launch_claude() {'|'launch_codex() {'|'launch_omp() {'|'codex_happy_compatible() {') inside=1 ;; esac
   if [ "$inside" = 1 ]; then
     printf '%s\n' "$line" >> "$TMP/selected-functions.bash"
     [ "$line" != '}' ] || inside=0
@@ -143,7 +168,7 @@ harness_launch_source_root() { printf '%s\n' "$HARNESS"; }
 history_save() { printf 'saved\n' >> "$TMP/history-writes"; }
 launch_banner() { :; }
 PLAN_SUMMARY='Selected test launch'
-HARNESS_NAME='routing test' HARNESS_PREFIX=route
+HARNESS_NAME='routing test' HARNESS_PREFIX=route MCP_SURFACE_POLICY=legacy
 HARNESS_DIR="$HARNESS" HARNESS_RUN_DIR="$HARNESS/nested" LAUNCHER_BIN_DIR="$TMP/tui-bin"
 CHOICE_PROVIDER=direct CHOICE_HAPPY=0 CHOICE_MODE=base CHOICE_SESSION=new
 CHOICE_PERM=default CHOICE_CHROME=0 CHOICE_MCP_SURFACE=light
@@ -152,7 +177,7 @@ OMP_HANDOFF="$TMP/omp-handoff"
 case "$1" in
   claude) CHOICE_MODE=custom CHOICE_C_MODEL=chosen-model CHOICE_C_EFFORT=high; launch_claude ;;
   codex) launch_codex ;;
-  codex-happy) CHOICE_HAPPY=1 CHOICE_CODEX_SAFETY=bypass; launch_codex ;;
+  codex-happy) CHOICE_HAPPY=1 CHOICE_CODEX_PROFILE=base CHOICE_CODEX_SURFACE=default CHOICE_CODEX_SAFETY=default; codex_happy_compatible; launch_codex ;;
   claude-continuation) CHOICE_SESSION="$2" CHOICE_MODE=custom CHOICE_C_MODEL=chosen-model CHOICE_C_EFFORT=high; launch_claude ;;
   codex-continuation) CHOICE_SESSION="$2"; launch_codex ;;
   claude-happy) CHOICE_HAPPY=1 CHOICE_MODE=custom CHOICE_C_MODEL=chosen-model CHOICE_C_EFFORT=high; launch_claude ;;
@@ -175,7 +200,7 @@ for runtime in claude codex codex-happy omp; do
     claude) expected+=(claude light --passthrough --model chosen-model --effort high --exclude-dynamic-system-prompt-sections) ;;
     codex) expected+=(codex fast 1m work never)
       [[ "$(<"$TMP/context")" == 1m ]] || fail 'Codex selection lost context' ;;
-    codex-happy) expected+=(codex fast 1m happy work bypass) ;;
+    codex-happy) expected+=(codex 1m happy) ;;
     omp) expected+=(omp --model-mode 'mode with spaces') ;;
   esac
   [[ "${(j:|:)actual}" == "${(j:|:)expected}" ]] || fail "$runtime selected TUI argv changed: ${(j:|:)actual}"

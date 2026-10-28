@@ -2246,6 +2246,9 @@ _harness_launcher_run() {
       echo 'harness-launcher: claude-management requires a native Claude subcommand' >&2
       return 2
     }
+    if ! harness_claude_is_management_command "$1"; then
+      _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" claude || return $?
+    fi
     local claude_management_bin="${commands[claude]:-}"
     [[ -n "$claude_management_bin" && -x "$claude_management_bin" ]] || {
       echo 'harness-launcher: claude not found in PATH' >&2

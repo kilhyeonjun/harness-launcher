@@ -47,7 +47,11 @@ elif harness_resolve_run_dir "$HARNESS_DIR" "$PWD" >/dev/null 2>&1; then
 fi
 if [[ "${@[legacy_i]-}" == --no-isolated && -n "${@[legacy_i+1]-}" ]]; then
   case "${@[legacy_i+1]}" in
-    kiro|kiro-cli|codex-gateway|checkup|codex-smoke|claude-management) ;;
+    kiro|kiro-cli|codex-gateway|checkup|codex-smoke) ;;
+    claude-management)
+       if ! harness_claude_is_management_command "${@[legacy_i+2]-}"; then
+         harness_canonical_agent_refuse "$legacy_cwd" claude || exit $?
+       fi ;;
     *) legacy_runtime=claude
        legacy_args=("${@[legacy_i+1,-1]}")
        if [[ "${legacy_args[1]}" == (omp|codex|claude) ]]; then
