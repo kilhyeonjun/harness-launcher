@@ -1894,6 +1894,30 @@ _harness_launcher_omp_native_resume() (
   }
 )
 
+# _harness_launcher_owner_pool SOURCE HANDLE: print the one session-state pool
+# of registered SOURCE that holds launcher session HANDLE (32 lowercase hex).
+# harness_session_pools.find_owner checks the source registration and the
+# record's source-root and absolute session-root; any doubt prints nothing.
+# Pool base: HARNESS_SESSION_POOL_BASE, else the runtime store's session-state.
+_harness_launcher_owner_pool() (
+  local source="$1" handle="$2" python base
+  [[ "$handle" =~ '^[0-9a-f]{32}$' && "$source" == /* ]] || return 2
+  base="${HARNESS_SESSION_POOL_BASE:-$HOME/.local/state/kilhyeonjun-harness/launcher-runtimes/session-state}"
+  [[ "$base" == /* && -d "$base" ]] || return 2
+  python="$(harness_python3_resolve)" || return 2
+  "$python" -I -S -B - "$_HARNESS_LAUNCHER_BIN/harness_session_pools.py" "$base" "$source" \
+    "${handle[1,8]}-${handle[9,12]}-${handle[13,16]}-${handle[17,20]}-${handle[21,32]}" 2>/dev/null <<'PYOWNER'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('_harness_owner_pool', sys.argv[1])
+pools = importlib.util.module_from_spec(spec); spec.loader.exec_module(pools)
+try:
+    pool, _ = pools.find_owner(sys.argv[2], sys.argv[3], sys.argv[4])
+except (pools.PoolError, OSError, ValueError):
+    raise SystemExit(2)
+print(pool)
+PYOWNER
+)
+
 _harness_launcher_omp_continuation() (
   setopt localoptions pipefail
   local continuation_w="$1" continuation_mode="$2"; shift 2
@@ -2185,16 +2209,23 @@ _harness_launcher_run() {
     if [[ "${omp_native_args[1]-}" == (--session-new|--session-resume) ]]; then
       # Entry alone supplies this exact internal transport after origin/store
       # verification. Raw public outer controls are refused by Entry pre-begin.
-      local continuation_session=""
+      local continuation_session="" continuation_state=""
       if [[ -z "$isolated_source_run_dir" && "$1" == --isolated-session && "$selector_i" == 3 ]]; then
         continuation_session="$2"
       elif [[ -z "$isolated_source_run_dir" && "$selector_i" == 1 && "${omp_native_args[1]}" == --session-resume \
               && "${omp_native_args[2]-}" =~ '^[0-9a-f]{32}$' ]]; then
         # herdr's bare resume argv: the handle names its session; use the
         # session directory's own spelling (the record binds that spelling).
+        # herdr runs it in a fresh login shell after a server restart, which has
+        # no launcher state field: then the registered source's own pools
+        # (harness_session_pools.find_owner) name the owner's state. Only an
+        # absent field is derived; an empty one stays the native's no-authority
+        # sentinel (_harness_launcher_omp_native).
+        (( ${+HARNESS_SESSION_STATE_HOME} )) || continuation_state="$(_harness_launcher_owner_pool \
+          "${config_root:A}" "${omp_native_args[2]}")" || continuation_state=""
         local continuation_entry
         local -a continuation_found=()
-        for continuation_entry in "${HARNESS_SESSION_STATE_HOME:-/nonexistent}"/sessions/*(N/); do
+        for continuation_entry in "${continuation_state:-${HARNESS_SESSION_STATE_HOME:-/nonexistent}}"/sessions/*(N/); do
           [[ "${(L)${continuation_entry:t}//-/}" == "${omp_native_args[2]}" ]] && continuation_found+=("${continuation_entry:t}")
         done
         (( ${#continuation_found} == 1 )) && continuation_session="$continuation_found[1]"
@@ -2203,7 +2234,12 @@ _harness_launcher_run() {
         echo 'harness-launcher: OMP_CONTINUATION_UNBOUND' >&2; return 2
       }
       _harness_launcher_omp_projection_select || return 2
-      _harness_launcher_omp_continuation "$continuation_session" "${omp_native_args[@]}"
+      if [[ -n "$continuation_state" ]]; then
+        HARNESS_SESSION_STATE_HOME="$continuation_state" \
+          _harness_launcher_omp_continuation "$continuation_session" "${omp_native_args[@]}"
+      else
+        _harness_launcher_omp_continuation "$continuation_session" "${omp_native_args[@]}"
+      fi
       return $?
     fi
     _harness_launcher_omp_check_args "${omp_native_args[@]}" || return 2

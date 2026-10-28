@@ -2,6 +2,19 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased
+
+- Resume OMP continuations from herdr's stored `harness-exec <source> omp
+  --session-resume <h> --` after a herdr server restart. The restored pane is a
+  fresh login shell without `HARNESS_SESSION_STATE_HOME`, so every such resume
+  failed with `OMP_CONTINUATION_UNBOUND`. When the field is absent, the bare
+  form now locates the owner's session-state pool through the existing
+  verified pool lookup (registered source, record source-root and absolute
+  session-root; pool base `HARNESS_SESSION_POOL_BASE` or the runtime store's
+  `session-state`). An explicit state field, including the empty
+  no-authority sentinel, is still used unchanged, and an unknown, foreign or
+  ambiguous handle is still refused.
+
 ## 0.81.0 — 2026-10-28
 
 - Refuse Claude, Codex and OMP agents in registered canonical checkouts,

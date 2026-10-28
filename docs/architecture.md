@@ -407,7 +407,13 @@ handle's single eligible session file. The native itself holds
 the launcher's lease alone would free a handle whose native outlived a killed
 launcher); RESUME refuses `OMP_CONTINUATION_BUSY` while it is held.
 herdr's bare `harness-exec <harness> omp --session-resume H --` names its own
-session; no caller cwd is injected. The installed Entry resumes a session with its
+session; no caller cwd is injected. herdr runs it in a fresh login shell after a
+server restart, so when `HARNESS_SESSION_STATE_HOME` is absent (not merely
+empty, which stays the native's no-authority sentinel) the launcher takes the
+owner's state pool from `harness_session_pools.find_owner` over the registered
+source's pools under `HARNESS_SESSION_POOL_BASE`, else
+`~/.local/state/kilhyeonjun-harness/launcher-runtimes/session-state`; an
+absent, foreign or ambiguous owner is `OMP_CONTINUATION_UNBOUND`. The installed Entry resumes a session with its
 bound runtime; `harness_omp_continuation.py --rebind-runtime <state> <source> W`,
 run from the current selected snapshot (verified via `current.json` and the
 manifest), rewrites `bindings/W.json` to that snapshot under the Entry's binding
