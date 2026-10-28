@@ -1648,6 +1648,9 @@ _harness_launcher_omp_native_exec() {
   local run_dir="$1" root="$HARNESS_OMP_ROOT" native_bin="$HARNESS_OMP_BIN"
   shift
   cd "$run_dir" || return 2
+  if ! harness_agent_is_management omp "$@"; then
+    _harness_launcher_canonical_agent_refuse "$PWD" omp || return $?
+  fi
   umask 077
   # A continuation's native holds its own lock: fcntl locks die with their
   # owning process, so the launcher's workspace lease alone would free a handle
@@ -2157,12 +2160,6 @@ _harness_launcher_run() {
     esac
   fi
 
-  if [[ "$selector_i" == 1 && "${1:-}" == omp && "$HARNESS_SESSION_ISOLATION_DEFAULT" != 1 && "${HARNESS_SESSION_ISOLATION:-0}" != 1 ]]; then
-    case "${2:-}" in
-      --session-new|--session-resume|--session-native-resume|--session-native-fork|--version|--help|login|models) ;;
-      *) _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" omp || return $? ;;
-    esac
-  fi
   # Keep the OMP discriminator through workspace normalization. Public native
   # management returns before session/history preparation, even with controls.
   local omp_selected=false omp_required_selected=false
@@ -2174,6 +2171,14 @@ _harness_launcher_run() {
     _harness_launcher_omp_model_mode "${omp_native_args[@]}" || return 2
     local -a omp_prefix=("${@[1,selector_i]}")
     set -- "${omp_prefix[@]}" "${omp_native_args[@]}"
+    # Model-mode controls can precede a bound continuation. Classify only the
+    # normalized request: its source root is not its recorded execution cwd.
+    if [[ "$selector_i" == 1 && "$HARNESS_SESSION_ISOLATION_DEFAULT" != 1 && "${HARNESS_SESSION_ISOLATION:-0}" != 1 ]]; then
+      case "${omp_native_args[1]-}" in
+        --session-new|--session-resume|--session-native-resume|--session-native-fork|--version|--help|login|models) ;;
+        *) _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" omp || return $? ;;
+      esac
+    fi
     if [[ "${omp_native_args[1]-}" == (--session-native-resume|--session-native-fork) ]]; then
       [[ -z "$isolated_source_run_dir" && "$1" == --isolated-session && "$selector_i" == 3 && ${#omp_native_args} -ge 2 ]] || {
         echo 'harness-launcher: runtime_resume_unbound' >&2; return 2

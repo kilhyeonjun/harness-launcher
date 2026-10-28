@@ -64,6 +64,13 @@ unset HARNESS_SESSION_ISOLATION HARNESS_SESSION_ROOT HARNESS_SESSION_ID
 unset HARNESS_TERMINAL_RUNTIME TERM_PROGRAM CLAUDECODE CODEX_THREAD_ID
 unset -m 'HERDR_*' 'ORCA_*' 'CMUX_*' || true
 source "$ROOT/bin/aliases.zsh"
+# Even a bound native handoff must refuse if its final execution cwd is canonical.
+HARNESS_OMP_ROOT="$TMP/omp-owner" HARNESS_OMP_BIN=/usr/bin/false
+for cwd in "$HARNESS" "$HARNESS/nested"; do
+  rc=0
+  (_harness_launcher_omp_native_exec "$cwd" --resume fixture --) > "$TMP/native.out" 2> "$TMP/native.err" || rc=$?
+  [[ "$rc" == 2 && "$(<"$TMP/native.err")" == *canonical_agent_refused* ]] || { print -u2 'FAIL: final OMP execution cwd escaped canonical refusal'; exit 1; }
+done
 _harness_launcher_run_session() { print native >> "$LOG"; }
 _harness_launcher_run_codex_cli() { print native >> "$LOG"; }
 _harness_launcher_codex_history_select() { print history >> "$LOG"; return 1; }
