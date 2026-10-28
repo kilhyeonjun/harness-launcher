@@ -308,6 +308,82 @@ class ContinuationTests(unittest.TestCase):
         self.public_shell(['--session-resume',self.h],0)
         self.assertEqual(json.loads(self.record.read_bytes())['status'],'READY')
 
+    def herdr_restore_shell(self, handle, expected, extra_env=None):
+        # herdr restores a pane by running its stored argv in a fresh login
+        # shell: `harness-exec <source> omp --session-resume <h> --`, with no
+        # launcher state field and no isolated-session control.
+        env={'HOME':str(self.home),'PATH':self.preparation_path,'LC_ALL':'C','TERM':'dumb',
+             'FIXTURE_PYTHON':sys.executable,'FIXTURE_EVENTS':str(self.events),
+             'HARNESS_CLAUDE_PLUGIN_MIRROR':'0','HARNESS_POST_EDIT_CODEX_SYNC':'0',
+             'HARNESS_POST_COMMIT_CODEX_SYNC':'0','TMPDIR':str(self.base),**(extra_env or {})}
+        script='''source "$1"
+harness_python3_resolve() { print -r -- "$FIXTURE_PYTHON"; }
+shift
+_harness_launcher_run "$@"
+'''
+        done=subprocess.run(['/bin/zsh','-f','-c',script,'fixture',str(self.consumer),str(self.profile),
+            'omp','--session-resume',handle,'--'],cwd=self.home,env=env,capture_output=True,timeout=20)
+        self.assertEqual(done.returncode,expected,done.stderr.decode())
+        return done
+
+    def test_C03d_herdr_restore_without_state_field_finds_the_owner_pool(self):
+        self.public_fixture();self.public_shell(['--session-new','--print','--','one'],0)
+        self.herdr_restore_shell(self.h,0)
+        self.assertEqual(json.loads(self.record.read_bytes())['status'],'READY')
+        self.assertNotIn('create',self.events.read_text() if self.events.exists() else '')
+
+    def owner_pool(self, base, handle, pool_base=True):
+        env={'HOME':str(self.home),'PATH':'/usr/bin:/bin','LC_ALL':'C','FIXTURE_PYTHON':sys.executable}
+        if pool_base:env['HARNESS_SESSION_POOL_BASE']=str(base)
+        script='source "$1"\nharness_python3_resolve() { print -r -- "$FIXTURE_PYTHON"; }\n_harness_launcher_owner_pool "$2" "$3"\n'
+        done=subprocess.run(['/bin/zsh','-f','-c',script,'fixture',str(REPO/'bin/aliases.zsh'),str(self.profile),handle],
+            env=env,capture_output=True,timeout=20)
+        return done.returncode,done.stdout.decode().strip()
+
+    def seed_owner(self, pool, w, source=None):
+        record=pool/'sessions'/w;record.mkdir(parents=True,mode=0o700)
+        (pool/'worktrees'/w).mkdir(parents=True,mode=0o700)
+        (record/'source-root').write_text(str(source or self.profile)+'\n')
+        (record/'session-root').write_text(str(pool/'worktrees'/w)+'\n')
+
+    def test_C03e_owner_pool_profile_layout_override_and_refusals(self):
+        w='12345678-1234-4234-8234-123456789abc';h=w.replace('-','')
+        other=self.base/'other project';(other/'config').mkdir(parents=True)
+        (other/'config/launcher.env').write_text('HARNESS_PREFIX=ot\n')
+        (self.registry/'ot').write_text(str(other)+'\n');(self.registry/'ot').chmod(0o600)
+        base=self.base/'pools'/'session-state';self.seed_owner(base/'ex',w)
+        # Entry's profile layout under an explicit pool base.
+        self.assertEqual(self.owner_pool(base,h),(0,str(base/'ex')))
+        # Without HARNESS_SESSION_POOL_BASE: the runtime store's session-state.
+        default=self.home/'.local/state/kilhyeonjun-harness/launcher-runtimes/session-state'
+        self.assertEqual(self.owner_pool(base,h,pool_base=False)[0],2)
+        self.seed_owner(default/'ex',w)
+        self.assertEqual(self.owner_pool(base,h,pool_base=False),(0,str(default/'ex')))
+        # The same handle in the flat pool too: ambiguous.
+        self.seed_owner(base,w);self.assertEqual(self.owner_pool(base,h),(2,''))
+        # A record that names another registered source is not this source's owner.
+        foreign=self.base/'foreign'/'session-state';self.seed_owner(foreign/'ex',w,source=other)
+        self.assertEqual(self.owner_pool(foreign,h),(2,''))
+        # Unregistered source, malformed handle.
+        (self.registry/'ex').unlink();self.assertEqual(self.owner_pool(default,h),(2,''))
+        self.assertEqual(self.owner_pool(default,'XYZ')[0],2)
+
+    def test_C03d_herdr_restore_keeps_an_empty_sentinel(self):
+        self.public_fixture();self.public_shell(['--session-new','--print','--','one'],0)
+        done=self.herdr_restore_shell(self.h,2,{'HARNESS_SESSION_STATE_HOME':''})
+        self.assertIn(b'OMP_CONTINUATION_UNBOUND',done.stderr)
+
+    def test_C03d_herdr_restore_refuses_an_unknown_handle(self):
+        self.public_fixture();self.public_shell(['--session-new','--print','--','one'],0)
+        done=self.herdr_restore_shell('0'*32,2)
+        self.assertIn(b'OMP_CONTINUATION_UNBOUND',done.stderr)
+
+    def test_C03d_herdr_restore_keeps_an_explicit_state_field(self):
+        self.public_fixture();self.public_shell(['--session-new','--print','--','one'],0)
+        other=self.base/'other-state';(other/'sessions').mkdir(parents=True,mode=0o700)
+        done=self.herdr_restore_shell(self.h,2,{'HARNESS_SESSION_STATE_HOME':str(other)})
+        self.assertIn(b'OMP_CONTINUATION_UNBOUND',done.stderr)
+
     def test_C12_C23_retired_workspace_not_recreated(self):
         self.kernel(); self.work.rmdir()
         with self.assertRaises(self.m.ContinuationError):self.op('NEW_PREPARE')
