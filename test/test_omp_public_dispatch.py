@@ -511,9 +511,13 @@ class PublicOmpDispatch(unittest.TestCase):
                 self.assertEqual(2, result.returncode, result.stderr)
                 self.assertNotIn(b'OMP_', result.stderr, 'Malformed controls must not enter OMP projection')
                 self.assertFalse((self.home / 'menu-state').exists())
-        # An explicit empty argument is opaque, not argument exhaustion: it
-        # reaches the existing menu with unavailable OMP instead of dispatching.
-        self.run_menu([''], observe_mode=False)
+        # An opaque empty argument is not argument exhaustion: it must not
+        # enter OMP dispatch. The canonical agent guard now refuses this legacy
+        # argv before any menu or native launch, rather than treating it as bare.
+        result = self.run_entry([str(self.public), ''])
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn(b'canonical_agent_refused', result.stderr)
+        self.assertFalse((self.home / 'menu-state').exists())
         self.assertEqual([], self.calls())
         self.assert_preserved()
 

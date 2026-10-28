@@ -28,7 +28,7 @@ for tail in [['--cwd'],['--isolated-session'],['--cwd','DIR','--isolated-session
     else:raise AssertionError(('auto accepted a missing outer-control value',tail))
 print('PASS: auto literal prefix/value/empty/prompt matrix and missing-value refusal')
 with tempfile.TemporaryDirectory(prefix='explicit-claude-') as tmp:
-    base=Path(tmp);home=base/'home';binary=base/'bin';profile=home/'profile with spaces';log=base/'native.json'
+    base=Path(tmp).resolve();home=base/'home';binary=base/'bin';profile=home/'profile with spaces';log=base/'native.json'
     for path in (binary,profile/'config',profile/'.claude',home/'.claude',home/'.config/harness-launcher/profiles'):
         path.mkdir(parents=True,exist_ok=True)
     (profile/'config/launcher.env').write_text('HARNESS_NAME="fixture"\nHARNESS_PREFIX="fixture"\nHARNESS_SESSION_ISOLATION_DEFAULT=0\n')
