@@ -27,6 +27,14 @@ def _text(value, limit=256):
         return False
 
 
+def _preset_model_id(runtime, model):
+    # Claude's rich preset carries its context suffix; advanced model choices
+    # and efforts_by_model use the base model emitted by the Web catalog.
+    if runtime["id"] == "claude" and model not in runtime.get("advanced", {}).get("models", []):
+        return model.removesuffix("[1m]")
+    return model
+
+
 def catalog(client, device, local_device):
     path = "/api/workspace/launch-catalog" if device == local_device else f"/api/machines/{device}/workspace/launch-catalog"
     value = client.request_json(path)
@@ -65,7 +73,7 @@ def catalog(client, device, local_device):
                 required = fields - {"efforts_by_model", "networks"}
                 if not isinstance(advanced, dict) or set(advanced) - fields or not required <= set(advanced) or any(not isinstance(advanced[key], list) or any(not _text(item, 128) for item in advanced[key]) for key in set(advanced) - {"efforts_by_model"}):
                     _fail()
-                if any(preset["model"] not in advanced["models"] for preset in presets):
+                if any(_preset_model_id(runtime, preset["model"]) not in advanced["models"] for preset in presets):
                     _fail()
                 by_model = advanced.get("efforts_by_model")
                 if "efforts_by_model" in advanced and (not isinstance(by_model, dict) or set(by_model) != set(advanced["models"]) or any(not isinstance(model, str) or not isinstance(efforts, list) or any(not _text(effort, 128) or effort not in advanced["efforts"] for effort in efforts) for model, efforts in by_model.items())):
@@ -99,7 +107,7 @@ def _validate_selection(current, request):
     advanced = runtime.get("advanced", {})
     if not isinstance(options, dict) or set(options) - set(names) or any(not isinstance(value, str) or value not in advanced.get(names[key], []) for key, value in options.items()):
         raise LaunchError("invalid_selection")
-    if "effort" in options and options["effort"] not in advanced.get("efforts_by_model", {}).get(options.get("model", preset["model"]), advanced.get("efforts", [])):
+    if "effort" in options and options["effort"] not in advanced.get("efforts_by_model", {}).get(options.get("model", _preset_model_id(runtime, preset["model"])), advanced.get("efforts", [])):
         raise LaunchError("invalid_selection")
     return current
 

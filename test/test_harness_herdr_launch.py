@@ -28,6 +28,41 @@ class Client:
 
 
 class LaunchCliTest(unittest.TestCase):
+    def deployed_catalog(self):
+        # Captured from the authenticated Web catalog on 2026-10-28; only
+        # private directories, profile aliases and opaque revision are sanitized.
+        runtimes = [
+            {"id": "claude", "label": "Claude", "presets": [
+                {"id": "base", "label": "base", "model": "sonnet", "effort": "high"},
+                {"id": "fast", "label": "fast", "model": "haiku", "effort": "low"},
+                {"id": "plan", "label": "plan", "model": "opusplan", "effort": "high"},
+                {"id": "rich", "label": "rich", "model": "opus[1m]", "effort": "xhigh"}],
+             "advanced": {"models": ["sonnet", "haiku", "opusplan", "opus"],
+                "efforts": ["high", "low", "xhigh"],
+                "efforts_by_model": {"sonnet": ["high"], "haiku": ["low"], "opusplan": ["high"], "opus": ["xhigh"]},
+                "contexts": ["standard", "1m"],
+                "permissions": ["default", "acceptEdits", "dontAsk", "plan", "bypassPermissions"],
+                "approvals": [], "sandboxes": []}},
+            {"id": "codex", "label": "Codex", "presets": [
+                {"id": "base", "label": "base", "model": "gpt-5.6-terra", "effort": "medium"},
+                {"id": "fast", "label": "fast", "model": "gpt-6-luna", "effort": "low"},
+                {"id": "plan", "label": "plan", "model": "gpt-6.1-sol", "effort": "high"},
+                {"id": "rich", "label": "rich", "model": "gpt-6.1-sol", "effort": "xhigh"}],
+             "advanced": {"models": ["gpt-5.6-terra", "gpt-6-luna", "gpt-6.1-sol"],
+                "efforts": ["medium", "low", "high", "xhigh", "max", "ultra"],
+                "efforts_by_model": {
+                    "gpt-5.6-terra": ["medium", "low", "high", "xhigh", "max", "ultra"],
+                    "gpt-6-luna": ["low", "medium", "high", "xhigh", "max"],
+                    "gpt-6.1-sol": ["high", "xhigh", "low", "medium", "max", "ultra"]},
+                "contexts": ["auto", "272k", "500k", "1m"], "permissions": [],
+                "approvals": ["on-request", "never"], "sandboxes": ["read-only", "workspace-write", "danger-full-access"],
+                "networks": ["enabled", "disabled"]}}]
+        profiles = [{"id": name, "label": name, "directory": "/PRIVATE/" + name,
+                     "runtimes": json.loads(json.dumps(runtimes))} for name in ("sample-one", "sample-two", "sample-three")]
+        for profile in profiles[1:]:
+            profile["runtimes"][1]["advanced"]["approvals"] = ["on-request"]
+        return {"available": True, "revision": "r1", "profiles": profiles}
+
     def test_job_accepts_assigned_ids_before_started_without_projecting_them(self):
         request = "33333333-3333-4333-8333-333333333333"
         for phase in ("allocating", "preparing", "starting", "unknown", "failed"):
@@ -255,6 +290,38 @@ class LaunchCliTest(unittest.TestCase):
         client.post_json = lambda *args: self.fail("POST")
         with patch.object(cli.local,"discover",return_value=client), patch.object(cli,"read_identity",return_value={"device_id":DEVICE}), patch("sys.stdout",io.StringIO()):
             self.assertEqual(cli.main(["launch-preview","--device",DEVICE,"--catalog-revision","r1","--profile","sample","--runtime","codex","--preset","base","--model","bad"]),1)
+    def test_main_catalog_accepts_deployed_claude_rich_shape_locally_and_remotely(self):
+        for device in (DEVICE, "22222222-2222-4222-8222-222222222222"):
+            client, output = Client(), io.StringIO()
+            client.request_json = lambda path: self.deployed_catalog()
+            with patch.object(cli.local, "discover", return_value=client), patch.object(cli, "read_identity", return_value={"device_id": DEVICE}), patch("sys.stdout", output):
+                self.assertEqual(cli.main(["launch-catalog", "--device", device]), 0)
+            value = json.loads(output.getvalue())
+            self.assertEqual([p["id"] for p in value["profiles"]], ["sample-one", "sample-two", "sample-three"])
+            self.assertEqual(value["profiles"][0]["runtimes"][0]["presets"][-1]["model"], "opus[1m]")
+            self.assertNotIn("/PRIVATE", output.getvalue())
+
+    def test_deployed_rich_effort_uses_qualified_presets_base_model(self):
+        client = Client(); client.request_json = lambda path: self.deployed_catalog()
+        current = cli.launch.catalog(client, DEVICE, DEVICE)
+        request = {"catalog_revision": "r1", "profile": "sample-one", "runtime": "claude", "preset": "rich"}
+        self.assertIs(cli.launch._validate_selection(current, {**request, "options": {"effort": "xhigh"}}), current)
+        with self.assertRaisesRegex(cli.launch.LaunchError, "invalid_selection"):
+            cli.launch._validate_selection(current, {**request, "options": {"effort": "low"}})
+
+    def test_deployed_catalog_keeps_unknown_fields_models_and_suffixes_closed(self):
+        for case in ("unknown_field", "unknown_model", "unknown_context", "codex_suffix", "inconsistent_efforts"):
+            value = self.deployed_catalog(); claude, codex = value["profiles"][0]["runtimes"]
+            if case == "unknown_field": claude["advanced"]["extra"] = []
+            elif case == "unknown_model": claude["presets"][-1]["model"] = "foreign[1m]"
+            elif case == "unknown_context": claude["presets"][-1]["model"] = "opus[2m]"
+            elif case == "codex_suffix": codex["presets"][0]["model"] += "[1m]"
+            else: claude["advanced"]["efforts_by_model"]["opus[1m]"] = ["xhigh"]
+            with self.subTest(case=case):
+                client = Client(); client.request_json = lambda path: value
+                with self.assertRaisesRegex(cli.launch.LaunchError, "invalid_response"):
+                    cli.launch.catalog(client, DEVICE, DEVICE)
+
     def test_catalog_preserves_unicode_label(self):
         client = Client()
         value = client.request_json("")

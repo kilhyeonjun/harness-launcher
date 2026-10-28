@@ -29,7 +29,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - Rebind the canonical-update bootstrap to the delivered source closure with
   corrected owner liveness, refused-update readback and native mutation state.
 - Surface unavailable Web launch catalogs as `launch_unavailable` with their
-  validated server reason; keep available-catalog validation strict.
+  validated server reason; keep available-catalog validation strict. Accept
+  Claude's context-qualified rich preset (`opus[1m]`) against its advertised
+  base-model choices and per-model efforts without admitting unknown fields,
+  models or context suffixes.
 
 ## 0.80.0 — 2026-10-27
 
