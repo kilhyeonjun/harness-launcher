@@ -285,8 +285,8 @@ class ProjectionTests(unittest.TestCase):
         # Non-OMP management still reaches only the installed-denial stub;
         # it must not require or read the now-missing projection.
         run(['claude','auth','status'],97)
-        run(['codex','--passthrough','auth','status'],97)
-        self.assertEqual(codex_route.read_text(),'--passthrough\nauth\nstatus\n')
+        run(['codex','--passthrough','login','status'],97)
+        self.assertEqual(codex_route.read_text(),'--passthrough\nlogin\nstatus\n')
 
     # --- D: device renumbering tolerance (APFS renumbers st_dev at reboot) ---
     FIELDS = {
