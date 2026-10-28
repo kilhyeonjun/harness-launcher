@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## 0.80.1 — 2026-10-28
+## 0.81.0 — 2026-10-28
 
 - Resume OMP continuations from herdr's stored `harness-exec <source> omp
   --session-resume <h> --` after a herdr server restart. The restored pane is a
@@ -14,9 +14,6 @@ Notable changes are recorded here. This project follows semantic versioning for 
   `session-state`). An explicit state field, including the empty
   no-authority sentinel, is still used unchanged, and an unknown, foreign or
   ambiguous handle is still refused.
-
-## 0.81.0 — 2026-10-28
-
 - Refuse Claude, Codex and OMP agents in registered canonical checkouts,
   including explicit legacy and resume routes; use isolated fresh menu launches
   and interactive shell interception. Unbound menu continuations require a bound
