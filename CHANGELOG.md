@@ -2,6 +2,17 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.81.1 — 2026-10-28
+
+- Rebind the canonical-update bootstrap to the delivered source closure with
+  physical Unix agent-socket resolution and bounded compiler source descriptors.
+  Inherited SSH agent symlinks remain intact; socket identity, ancestry, native
+  once consent, CAS/lock and sealed verification checks are preserved.
+- The same source revision includes the fixed Slack connector's canonical
+  source-owner and isolated-workspace binding. Source delivery does not activate
+  a connector, enroll credentials or grant approval; fresh-session enrollment
+  and per-call native once consent remain required.
+
 ## 0.81.0 — 2026-10-28
 
 - Resume OMP continuations from herdr's stored `harness-exec <source> omp
