@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## 0.80.1 — 2026-10-28
 
 - Resume OMP continuations from herdr's stored `harness-exec <source> omp
   --session-resume <h> --` after a herdr server restart. The restored pane is a
