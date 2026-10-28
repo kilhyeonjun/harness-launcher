@@ -1085,6 +1085,24 @@ launch_claude() {
   [ -n "$effort" ] && args+=(--effort "$effort")
   args+=(--exclude-dynamic-system-prompt-sections)
 
+  if [ "$CHOICE_PROVIDER" = direct ] && ! harness_canonical_agent_refuse "$HARNESS_RUN_DIR" claude 2>/dev/null; then
+    # Selection is complete; use the bound launcher rather than executing a
+    # native agent in the menu's canonical working directory.
+    if [ "$CHOICE_SESSION" != new ]; then
+      echo "harness-launcher: canonical_agent_refused: menu continuation needs a bound session; use harness-exec \"$HARNESS_DIR\" --isolated-session <uuid> claude resume" >&2
+      return 2
+    fi
+    if [ "$CHOICE_HAPPY" = 1 ]; then
+      harness_canonical_agent_refuse "$HARNESS_RUN_DIR" claude
+      return 2
+    fi
+    local isolated_prefix=()
+    [ "$CHOICE_MCP_SURFACE" != light ] || isolated_prefix+=(light)
+    history_save
+    launch_banner "$PLAN_SUMMARY" harness-exec "$HARNESS_DIR" --isolated claude
+    exec "$LAUNCHER_BIN_DIR/harness-exec" "$HARNESS_DIR" --cwd "$HARNESS_RUN_DIR" --isolated claude "${isolated_prefix[@]}" --passthrough "${args[@]}"
+  fi
+
   if [ -n "$provider_url" ]; then
     export ANTHROPIC_BASE_URL="$provider_url"
     if [ -n "$gateway_api_key" ]; then
@@ -1182,6 +1200,27 @@ launch_claude() {
 }
 
 launch_codex() {
+  if ! harness_canonical_agent_refuse "$HARNESS_RUN_DIR" codex 2>/dev/null; then
+    if [ "$CHOICE_SESSION" != new ]; then
+      echo "harness-launcher: canonical_agent_refused: menu continuation needs a bound session; use harness-exec \"$HARNESS_DIR\" --isolated-session <uuid> codex resume" >&2
+      return 2
+    fi
+    local isolated_args=(codex "$CHOICE_CODEX_PROFILE" "$CHOICE_CODEX_CONTEXT")
+    if [ "$CHOICE_HAPPY" = 1 ]; then
+      isolated_args=(codex "$CHOICE_CODEX_CONTEXT" happy)
+    fi
+    case "$CHOICE_CODEX_SURFACE" in work) isolated_args+=(work) ;; esac
+    case "$CHOICE_CODEX_SAFETY" in
+      full-auto|never|bypass) isolated_args+=("$CHOICE_CODEX_SAFETY") ;;
+    esac
+    case "$CHOICE_SESSION" in
+      continue|resume|fork) isolated_args+=("$CHOICE_SESSION") ;;
+    esac
+    history_save
+    export HARNESS_CODEX_CONTEXT="$CHOICE_CODEX_CONTEXT"
+    launch_banner "$PLAN_SUMMARY" harness-exec "$HARNESS_DIR" --isolated "${isolated_args[@]}"
+    exec "$LAUNCHER_BIN_DIR/harness-exec" "$HARNESS_DIR" --cwd "$HARNESS_RUN_DIR" --isolated "${isolated_args[@]}"
+  fi
   [ "$CHOICE_HAPPY" != 1 ] || harness_slack_happy_guard || return $?
   export HARNESS_CODEX_CONTEXT="$CHOICE_CODEX_CONTEXT"
   if harness_mcp_surface_policy_is_single_full "$MCP_SURFACE_POLICY"; then
@@ -1319,6 +1358,11 @@ launch_omp() {
   local args=(omp)
   [ -n "$OMP_HANDOFF" ] || { echo "⚠️  OMP를 시작할 수 없습니다: ${OMP_UNAVAILABLE:-not configured}" >&2; return 1; }
   [ -n "$CHOICE_MODE" ] && args+=(--model-mode "$CHOICE_MODE")
+  if ! harness_canonical_agent_refuse "$HARNESS_RUN_DIR" omp 2>/dev/null; then
+    history_save
+    launch_banner "$PLAN_SUMMARY" harness-exec "$HARNESS_DIR" --isolated "${args[@]}"
+    exec "$LAUNCHER_BIN_DIR/harness-exec" "$HARNESS_DIR" --cwd "$HARNESS_RUN_DIR" --isolated "${args[@]}"
+  fi
   history_save
   launch_banner "$PLAN_SUMMARY" "${HARNESS_PREFIX:-$HARNESS_NAME}" "${args[@]}"
   printf '%s\n' "${args[@]}" > "$OMP_HANDOFF" || return 1

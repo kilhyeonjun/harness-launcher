@@ -2,7 +2,8 @@
 # test-launch-task.sh — the launcher `--task <uuid>` keyword and a fork's parent
 # native session reach the launch record hook (Claude: hook arguments in the
 # launcher --settings; Codex: HARNESS_LAUNCH_TASK_ID / _PARENT_NATIVE), and
-# nothing after `--passthrough` is interpreted.
+# nothing after `--passthrough` is interpreted. Assembly cases call the
+# low-level session helper with fake agents; public registered entry is refused.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LAUNCHER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -42,7 +43,14 @@ run() {  # <stub> <runtime-prefix-or-empty> args...
     source "$LAUNCHER_DIR/bin/aliases.zsh"
     _HARNESS_LAUNCHER_BIN="$LAUNCHER_DIR/bin"
     [[ "$rt" != codex ]] || _HARNESS_LAUNCHER_BIN="$TEST_BIN"
-    _harness_launcher_run "$TEST_HARNESS" ${=rt} "$@"
+    # Explicit low-level argv/metadata unit: no public-entry authorization.
+    local HARNESS_DIR="$TEST_HARNESS" config_root="$TEST_HARNESS"
+    local HARNESS_NAME=t HARNESS_PREFIX=test HARNESS_RUN_DIR=""
+    local HARNESS_SOURCE_ROOT="" HARNESS_SESSION_ID="" HARNESS_SESSION_ROOT=""
+    local isolated_session_id="" isolated_heartbeat_pid="" host_default_mode=""
+    local mcp_surface_policy=full HARNESS_NATIVE_HISTORY_LEASE_FD=""
+    setopt noerrexit
+    _harness_launcher_run_session ${=rt} "$@"
   ) </dev/null >/dev/null 2>"$stub.err" || RC=$?
 }
 settings_hook() { # prints the SessionStart hook command from the --settings JSON in the stub
@@ -120,4 +128,18 @@ run "$TEST_TEMP/x4" codex base --passthrough resume $P
 grep -Fxq -- 'PARENT:unset' "$TEST_TEMP/x4" || fail 'codex resume is not a fork' "$TEST_TEMP/x4"
 HARNESS_LAUNCH_TASK_ID=stale run "$TEST_TEMP/x5" codex base
 grep -Fxq -- 'TASK:unset' "$TEST_TEMP/x5" || fail 'inherited task id must be dropped' "$TEST_TEMP/x5"
-echo 'PASS: launcher --task and fork parent reach the launch record'
+# Public entry remains authoritative even with valid task metadata and fake agents.
+for rt in claude codex; do
+  stub="$TEST_TEMP/public-$rt"
+  : > "$stub"
+  RC=0
+  (
+    export TEST_STUB_FILE="$stub" PATH="$TEST_BIN:$PATH" HARNESS_PROFILE_HOME="$TEST_PROFILE_HOME"
+    export HARNESS_CODEX_BIN="$TEST_BIN/codex"
+    source "$LAUNCHER_DIR/bin/aliases.zsh"
+    _harness_launcher_run "$TEST_HARNESS" --no-isolated "$rt" base --task "$T"
+  ) </dev/null >/dev/null 2>"$stub.err" || RC=$?
+  [[ $RC == 2 && ! -s "$stub" ]] || fail 'public canonical task launch must refuse' "$stub"
+  grep -q canonical_agent_refused "$stub.err" || fail 'public task refusal diagnostic missing' "$stub"
+done
+echo 'PASS: task/fork helper metadata and public canonical refusal'

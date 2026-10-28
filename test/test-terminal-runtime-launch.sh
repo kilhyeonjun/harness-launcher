@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# test-terminal-runtime-launch.sh — every agent launch path scrubs foreign
-# terminal-runtime variables, exports HARNESS_TERMINAL_RUNTIME, announces the
-# run directory to herdr with one OSC 7, and starts a cmux title broker only in
-# cmux.
+# test-terminal-runtime-launch.sh — registered canonical Claude/Codex launches
+# refuse before an agent or broker starts. Noncanonical fake-agent assembly
+# fixtures retain terminal scrubbing, HARNESS_TERMINAL_RUNTIME, herdr OSC 7 and
+# cmux title broker coverage. Kiro and the stubbed, non-launching TUI retain
+# their public launch-path coverage.
 #
 # The launchers run from an installed copy of bin/ (test/lib/install-runtime-
 # fixture.sh) with stub claude, codex and kiro-cli executables that dump their
@@ -23,7 +24,14 @@
 #   exec-tui-cwd  harness-exec <harness> --cwd <harness> --no-isolated (TUI quit without a
 #                 launch: the stub returns)
 #
-# In herdr the launcher announces the run directory before the agent starts
+# Routed Claude/Codex public paths above assert canonical refusal. The
+# routing-disabled shell-codex path retains native wrapper behavior. The
+# unit-{claude,codex}[-cwd] cases call _harness_launcher_run directly against
+# a separate, never-registered fake-agent tree; they test runtime assembly,
+# not permission to launch in a registered checkout. The registry remains
+# present throughout both matrices.
+#
+# In herdr an allowed launcher announces the run directory before the agent starts
 # (the stubs snapshot the capture on start) and the caller's directory once the
 # agent or TUI returns: two OSC 7 sequences in total.
 #
@@ -62,6 +70,14 @@ HARNESS_PREFIX="alpha"
 EOF
 HARNESS_REAL="$(cd "$HARNESS" && pwd -P)"
 APP_REAL="$(cd "$APP" && pwd -P)"
+# Keep the registered checkout intact for public refusal coverage. Runtime
+# assembly is a lower-level unit fixture with fake agents outside that checkout.
+RUNTIME="$HOME_DIR/runtime fixture"
+RUNTIME_APP="$RUNTIME/projects/app"
+mkdir -p "$RUNTIME/config" "$RUNTIME/.claude" "$RUNTIME_APP"
+cp "$HARNESS/config/launcher.env" "$RUNTIME/config/launcher.env"
+RUNTIME_REAL="$(cd "$RUNTIME" && pwd -P)"
+RUNTIME_APP_REAL="$(cd "$RUNTIME_APP" && pwd -P)"
 
 python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$SOCK"
 [[ -S "$SOCK" ]] || { echo "FAIL: socket fixture was not created"; exit 1; }
@@ -185,6 +201,17 @@ path_cmd() {
   CALLER_DIR="$APP_REAL"
   HAS_BROKER=1
   case "$1" in
+    unit-claude|unit-codex|unit-claude-cwd|unit-codex-cwd)
+      PATH_CWD="$RUNTIME_APP"
+      OSC_DIR="$RUNTIME_APP_REAL"
+      CALLER_DIR="$RUNTIME_APP_REAL"
+      local runtime_agent=base
+      # Without harness-exec's cwd forwarding, the native Codex helper defaults
+      # to its fixture root; Claude retains the calling project directory.
+      case "$1" in unit-codex*) runtime_agent=codex; OSC_DIR="$RUNTIME_REAL" ;; esac
+      PATH_CMD=(/bin/zsh -c 'source "$1"; root="$2"; shift 2; _harness_launcher_run "$root" "$@"' _ "$SHARE/aliases.zsh" "$RUNTIME")
+      case "$1" in *-cwd) PATH_CMD+=(--cwd "$RUNTIME"); OSC_DIR="$RUNTIME_REAL" ;; esac
+      PATH_CMD+=("$runtime_agent") ;;
     exec-claude)   PATH_CMD=("$PREFIX/bin/harness-exec" "$HARNESS" base) ;;
     auto-claude)   PATH_CMD=("$PREFIX/bin/harness-auto" claude base) ;;
     shell-claude)  PATH_CMD=(/bin/zsh -c 'source "$1"; harness_shell_enable || exit 9; claude' _ "$SHARE/aliases.zsh") ;;
@@ -237,6 +264,14 @@ check_case() {
       "$(sed 's/^/  /' "$CASE_DIR/out")"
     return 0
   fi
+  case "$path" in
+    exec-claude|auto-claude|shell-claude|exec-codex|harness-codex|exec-claude-cwd)
+      [[ "$CASE_RC" -eq 2 ]] && grep -q 'canonical_agent_refused:' "$CASE_DIR/out" \
+        || fail "$label: registered canonical launch must refuse (rc=$CASE_RC)" "$(cat "$CASE_DIR/out")"
+      [[ ! -s "$CASE_DIR/agent.env" && ! -s "$CASE_DIR/cmux.log" && ! -s "$CASE_DIR/broker.log" ]] \
+        || fail "$label: refused launch reached the agent or title broker"
+      return 0 ;;
+  esac
   if [[ "$CASE_RC" -ne 0 || ! -s "$CASE_DIR/agent.env" ]]; then
     fail "$label: agent did not run (rc=$CASE_RC)" "$(sed 's/^/  /' "$CASE_DIR/out")"
     return 0
@@ -278,10 +313,10 @@ check_case() {
       || fail "$label: cmux or the broker helper was called" \
         "$(cat "$CASE_DIR/cmux.log" "$CASE_DIR/broker.log" 2>&1)"
   fi
-  # The interactive shell behind the plain codex wrapper keeps its own env.
+  # Routing-disabled native Codex keeps the interactive shell's own env.
   if [[ "$path" == shell-codex ]]; then
-    local want_cmux="unset"
-    [[ "$input" == d ]] || want_cmux="workspace:7"
+    local want_cmux=unset
+    [[ "$input" == d ]] || want_cmux=workspace:7
     [[ "$(cat "$CASE_DIR/shell-after" 2>/dev/null)" == "CMUX=$want_cmux RT=unset" ]] \
       || fail "$label: the wrapper changed the interactive shell environment" \
         "$(cat "$CASE_DIR/shell-after" 2>&1)"
@@ -289,7 +324,7 @@ check_case() {
   return 0
 }
 
-PATHS="exec-claude auto-claude shell-claude shell-codex exec-codex harness-codex exec-kiro exec-tui exec-claude-cwd exec-tui-cwd"
+PATHS="exec-claude auto-claude shell-claude shell-codex exec-codex harness-codex exec-kiro exec-tui exec-claude-cwd exec-tui-cwd unit-claude unit-codex unit-claude-cwd unit-codex-cwd"
 for path in $PATHS; do
   before="$failures"
   for input in a b c; do
@@ -306,7 +341,7 @@ CASE_DIR="$CASES/native-codex"
 mkdir -p "$CASE_DIR"
 input_env a
 (
-  cd "$APP"
+  cd "$TMP"
   python3 "$BOUNDED" tty "$LAUNCH_LIMIT" "$CASE_DIR/out" env -i \
     HOME="$HOME_DIR" PATH="$STUB_BIN:$PATH" TERM=xterm-256color LANG=en_US.UTF-8 \
     STUB_DUMP="$CASE_DIR/agent.env" STUB_CMUX_LOG="$CASE_DIR/cmux.log" \

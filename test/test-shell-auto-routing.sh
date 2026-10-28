@@ -294,7 +294,7 @@ echo 'PASS: disable restores native plain-command behavior'
 
 # The opt-in state must remain local to the interactive shell. Exercise the
 # real harness-exec, which starts a child Zsh and sources aliases.zsh again;
-# each command must reach exactly one native runtime rather than recurse.
+# canonical sessions refuse before native dispatch while management stays native.
 cp "$TMP/real-harness-exec" "$PREFIX/share/harness-launcher/harness-exec"
 : > "$NATIVE_LOG"
 harness_shell_enable
@@ -314,21 +314,17 @@ grep -Fqx "claude-pwd:<$PROJECT>" "$NATIVE_LOG" || {
   echo 'FAIL: Claude management command created isolation state' >&2; exit 1
 }
 : > "$NATIVE_LOG"
-(
-  cd "$PROJECT"
-  codex real-codex
-  claude real-claude
-  claude mcp list
-)
-[[ "$(grep -c '^codex:' "$NATIVE_LOG")" -eq 1 ]] || {
-  echo 'FAIL: real harness-exec did not reach Codex exactly once' >&2; exit 1
+for runtime in codex claude; do
+  rc=0
+  (cd "$PROJECT"; "$runtime" "real-$runtime") >"$TMP/canonical-$runtime.out" 2>"$TMP/canonical-$runtime.err" || rc=$?
+  [[ "$rc" -eq 2 ]] && grep -Fq canonical_agent_refused "$TMP/canonical-$runtime.err" || {
+    echo "FAIL: real harness-exec did not refuse canonical $runtime session" >&2; exit 1
+  }
+done
+[[ ! -s "$NATIVE_LOG" ]] || {
+  echo 'FAIL: refused canonical session reached a native runtime' >&2; exit 1
 }
-[[ "$(grep -c '^claude:.*<real-claude>' "$NATIVE_LOG")" -eq 1 ]] || {
-  echo 'FAIL: real harness-exec did not reach the Claude session exactly once' >&2; exit 1
-}
-grep -Fq '<real-codex>' "$NATIVE_LOG" && grep -Fq '<real-claude>' "$NATIVE_LOG" || {
-  echo 'FAIL: real harness-exec lost runtime arguments' >&2; exit 1
-}
+(cd "$PROJECT"; claude mcp list)
 grep -Fqx 'claude: <mcp> <list>' "$NATIVE_LOG" || {
   echo 'FAIL: real harness-exec changed native Claude management arguments' >&2; exit 1
 }
@@ -336,7 +332,7 @@ grep -Fqx 'claude-env:<set>' "$NATIVE_LOG" || {
   echo 'FAIL: native Claude management route did not load profile-local environment' >&2; exit 1
 }
 harness_shell_disable
-echo 'PASS: real harness-exec preserves session and management routes without recursion'
+echo 'PASS: real harness-exec refuses canonical sessions and preserves management without recursion'
 
 source "$PREFIX/share/harness-launcher/aliases.zsh"
 harness_shell_enable

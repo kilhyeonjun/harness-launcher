@@ -50,6 +50,37 @@ harness_resolve_run_dir() {
   esac
 }
 
+# harness_canonical_agent_refuse <physical-cwd> <runtime> [registered-root...]
+# Registry roots are physical absolute paths written by harness-profile. Missing
+# registries fail open; matching uses shell builtins only, including the common
+# no-registry path. Callers resolve logical cwd spellings before entering here.
+harness_canonical_agent_refuse() {
+  local cwd="$1" runtime="$2" root entry registry
+  if [ -n "${ZSH_VERSION:-}" ]; then setopt local_options nonomatch; fi
+  shift 2
+  case "$runtime" in omp|codex|claude) ;; *) return 0 ;; esac
+  for registry in "$HOME/.config/harness-launcher/profiles" "${HARNESS_PROFILE_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/harness-launcher}/profiles"; do
+    for entry in "$registry"/*; do
+      [ -f "$entry" ] && [ ! -L "$entry" ] && [ -r "$entry" ] || continue
+      root=""
+      IFS= read -r root < "$entry" || [ -n "$root" ] || continue
+      [ -d "$root" ] && [ -f "$root/config/launcher.env" ] || continue
+      set -- "$@" "$root"
+    done
+  done
+  for root in "$@"; do
+    [ -n "$root" ] || continue
+    case "$cwd" in
+      "$root"|"${root%/}"/*)
+        printf 'harness-launcher: canonical_agent_refused: %s cannot run in registered canonical checkout: %s\n' "$runtime" "$root" >&2
+        printf 'Use an isolated session: harness-exec %q --isolated %s\n' "$root" "$runtime" >&2
+        return 2
+        ;;
+    esac
+  done
+  return 0
+}
+
 harness_python3_resolve() {
   local candidate
   if [ -n "${HARNESS_PYTHON_BIN:-}" ]; then
@@ -115,6 +146,26 @@ harness_claude_is_management_command() {
   case "${1:-}" in
     agents|attach|auth|auto-mode|doctor|gateway|help|import|install|logs|mcp|plugin|plugins|project|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade|-h|--help|-v|-V|--version)
       return 0 ;;
+  esac
+  return 1
+}
+
+# harness_agent_is_management <runtime> [native argv...]
+# Only native management/info entrypoints bypass canonical agent refusal; agent
+# execution (including Codex exec/review/app-server) is deliberately excluded.
+harness_agent_is_management() {
+  local runtime="${1:-}"
+  [ "$#" -gt 0 ] || return 1
+  shift
+  [ "${1:-}" != --passthrough ] || shift
+  case "$runtime" in
+    claude) harness_claude_is_management_command "${1:-}"; return $? ;;
+    codex)
+      case "${1:-}" in
+        --version|-V|--help|-h|help|login|logout|mcp|completion|features) return 0 ;;
+      esac ;;
+    omp)
+      case "${1:-}" in --version|--help|login|models) return 0 ;; esac ;;
   esac
   return 1
 }

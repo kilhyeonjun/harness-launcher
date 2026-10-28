@@ -2,6 +2,25 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.81.0 — 2026-10-28
+
+- Refuse Claude, Codex and OMP agents in registered canonical checkouts,
+  including explicit legacy and resume routes; use isolated fresh menu launches
+  and interactive shell interception. Unbound menu continuations require a bound
+  session UUID. Shell/manual Git and native management remain allowed. Kiro and
+  gateway routes remain documented legacy residuals.
+- Evaluate OMP's canonical ban at the final native execution directory, not
+  its registered source root or raw model-mode selector, so bound herdr resumes
+  execute in their recorded isolated workspace. Explicit canonical legacy
+  entries remain refused before runtime probes.
+- Apply the same canonical ban to non-management arguments passed through the
+  internal Claude management selector. Keep isolated Happy Codex menu handoffs
+  free of an explicit launcher profile so valid Happy selections remain usable.
+- Rebind the canonical-update bootstrap to the delivered source closure with
+  corrected owner liveness, refused-update readback and native mutation state.
+- Surface unavailable Web launch catalogs as `launch_unavailable` with their
+  validated server reason; keep available-catalog validation strict.
+
 ## 0.80.0 — 2026-10-27
 
 - Negotiate an advertised trusted-baseline `--toolchain-env` before headless

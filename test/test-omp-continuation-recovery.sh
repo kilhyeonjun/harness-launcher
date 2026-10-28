@@ -409,7 +409,10 @@ raise SystemExit(int(args[-1]) if args[-1:] and args[-1].isdigit() else 0)
                 '--session-resume', H, '--']
         done = subprocess.run(argv, cwd=self.base, env=self.env, capture_output=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr.decode())
-        bundle = self.assert_resume_model(self.native_calls()[0]['argv'], 'openai-codex/gpt-6.1-sol:high')
+        calls = self.native_calls(); self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['cwd'], str(self.work))
+        self.assertNotEqual(calls[0]['cwd'], str(self.profile))
+        bundle = self.assert_resume_model(calls[0]['argv'], 'openai-codex/gpt-6.1-sol:high')
         self.assertIn('model-mode:gpt-only', json.loads((bundle/'selection.json').read_text())['bundle_ids'])
 
     def fresh_mode(self, mode):

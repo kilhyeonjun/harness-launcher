@@ -1065,8 +1065,34 @@ _harness_launcher_codex_harness_for_args() {
   return 1
 }
 
+# Shared with explicit launcher routes; unlike the interactive adapter this
+# helper itself is unconditional so callers can enforce their own entry policy.
+_harness_launcher_canonical_agent_refuse() {
+  local cwd="$1" runtime="$2"
+  harness_canonical_agent_refuse "${cwd:A}" "$runtime" "${_HARNESS_LAUNCHER_REGISTERED_DIRS[@]}"
+}
+
+if (( ${+parameters[_HARNESS_LAUNCHER_SHELL_OMP_OWNED]} )) && \
+    [[ "${(t)_HARNESS_LAUNCHER_SHELL_OMP_OWNED}" == *-export* ]]; then
+  unset _HARNESS_LAUNCHER_SHELL_OMP_OWNED
+fi
+typeset -gi _HARNESS_LAUNCHER_SHELL_OMP_OWNED="${_HARNESS_LAUNCHER_SHELL_OMP_OWNED:-0}"
+typeset -g +x _HARNESS_LAUNCHER_SHELL_OMP_OWNED
+
+_harness_launcher_auto_omp() {
+  if [[ -o interactive ]] && (( _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED )) && \
+      ! harness_agent_is_management omp "$@"; then
+    _harness_launcher_canonical_agent_refuse "$PWD" omp || return $?
+  fi
+  command omp "$@"
+}
+
 _harness_launcher_auto_runtime() {
   local runtime="$1"; shift
+  if [[ -o interactive ]] && (( _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED )) && \
+      ! harness_agent_is_management "$runtime" "$@"; then
+    _harness_launcher_canonical_agent_refuse "$PWD" "$runtime" || return $?
+  fi
   local harness_auto="$_HARNESS_LAUNCHER_BIN/harness-auto"
   [[ -x "$harness_auto" ]] || {
     echo "harness-launcher: missing executable: $harness_auto" >&2
@@ -1214,6 +1240,26 @@ harness_shell_enable() {
     return 2
   fi
 
+  if alias omp >/dev/null 2>&1; then
+    echo 'harness_shell_enable: omp alias already exists' >&2
+    return 2
+  fi
+  if (( _HARNESS_LAUNCHER_SHELL_OMP_OWNED )); then
+    if (( $+functions[omp] )) && \
+        [[ "$functions[omp]" != "$functions[_harness_launcher_auto_omp]" ]]; then
+      echo 'harness_shell_enable: launcher-owned omp function was replaced' >&2
+      return 2
+    fi
+  elif (( $+functions[omp] )); then
+    echo 'harness_shell_enable: omp function already exists' >&2
+    return 2
+  fi
+
+  if (( ! $+functions[omp] )); then
+    functions -c _harness_launcher_auto_omp omp || return 2
+  fi
+  typeset -g _HARNESS_LAUNCHER_SHELL_OMP_OWNED=1
+  typeset -g +x _HARNESS_LAUNCHER_SHELL_OMP_OWNED
   if (( ! $+functions[claude] )); then
     functions -c _harness_launcher_auto_claude claude || return 2
   fi
@@ -1226,7 +1272,20 @@ harness_shell_enable() {
 harness_shell_disable() {
   typeset -g _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED=0
   typeset -g +x _HARNESS_LAUNCHER_SHELL_AUTO_ENABLED
-  (( _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED )) || return 0
+  local omp_rc=0
+  if (( _HARNESS_LAUNCHER_SHELL_OMP_OWNED )); then
+    if (( $+functions[omp] )); then
+      if [[ "$functions[omp]" == "$functions[_harness_launcher_auto_omp]" ]]; then
+        unfunction omp
+      else
+        echo 'harness_shell_disable: omp function is no longer launcher-owned; preserved it' >&2
+        omp_rc=2
+      fi
+    fi
+    typeset -g _HARNESS_LAUNCHER_SHELL_OMP_OWNED=0
+    typeset -g +x _HARNESS_LAUNCHER_SHELL_OMP_OWNED
+  fi
+  (( _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED )) || return "$omp_rc"
   if (( $+functions[claude] )); then
     if [[ "$functions[claude]" == "$functions[_harness_launcher_auto_claude]" ]]; then
       unfunction claude
@@ -1237,6 +1296,7 @@ harness_shell_disable() {
   fi
   typeset -g _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED=0
   typeset -g +x _HARNESS_LAUNCHER_SHELL_CLAUDE_OWNED
+  return "$omp_rc"
 }
 
 # harness_register <harness-dir>
@@ -1588,6 +1648,9 @@ _harness_launcher_omp_native_exec() {
   local run_dir="$1" root="$HARNESS_OMP_ROOT" native_bin="$HARNESS_OMP_BIN"
   shift
   cd "$run_dir" || return 2
+  if ! harness_agent_is_management omp "$@"; then
+    _harness_launcher_canonical_agent_refuse "$PWD" omp || return $?
+  fi
   umask 077
   # A continuation's native holds its own lock: fcntl locks die with their
   # owning process, so the launcher's workspace lease alone would free a handle
@@ -2080,6 +2143,23 @@ _harness_launcher_run() {
   mcp_surface_policy="$(harness_mcp_surface_policy_resolve "$HARNESS_MCP_SURFACE_POLICY")" || return $?
   export HARNESS_PREFIX
 
+  # Refuse explicit legacy agent entry before runtime probes or preparation.
+  # Bound isolated continuations keep their own recorded execution directory.
+  if [[ "${1:-}" == --no-isolated && -n "${@[2]-}" ]]; then
+    case "${@[2]}" in
+      kiro|kiro-cli|codex-gateway|checkup|codex-smoke|claude-management) ;;
+      *) local canonical_runtime=claude
+         local -a canonical_native_args=("${@:2}")
+         if [[ "${@[2]}" == (codex|omp) ]]; then
+           canonical_runtime="${@[2]}"
+           canonical_native_args=("${@:3}")
+         fi
+         if ! harness_agent_is_management "$canonical_runtime" "${canonical_native_args[@]}"; then
+           _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$canonical_runtime" || return $?
+         fi ;;
+    esac
+  fi
+
   # Keep the OMP discriminator through workspace normalization. Public native
   # management returns before session/history preparation, even with controls.
   local omp_selected=false omp_required_selected=false
@@ -2091,6 +2171,9 @@ _harness_launcher_run() {
     _harness_launcher_omp_model_mode "${omp_native_args[@]}" || return 2
     local -a omp_prefix=("${@[1,selector_i]}")
     set -- "${omp_prefix[@]}" "${omp_native_args[@]}"
+    # Model-mode controls can precede a bound continuation. Neither this
+    # source root nor the raw selector determines its final execution cwd;
+    # _harness_launcher_omp_native_exec enforces that boundary after binding.
     if [[ "${omp_native_args[1]-}" == (--session-native-resume|--session-native-fork) ]]; then
       [[ -z "$isolated_source_run_dir" && "$1" == --isolated-session && "$selector_i" == 3 && ${#omp_native_args} -ge 2 ]] || {
         echo 'harness-launcher: runtime_resume_unbound' >&2; return 2
@@ -2163,6 +2246,9 @@ _harness_launcher_run() {
       echo 'harness-launcher: claude-management requires a native Claude subcommand' >&2
       return 2
     }
+    if ! harness_claude_is_management_command "$1"; then
+      _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" claude || return $?
+    fi
     local claude_management_bin="${commands[claude]:-}"
     [[ -n "$claude_management_bin" && -x "$claude_management_bin" ]] || {
       echo 'harness-launcher: claude not found in PATH' >&2
@@ -2264,6 +2350,7 @@ _harness_launcher_run() {
                isolated=true
                history_local_create=true
              else
+               _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$([[ "${1:-}" == codex ]] && print codex || print claude)" || return $?
                ! $canonical_pure || canonical_prepare_failed=true
                [[ -z "$isolated_source_run_dir" ]] || canonical_cwd="--cwd ${(q-)isolated_source_run_dir} "
                canonical_alt="start a fresh isolated session ('${HARNESS_PREFIX}'), or for maintenance run '${HARNESS_PREFIX} ${canonical_cwd}--no-isolated ${(j: :)${(q-)@}}'"
@@ -2273,16 +2360,34 @@ _harness_launcher_run() {
                return 2
              fi
              ;;
-          *) echo "harness-launcher: this profile isolates fresh sessions; use '${HARNESS_PREFIX} --isolated-session <uuid> $*' or '${HARNESS_PREFIX} --no-isolated $*'" >&2
+          *) _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$([[ "${1:-}" == codex ]] && print codex || print claude)" || return $?
+             echo "harness-launcher: this profile isolates fresh sessions; use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
              return 2 ;;
         esac
         ;;
       *) echo 'harness-launcher: invalid or conflicting isolation controls' >&2; return 2 ;;
     esac
   fi
+  # No inherited session marker or explicit legacy control authorizes agents
+  # in a registered canonical checkout. Menus choose their runtime later;
+  # Kiro/gateway and management routes retain their documented legacy policy.
+  if ! $isolated && (( $# )); then
+    case "${1:-}" in
+      kiro|kiro-cli|codex-gateway|codex-smoke) ;;
+      omp) ;; # Its selected native cwd is checked at _omp_native_exec.
+      *) local canonical_runtime=claude
+         local -a canonical_native_args=("$@")
+         case "${1:-}" in
+           codex) canonical_runtime="$1"; canonical_native_args=("${@:2}") ;;
+         esac
+         if ! harness_agent_is_management "$canonical_runtime" "${canonical_native_args[@]}"; then
+           _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$canonical_runtime" || return $?
+         fi ;;
+    esac
+  fi
   # checkup audits the harness root itself; reject before any clone exists.
   if $isolated && [[ "${1:-}" == checkup ]]; then
-    echo "harness-launcher: checkup audits the harness root and cannot run in an isolated session; use '${HARNESS_PREFIX} --no-isolated checkup prompt-audit'" >&2
+    echo "harness-launcher: checkup has no isolated route; use '${HARNESS_PREFIX} --isolated claude' for an agent-driven audit" >&2
     return 2
   fi
   if $isolated; then
@@ -2294,7 +2399,7 @@ _harness_launcher_run() {
         0) requested_session_id="$orca_resume_id"; orca_resume=true ;;
         3) echo "harness-launcher: resume id is ambiguous (several isolated sessions own it); use '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
            return 2 ;;
-        *) echo "harness-launcher: continuation requires '${HARNESS_PREFIX} --isolated-session <uuid> $*' or intentional '${HARNESS_PREFIX} --no-isolated $*'" >&2
+        *) echo "harness-launcher: continuation requires '${HARNESS_PREFIX} --isolated-session <uuid> $*'" >&2
            return 2 ;;
       esac
     fi

@@ -70,10 +70,12 @@ Paseo runs Claude Code through the Claude Agent SDK with `settingSources: user, 
 Paseo starts one `<command> app-server [--enable goals]` per agent with no working directory of its own and sends each thread's `cwd` over JSON-RPC. It probes `<command[0]> --version` for feature gates. `harness-codex` covers both:
 
 - `harness-codex --version` runs native `codex --version`.
-- `harness-codex --profile <p> app-server …` runs `harness-profile <p> codex --passthrough app-server …`. The profile, not the daemon's working directory, selects the harness, so there is one provider per registered profile.
-- Without `--profile`, the current directory selects the harness through `harness-auto`.
+- `harness-codex --profile <p> app-server …` routes to `harness-profile <p> codex --passthrough app-server …`. The profile, not the daemon's working directory, selects the harness, so there is one provider per registered profile. **The registered canonical app-server launch is refused with exit 2 (`canonical_agent_refused`) before the server or relay starts**, including when the selected working directory is a descendant of that root. Neither `--passthrough` nor `--no-isolated` bypasses this policy.
+- Without `--profile`, the current directory selects the harness through `harness-auto`; selecting a registered canonical root has the same refusal.
 
-For a plain `app-server`, the launcher omits `-p` (Codex rejects it there) and starts the server behind `codex-app-server-guard.py`, a JSON-RPC relay that keeps execution roots inside the selected harness:
+Paseo's registered Codex providers are therefore unsupported for agent execution until an isolated app-server route exists. Provider generation and native management commands (for example, `codex --passthrough mcp list` through the launcher) remain available; successful provider synchronization is not evidence that an app-server can start.
+
+For an otherwise permitted, noncanonical plain `app-server` route, the launcher still omits `-p` (Codex rejects it there) and starts the server behind `codex-app-server-guard.py`, a JSON-RPC relay that keeps execution roots inside the selected harness:
 
 - Every client message is scanned for `cwd`, `cwds`, `runtimeWorkspaceRoots`, `extraRoots`, and `selectedCapabilityRoots[].location.path`. A value must be an absolute path whose real path is the harness root or below it and not inside another registered harness nested in it. A request that violates this gets a JSON-RPC error (`-32602`, "outside the `<prefix>` harness boundary") instead of reaching Codex; a violating notification is dropped.
 - `thread/resume` and `thread/fork` without `cwd` get the server's working directory, so a thread recorded elsewhere cannot resume outside the harness.
@@ -81,7 +83,7 @@ For a plain `app-server`, the launcher omits `-p` (Codex rejects it there) and s
 - `app-server daemon`/`proxy`, `--listen` values other than `stdio://`, `remote-control`, `exec-server`, and `mcp-server` exit 2 because they would serve clients around the relay. Use `command codex` for them deliberately.
 - Malformed messages (unparseable lines, batches, duplicate keys, paths that cannot be checked) get a JSON-RPC error and are not forwarded; the relay keeps running.
 
-In a Paseo workspace outside the profile's harness, thread start fails with the boundary error; use the provider of the harness that owns the workspace. The app-server runs without `-p`, so it uses the top-level `config.toml` defaults of the profile's `CODEX_HOME`, and Paseo selects the model per thread.
+On a permitted noncanonical guarded route, a workspace outside the selected harness fails thread start with the boundary error. This relay behavior does not make a registered canonical Paseo provider usable: its launch is refused earlier. A permitted app-server runs without `-p`, so it uses the top-level `config.toml` defaults of its `CODEX_HOME`, and the client selects the model per thread.
 
 Other Codex callers get the same rules through `--passthrough`: a caller `-p`/`--profile` replaces the launcher profile, and a caller `-C`/`--cd` (any form) replaces the launcher `--cd` after it is validated to stay inside the harness.
 
@@ -108,6 +110,6 @@ Other Codex callers get the same rules through `--passthrough`: a caller `-p`/`-
 
 ## Known limits
 
-- An explicitly isolated `app-server` (`--isolated codex app-server`) fails closed: the isolated session root does not contain the canonical working directory. SDK hosts launch without a TTY and do not start isolated sessions.
+- Registered canonical `app-server` launches are unsupported and exit 2 (`canonical_agent_refused`); `--passthrough` and `--no-isolated` are not exemptions. An explicitly isolated `app-server` (`--isolated codex app-server`) also fails closed: the isolated session root does not contain the canonical working directory. SDK hosts launch without a TTY and do not start isolated sessions, so Paseo has no supported registered Codex agent route until an isolated app-server route exists. The noncanonical guarded runtime path remains available to otherwise permitted callers.
 - With the `kiro` or `codex-gateway` provider prefixes, a full model ID from Paseo is passed as-is and is not mapped through `ANTHROPIC_DEFAULT_*`.
 - With a caller `--settings` (Paseo's `fastMode`), the launcher's forced-thinking `--settings` for `xhigh`/`max` is passed as a second `--settings` ahead of it.

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# test-launcher-checkup.sh — headless `<prefix> checkup prompt-audit` and the
-# `harness-profile checkup` fan-out: argv/cwd contract, report files, a status
-# line that never carries report content, failure paths, the working-tree
-# guard, isolation rejection before any clone, and reserved profile prefixes.
+# test-launcher-checkup.sh — low-level audit helper contracts in an unregistered
+# fixture: argv/cwd, private reports, budget/error handling, and tree warnings.
+# Registered public checkup/fan-out refuses canonical agent execution without
+# starting Claude or writing reports; checkup has no isolated route.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -69,13 +69,10 @@ esac
 EOF
 chmod +x "$STUB_BIN/claude"
 
-H1="$HOME_DIR/work/test harness"; make_harness "$H1" th
-H2="$HOME_DIR/work/other harness"; make_harness "$H2" tg
-H3="$HOME_DIR/work/isolated harness"; make_harness "$H3" ti 'HARNESS_SESSION_ISOLATION_DEFAULT="1"'
-for h in "$H1" "$H2" "$H3"; do
-  HOME="$HOME_DIR" HARNESS_PROFILE_BIN_DIR="$BIN_DIR" "$PREFIX/bin/harness-profile" register "$h" >/dev/null
-done
-H1R="$(cd "$H1" && pwd -P)"; H2R="$(cd "$H2" && pwd -P)"
+# Deliberately unregistered: these are helper unit tests, not a supported route
+# for auditing a registered canonical checkout.
+H1="$HOME_DIR/work/audit helper fixture"; make_harness "$H1" unit
+H1R="$(cd "$H1" && pwd -P)"
 REPORTS="$H1R/.harness/reports/checkup"
 
 # run <command> [args...]: run from inside H1/sub (so harness-exec injects
@@ -97,6 +94,10 @@ run() {
     [[ -z "${HARNESS_SESSION_ISOLATION:-}" ]] || export HARNESS_SESSION_ISOLATION
     printf 'PIPED-INPUT\n' | "$@"
   )
+}
+audit() {
+  run zsh -c 'source "$1/bin/aliases.zsh"; shift; _harness_launcher_run_checkup "$@"' \
+    checkup-helper "$ROOT" "$H1R" "$@"
 }
 # argv_check <python expression over `a` (argv list) and `s` (parsed --settings)>
 # eval() only ever sees the literal assertion strings written in this file.
@@ -124,7 +125,7 @@ expect_rc() { # <rc> <label> <command...>
 
 # --- A: default run ---------------------------------------------------------
 : > "$LOG"
-out="$(run "$BIN_DIR/th" checkup prompt-audit 2>"$TMP/a.err")" || { cat "$TMP/a.err" >&2; fail "checkup exited non-zero"; }
+out="$(audit prompt-audit 2>"$TMP/a.err")" || { cat "$TMP/a.err" >&2; fail "checkup exited non-zero"; }
 grep -Fqx "PWD:$H1R" "$LOG" || fail "checkup did not run at the harness root"
 grep -Fqx "ENV:loaded" "$LOG" || fail "checkup did not export the profile's local env"
 grep -Fqx "STDIN:" "$LOG" || fail "claude must not read the caller's stdin"
@@ -158,7 +159,7 @@ grep -Fq "$BODY" "$md" || fail "report file does not contain the result"
 echo "PASS: checkup prompt-audit runs restricted at the harness root and keeps the report inside it"
 
 # --- A2: stderr and denials stay out of the terminal ---------------------------
-out="$(CHECKUP_STUB_MODE=noisy run "$BIN_DIR/th" checkup prompt-audit 2>"$TMP/a2.err")" || fail "noisy checkup failed"
+out="$(CHECKUP_STUB_MODE=noisy audit prompt-audit 2>"$TMP/a2.err")" || fail "noisy checkup failed"
 [[ "$out" == *" denials=2 stderr=$REPORTS/"*".stderr" ]] || fail "status must count denials and point at stderr: $out"
 grep -Fq "STDERR-$BODY" "${out##*stderr=}" || fail "claude stderr not captured"
 [[ "$out$(cat "$TMP/a2.err")" != *"STDERR-"* ]] || fail "claude stderr leaked to the terminal"
@@ -169,7 +170,7 @@ PATH="$STUB_BIN:/usr/bin:/bin" CHECKUP_TEST_LOG="$LOG" CHECKUP_TEST_BODY="$BODY"
   HOME="$HOME_DIR" ROOT="$ROOT" H1R="$H1R" zsh -c '
   source "$ROOT/bin/aliases.zsh"
   um="$(umask)"; here="$PWD"
-  _harness_launcher_run "$H1R" checkup prompt-audit >/dev/null 2>&1 || exit 10
+  _harness_launcher_run_checkup "$H1R" prompt-audit >/dev/null 2>&1 || exit 10
   [[ "$(umask)" == "$um" ]] || exit 11
   [[ "$PWD" == "$here" ]] || exit 12
   [[ -z "${CHECKUP_LOCAL_ENV-}" && -z "${HARNESS_MODE_MODEL-}" && -z "${HARNESS_MODE_EFFORT-}" ]] || exit 13
@@ -178,70 +179,90 @@ echo "PASS: checkup leaves the calling shell's umask, cwd, and env unchanged"
 
 # --- B: preset and budget ----------------------------------------------------
 : > "$LOG"
-run "$BIN_DIR/th" checkup prompt-audit rich --max-budget-usd 5 >/dev/null 2>&1 || fail "rich checkup failed"
+audit prompt-audit rich --max-budget-usd 5 >/dev/null 2>&1 || fail "rich checkup failed"
 argv_check 'val("--model") == "opus[1m]" and val("--effort") == "xhigh" and s.get("alwaysThinkingEnabled") is True and val("--max-budget-usd") == "5"' || fail "rich preset/budget not applied"
 : > "$LOG"
-HARNESS_CHECKUP_MAX_BUDGET_USD=7.5 run "$BIN_DIR/th" checkup prompt-audit >/dev/null 2>&1 || fail "env budget checkup failed"
+HARNESS_CHECKUP_MAX_BUDGET_USD=7.5 audit prompt-audit >/dev/null 2>&1 || fail "env budget checkup failed"
 argv_check 'val("--max-budget-usd") == "7.5"' || fail "HARNESS_CHECKUP_MAX_BUDGET_USD not applied"
+: > "$LOG"
+audit prompt-audit --max-budget-usd=5 >/dev/null 2>&1 || fail "equals budget helper run failed"
+argv_check 'val("--max-budget-usd") == "5"' || fail "--max-budget-usd=N not applied"
 echo "PASS: preset and budget overrides reach Claude"
 
 # --- C: usage errors never start Claude -------------------------------------
 : > "$LOG"
-expect_rc 2 "bare checkup" run "$BIN_DIR/th" checkup
-expect_rc 2 "unknown check" run "$BIN_DIR/th" checkup doctor
-expect_rc 2 "unknown preset" run "$BIN_DIR/th" checkup prompt-audit nosuchpreset
-expect_rc 2 "plan preset" run "$BIN_DIR/th" checkup prompt-audit plan
-expect_rc 2 "two presets" run "$BIN_DIR/th" checkup prompt-audit opus rich
-expect_rc 2 "path argument" run "$BIN_DIR/th" checkup prompt-audit /some/path
-expect_rc 2 "non-numeric budget" run "$BIN_DIR/th" checkup prompt-audit --max-budget-usd abc
-expect_rc 2 "zero budget" run "$BIN_DIR/th" checkup prompt-audit --max-budget-usd 0
-expect_rc 2 "missing budget value" run "$BIN_DIR/th" checkup prompt-audit --max-budget-usd
+expect_rc 2 "bare checkup" audit
+expect_rc 2 "unknown check" audit doctor
+expect_rc 2 "unknown preset" audit prompt-audit nosuchpreset
+expect_rc 2 "plan preset" audit prompt-audit plan
+expect_rc 2 "two presets" audit prompt-audit opus rich
+expect_rc 2 "path argument" audit prompt-audit /some/path
+expect_rc 2 "non-numeric budget" audit prompt-audit --max-budget-usd abc
+expect_rc 2 "zero budget" audit prompt-audit --max-budget-usd 0
+expect_rc 2 "missing budget value" audit prompt-audit --max-budget-usd
 [[ ! -s "$LOG" ]] || fail "a usage error started Claude"
 echo "PASS: checkup usage errors exit 2 before launching Claude"
 
 # --- D: failures -------------------------------------------------------------
 before="$(ls "$REPORTS" | wc -l | tr -d ' ')"
-CHECKUP_STUB_MODE=budget expect_rc 1 "budget stop" run "$BIN_DIR/th" checkup prompt-audit
+CHECKUP_STUB_MODE=budget expect_rc 1 "budget stop" audit prompt-audit
 grep -q '^checkup prompt-audit: failed (error_max_budget_usd) raw=.*\.json cost_usd=0.08 denials=0$' "$TMP/rc.out" || fail "budget failure line: $(cat "$TMP/rc.out")"
 [[ "$(ls "$REPORTS" | wc -l | tr -d ' ')" == $((before + 1)) ]] || fail "a failed run without a result must keep only the raw JSON"
-CHECKUP_STUB_MODE=crash expect_rc 3 "claude crash" run "$BIN_DIR/th" checkup prompt-audit
+CHECKUP_STUB_MODE=crash expect_rc 3 "claude crash" audit prompt-audit
 grep -q '^checkup prompt-audit: failed (exit 3) raw=.*\.json$' "$TMP/rc.out" || fail "crash failure line: $(cat "$TMP/rc.out")"
 raw="$(sed 's/.*raw=//' "$TMP/rc.out")"
 grep -Fqx 'not json' "$raw" || fail "raw output not preserved on crash"
-CHECKUP_STUB_MODE=apierror expect_rc 1 "API error" run "$BIN_DIR/th" checkup prompt-audit
+CHECKUP_STUB_MODE=apierror expect_rc 1 "API error" audit prompt-audit
 grep -q '^checkup prompt-audit: failed (error) raw=' "$TMP/rc.out" || fail "is_error result must read as an error: $(cat "$TMP/rc.out")"
 echo "PASS: checkup failures keep raw output and exit non-zero"
 
 # --- E: working-tree guard (informational) -------------------------------------
-CHECKUP_STUB_MODE=write expect_rc 0 "tree changed" run "$BIN_DIR/th" checkup prompt-audit
+CHECKUP_STUB_MODE=write expect_rc 0 "tree changed" audit prompt-audit
 [[ "$(cat "$TMP/rc.out")" == *" tree_changed=1" ]] || fail "status must carry tree_changed: $(cat "$TMP/rc.out")"
 grep -q 'working tree changed during checkup (1 git status entries)' "$TMP/rc.err" || fail "guard warning missing: $(cat "$TMP/rc.err")"
 ! grep -q 'stray-file' "$TMP/rc.out" "$TMP/rc.err" || fail "guard must not print changed paths"
 rm -f "$H1R/sub/stray-file" "$H1R/stray-file"
 echo "PASS: checkup reports a working tree changed during the run"
 
-# --- F: isolation --------------------------------------------------------------
+# --- F: public canonical checkup and isolation ---------------------------------
+C1="$HOME_DIR/work/canonical harness"; make_harness "$C1" th
+C2="$HOME_DIR/work/other canonical harness"; make_harness "$C2" tg
+C3="$HOME_DIR/work/isolation-default harness"; make_harness "$C3" ti 'HARNESS_SESSION_ISOLATION_DEFAULT="1"'
+for h in "$C1" "$C2" "$C3"; do
+  HOME="$HOME_DIR" HARNESS_PROFILE_BIN_DIR="$BIN_DIR" "$PREFIX/bin/harness-profile" register "$h" >/dev/null
+done
+assert_no_public_audit() {
+  [[ ! -s "$LOG" ]] || fail "public checkup started Claude"
+  for h in "$C1" "$C2" "$C3"; do
+    [[ ! -e "$h/.harness/reports/checkup" ]] || fail "public checkup created reports in $h"
+  done
+  [[ ! -d "$TMP/state" || -z "$(find "$TMP/state" -mindepth 1 -print -quit)" ]] || fail "public checkup created session state"
+}
 : > "$LOG"
+for profile in th tg ti; do
+  expect_rc 2 "canonical $profile checkup" run "$BIN_DIR/$profile" checkup prompt-audit
+  grep -q canonical_agent_refused "$TMP/rc.err" || fail "canonical $profile checkup lacks refusal reason"
+  assert_no_public_audit
+done
+expect_rc 2 "profile-dispatched canonical checkup" run "$PREFIX/bin/harness-profile" th checkup prompt-audit
+grep -q canonical_agent_refused "$TMP/rc.err" || fail "profile dispatch lacks canonical refusal reason"
+assert_no_public_audit
 expect_rc 2 "explicit --isolated" run "$BIN_DIR/ti" --isolated checkup prompt-audit
 HARNESS_SESSION_ISOLATION=1 expect_rc 2 "env isolation" run "$BIN_DIR/ti" checkup prompt-audit
 expect_rc 2 "explicit --isolated-session" run "$BIN_DIR/ti" --isolated-session 123e4567-e89b-42d3-a456-426614174000 checkup prompt-audit
-[[ ! -s "$LOG" ]] || fail "isolated checkup started Claude"
-[[ -z "$(find "$TMP/state" -mindepth 1 -maxdepth 3 2>/dev/null | head -1)" ]] || fail "isolated checkup created session state"
-run "$BIN_DIR/ti" checkup prompt-audit >/dev/null 2>&1 || fail "checkup on an isolation-default profile must run at the root"
-echo "PASS: checkup refuses isolated sessions before cloning"
+assert_no_public_audit
+echo "PASS: canonical checkup refuses agents and has no isolated route"
 
 # --- G: harness-profile fan-out ------------------------------------------------
-: > "$LOG"
-out="$(run "$PREFIX/bin/harness-profile" checkup prompt-audit th tg --mode rich 2>"$TMP/g.err")" || { cat "$TMP/g.err" >&2; fail "fan-out failed"; }
-[[ "$(grep '^PWD:' "$LOG" | tr '\n' '|')" == "PWD:$H1R|PWD:$H2R|" ]] || fail "fan-out order/cwd wrong: $(grep '^PWD:' "$LOG")"
-argv_check 'val("--effort") == "xhigh"' || fail "--mode not forwarded"
-[[ "$(printf '%s\n' "$out" | tail -1)" == "checkup prompt-audit: 2 ok, 0 failed" ]] || fail "fan-out summary: $out"
-[[ "$out$(cat "$TMP/g.err")" != *"$BODY"* ]] || fail "fan-out leaked report content"
-CHECKUP_STUB_FAIL_PWD="$H2R" expect_rc 1 "fan-out partial failure" run "$PREFIX/bin/harness-profile" checkup prompt-audit th tg
-[[ "$(tail -1 "$TMP/rc.out")" == "checkup prompt-audit: 1 ok, 1 failed" ]] || fail "partial summary: $(cat "$TMP/rc.out")"
-: > "$LOG"
-run "$PREFIX/bin/harness-profile" checkup prompt-audit --all >/dev/null 2>&1 || fail "--all failed"
-[[ "$(grep -c '^PWD:' "$LOG")" == 3 ]] || fail "--all did not run every registered profile"
+expect_rc 1 "canonical fan-out" run "$PREFIX/bin/harness-profile" checkup prompt-audit th tg --mode rich
+[[ "$(cat "$TMP/rc.out")" == "checkup prompt-audit: 0 ok, 2 failed" ]] || fail "fan-out summary: $(cat "$TMP/rc.out")"
+[[ "$(grep -c canonical_agent_refused "$TMP/rc.err")" == 2 ]] || fail "fan-out must refuse both canonical profiles"
+[[ "$(grep '^== ' "$TMP/rc.err" | tr '\n' '|')" == '== th ==|== tg ==|' ]] || fail "fan-out order changed"
+assert_no_public_audit
+expect_rc 1 "canonical --all" run "$PREFIX/bin/harness-profile" checkup prompt-audit --all
+[[ "$(cat "$TMP/rc.out")" == "checkup prompt-audit: 0 ok, 3 failed" ]] || fail "--all summary: $(cat "$TMP/rc.out")"
+[[ "$(grep -c canonical_agent_refused "$TMP/rc.err")" == 3 ]] || fail "--all must refuse every canonical profile"
+assert_no_public_audit
 : > "$LOG"
 expect_rc 2 "unknown profile" run "$PREFIX/bin/harness-profile" checkup prompt-audit th zz
 expect_rc 2 "no selection" run "$PREFIX/bin/harness-profile" checkup prompt-audit
@@ -254,12 +275,13 @@ ln -s "$(readlink "$BIN_DIR/th")" "$BIN_DIR/zz"
 expect_rc 2 "unregistered profile command" run "$BIN_DIR/zz" checkup prompt-audit th
 rm -f "$BIN_DIR/zz"
 [[ ! -s "$LOG" ]] || fail "fan-out validation started Claude"
-run "$PREFIX/bin/harness-profile" checkup prompt-audit th --max-budget-usd=5 >/dev/null 2>&1 || fail "--max-budget-usd=N fan-out failed"
-argv_check 'val("--max-budget-usd") == "5"' || fail "--max-budget-usd=N not forwarded"
-: > "$LOG"
-run "$PREFIX/bin/harness-profile" checkup prompt-audit th th >/dev/null 2>&1 || fail "duplicate profile run failed"
-[[ "$(grep -c '^PWD:' "$LOG")" == 1 ]] || fail "duplicate profile names must run once"
-echo "PASS: harness-profile checkup runs profiles one at a time and reports only status"
+expect_rc 1 "canonical --max-budget-usd=N" run "$PREFIX/bin/harness-profile" checkup prompt-audit th --max-budget-usd=5
+grep -q canonical_agent_refused "$TMP/rc.err" || fail "budget option bypassed canonical refusal"
+expect_rc 1 "duplicate canonical profile" run "$PREFIX/bin/harness-profile" checkup prompt-audit th th
+[[ "$(grep -c canonical_agent_refused "$TMP/rc.err")" == 1 ]] || fail "duplicate profile names must be attempted once"
+[[ "$(cat "$TMP/rc.out")" == "checkup prompt-audit: 0 ok, 1 failed" ]] || fail "duplicate summary: $(cat "$TMP/rc.out")"
+assert_no_public_audit
+echo "PASS: harness-profile checkup validates selections and reports canonical refusals without agents or reports"
 
 # --- H: reserved prefixes --------------------------------------------------------
 for reserved in checkup register; do
