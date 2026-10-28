@@ -16,6 +16,8 @@ Notable changes are recorded here. This project follows semantic versioning for 
 - Apply the same canonical ban to non-management arguments passed through the
   internal Claude management selector. Keep isolated Happy Codex menu handoffs
   free of an explicit launcher profile so valid Happy selections remain usable.
+- Rebind the canonical-update bootstrap to the delivered source closure with
+  corrected owner liveness, refused-update readback and native mutation state.
 - Surface unavailable Web launch catalogs as `launch_unavailable` with their
   validated server reason; keep available-catalog validation strict.
 
