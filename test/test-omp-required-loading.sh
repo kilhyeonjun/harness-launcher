@@ -9,7 +9,7 @@ HARNESS_TEST_OMP_SOURCE="$(python3 -I -S -B "$ROOT/test/omp-fixture-source.py")"
 export HARNESS_TEST_OMP_SOURCE
 python3 -I -S -B "$ROOT/test/test_omp_required_fixture_path.py"
 python3 -I -S -B - "$ROOT" <<'PYTEST'
-import hashlib, importlib.util, json, os, pty, shlex, shutil, subprocess, sys, tempfile, unittest
+import fcntl, hashlib, importlib.util, json, os, pty, shlex, shutil, subprocess, sys, tempfile, termios, unittest
 from unittest.mock import patch
 from pathlib import Path
 
@@ -91,6 +91,11 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         config = {'HARNESS_NAME':'fixture','HARNESS_PREFIX':'ex','HARNESS_SESSION_ISOLATION_DEFAULT':'0',
                   'HARNESS_OMP_BIN':str(self.binary),'HARNESS_OMP_ROOT':str(self.ns),'HARNESS_OMP_SHA256':sha(self.binary)}
         put(self.profile/'config/launcher.env', '\n'.join(k+'='+shlex.quote(v) for k,v in config.items())+'\n')
+        # Public agent entry must allocate an isolated checkout from this source.
+        for args in (['init','-q'], ['add','.'],
+                     ['-c','user.name=fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture']):
+            subprocess.run(['/usr/bin/git','-c','core.hooksPath=/dev/null','-C',str(self.profile),*args],
+                           check=True, capture_output=True)
         runtime = self.home/'.local/state/kilhyeonjun-harness/launcher-runtimes'
         runtime.mkdir(parents=True, mode=0o700)
         runtime.chmod(0o700)
@@ -152,13 +157,15 @@ Path('''+repr(str(self.capture))+''').write_text(json.dumps({'policy_sha256':has
         master, slave = pty.openpty()
         try:
             return subprocess.run(argv, cwd=cwd, env=self.env, stdin=slave,
-                                  text=True, capture_output=True, timeout=30)
+                                  text=True, capture_output=True, timeout=30,
+                                  start_new_session=True,
+                                  preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0))
         finally:
             os.close(slave)
             os.close(master)
 
     def public_exec(self,args):
-        return self.tui_entry(['/bin/zsh',str(self.snapshot/'bin/harness-exec'),str(self.profile),'omp',*args],
+        return self.tui_entry(['/bin/zsh',str(self.snapshot/'bin/harness-exec'),str(self.profile),'--isolated','omp',*args],
                               self.profile)
 
     def file_state(self):

@@ -9,9 +9,10 @@ Notable changes are recorded here. This project follows semantic versioning for 
   and interactive shell interception. Unbound menu continuations require a bound
   session UUID. Shell/manual Git and native management remain allowed. Kiro and
   gateway routes remain documented legacy residuals.
-- Classify OMP continuations after model-mode normalization so bound herdr
-  resumes execute in their recorded isolated workspace; enforce the canonical
-  ban again at the final native execution directory.
+- Evaluate OMP's canonical ban at the final native execution directory, not
+  its registered source root or raw model-mode selector, so bound herdr resumes
+  execute in their recorded isolated workspace. Explicit canonical legacy
+  entries remain refused before runtime probes.
 - Surface unavailable Web launch catalogs as `launch_unavailable` with their
   validated server reason; keep available-catalog validation strict.
 

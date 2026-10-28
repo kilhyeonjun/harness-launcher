@@ -2171,14 +2171,9 @@ _harness_launcher_run() {
     _harness_launcher_omp_model_mode "${omp_native_args[@]}" || return 2
     local -a omp_prefix=("${@[1,selector_i]}")
     set -- "${omp_prefix[@]}" "${omp_native_args[@]}"
-    # Model-mode controls can precede a bound continuation. Classify only the
-    # normalized request: its source root is not its recorded execution cwd.
-    if [[ "$selector_i" == 1 && "$HARNESS_SESSION_ISOLATION_DEFAULT" != 1 && "${HARNESS_SESSION_ISOLATION:-0}" != 1 ]]; then
-      case "${omp_native_args[1]-}" in
-        --session-new|--session-resume|--session-native-resume|--session-native-fork|--version|--help|login|models) ;;
-        *) _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" omp || return $? ;;
-      esac
-    fi
+    # Model-mode controls can precede a bound continuation. Neither this
+    # source root nor the raw selector determines its final execution cwd;
+    # _harness_launcher_omp_native_exec enforces that boundary after binding.
     if [[ "${omp_native_args[1]-}" == (--session-native-resume|--session-native-fork) ]]; then
       [[ -z "$isolated_source_run_dir" && "$1" == --isolated-session && "$selector_i" == 3 && ${#omp_native_args} -ge 2 ]] || {
         echo 'harness-launcher: runtime_resume_unbound' >&2; return 2
@@ -2376,10 +2371,11 @@ _harness_launcher_run() {
   if ! $isolated && (( $# )); then
     case "${1:-}" in
       kiro|kiro-cli|codex-gateway|codex-smoke) ;;
+      omp) ;; # Its selected native cwd is checked at _omp_native_exec.
       *) local canonical_runtime=claude
          local -a canonical_native_args=("$@")
          case "${1:-}" in
-           codex|omp) canonical_runtime="$1"; canonical_native_args=("${@:2}") ;;
+           codex) canonical_runtime="$1"; canonical_native_args=("${@:2}") ;;
          esac
          if ! harness_agent_is_management "$canonical_runtime" "${canonical_native_args[@]}"; then
            _harness_launcher_canonical_agent_refuse "${HARNESS_RUN_DIR:-$HARNESS_DIR}" "$canonical_runtime" || return $?
