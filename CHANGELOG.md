@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## 0.81.0 — Unreleased
+## 0.81.0 — 2026-10-28
 
 - Refuse Claude, Codex and OMP agents in registered canonical checkouts,
   including explicit legacy and resume routes; use isolated fresh menu launches
