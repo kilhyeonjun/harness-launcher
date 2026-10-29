@@ -478,6 +478,47 @@ def safe_code(error):
     return code if re.fullmatch('[A-Za-z][A-Za-z0-9_]{0,95}', code) else 'BOOTSTRAP_OPERATION_FAILED'
 
 
+def validate_public_result(result, request, root, decision):
+    """Admit the closed public wire result; never retain private detail."""
+    if result is None:
+        return None
+    require(type(request) is dict and set(request) == {'profile', 'expected_base', 'revision'}
+            and type(request['profile']) is str
+            and re.fullmatch('[A-Za-z_][A-Za-z0-9_-]{0,63}', request['profile'])
+            and all(type(request[key]) is str and HEX40.fullmatch(request[key])
+                    for key in ('expected_base', 'revision')), 'BOOTSTRAP_RESULT')
+    require(type(result) is dict and set(result) == {'status', 'profile', 'root', 'before', 'target',
+            'after', 'changed', 'verified', 'detail'}
+            and all(type(result[key]) is str for key in ('status', 'profile', 'root', 'before', 'target', 'detail'))
+            and result['profile'] == request['profile'] and result['root'] == str(root)
+            and Path(result['root']).is_absolute() and result['before'] == request['expected_base']
+            and result['target'] == request['revision'] and decision == 'once'
+            and result['status'] in ('updated', 'already_current', 'applied_unverified', 'not_applied', 'uncertain')
+            and type(result['verified']) is bool and (type(result['changed']) is bool or result['changed'] is None)
+            and (result['after'] is None or type(result['after']) is str and HEX40.fullmatch(result['after'])),
+            'BOOTSTRAP_RESULT')
+    require(result['status'] not in ('updated', 'already_current') or
+            result['verified'] and result['after'] == request['revision'], 'BOOTSTRAP_RESULT')
+    return {key: value for key, value in result.items() if key != 'detail'}
+
+
+def receipt_exit_code(receipt):
+    """Only a bound, verified result after once and confirmed cleanup succeeds."""
+    if (type(receipt) is not dict or receipt.get('schema') != 'launcher-canonical-bootstrap-receipt/v1'
+            or receipt.get('decision') != 'once' or receipt.get('cleanup_verified') is not True
+            or receipt.get('status') not in ('updated', 'already_current')):
+        return 1
+    result = receipt.get('result')
+    if (type(result) is not dict or set(result) != {'status', 'profile', 'root', 'before', 'target',
+            'after', 'changed', 'verified'} or result.get('status') != receipt['status']):
+        return 1
+    try:
+        validate_public_result(dict(result, detail=''), receipt.get('request'), result['root'], receipt['decision'])
+    except BootstrapError:
+        return 1
+    return 0
+
+
 def run(home, directory, projection, request):
     retained = Retained()
     try:
@@ -695,19 +736,7 @@ def run_retained(home, directory, projection, request, retained):
                 same_process(kernel, native_identity)
                 child.kill()
                 child.wait(timeout=3)
-        result = final['result'] if final else None
-        if result is not None:
-            require(type(result) is dict and set(result) == {'status', 'profile', 'root', 'before', 'target',
-                    'after', 'changed', 'verified', 'detail'} and result['profile'] == request['profile']
-                    and result['root'] == str(root) and result['before'] == request['expected_base']
-                    and result['target'] == request['revision'] and final['decision'] == 'once'
-                    and result['status'] in ('updated', 'already_current', 'not_applied', 'uncertain')
-                    and type(result['verified']) is bool and (type(result['changed']) is bool or result['changed'] is None)
-                    and (result['after'] is None or type(result['after']) is str and HEX40.fullmatch(result['after']))
-                    and type(result['detail']) is str, 'BOOTSTRAP_RESULT')
-            require(result['status'] not in ('updated', 'already_current') or
-                    result['verified'] and result['after'] == request['revision'], 'BOOTSTRAP_RESULT')
-            result = {key: value for key, value in result.items() if key != 'detail'}
+        result = validate_public_result(final['result'], request, root, final['decision']) if final else None
         receipt = {'schema': 'launcher-canonical-bootstrap-receipt/v1', 'operation_id': operation,
                    'request': request, 'runtime': runtime, 'source': record['source'], 'native_session': bound_session,
                    'decision': final['decision'] if final else None, 'result': result,
@@ -718,7 +747,7 @@ def run_retained(home, directory, projection, request, retained):
                    'elapsed_seconds': round(time.monotonic() - started, 3)}
         write_record(control / 'receipt.json', receipt, 0o600)
         print(json.dumps(receipt, ensure_ascii=False))
-        return 0 if receipt['status'] in ('updated', 'already_current') and receipt['cleanup_verified'] else 1
+        return receipt_exit_code(receipt)
     except (BootstrapError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         if child is None:
             raise

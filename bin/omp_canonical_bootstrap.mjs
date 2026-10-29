@@ -305,10 +305,27 @@ export function approvalPrompt(scope, authority) {
   ].join('\n');
   return Object.freeze({ full, compact: full });
 }
-function safeResult(result) {
-  keys(result, ['status', 'profile', 'root', 'before', 'target', 'after', 'changed', 'verified', 'detail']);
-  need(['updated', 'already_current', 'not_applied', 'uncertain'].includes(result.status) && typeof result.verified === 'boolean' && [true, false, null].includes(result.changed) && (result.after === null || HEX40.test(result.after)), 'engine_result_invalid');
-  return { ...result, detail: ['sealed_verifier_passed', 'not_applied'].includes(result.detail) ? result.detail : 'engine_result_redacted' };
+export function safeResult(result) {
+  const invalid = 'engine_result_invalid';
+  const fields = ['status', 'profile', 'root', 'before', 'target', 'after', 'changed', 'verified', 'detail', 'occupancy', 'blockers'];
+  need(result && typeof result === 'object' && !Array.isArray(result)
+    && Object.keys(result).sort().join(',') === fields.sort().join(','), invalid);
+  const revision = value => typeof value === 'string' && HEX40.test(value);
+  need(['updated', 'already_current', 'applied_unverified', 'not_applied', 'uncertain'].includes(result.status)
+    && text(result.profile) && text(result.root) && path.isAbsolute(result.root) && path.normalize(result.root) === result.root
+    && revision(result.before) && revision(result.target) && (result.after === null || revision(result.after))
+    && typeof result.verified === 'boolean' && [true, false, null].includes(result.changed)
+    && typeof result.detail === 'string' && Array.isArray(result.blockers), invalid);
+  // occupancy is unknown and blockers are unknown[] in the private contract.
+  // Their contents carry no public authority and must never be traversed or emitted.
+  const status = result.status === 'already_current' && !result.verified && result.after === result.target
+    ? 'applied_unverified' : result.status;
+  need(!['updated', 'already_current'].includes(status) || (result.verified && result.after === result.target), invalid);
+  return {
+    status, profile: result.profile, root: result.root, before: result.before, target: result.target,
+    after: result.after, changed: result.changed, verified: result.verified,
+    detail: ['sealed_verifier_passed', 'not_applied'].includes(result.detail) ? result.detail : 'engine_result_redacted',
+  };
 }
 
 // The operation owns exactly one promise. Invalidation only aborts; disposal waits
@@ -341,8 +358,9 @@ export async function runOperation({ ctx, request, runtime, prepare, current, de
       phase = 'apply';
       const actual = await prepared.apply();
       engineCleanupFailed = typeof actual?.detail === 'string' && actual.detail.includes('cleanup_failed:');
-      result = safeResult(actual);
-      need(result.profile === request.profile && result.root === prepared.scope.root && result.before === request.expected_base && result.target === request.revision, 'engine_result_invalid');
+      const admitted = safeResult(actual);
+      need(admitted.profile === request.profile && admitted.root === prepared.scope.root && admitted.before === request.expected_base && admitted.target === request.revision, 'engine_result_invalid');
+      result = admitted;
     }
   } catch (error) {
     const code = error instanceof Error ? error.message : '';
