@@ -110,6 +110,54 @@ Kiro follows the same explicit-override pattern through `HARNESS_KIRO_BIN`, then
 
 This order matters on macOS because an app-bundled CLI or a version-manager shim can differ from the executable expected by the user. Verify binary selection from the same login shell that loads the launcher.
 
+## Reviewed native fork admission
+
+A reviewed local native distribution is a separately reviewed build, not an
+official upstream release. Normal trusted configuration operations register an
+exact source-owned artifact and then separately select it through Publisher CAS
+into a fresh empty namespace. Registration alone changes no enrollment,
+selection, credentials or history. Upstream contribution and release are
+independent of this operating path.
+
+Preparation first reads the normal owned selected context and resolved profile.
+For a rich release, the canonical compiler matches the actual resolved profile,
+complete release, binary digest and size to its private source-owned artifact.
+The resulting closed `native_distribution` declaration and unchanged sealed
+`native-fork-artifact.json` bind source inputs, full runtime version and binary
+provenance through required bundle preparation and bridge startup. The resolver
+profile is supplied at that boundary without changing the continuation context.
+Numeric stock does not require the new compiler helper or read a fork record.
+Old continuations retain their own binary, namespace and provenance; a suffix or
+mutable `.distribution.json` never expands admission.
+
+The paired `launcher-canonical-bootstrap/v3` descriptor has exactly `schema`,
+`revision`, `manifest_sha256`, `files` and `native_artifact`. The singular
+`native_artifact` content reference contains only `manifest_sha256`,
+`manifest_bytes`, `binary_sha256` and `binary_bytes`, not an owner or release
+alias. Its canonical private artifact proves the actual owner, full release
+and binary tuple. The selected prefix's fixed `.distribution.json` is only a
+byte-proof carrier: its exact pinned content and retained file identity must
+remain valid for the operation. Native admission independently verifies the
+canonical artifact against the public content reference before using its owner
+or release, then binds them to the actual request and complete selected context
+before deriving `omp-bin/<full-version>-<binary-sha8>/bin/omp`.
+Fork admission is limited to that proved owner. Generic valid registered stock
+keeps its existing fixed tuple and admission path; unregistered, ambiguous,
+blocked, revoked, expired, mismatched and unknown selections still refuse.
+The descriptor still binds the actual published private seven-file Git closure;
+never use a placeholder revision, alter an immutable release or repair a sealed
+cache. Native once, exact scope/expiry, cancellation/drain, truthful
+not-applied/unknown receipts and canonical CAS/lock/verifier protocols remain
+unchanged.
+
+Source publication and artifact registration are not installed capability or
+activation. Before selection, the operator must confirm compatible installed
+producer and canonical compiler support; do not select an unsupported consumer
+over a working stock profile. MCP stays off until the fixed gateway, fresh-owner transport-only
+credentials, original tool identity, backend no-replay/typed unknown, per-write
+genuine human once even in bypass and installed acceptance gates are proven.
+No configuration approval is a native call's once grant.
+
 ## OMP entry and prepared namespace
 
 Before sourcing aliases or allocating a workspace, an exact OMP discriminator

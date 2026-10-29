@@ -24,7 +24,7 @@ import time
 import uuid
 
 SCHEMA = 'launcher-canonical-bootstrap-control/v1'
-PIN_SCHEMA = 'launcher-canonical-bootstrap/v1'
+PIN_SCHEMA = 'launcher-canonical-bootstrap/v3'
 SOURCE_SCHEMA = 'canonical-bootstrap-source/v1'
 STATE = '.local/state/kilhyeonjun-harness/launcher-runtimes'
 SYSTEM_PYTHON = '/usr/bin/python3'
@@ -202,8 +202,40 @@ def observer_directory(home):
     return directory
 
 
+STOCK_NATIVE = {'release': {'version': '18.11.3', 'source_revision': '96894a6147d8cc64b7e00ad3a7d7178fd93b9531'},
+    'sha256': 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b', 'bytes': 194982944}
+def validate_native_artifact_ref(value):
+    require(type(value) is dict and set(value) == {
+        'manifest_sha256', 'manifest_bytes', 'binary_sha256', 'binary_bytes'}, 'BOOTSTRAP_NATIVE_RELEASE')
+    require(all(type(value[key]) is str and HEX64.fullmatch(value[key])
+                for key in ('manifest_sha256', 'binary_sha256'))
+            and type(value['manifest_bytes']) is int and 0 < value['manifest_bytes'] <= LIMIT
+            and type(value['binary_bytes']) is int and 0 < value['binary_bytes'] <= 9007199254740991,
+            'BOOTSTRAP_NATIVE_RELEASE')
+    return value
+
+
+def artifact_native(artifact, ref, profile):
+    raw = canonical(artifact) + b'\n'
+    require(len(raw) == ref['manifest_bytes'] and digest(raw) == ref['manifest_sha256'],
+            'BOOTSTRAP_NATIVE_BINDING')
+    require(type(artifact) is dict and set(artifact) == {
+        'schema', 'profile', 'release', 'binary', 'local_patch_sha256', 'reviewed_base_revision'}
+        and artifact['profile'] == profile and type(artifact['schema']) is str,
+        'BOOTSTRAP_NATIVE_BINDING')
+    release, binary = artifact['release'], artifact['binary']
+    require(type(release) is dict and set(release) == {'version', 'source_revision', 'contract_id',
+        'upstream_base_version', 'upstream_base_revision', 'source_patch_sha256', 'build_provenance_sha256'}
+        and type(release['version']) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}', release['version'])
+        and type(binary) is dict and set(binary) == {'sha256', 'bytes', 'platform'}
+        and binary['sha256'] == ref['binary_sha256'] and type(binary['bytes']) is int
+        and binary['bytes'] == ref['binary_bytes'] and binary['platform'] == 'darwin-arm64',
+        'BOOTSTRAP_NATIVE_BINDING')
+    return {'release': release, 'sha256': binary['sha256'], 'bytes': binary['bytes']}
+
+
 def validate_pin(value):
-    require(type(value) is dict and set(value) == {'schema', 'revision', 'manifest_sha256', 'files', 'native'}
+    require(type(value) is dict and set(value) == {'schema', 'revision', 'manifest_sha256', 'files', 'native_artifact'}
             and value['schema'] == PIN_SCHEMA, 'BOOTSTRAP_SOURCE_PIN')
     require(type(value['revision']) is str and HEX40.fullmatch(value['revision'])
             and type(value['manifest_sha256']) is str and HEX64.fullmatch(value['manifest_sha256']),
@@ -217,12 +249,7 @@ def validate_pin(value):
                 and row['git_mode'] == '100644' and type(row['bytes']) is int
                 and 0 <= row['bytes'] <= 1048576 and type(row['sha256']) is str
                 and HEX64.fullmatch(row['sha256']), 'BOOTSTRAP_SOURCE_INVENTORY')
-    native = value['native']
-    require(type(native) is dict and set(native) == {'version', 'source_revision', 'sha256', 'bytes'}
-            and native['version'] == '18.11.3'
-            and native['source_revision'] == '96894a6147d8cc64b7e00ad3a7d7178fd93b9531'
-            and native['sha256'] == 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b'
-            and native['bytes'] == 194982944, 'BOOTSTRAP_NATIVE_RELEASE')
+    validate_native_artifact_ref(value['native_artifact'])
     return value
 
 
@@ -282,6 +309,36 @@ class Retained:
     """Frozen code/data admission with held-and-named identity rechecks."""
     def __init__(self):
         self.nodes = {}
+        self.native_artifact = None
+
+    def artifact(self, path, ref, profile):
+        path = ancestry(path, 0o400, False)
+        self.hold(path.parent)
+        before = path.lstat()
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
+                and stat.S_IMODE(before.st_mode) == 0o400
+                and before.st_nlink == 1 and before.st_size == ref['manifest_bytes'], 'BOOTSTRAP_NATIVE_BINDING')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            require(identity(os.fstat(fd)) == identity(before), 'BOOTSTRAP_AUTHORITY_CHANGED')
+            raw = os.read(fd, ref['manifest_bytes'] + 1)
+            require(len(raw) == ref['manifest_bytes'] and digest(raw) == ref['manifest_sha256'],
+                    'BOOTSTRAP_NATIVE_BINDING')
+            artifact = decode(raw)
+            require(raw == canonical(artifact) + b'\n', 'BOOTSTRAP_NATIVE_BINDING')
+            native = artifact_native(artifact, ref, profile)
+            require(identity(os.fstat(fd)) == identity(before)
+                    and identity(path.lstat()) == identity(before), 'BOOTSTRAP_AUTHORITY_CHANGED')
+            ancestry(path, 0o400, False)
+            require(path not in self.nodes, 'BOOTSTRAP_AUTHORITY_CHANGED')
+            self.nodes[path] = fd, identity(before), True
+            fd = None
+            self.native_artifact = artifact
+            self.check()
+            return native
+        finally:
+            if fd is not None:
+                os.close(fd)
 
     def hold(self, path, sealed=False):
         path = Path(path)
@@ -315,18 +372,28 @@ class Retained:
         self.nodes.clear()
 
 
-def profile_context(home, directory, projection, request, pin):
+def profile_context(home, directory, projection, request, pin, retained):
     registry = home / '.config/harness-launcher/profiles'
     raw, _ = read_file(registry / request['profile'], 0o600, 4096)
     root = ancestry(raw.decode('utf-8').strip(), directory=True)
     context = projection.select(request['profile'], str(root), str(directory / 'aliases.zsh'), continuation=True)
     require(context is not None, 'BOOTSTRAP_PROFILE_NOT_ENROLLED')
-    native = pin['native']
-    binary = home / '.local/state/kilhyeonjun-harness/omp-bin' / (native['version'] + '-' + native['sha256'][:8]) / 'bin/omp'
-    require(context['binary_path'] == str(binary) and context['binary_sha256'] == native['sha256']
-            and context['binary_size'] == native['bytes']
-            and context['binary_release'] == {key: native[key] for key in ('version', 'source_revision')},
+    native = STOCK_NATIVE
+    if context['binary_release'] != STOCK_NATIVE['release']:
+        require(context['binary_sha256'] == pin['native_artifact']['binary_sha256']
+                and type(context['binary_size']) is int
+                and context['binary_size'] == pin['native_artifact']['binary_bytes'], 'BOOTSTRAP_NATIVE_BINDING')
+        selected = ancestry(context['binary_path'], directory=False)
+        base = home / '.local/state/kilhyeonjun-harness/omp-bin'
+        require(selected.name == 'omp' and selected.parent.name == 'bin'
+                and selected.parent.parent.parent == base, 'BOOTSTRAP_NATIVE_BINDING')
+        native = retained.artifact(selected.parent.parent / '.distribution.json', pin['native_artifact'], request['profile'])
+    require(context['binary_release'] == native['release']
+            and context['binary_sha256'] == native['sha256']
+            and type(context['binary_size']) is int and context['binary_size'] == native['bytes'],
             'BOOTSTRAP_NATIVE_BINDING')
+    binary = home / '.local/state/kilhyeonjun-harness/omp-bin' / (native['release']['version'] + '-' + native['sha256'][:8]) / 'bin/omp'
+    require(context['binary_path'] == str(binary), 'BOOTSTRAP_NATIVE_BINDING')
     return root, context
 
 
@@ -412,9 +479,17 @@ def safe_code(error):
 
 
 def run(home, directory, projection, request):
+    retained = Retained()
+    try:
+        return run_retained(home, directory, projection, request, retained)
+    finally:
+        retained.close()
+
+
+def run_retained(home, directory, projection, request, retained):
     require(os.isatty(0) and os.isatty(1), 'BOOTSTRAP_MAIN_TUI_REQUIRED')
     pin, source = admit_source(home, directory)
-    root, context = profile_context(home, directory, projection, request, pin)
+    root, context = profile_context(home, directory, projection, request, pin, retained)
     kernel = kernel_module(source)
     runtime_raw, _ = read_file(home / STATE / 'current.json', 0o600)
     runtime = decode(runtime_raw)
@@ -453,7 +528,6 @@ def run(home, directory, projection, request):
     lease = os.open(lease_path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     # Never open/close a second descriptor for this inode in the holder process.
     fcntl.lockf(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    retained = Retained()
     child = None
     native_identity = None
     final = None
@@ -498,6 +572,7 @@ def run(home, directory, projection, request):
                   'expires_at': int(time.time() * 1000) + 300000, 'runtime': runtime,
                   'source': {'revision': pin['revision'], 'manifest_sha256': pin['manifest_sha256'], 'path': str(source)},
                   'account_home': str(home), 'parent': parent_identity, 'native': native_identity,
+                  'native_artifact': retained.native_artifact,
                   'control': {'path': str(control), 'identity': identity(control.lstat())},
                   'lease': {'path': str(lease_path), 'identity': identity(os.fstat(lease))},
                   'liveness': {'read_fd': child_alive_fd, 'identity': alive_identity},

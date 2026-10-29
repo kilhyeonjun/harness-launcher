@@ -2,6 +2,24 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.82.0 — 2026-10-29
+
+- Admit the exact reviewed local native fork through the selected Publisher
+  context and a canonical source-owned artifact record, preserving full version,
+  binary and build provenance. Resolve its actual owner privately; numeric stock
+  preparation remains independent of the new compiler API and fork record. No
+  suffix or mutable registration alone authorizes a fork.
+- Canonical bootstrap v3 binds a singular exact artifact content reference,
+  without public owner or release aliases. Preserve actual-owner-only fork
+  admission and generic valid registered stock behavior, alongside native
+  main-TUI once, cancellation, receipts and canonical CAS checks.
+- Bind the compiler closure to actual delivered source and the exact registered
+  binary. Registration, selection, MCP activation and installed acceptance are
+  separate gates; publication or capability support does not activate MCP or
+  enroll credentials. The reviewed HTTP transport rejects missing or mismatched
+  JSON-RPC IDs before success/error handling; source and build verification do
+  not establish installed MCP acceptance.
+
 ## 0.81.1 — 2026-10-28
 
 - Rebind the canonical-update bootstrap to the delivered source closure with

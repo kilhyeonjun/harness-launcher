@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import bootstrap, { accountHome, runOperation, canonical, validateScope, validatePin, admitTree, openChannel, identity } from '../bin/omp_canonical_bootstrap.mjs';
+import bootstrap, { accountHome, runOperation, canonical, validateScope, validatePin, validateNative, admitTree, openChannel, identity } from '../bin/omp_canonical_bootstrap.mjs';
 
 test('native account authority ignores fresh HOME and HOME-sensitive userInfo', { skip: process.platform !== 'darwin' }, () => {
   const carrier = new URL('../bin/omp_canonical_bootstrap.mjs', import.meta.url).href;
@@ -252,11 +252,81 @@ test('closed scope rejects mismatches and malformed counts before approval', asy
     assert.equal(f.events.includes('apply'), false);
   }
 });
+function nativeFixture() {
+  const artifact = { schema: 'synthetic-native-artifact/v1', profile: 'alpha',
+    release: { version: '18.11.3-fixture.2', source_revision: '1'.repeat(40), contract_id: 'synthetic-runtime/v1',
+      upstream_base_version: '18.11.3', upstream_base_revision: '2'.repeat(40), source_patch_sha256: '3'.repeat(64), build_provenance_sha256: '4'.repeat(64) },
+    binary: { platform: 'darwin-arm64', sha256: '5'.repeat(64), bytes: 1234 },
+    local_patch_sha256: '6'.repeat(64), reviewed_base_revision: '7'.repeat(40) };
+  const bytes = Buffer.from(canonical(artifact) + '\n');
+  const pin = { native_artifact: { manifest_sha256: createHash('sha256').update(bytes).digest('hex'), manifest_bytes: bytes.length,
+    binary_sha256: artifact.binary.sha256, binary_bytes: artifact.binary.bytes } };
+  const home = '/synthetic-home';
+  const binary = path.join(home, '.local/state/kilhyeonjun-harness/omp-bin', `${artifact.release.version}-${artifact.binary.sha256.slice(0, 8)}`, 'bin/omp');
+  const record = { request: { profile: 'alpha' }, native_artifact: artifact,
+    context: { binary_path: binary, binary_release: structuredClone(artifact.release), binary_sha256: artifact.binary.sha256, binary_size: artifact.binary.bytes },
+    native: { executable: binary, argv: [binary, '--no-session'] } };
+  return { record, pin, home };
+}
+test('native independently proves exact artifact before owner and full context identity', () => {
+  const f = nativeFixture();
+  validateNative(f.record, f.pin, f.home);
+  const mutations = [
+    r => { r.request.profile = 'bravo'; },
+    r => { r.native_artifact.profile = 'bravo'; r.request.profile = 'bravo'; },
+    r => { r.native_artifact.release.contract_id = 'reflected-fake'; r.context.binary_release.contract_id = 'reflected-fake'; },
+    r => { r.native_artifact.binary.platform = 'other-platform'; },
+    r => { r.native_artifact.binary.bytes++; r.context.binary_size++; },
+    r => { r.native_artifact.binary.sha256 = '0'.repeat(64); r.context.binary_sha256 = '0'.repeat(64); },
+    r => { r.context.binary_path += '-other'; },
+    r => { r.context.binary_sha256 = '0'.repeat(64); },
+    r => { r.context.binary_size++; },
+    r => { r.native.executable += '-other'; },
+    r => { r.native.argv[0] += '-other'; },
+    r => { delete r.native_artifact; },
+    r => { r.native_artifact = null; },
+    ...Object.keys(f.record.native_artifact.release).map(key => r => { r.context.binary_release[key] = 'wrong'; }),
+  ];
+  for (const mutate of mutations) {
+    const r = structuredClone(f.record); mutate(r);
+    assert.throws(() => validateNative(r, f.pin, f.home));
+  }
+  for (const change of [{ manifest_bytes: f.pin.native_artifact.manifest_bytes + 1 }, { manifest_sha256: '0'.repeat(64) },
+    { binary_sha256: '0'.repeat(64) }, { binary_bytes: f.pin.native_artifact.binary_bytes + 1 }]) {
+    assert.throws(() => validateNative(f.record, { native_artifact: { ...f.pin.native_artifact, ...change } }, f.home));
+  }
+});
+test('native stock accepts fourth registered context without artifact and refuses rich unsupported tuple', () => {
+  const { record, home } = nativeFixture();
+  const stock = { release: { version: '18.11.3', source_revision: '96894a6147d8cc64b7e00ad3a7d7178fd93b9531' }, sha256: 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b', bytes: 194982944 };
+  const binary = path.join(home, '.local/state/kilhyeonjun-harness/omp-bin', `${stock.release.version}-${stock.sha256.slice(0, 8)}`, 'bin/omp');
+  record.request.profile = 'delta'; record.native_artifact = null;
+  record.context = { binary_path: binary, binary_release: stock.release, binary_sha256: stock.sha256, binary_size: stock.bytes };
+  record.native = { executable: binary, argv: [binary] };
+  validateNative(record, {}, home);
+  record.context.binary_release = { ...stock.release, contract_id: 'unsupported' };
+  assert.throws(() => validateNative(record, {}, home));
+});
 test('public pin rejects alternate source closure or native artifact', () => {
   const rows = ['core/omp/model_modes.py', 'core/scripts/canonical_occupancy.py', 'core/scripts/cross_harness_surface_diff.py', 'core/scripts/harness_compile.py', 'core/scripts/launcher_runtime_snapshot.py', 'core/scripts/omp_canonical_update.ts', 'core/scripts/omp_canonical_update_lock.py'].map(p => ({ path: p, git_mode: '100644', bytes: 1, sha256: 'a'.repeat(64) }));
-  const pin = { schema: 'launcher-canonical-bootstrap/v1', revision: 'b'.repeat(40), manifest_sha256: createHash('sha256').update(canonical({ schema: 'canonical-bootstrap-source/v1', files: rows }) + '\n').digest('hex'), files: rows, native: { version: '18.11.3', source_revision: '96894a6147d8cc64b7e00ad3a7d7178fd93b9531', sha256: 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b', bytes: 194982944 } };
+  const { pin: nativePin } = nativeFixture();
+  const pin = { schema: 'launcher-canonical-bootstrap/v3', revision: 'b'.repeat(40), manifest_sha256: createHash('sha256').update(canonical({ schema: 'canonical-bootstrap-source/v1', files: rows }) + '\n').digest('hex'), files: rows, native_artifact: nativePin.native_artifact };
   validatePin(pin);
-  for (const change of [{ source: '/other' }, { native: { ...pin.native, version: '0.0.0' } }, { revision: '../other' }, { files: [...rows].reverse() }, { files: rows.slice(1) }, { manifest_sha256: 'f'.repeat(64) }]) assert.throws(() => validatePin({ ...pin, ...change }));
+  for (const change of [{ schema: 'launcher-canonical-bootstrap/v2' }, { source: '/other' }, { revision: '../other' }, { files: [...rows].reverse() }, { files: rows.slice(1) }, { manifest_sha256: 'f'.repeat(64) }]) assert.throws(() => validatePin({ ...pin, ...change }));
+  const mutations = [
+    p => { p.native_by_profile = {}; },
+    p => { p.native_artifact.extra = true; },
+    p => { delete p.native_artifact.binary_bytes; },
+    p => { p.native_artifact.binary_bytes = true; },
+    p => { p.native_artifact.binary_bytes = Number.MAX_SAFE_INTEGER + 1; },
+    p => { p.native_artifact.manifest_bytes = 65537; },
+    p => { p.native_artifact.manifest_sha256 = 'invalid'; },
+    p => { p.native_artifact.binary_sha256 = 'invalid'; },
+  ];
+  for (const mutate of mutations) {
+    const candidate = structuredClone(pin); mutate(candidate);
+    assert.throws(() => validatePin(candidate));
+  }
 });
 test('source closure admission rejects bytes, links, extras, and post-admission drift', () => {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.userInfo().homedir, '.bootstrap-admission-')));

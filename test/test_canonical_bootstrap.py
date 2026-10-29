@@ -76,15 +76,31 @@ class Disposable(unittest.TestCase):
         path.chmod(mode)
         return path
 
+    def artifact(self):
+        return {'schema': 'synthetic-native-artifact/v1', 'profile': 'alpha',
+                'release': {'version': '18.11.3-fixture.2', 'source_revision': '1' * 40,
+                    'contract_id': 'synthetic-runtime/v1', 'upstream_base_version': '18.11.3',
+                    'upstream_base_revision': '2' * 40, 'source_patch_sha256': '3' * 64,
+                    'build_provenance_sha256': '4' * 64},
+                'binary': {'platform': 'darwin-arm64', 'sha256': b.digest(b'disposable fork executable'),
+                           'bytes': len(b'disposable fork executable')},
+                'local_patch_sha256': '5' * 64, 'reviewed_base_revision': '6' * 40}
+
+    def native_context(self, native):
+        binary = self.home / '.local/state/kilhyeonjun-harness/omp-bin' / (native['release']['version'] + '-' + native['sha256'][:8]) / 'bin/omp'
+        return dict(binary_path=str(binary), binary_release=copy.deepcopy(native['release']),
+                    binary_sha256=native['sha256'], binary_size=native['bytes'])
+
     def source(self):
         data = {name: ('synthetic authority: ' + name + '\n').encode() for name in b.FILES}
         rows = [{'path': name, 'git_mode': '100644', 'bytes': len(data[name]), 'sha256': b.digest(data[name])}
                 for name in b.FILES]
         manifest = b.canonical({'schema': b.SOURCE_SCHEMA, 'files': rows}) + b'\n'
         pin = {'schema': b.PIN_SCHEMA, 'revision': 'a' * 40, 'manifest_sha256': b.digest(manifest), 'files': rows,
-               'native': {'version': '18.11.3', 'source_revision': '96894a6147d8cc64b7e00ad3a7d7178fd93b9531',
-                          'sha256': 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b',
-                          'bytes': 194982944}}
+               'native_artifact': {'manifest_sha256': b.digest(b.canonical(self.artifact()) + b'\n'),
+                   'manifest_bytes': len(b.canonical(self.artifact()) + b'\n'),
+                   'binary_sha256': self.artifact()['binary']['sha256'],
+                   'binary_bytes': self.artifact()['binary']['bytes']}}
         directory = self.home / 'released/bin'
         self.put(directory / 'canonical-bootstrap-source.json', b.canonical(pin), 0o400)
         source = self.home / b.STATE / 'canonical-bootstrap' / pin['revision'] / pin['manifest_sha256']
@@ -114,7 +130,7 @@ class SourceAdmission(Disposable):
                      lambda p: p['files'][0].update(bytes=1048577),
                      lambda p: p['files'][0].update(sha256='0' * 63),
                      lambda p: p['files'][0].update(extra=True),
-                     lambda p: p['native'].update(sha256='0' * 64)]
+                     lambda p: p['native_artifact'].update(binary_sha256='invalid')]
         for mutate in mutations:
             candidate = copy.deepcopy(pin)
             mutate(candidate)
@@ -211,27 +227,158 @@ class InputAndRecordBoundaries(Disposable):
         self.assertEqual(actual['TERM'], 'xterm-256color')
         self.assertTrue(set(actual).isdisjoint(set(inherited) - {'HOME', 'PATH', 'TERM'}))
 
-    def test_profile_registry_and_enrolled_binary_are_both_required(self):
+    def test_registered_stock_profiles_have_no_artifact_dependency(self):
         directory, _, pin = self.source()
         workspace = self.home / 'workspace'
         workspace.mkdir(mode=0o700)
-        self.put(self.home / '.config/harness-launcher/profiles/sample-profile', str(workspace).encode())
-        native = pin['native']
-        binary = self.home / '.local/state/kilhyeonjun-harness/omp-bin' / (native['version'] + '-' + native['sha256'][:8]) / 'bin/omp'
-        context = {'binary_path': str(binary), 'binary_sha256': native['sha256'], 'binary_size': native['bytes'],
-                   'binary_release': {key: native[key] for key in ('version', 'source_revision')}}
-        request = {'profile': 'sample-profile'}
-        projection = types.SimpleNamespace(select=mock.Mock(return_value=context))
-        for key, replacement in (('binary_path', str(self.home / 'other-native')), ('binary_sha256', '0' * 64),
-                                 ('binary_size', native['bytes'] - 1), ('binary_release', {'version': 'other'})):
-            altered = copy.deepcopy(context)
-            altered[key] = replacement
-            projection.select.return_value = altered
-            with self.subTest(field=key), self.rejected('BOOTSTRAP_NATIVE_BINDING'):
-                b.profile_context(self.home, directory, projection, request, pin)
-        projection.select.return_value = None
-        with self.rejected('BOOTSTRAP_PROFILE_NOT_ENROLLED'):
-            b.profile_context(self.home, directory, projection, request, pin)
+        current = self.native_context(b.STOCK_NATIVE)
+        for profile in ('alpha', 'bravo', 'charlie', 'delta'):
+            self.put(self.home / '.config/harness-launcher/profiles' / profile, str(workspace).encode())
+            selector = types.SimpleNamespace(select=mock.Mock(return_value=current))
+            retained = b.Retained()
+            with mock.patch.object(retained, 'artifact', side_effect=AssertionError('stock carrier access')):
+                self.assertEqual(b.profile_context(self.home, directory, selector, {'profile': profile}, pin, retained), (workspace, current))
+            self.assertIsNone(retained.native_artifact)
+            selector.select.return_value = None
+            with self.rejected('BOOTSTRAP_PROFILE_NOT_ENROLLED'):
+                b.profile_context(self.home, directory, selector, {'profile': profile}, pin, retained)
+            for key, replacement in (('binary_path', str(self.home / 'other-native')),
+                                     ('binary_sha256', '0' * 64), ('binary_size', True),
+                                     ('binary_release', dict(b.STOCK_NATIVE['release'], contract_id='unsupported'))):
+                selector.select.return_value = dict(current, **{key: replacement})
+                with self.subTest(profile=profile, field=key), self.rejected('BOOTSTRAP_NATIVE_BINDING'):
+                    b.profile_context(self.home, directory, selector, {'profile': profile}, pin, retained)
+        with self.assertRaises(OSError):
+            b.profile_context(self.home, directory, selector, {'profile': 'unregistered'}, pin, b.Retained())
+
+    def test_fork_full_tuple_owner_and_retained_carrier(self):
+        directory, _, pin = self.source()
+        artifact = self.artifact()
+        native = b.artifact_native(artifact, pin['native_artifact'], 'alpha')
+        current = self.native_context(native)
+        binary = self.put(current['binary_path'], b'disposable fork executable', 0o500)
+        carrier = self.put(binary.parent.parent / '.distribution.json', b.canonical(artifact) + b'\n', 0o400)
+        workspace = self.home / 'workspace'
+        workspace.mkdir(mode=0o700)
+        for profile in ('alpha', 'bravo'):
+            self.put(self.home / '.config/harness-launcher/profiles' / profile, str(workspace).encode())
+        selector = types.SimpleNamespace(select=mock.Mock(return_value=current))
+        retained = b.Retained()
+        try:
+            self.assertEqual(b.profile_context(self.home, directory, selector, {'profile': 'alpha'}, pin, retained), (workspace, current))
+            self.assertEqual(retained.native_artifact, artifact)
+            held = retained.nodes[carrier][0]
+            replacement = self.put(carrier.with_name('replacement'), carrier.read_bytes(), 0o400)
+            os.replace(replacement, carrier)
+            retained.hold(carrier, True)
+            self.assertEqual(retained.nodes[carrier][0], held)
+            with self.rejected('BOOTSTRAP_AUTHORITY_CHANGED'):
+                retained.check()
+        finally:
+            retained.close()
+        cases = [('bravo', current)] + [('alpha', dict(current, **{key: value}))
+                for key, value in (('binary_sha256', '0' * 64), ('binary_size', native['bytes'] + 1),
+                    ('binary_path', str(binary.with_name('other'))))] + [
+                ('alpha', dict(current, binary_release=dict(native['release'], **{key: 'wrong'})))
+                for key in native['release']]
+        for profile, altered in cases:
+            selector.select.return_value = altered
+            retained = b.Retained()
+            try:
+                with self.subTest(profile=profile, context=altered), self.assertRaises((b.BootstrapError, OSError)):
+                    b.profile_context(self.home, directory, selector, {'profile': profile}, pin, retained)
+            finally:
+                retained.close()
+
+    def test_carrier_exact_canonical_bytes_modes_links_and_identity(self):
+        _, _, pin = self.source()
+        ref = pin['native_artifact']
+        raw = b.canonical(self.artifact()) + b'\n'
+        for kind in ('bytes', 'length', 'noncanonical', 'symlink', 'hardlink', 'mode', 'replace-during-read', 'prefix-replace-during-read'):
+            carrier = self.put(self.home / kind / '.distribution.json', raw, 0o400)
+            if kind == 'bytes':
+                carrier.chmod(0o600)
+                carrier.write_bytes(raw.replace(b'alpha', b'bravo'))
+                carrier.chmod(0o400)
+            elif kind == 'length':
+                carrier.chmod(0o600)
+                carrier.write_bytes(raw + b'\n')
+                carrier.chmod(0o400)
+            elif kind == 'noncanonical':
+                carrier.chmod(0o600)
+                carrier.write_bytes(b' ' + raw[0:-1])
+                carrier.chmod(0o400)
+            elif kind == 'symlink':
+                carrier.rename(carrier.with_name('target'))
+                carrier.symlink_to(carrier.with_name('target'))
+            elif kind == 'hardlink':
+                os.link(carrier, carrier.with_name('linked'))
+            elif kind == 'mode':
+                carrier.chmod(0o600)
+            retained = b.Retained()
+            original_read = os.read
+            def replace_after_read(fd, count):
+                data = original_read(fd, count)
+                if kind == 'prefix-replace-during-read':
+                    old = carrier.parent.with_name('old-prefix')
+                    carrier.parent.rename(old)
+                    carrier.parent.mkdir(mode=0o700)
+                    os.rename(old / carrier.name, carrier)
+                else:
+                    replacement = self.put(carrier.with_name('replacement'), raw, 0o400)
+                    os.replace(replacement, carrier)
+                return data
+            try:
+                with self.subTest(kind=kind), self.assertRaises(b.BootstrapError):
+                    with mock.patch.object(b.os, 'read', replace_after_read if kind.endswith('replace-during-read') else original_read):
+                        admitted_ref = dict(ref, manifest_sha256=b.digest(carrier.read_bytes())) if kind == 'noncanonical' else ref
+                        retained.artifact(carrier, admitted_ref, 'alpha')
+            finally:
+                retained.close()
+        for change in ({'manifest_bytes': len(raw) + 1}, {'manifest_sha256': '0' * 64},
+                       {'binary_sha256': '0' * 64}, {'binary_bytes': ref['binary_bytes'] + 1}):
+            with self.assertRaises(b.BootstrapError):
+                b.artifact_native(self.artifact(), dict(ref, **change), 'alpha')
+
+    def test_carrier_metadata_drift_after_path_admission_is_rejected(self):
+        _, _, pin = self.source()
+        carrier = self.put(self.home / 'metadata-drift' / '.distribution.json',
+                           b.canonical(self.artifact()) + b'\n', 0o400)
+        original_ancestry = b.ancestry
+        for target, unsafe, restored in ((carrier, 0o600, 0o400),
+                                         (carrier.parent, 0o770, 0o700)):
+            changed = False
+            def change_after_admission(path, *args, **kwargs):
+                nonlocal changed
+                admitted = original_ancestry(path, *args, **kwargs)
+                if Path(path) == carrier and not changed:
+                    target.chmod(unsafe)
+                    changed = True
+                return admitted
+            retained = b.Retained()
+            try:
+                with self.subTest(target=target.name), mock.patch.object(
+                        b, 'ancestry', side_effect=change_after_admission):
+                    with self.assertRaises(b.BootstrapError):
+                        retained.artifact(carrier, pin['native_artifact'], 'alpha')
+            finally:
+                retained.close()
+                target.chmod(restored)
+
+    def test_artifact_reference_closed_schema_and_integer_bounds(self):
+        _, _, pin = self.source()
+        mutations = [lambda p: p.update(schema='launcher-canonical-bootstrap/v2'),
+            lambda p: p.update(native_by_profile={}),
+            lambda p: p['native_artifact'].update(extra=True),
+            lambda p: p['native_artifact'].pop('binary_bytes'),
+            lambda p: p['native_artifact'].update(binary_bytes=True),
+            lambda p: p['native_artifact'].update(manifest_bytes=b.LIMIT + 1),
+            lambda p: p['native_artifact'].update(manifest_sha256='invalid')]
+        for mutate in mutations:
+            candidate = copy.deepcopy(pin)
+            mutate(candidate)
+            with self.assertRaises(b.BootstrapError):
+                b.validate_pin(candidate)
 
     def test_json_duplicates_constants_and_size_are_rejected(self):
         for raw in (b'{"a":1,"a":2}', b'{"nested":{"a":1,"a":2}}', b'{"x":NaN}', b'{"x":Infinity}'):
@@ -506,6 +653,14 @@ channel = socket.socket(fileno=int(os.environ['HARNESS_CANONICAL_BOOTSTRAP_FD'])
 stream = channel.makefile('rb')
 frame = json.loads(stream.readline())
 mode = sys.argv[1]
+assert 'native_artifact' in frame['record']
+if mode == 'artifact-record':
+    artifact = frame['record']['native_artifact']
+    assert artifact['profile'] == frame['record']['request']['profile']
+    assert artifact['binary']['platform'] == 'darwin-arm64'
+    assert len(artifact['release']) == 7
+else:
+    assert frame['record']['native_artifact'] is None
 control = frame['record']['control']['path']
 session = str(uuid.uuid4())
 header = {'type':'session','version':3,'id':session,'cwd':control+'/cwd','timestamp':'2026-01-01T00:00:00Z'}
@@ -593,12 +748,17 @@ class ControllerProtocol(Disposable):
             return {'pid': pid, 'ppid': os.getpid(), 'pgid': pid, 'uid': os.getuid(),
                     'generation': [2, 1], 'argv': launched['argv'], 'executable': str(binary)}
 
+        def selected_context(_home, _directory, _projection, _request, _pin, retained):
+            if mode == 'artifact-record':
+                retained.native_artifact = dict(self.artifact(), profile=request['profile'])
+            return root, context
+
         continuation = b.module('_bootstrap_test_continuation', ROOT / 'bin/harness_omp_continuation.py')
         output = io.StringIO()
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(b, 'module', return_value=continuation))
             for target, value in (('admit_source', lambda *_: (pin, source)),
-                                  ('profile_context', lambda *_: (root, context)),
+                                  ('profile_context', selected_context),
                                   ('kernel_module', lambda *_: kernel), ('process_record', process_record)):
                 stack.enter_context(mock.patch.object(b, target, value))
             stack.enter_context(mock.patch.object(b.os, 'isatty', return_value=True))
@@ -611,6 +771,12 @@ class ControllerProtocol(Disposable):
         self.assertEqual(json.loads((operation / 'receipt.json').read_bytes()), receipt)
         self.assertIsNotNone(launched['child'].poll())
         return status, receipt
+
+    def test_full_canonical_artifact_reaches_native_record(self):
+        status, receipt = self.invoke('artifact-record')
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt['status'], 'not_applied')
+        self.assertTrue(receipt['cleanup_verified'])
 
     def test_deny_is_no_apply_without_fabricated_after_and_child_is_drained(self):
         status, receipt = self.invoke('deny')
