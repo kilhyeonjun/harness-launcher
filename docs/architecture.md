@@ -158,6 +158,29 @@ credentials, original tool identity, backend no-replay/typed unknown, per-write
 genuine human once even in bypass and installed acceptance gates are proven.
 No configuration approval is a native call's once grant.
 
+### Canonical result receipts
+
+The native adapter admits the engine's exact eleven-field result and constructs
+an explicit nine-field public projection: `status`, `profile`, `root`, `before`,
+`target`, `after`, `changed`, `verified` and redacted `detail`. Private `occupancy`
+and `blockers` diagnostics are not public output. Unknown fields, invalid scalar
+values and mismatched request bindings remain errors; the carrier removes
+`detail` from its durable public result.
+
+Both consumers recognize `updated`, `already_current`, `applied_unverified`,
+`not_applied` and `uncertain`. An engine `already_current` result that observes
+the target but has not verified it is projected as `applied_unverified`, retaining
+its actual `after` and `changed` values, including `changed: false`. That status
+does not assert that this operation changed the checkout. Unverified, uncertain
+and not-applied results never exit successfully. Successful acceptance requires
+`updated` or `already_current`, actual verification of the requested target,
+completed cleanup and the operation's genuine once decision.
+
+A new current-state check is separate evidence. It cannot recover a lost engine
+result, rewrite a prior unknown receipt or authorize replay with consumed consent.
+A corrected immutable launcher release does not change the pinned private engine,
+native artifact or independent selection and MCP gates.
+
 ## OMP entry and prepared namespace
 
 Before sourcing aliases or allocating a workspace, an exact OMP discriminator

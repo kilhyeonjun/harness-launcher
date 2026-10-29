@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import bootstrap, { accountHome, runOperation, canonical, validateScope, validatePin, validateNative, admitTree, openChannel, identity } from '../bin/omp_canonical_bootstrap.mjs';
+import bootstrap, { accountHome, runOperation, safeResult, canonical, validateScope, validatePin, validateNative, admitTree, openChannel, identity } from '../bin/omp_canonical_bootstrap.mjs';
 
 test('native account authority ignores fresh HOME and HOME-sensitive userInfo', { skip: process.platform !== 'darwin' }, () => {
   const carrier = new URL('../bin/omp_canonical_bootstrap.mjs', import.meta.url).href;
@@ -71,7 +71,9 @@ test('account proof accepts canonical UTF8 but rejects escaped, linked or writab
 const request = Object.freeze({ profile: 'sample', expected_base: 'a'.repeat(40), revision: 'b'.repeat(40) });
 const authority = { release: 'c'.repeat(40), revision: 'd'.repeat(40), digest: 'e'.repeat(64) };
 const scope = () => ({ profile: request.profile, root: '/canonical/sample', origin: 'git@example.invalid:sample/repository', expectedBase: request.expected_base, revision: request.revision, expiresAt: 20000, commitCount: 2, pathCount: 3 });
-const engineResult = () => ({ status: 'updated', profile: request.profile, root: '/canonical/sample', before: request.expected_base, target: request.revision, after: request.revision, changed: true, verified: true, detail: 'sealed_verifier_passed' });
+// Synthetic private-engine contract; fixture approval is not production consent.
+const engineResult = () => ({ status: 'updated', profile: request.profile, root: '/canonical/sample', before: request.expected_base, target: request.revision, after: request.revision, changed: true, verified: true, detail: 'sealed_verifier_passed', occupancy: null, blockers: [] });
+const publicResult = (change = {}) => ({ status: 'updated', profile: request.profile, root: '/canonical/sample', before: request.expected_base, target: request.revision, after: request.revision, changed: true, verified: true, detail: 'sealed_verifier_passed', ...change });
 function deferred() { let resolve; let reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
 function fixture(overrides = {}) {
   const controller = new AbortController();
@@ -97,11 +99,80 @@ test('once applies exactly once, disposes, acknowledges result, then shuts down'
   await f.run();
   assert.equal(f.events.filter(e => e === 'apply').length, 1);
   assert.deepEqual(f.events.slice(-4), ['apply', 'dispose', 'result', 'shutdown']);
-  assert.deepEqual(f.receipts[0], { decision: 'once', phase: 'disposed', cleanup_verified: true, error_code: null, result: engineResult() });
+  assert.deepEqual(f.receipts[0], { decision: 'once', phase: 'disposed', cleanup_verified: true, error_code: null, result: publicResult() });
   for (const rendering of [prompt.full, prompt.compact]) {
     for (const field of [request.profile, '/canonical/sample', 'git@example.invalid:sample/repository', request.expected_base, request.revision, authority.release, authority.revision, authority.digest, 'Commits: 2; paths: 3', new Date(20000).toISOString()]) assert.ok(rendering.includes(field));
   }
   assert.equal(Object.hasOwn(prompt, 'session'), false);
+});
+test('exported result adapter projects eleven fields without mutating the engine return', () => {
+  const actual = Object.freeze({ ...engineResult(), occupancy: Object.freeze({ diagnostic: 'private occupancy' }), blockers: Object.freeze(['private blocker']) });
+  assert.deepEqual(safeResult(actual), publicResult());
+  assert.equal(Object.keys(actual).length, 11);
+  assert.equal(actual.occupancy.diagnostic, 'private occupancy');
+  for (const occupancy of [null, [], 42, 'private occupancy', undefined]) {
+    assert.deepEqual(safeResult({ ...engineResult(), occupancy, blockers: [42, null, { private: 'diagnostic' }] }), publicResult());
+  }
+  const opaque = {};
+  Object.defineProperty(opaque, 'diagnostic', { enumerable: true, get() { throw new Error('must not inspect private diagnostics'); } });
+  assert.deepEqual(safeResult({ ...engineResult(), occupancy: opaque, blockers: [opaque] }), publicResult());
+  const noEffect = { ...engineResult(), status: 'not_applied', after: request.expected_base, changed: false, verified: false, detail: 'not_applied' };
+  assert.deepEqual(safeResult(noEffect), publicResult({ status: 'not_applied', after: request.expected_base, changed: false, verified: false, detail: 'not_applied' }));
+});
+test('all five engine statuses reach a closed public receipt without private diagnostics', async () => {
+  const cases = [
+    { status: 'updated' },
+    { status: 'already_current', changed: false },
+    { status: 'applied_unverified', verified: false },
+    { status: 'not_applied', after: request.expected_base, changed: false, verified: false },
+    { status: 'uncertain', after: null, changed: null, verified: false },
+    { status: 'uncertain', after: 'c'.repeat(40), changed: null, verified: false },
+  ];
+  for (const change of cases) {
+    const f = fixture();
+    const actual = { ...engineResult(), ...change, detail: 'private-detail-token', occupancy: { diagnostic: 'private-occupancy-token' }, blockers: ['private-blocker-token'] };
+    f.plan.apply = async () => { f.events.push('apply'); return actual; };
+    await f.run();
+    assert.deepEqual(f.receipts[0], { decision: 'once', phase: 'disposed', cleanup_verified: true, error_code: null,
+      result: publicResult({ ...change, detail: 'engine_result_redacted' }) });
+    assert.equal(f.events.filter(e => e === 'apply').length, 1);
+    assert.equal(JSON.stringify(f.receipts).includes('private-'), false);
+    assert.equal(Object.keys(f.receipts[0].result).length, 9);
+  }
+});
+test('dirty already-current readback is unverified without inventing a HEAD change', async () => {
+  for (const changed of [false, null]) {
+    const f = fixture();
+    f.plan.apply = async () => ({ ...engineResult(), status: 'already_current', changed, verified: false, detail: 'private dirty worktree' });
+    await f.run();
+    assert.deepEqual(f.receipts[0].result, publicResult({ status: 'applied_unverified', changed, verified: false, detail: 'engine_result_redacted' }));
+    assert.equal(f.receipts[0].result.after, request.revision);
+    assert.equal(f.receipts[0].error_code, null);
+  }
+});
+test('malformed, contradictory and out-of-scope engine returns are rejected after one apply and cleanup', async () => {
+  const malformed = [
+    null, [], publicResult(),
+    ...[
+      { status: 'unknown' }, { extra: 'private-extra-token' }, { private_diagnostic: 'private-extra-token' },
+      { profile: null }, { root: 'relative' }, { before: 1 }, { target: 'bad' }, { after: 1 },
+      { after: 'bad' }, { changed: 'false' }, { verified: 1 }, { detail: {} },
+      { blockers: {} }, { blockers: null },
+      { status: 'updated', verified: false }, { status: 'updated', after: null },
+      { status: 'already_current', verified: true, after: request.expected_base },
+      { status: 'already_current', verified: false, after: null },
+      { profile: 'other' }, { root: '/canonical/other' }, { before: 'c'.repeat(40) }, { target: 'c'.repeat(40), after: 'c'.repeat(40) },
+    ].map(change => ({ ...engineResult(), ...change })),
+  ];
+  for (const actual of malformed) {
+    const f = fixture();
+    f.plan.apply = async () => { f.events.push('apply'); return actual; };
+    await f.run();
+    assert.deepEqual(f.receipts[0], { decision: 'once', phase: 'disposed', cleanup_verified: true, error_code: 'engine_result_invalid', result: null });
+    assert.deepEqual(f.events.slice(-4), ['apply', 'dispose', 'result', 'shutdown']);
+    assert.equal(f.events.filter(e => e === 'apply').length, 1);
+    assert.equal(JSON.stringify(f.receipts).includes('private-'), false);
+  }
 });
 for (const answer of ['deny', 'session', undefined, true, { decision: 'once' }]) {
   test(`only native literal once can apply (${JSON.stringify(answer)})`, async () => {
@@ -205,7 +276,7 @@ test('cancellation during apply never races disposal or fabricates unchanged', a
   const uncertain = { ...engineResult(), status: 'uncertain', after: null, changed: null, verified: false, detail: 'command_failed:private stderr' };
   drain.resolve(uncertain);
   await running;
-  assert.deepEqual(f.receipts[0].result, { ...uncertain, detail: 'engine_result_redacted' });
+  assert.deepEqual(f.receipts[0].result, publicResult({ status: 'uncertain', after: null, changed: null, verified: false, detail: 'engine_result_redacted' }));
   assert.equal(f.receipts[0].result.after, null);
 });
 test('aborted apply rejection preserves once and unknown effect rather than claiming cancellation before effect', async () => {
@@ -225,7 +296,7 @@ test('cleanup failure is reported after effect without losing actual result', as
   assert.equal(f.receipts[0].cleanup_verified, false);
   assert.equal(f.receipts[0].phase, 'apply');
   assert.equal(f.receipts[0].error_code, 'cleanup_failed');
-  assert.deepEqual(f.receipts[0].result, engineResult());
+  assert.deepEqual(f.receipts[0].result, publicResult());
 });
 test('engine-reported cleanup failure is not erased by idempotent dispose', async () => {
   const f = fixture();

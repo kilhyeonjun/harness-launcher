@@ -2,6 +2,21 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.82.1 — 2026-10-29
+
+- Validate the complete closed engine result before projecting only the public
+  receipt fields. A completed engine return no longer fails admission merely
+  because it includes private occupancy and blocker diagnostics; those
+  diagnostics and raw detail remain private.
+- Preserve `applied_unverified` as a non-success result. An unverified
+  already-current checkout is reported conservatively without claiming a new
+  application or changing its observed HEAD and change flag. Successful exit
+  still requires actual target verification, completed cleanup and genuine once
+  consent; uncertainty, cancellation and immutable scope checks remain intact.
+- Keep the pinned engine source, native artifact and existing operation receipts
+  unchanged. Installing this correction does not replay an operation, reuse
+  consent, select a native distribution or activate MCP.
+
 ## 0.82.0 — 2026-10-29
 
 - Admit the exact reviewed local native fork through the selected Publisher

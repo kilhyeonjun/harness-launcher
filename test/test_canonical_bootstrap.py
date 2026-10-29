@@ -645,6 +645,77 @@ class NonholderObserverAdmission(Disposable):
                 self.assertEqual(reply, {'ok': False, 'error_code': code})
 
 
+class PublicResultAdmission(unittest.TestCase):
+    def setUp(self):
+        self.request = {'profile': 'sample-profile', 'expected_base': '1' * 40, 'revision': '2' * 40}
+        self.result = {'status': 'updated', 'profile': 'sample-profile', 'root': '/workspace',
+                       'before': '1' * 40, 'target': '2' * 40, 'after': '2' * 40,
+                       'changed': True, 'verified': True, 'detail': 'private diagnostic'}
+
+    def receipt(self):
+        return {'schema': 'launcher-canonical-bootstrap-receipt/v1', 'request': self.request,
+                'decision': 'once', 'cleanup_verified': True, 'status': 'updated',
+                'result': b.validate_public_result(self.result, self.request, Path('/workspace'), 'once')}
+
+    def test_result_redaction_and_no_input_mutation(self):
+        original = copy.deepcopy(self.result)
+        admitted = b.validate_public_result(self.result, self.request, Path('/workspace'), 'once')
+        self.assertEqual(admitted, {key: value for key, value in original.items() if key != 'detail'})
+        self.assertEqual(self.result, original)
+        self.assertEqual(b.receipt_exit_code(self.receipt()), 0)
+        self.assertIsNone(b.validate_public_result(None, self.request, Path('/workspace'), 'deny'))
+
+    def test_unverified_result_preserves_changed_and_after_without_success(self):
+        for changed in (True, False, None):
+            for after in (None, self.request['revision']):
+                with self.subTest(changed=changed, after=after):
+                    result = dict(self.result, status='applied_unverified', changed=changed,
+                                  after=after, verified=False)
+                    admitted = b.validate_public_result(result, self.request, '/workspace', 'once')
+                    self.assertIs(admitted['changed'], changed)
+                    self.assertEqual(admitted['after'], after)
+                    receipt = self.receipt()
+                    receipt.update(status='applied_unverified', result=admitted)
+                    self.assertEqual(b.receipt_exit_code(receipt), 1)
+
+    def test_closed_typed_wire(self):
+        mutations = [lambda r: r.pop('detail'), lambda r: r.update(extra=True),
+                     lambda r: r.update(occupancy={}, blockers=[]), lambda r: r.update(status='success')]
+        for field in ('status', 'profile', 'root', 'before', 'target', 'after', 'detail'):
+            mutations.append(lambda r, field=field: r.update({field: 1}))
+        mutations.extend([lambda r: r.update(changed=1), lambda r: r.update(verified=1),
+                          lambda r: r.update(after='main'), lambda r: r.update(detail=None)])
+        for mutate in mutations:
+            result = copy.deepcopy(self.result)
+            mutate(result)
+            with self.subTest(result=result), self.assertRaises(b.BootstrapError):
+                b.validate_public_result(result, self.request, '/workspace', 'once')
+        for result in ([], True, 'updated'):
+            with self.subTest(result=result), self.assertRaises(b.BootstrapError):
+                b.validate_public_result(result, self.request, '/workspace', 'once')
+
+    def test_malformed_receipts_cannot_succeed(self):
+        mutations = [lambda r: r.pop('request'), lambda r: r.pop('result'),
+                     lambda r: r.update(schema='other'), lambda r: r.update(decision='deny'),
+                     lambda r: r.update(decision=None), lambda r: r.update(cleanup_verified=1),
+                     lambda r: r.update(cleanup_verified=False), lambda r: r.update(status='unknown'),
+                     lambda r: r.update(result=None), lambda r: r['result'].update(verified=False),
+                     lambda r: r['result'].update(after='3' * 40), lambda r: r['result'].update(extra=True),
+                     lambda r: r['result'].update(status='already_current'),
+                     lambda r: r['request'].update(profile='other-profile'),
+                     lambda r: r['request'].update(expected_base='3' * 40),
+                     lambda r: r['request'].update(revision='3' * 40),
+                     lambda r: r['request'].update(revision=2),
+                     lambda r: r['result'].update(root=None)]
+        for mutate in mutations:
+            receipt = copy.deepcopy(self.receipt())
+            mutate(receipt)
+            with self.subTest(receipt=receipt):
+                self.assertEqual(b.receipt_exit_code(receipt), 1)
+        for receipt in (None, [], True):
+            self.assertEqual(b.receipt_exit_code(receipt), 1)
+
+
 # This child is deliberately synthetic authority, never a genuine approval UI.
 # It drives the real controller's framing, sequencing, receipt, and retention.
 NATIVE_FIXTURE = r'''
@@ -694,11 +765,32 @@ if mode == 'forged-result':
     message['result'] = {'profile':frame['record']['request']['profile'],'root':'/forged',
                          'before':frame['record']['request']['expected_base'],
                          'target':frame['record']['request']['revision'],'status':'updated'}
-if mode == 'unverified-result':
+if mode.startswith('result-') or mode == 'unverified-result':
     request = frame['record']['request']
-    message.update(decision='once', result={'profile':request['profile'], 'root':frame['record']['registered_root'],
+    result = {'profile':request['profile'], 'root':frame['record']['registered_root'],
         'before':request['expected_base'], 'target':request['revision'], 'after':request['revision'],
-        'status':'updated', 'changed':True, 'verified':False, 'detail':'engine_result_redacted'})
+        'status':'updated', 'changed':True, 'verified':True, 'detail':'private diagnostic must not persist'}
+    message.update(decision='once', result=result)
+    if mode in ('result-already_current', 'result-applied_unverified', 'result-not_applied', 'result-uncertain'):
+        result['status'] = mode.removeprefix('result-')
+        result['changed'] = False if mode == 'result-already_current' else None
+        result['verified'] = mode == 'result-already_current'
+        if mode in ('result-not_applied', 'result-uncertain'): result['after'] = None
+    if mode in ('unverified-result', 'result-unverified-current'):
+        result['verified'] = False
+        if mode == 'result-unverified-current': result['status'] = 'already_current'
+    if mode == 'result-wrong-profile': result['profile'] = 'other-profile'
+    if mode == 'result-wrong-root': result['root'] = '/other-workspace'
+    if mode == 'result-wrong-base': result['before'] = '3' * 40
+    if mode == 'result-wrong-target': result['target'] = '3' * 40
+    if mode == 'result-wrong-after': result['after'] = '3' * 40
+    if mode == 'result-no-once': message['decision'] = 'deny'
+    if mode == 'result-cleanup-failed': message['cleanup_verified'] = False
+    if mode == 'result-extra': result['occupancy'] = {}
+    if mode == 'result-missing': del result['detail']
+    if mode == 'result-malformed': result['changed'] = 1
+    if mode == 'result-unknown-status': result['status'] = 'success'
+    if mode == 'result-null': message['result'] = None
 if mode == 'cleanup-unconfirmed': message['cleanup_verified'] = False
 send(message)
 if mode == 'wait-for-revocation':
@@ -772,6 +864,44 @@ class ControllerProtocol(Disposable):
         self.assertIsNotNone(launched['child'].poll())
         return status, receipt
 
+    def test_bound_public_results_reach_durable_receipt(self):
+        # Transport authority is synthetic; these are not genuine UI approvals.
+        for name in ('updated', 'already_current', 'applied_unverified', 'not_applied', 'uncertain'):
+            with self.subTest(status=name):
+                case = self.home / name
+                case.mkdir(mode=0o700)
+                with mock.patch.object(self, 'home', case):
+                    status, receipt = self.invoke('result-' + name)
+                self.assertEqual(receipt['status'], name)
+                self.assertEqual(receipt['result']['status'], name)
+                self.assertEqual(set(receipt['result']), {'status', 'profile', 'root', 'before', 'target',
+                                                         'after', 'changed', 'verified'})
+                self.assertNotIn('private diagnostic', json.dumps(receipt))
+                self.assertEqual(status, 0 if name in ('updated', 'already_current') else 1)
+                self.assertEqual(status, b.receipt_exit_code(receipt))
+                if name == 'applied_unverified':
+                    self.assertEqual(receipt['result']['after'], receipt['request']['revision'])
+                    self.assertIsNone(receipt['result']['changed'])
+                    self.assertIs(receipt['result']['verified'], False)
+                if name == 'already_current':
+                    self.assertIs(receipt['result']['changed'], False)
+
+    def test_verified_result_without_cleanup_cannot_succeed(self):
+        status, receipt = self.invoke('result-cleanup-failed')
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt['status'], 'uncertain')
+        self.assertEqual(receipt['result']['status'], 'updated')
+        self.assertIs(receipt['result']['verified'], True)
+        self.assertIs(receipt['cleanup_verified'], False)
+        self.assertEqual(b.receipt_exit_code(receipt), 1)
+
+    def test_once_without_result_remains_unknown(self):
+        status, receipt = self.invoke('result-null')
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt['decision'], 'once')
+        self.assertEqual(receipt['status'], 'unknown')
+        self.assertIsNone(receipt['result'])
+
     def test_full_canonical_artifact_reaches_native_record(self):
         status, receipt = self.invoke('artifact-record')
         self.assertEqual(status, 1)
@@ -823,13 +953,24 @@ class ControllerProtocol(Disposable):
                 self.assertIn(receipt['error_code'], ('BOOTSTRAP_AUTHORITY_CHANGED', 'BOOTSTRAP_NATIVE_SESSION'))
 
     def test_replay_unknown_method_and_forged_result_are_rejected(self):
-        for mode in ('replay', 'boolean-seq', 'float-seq', 'unknown-method', 'forged-result', 'unverified-result'):
+        for mode in ('replay', 'boolean-seq', 'float-seq', 'unknown-method', 'forged-result', 'unverified-result',
+                     'result-unverified-current', 'result-wrong-profile', 'result-wrong-root', 'result-wrong-base',
+                     'result-wrong-target', 'result-wrong-after', 'result-no-once', 'result-extra',
+                     'result-missing', 'result-malformed', 'result-unknown-status'):
             with self.subTest(mode=mode):
                 case = self.home / mode
                 case.mkdir(mode=0o700)
                 with mock.patch.object(self, 'home', case):
-                    with self.assertRaises(b.BootstrapError):
+                    with self.assertRaises(b.BootstrapEffectUnknown):
                         self.invoke(mode)
+                receipts = list((case / b.STATE / 'canonical-bootstrap/operations').glob('*/receipt.json'))
+                self.assertEqual(len(receipts), 1)
+                receipt = json.loads(receipts[0].read_bytes())
+                self.assertEqual(receipt['status'], 'unknown')
+                self.assertIsNone(receipt['result'])
+                self.assertIs(receipt['cleanup_verified'], False)
+                self.assertEqual(b.receipt_exit_code(receipt), 1)
+                self.assertNotIn('private diagnostic', json.dumps(receipt))
 
 
 if __name__ == '__main__':
