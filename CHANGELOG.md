@@ -2,6 +2,23 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.82.0 — 2026-10-29
+
+- Admit the exact reviewed KH local native fork through the selected Publisher
+  context and a canonical source-owned artifact record, preserving full version,
+  binary and build provenance. Numeric stock preparation remains independent of
+  the new compiler API and fork record; no suffix or mutable registration alone
+  authorizes a fork.
+- Canonical bootstrap v2 uses closed per-profile native tuples: unchanged stock
+  for every profile, plus one exact KH fork. Preserve native main-TUI once,
+  cancellation, receipts and canonical CAS checks. Registration, publication and
+  capability support do not activate MCP or enroll credentials.
+- Bind the compiler closure to delivered KH source
+  `eb64659879f805399172237ea6cb9d189b6ee1c7` and the registered
+  `18.11.3-kh-mcp.2` build. Its reviewed HTTP transport rejects missing or
+  mismatched JSON-RPC IDs before success/error handling; source and build
+  verification do not establish installed MCP acceptance.
+
 ## 0.81.1 — 2026-10-28
 
 - Rebind the canonical-update bootstrap to the delivered source closure with

@@ -365,7 +365,9 @@ and executes the owner-managed current launcher's actual immutable snapshot.
 The selected operational release can remain older than the installed package.
 Profile, host, projection and native ownership checks run in that closure;
 metadata help does not establish model, required-policy, approval or restore
-acceptance.
+acceptance. Reviewed KH local forks use the separate
+[exact native fork admission contract](docs/architecture.md#reviewed-kh-native-fork-admission),
+not a version suffix, global executable replacement or an upstream-release wait.
 
 By default, the explicit `ex omp` route starts a fresh Oh My Pi session using a separately
 prepared native home and a SHA-256-pinned executable. Configure

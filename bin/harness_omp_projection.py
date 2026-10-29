@@ -749,7 +749,13 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
         resolver = importlib.util.module_from_spec(spec); spec.loader.exec_module(resolver)
         profile = resolver.resolve(source, registry_dir())
         require(profile.harness_root == source, BINDING)
-        # Schema 1: the enrolled upstream release version, no fork contract.
+        # Numeric stock has no fork-record/API dependency, including older canonical compilers.
+        distribution = None
+        release = current['binary_release']
+        if set(release) != {'version', 'source_revision'} or not re.fullmatch(r'\d+\.\d+\.\d+', release['version']):
+            require(profile.profile == 'kh' and callable(getattr(compiler, 'omp_native_distribution', None)), BINDING)
+            distribution = compiler.omp_native_distribution(source, profile.profile, dict(current, profile=profile.profile))
+            require(distribution is not None, BINDING)
         selection = dict(schema=1, profile=profile.profile, runtime='omp',
             runtime_version=current['binary_release']['version'],
             source_or_release_binding=digest(canonical({'source':str(source),'identity':directory(source),
@@ -763,6 +769,8 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
             bridge_rewrites=[f'{e["event"]}:{e.get("matcher","*")}:{e["script"]}'
                 for e in data.get('hooks',{}).get('entries',[]) if e.get('omp_rewrite_script')],
             workspace=str(workspace), hook_dependencies=required_dependencies())
+        if distribution is not None:
+            selection['native_distribution'] = distribution
         if 'omp_model_modes' in data:
             artifact, _, _ = model_mode_request(source, [] if model_mode is None else ['--model-mode', model_mode])
             require(recipe_sha256 is None or artifact['recipe_sha256'] == recipe_sha256, BINDING)

@@ -24,7 +24,7 @@ import time
 import uuid
 
 SCHEMA = 'launcher-canonical-bootstrap-control/v1'
-PIN_SCHEMA = 'launcher-canonical-bootstrap/v1'
+PIN_SCHEMA = 'launcher-canonical-bootstrap/v2'
 SOURCE_SCHEMA = 'canonical-bootstrap-source/v1'
 STATE = '.local/state/kilhyeonjun-harness/launcher-runtimes'
 SYSTEM_PYTHON = '/usr/bin/python3'
@@ -202,8 +202,37 @@ def observer_directory(home):
     return directory
 
 
+STOCK_NATIVE = {'release': {'version': '18.11.3', 'source_revision': '96894a6147d8cc64b7e00ad3a7d7178fd93b9531'},
+    'sha256': 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b', 'bytes': 194982944}
+FORK_RELEASE = {'version': '18.11.3-kh-mcp.2', 'source_revision': '273a19ab5c2fddac54c28ffd05184bf2a4447c64',
+    'contract_id': 'kh-mcp-runtime-admission/v1', 'upstream_base_version': '18.11.3',
+    'upstream_base_revision': '96894a6147d8cc64b7e00ad3a7d7178fd93b9531',
+    'source_patch_sha256': 'ae318b194c48aafc23d0d1856adafc8fc625f7e2a76c3e2074b5827018ff3bde'}
+
+
+def validate_native_profiles(value):
+    require(type(value) is dict and set(value) == {'kh', 'gp', 'gd'}, 'BOOTSTRAP_NATIVE_RELEASE')
+    for profile, entries in value.items():
+        require(type(entries) is list and len(entries) == (2 if profile == 'kh' else 1), 'BOOTSTRAP_NATIVE_RELEASE')
+        require(len({canonical(entry) for entry in entries}) == len(entries), 'BOOTSTRAP_NATIVE_RELEASE')
+        require(sum(entry == STOCK_NATIVE for entry in entries) == 1, 'BOOTSTRAP_NATIVE_RELEASE')
+        for entry in entries:
+            require(type(entry) is dict and set(entry) == {'release', 'sha256', 'bytes'}
+                    and type(entry['sha256']) is str and HEX64.fullmatch(entry['sha256'])
+                    and type(entry['bytes']) is int and entry['bytes'] > 0, 'BOOTSTRAP_NATIVE_RELEASE')
+            if entry == STOCK_NATIVE:
+                continue
+            release = entry['release']
+            require(profile == 'kh' and type(release) is dict
+                    and set(release) == {*FORK_RELEASE, 'build_provenance_sha256'}
+                    and all(release[key] == expected for key, expected in FORK_RELEASE.items())
+                    and type(release['build_provenance_sha256']) is str
+                    and HEX64.fullmatch(release['build_provenance_sha256']), 'BOOTSTRAP_NATIVE_RELEASE')
+    return value
+
+
 def validate_pin(value):
-    require(type(value) is dict and set(value) == {'schema', 'revision', 'manifest_sha256', 'files', 'native'}
+    require(type(value) is dict and set(value) == {'schema', 'revision', 'manifest_sha256', 'files', 'native_by_profile'}
             and value['schema'] == PIN_SCHEMA, 'BOOTSTRAP_SOURCE_PIN')
     require(type(value['revision']) is str and HEX40.fullmatch(value['revision'])
             and type(value['manifest_sha256']) is str and HEX64.fullmatch(value['manifest_sha256']),
@@ -217,12 +246,7 @@ def validate_pin(value):
                 and row['git_mode'] == '100644' and type(row['bytes']) is int
                 and 0 <= row['bytes'] <= 1048576 and type(row['sha256']) is str
                 and HEX64.fullmatch(row['sha256']), 'BOOTSTRAP_SOURCE_INVENTORY')
-    native = value['native']
-    require(type(native) is dict and set(native) == {'version', 'source_revision', 'sha256', 'bytes'}
-            and native['version'] == '18.11.3'
-            and native['source_revision'] == '96894a6147d8cc64b7e00ad3a7d7178fd93b9531'
-            and native['sha256'] == 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b'
-            and native['bytes'] == 194982944, 'BOOTSTRAP_NATIVE_RELEASE')
+    validate_native_profiles(value['native_by_profile'])
     return value
 
 
@@ -316,17 +340,21 @@ class Retained:
 
 
 def profile_context(home, directory, projection, request, pin):
+    require(request['profile'] in pin['native_by_profile'], 'BOOTSTRAP_NATIVE_BINDING')
     registry = home / '.config/harness-launcher/profiles'
     raw, _ = read_file(registry / request['profile'], 0o600, 4096)
     root = ancestry(raw.decode('utf-8').strip(), directory=True)
     context = projection.select(request['profile'], str(root), str(directory / 'aliases.zsh'), continuation=True)
     require(context is not None, 'BOOTSTRAP_PROFILE_NOT_ENROLLED')
-    native = pin['native']
-    binary = home / '.local/state/kilhyeonjun-harness/omp-bin' / (native['version'] + '-' + native['sha256'][:8]) / 'bin/omp'
-    require(context['binary_path'] == str(binary) and context['binary_sha256'] == native['sha256']
-            and context['binary_size'] == native['bytes']
-            and context['binary_release'] == {key: native[key] for key in ('version', 'source_revision')},
-            'BOOTSTRAP_NATIVE_BINDING')
+    validate_native_profiles(pin['native_by_profile'])
+    matches = [entry for entry in pin['native_by_profile'][request['profile']]
+               if context['binary_release'] == entry['release']
+               and context['binary_sha256'] == entry['sha256']
+               and type(context['binary_size']) is int and context['binary_size'] == entry['bytes']]
+    require(len(matches) == 1, 'BOOTSTRAP_NATIVE_BINDING')
+    native = matches[0]
+    binary = home / '.local/state/kilhyeonjun-harness/omp-bin' / (native['release']['version'] + '-' + native['sha256'][:8]) / 'bin/omp'
+    require(context['binary_path'] == str(binary), 'BOOTSTRAP_NATIVE_BINDING')
     return root, context
 
 

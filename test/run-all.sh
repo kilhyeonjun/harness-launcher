@@ -106,6 +106,7 @@ add_test test_session_maintenance.py resolved 1
 add_test test_integration_queue.py resolved 1
 add_test test_omp_print_receipt.py resolved 1
 add_test test_omp_native_resume.py resolved 1
+add_test test_omp_fork_preparation.py isolated 1
 add_test test_omp_fixture_source.py isolated 1
 add_test test_canonical_bootstrap.py isolated 1
 add_test test_omp_canonical_bootstrap.mjs node 1

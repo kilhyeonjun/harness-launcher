@@ -254,9 +254,31 @@ test('closed scope rejects mismatches and malformed counts before approval', asy
 });
 test('public pin rejects alternate source closure or native artifact', () => {
   const rows = ['core/omp/model_modes.py', 'core/scripts/canonical_occupancy.py', 'core/scripts/cross_harness_surface_diff.py', 'core/scripts/harness_compile.py', 'core/scripts/launcher_runtime_snapshot.py', 'core/scripts/omp_canonical_update.ts', 'core/scripts/omp_canonical_update_lock.py'].map(p => ({ path: p, git_mode: '100644', bytes: 1, sha256: 'a'.repeat(64) }));
-  const pin = { schema: 'launcher-canonical-bootstrap/v1', revision: 'b'.repeat(40), manifest_sha256: createHash('sha256').update(canonical({ schema: 'canonical-bootstrap-source/v1', files: rows }) + '\n').digest('hex'), files: rows, native: { version: '18.11.3', source_revision: '96894a6147d8cc64b7e00ad3a7d7178fd93b9531', sha256: 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b', bytes: 194982944 } };
+  const stock = { release: { version: '18.11.3', source_revision: '96894a6147d8cc64b7e00ad3a7d7178fd93b9531' }, sha256: 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b', bytes: 194982944 };
+  const fake = Buffer.from('disposable fork executable');
+  const fork = { release: { version: '18.11.3-kh-mcp.2', source_revision: '273a19ab5c2fddac54c28ffd05184bf2a4447c64', contract_id: 'kh-mcp-runtime-admission/v1', upstream_base_version: '18.11.3', upstream_base_revision: stock.release.source_revision, source_patch_sha256: 'ae318b194c48aafc23d0d1856adafc8fc625f7e2a76c3e2074b5827018ff3bde', build_provenance_sha256: 'e'.repeat(64) }, sha256: createHash('sha256').update(fake).digest('hex'), bytes: fake.length };
+  const pin = { schema: 'launcher-canonical-bootstrap/v2', revision: 'b'.repeat(40), manifest_sha256: createHash('sha256').update(canonical({ schema: 'canonical-bootstrap-source/v1', files: rows }) + '\n').digest('hex'), files: rows, native_by_profile: { kh: [stock, fork], gp: [stock], gd: [stock] } };
   validatePin(pin);
-  for (const change of [{ source: '/other' }, { native: { ...pin.native, version: '0.0.0' } }, { revision: '../other' }, { files: [...rows].reverse() }, { files: rows.slice(1) }, { manifest_sha256: 'f'.repeat(64) }]) assert.throws(() => validatePin({ ...pin, ...change }));
+  const reversed = structuredClone(pin);
+  reversed.native_by_profile.kh.reverse();
+  validatePin(reversed);
+  for (const change of [{ schema: 'launcher-canonical-bootstrap/v1' }, { source: '/other' }, { revision: '../other' }, { files: [...rows].reverse() }, { files: rows.slice(1) }, { manifest_sha256: 'f'.repeat(64) }]) assert.throws(() => validatePin({ ...pin, ...change }));
+  const mutations = [
+    p => p.native_by_profile.kh.push(structuredClone(fork)),
+    p => { p.native_by_profile.kh[1] = structuredClone(stock); },
+    p => { p.native_by_profile.gp = [stock, fork]; },
+    p => { p.native_by_profile.other = [stock]; },
+    p => { p.native_by_profile.kh = []; },
+    p => { p.native_by_profile.kh[1].bytes = true; },
+    p => { p.native_by_profile.kh[1].sha256 = 'invalid'; },
+    p => { p.native_by_profile.kh[1].release.contract_id = 'unregistered/v1'; },
+    p => { p.native_by_profile.kh[1].release.source_revision = '0'.repeat(40); },
+    p => { p.native_by_profile.kh[1].release.extra = true; },
+  ];
+  for (const mutate of mutations) {
+    const candidate = structuredClone(pin); mutate(candidate);
+    assert.throws(() => validatePin(candidate));
+  }
 });
 test('source closure admission rejects bytes, links, extras, and post-admission drift', () => {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.userInfo().homedir, '.bootstrap-admission-')));

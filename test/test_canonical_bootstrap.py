@@ -82,9 +82,10 @@ class Disposable(unittest.TestCase):
                 for name in b.FILES]
         manifest = b.canonical({'schema': b.SOURCE_SCHEMA, 'files': rows}) + b'\n'
         pin = {'schema': b.PIN_SCHEMA, 'revision': 'a' * 40, 'manifest_sha256': b.digest(manifest), 'files': rows,
-               'native': {'version': '18.11.3', 'source_revision': '96894a6147d8cc64b7e00ad3a7d7178fd93b9531',
-                          'sha256': 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b',
-                          'bytes': 194982944}}
+               'native_by_profile': {'kh': [copy.deepcopy(b.STOCK_NATIVE),
+                   {'release': dict(b.FORK_RELEASE, build_provenance_sha256='f' * 64),
+                    'sha256': b.digest(b'disposable fork executable'), 'bytes': len(b'disposable fork executable')}],
+                   'gp': [copy.deepcopy(b.STOCK_NATIVE)], 'gd': [copy.deepcopy(b.STOCK_NATIVE)]}}
         directory = self.home / 'released/bin'
         self.put(directory / 'canonical-bootstrap-source.json', b.canonical(pin), 0o400)
         source = self.home / b.STATE / 'canonical-bootstrap' / pin['revision'] / pin['manifest_sha256']
@@ -114,7 +115,7 @@ class SourceAdmission(Disposable):
                      lambda p: p['files'][0].update(bytes=1048577),
                      lambda p: p['files'][0].update(sha256='0' * 63),
                      lambda p: p['files'][0].update(extra=True),
-                     lambda p: p['native'].update(sha256='0' * 64)]
+                     lambda p: p['native_by_profile']['gp'][0].update(sha256='0' * 64)]
         for mutate in mutations:
             candidate = copy.deepcopy(pin)
             mutate(candidate)
@@ -215,12 +216,12 @@ class InputAndRecordBoundaries(Disposable):
         directory, _, pin = self.source()
         workspace = self.home / 'workspace'
         workspace.mkdir(mode=0o700)
-        self.put(self.home / '.config/harness-launcher/profiles/sample-profile', str(workspace).encode())
-        native = pin['native']
-        binary = self.home / '.local/state/kilhyeonjun-harness/omp-bin' / (native['version'] + '-' + native['sha256'][:8]) / 'bin/omp'
+        self.put(self.home / '.config/harness-launcher/profiles/kh', str(workspace).encode())
+        native = pin['native_by_profile']['kh'][0]
+        binary = self.home / '.local/state/kilhyeonjun-harness/omp-bin' / (native['release']['version'] + '-' + native['sha256'][:8]) / 'bin/omp'
         context = {'binary_path': str(binary), 'binary_sha256': native['sha256'], 'binary_size': native['bytes'],
-                   'binary_release': {key: native[key] for key in ('version', 'source_revision')}}
-        request = {'profile': 'sample-profile'}
+                   'binary_release': native['release']}
+        request = {'profile': 'kh'}
         projection = types.SimpleNamespace(select=mock.Mock(return_value=context))
         for key, replacement in (('binary_path', str(self.home / 'other-native')), ('binary_sha256', '0' * 64),
                                  ('binary_size', native['bytes'] - 1), ('binary_release', {'version': 'other'})):
@@ -232,6 +233,52 @@ class InputAndRecordBoundaries(Disposable):
         projection.select.return_value = None
         with self.rejected('BOOTSTRAP_PROFILE_NOT_ENROLLED'):
             b.profile_context(self.home, directory, projection, request, pin)
+
+    def test_stock_and_fork_match_only_full_owned_profile_tuple(self):
+        directory, _, pin = self.source()
+        workspace = self.home / 'selected-workspace'
+        workspace.mkdir(mode=0o700)
+        for profile in ('kh', 'gp', 'gd'):
+            self.put(self.home / '.config/harness-launcher/profiles' / profile, str(workspace).encode())
+        for profile in ('kh', 'gp', 'gd'):
+            for entry in pin['native_by_profile'][profile]:
+                binary = self.home / '.local/state/kilhyeonjun-harness/omp-bin' / (entry['release']['version'] + '-' + entry['sha256'][:8]) / 'bin/omp'
+                current = dict(binary_path=str(binary), binary_release=copy.deepcopy(entry['release']),
+                               binary_sha256=entry['sha256'], binary_size=entry['bytes'])
+                selector = types.SimpleNamespace(select=mock.Mock(return_value=current))
+                self.assertEqual(b.profile_context(self.home, directory, selector, {'profile': profile}, pin), (workspace, current))
+                for key, value in (('binary_sha256', '0' * 64), ('binary_size', entry['bytes'] + 1),
+                                   ('binary_release', dict(entry['release'], source_revision='0' * 40))):
+                    selector.select.return_value = dict(current, **{key: value})
+                    with self.subTest(profile=profile, field=key), self.rejected('BOOTSTRAP_NATIVE_BINDING'):
+                        b.profile_context(self.home, directory, selector, {'profile': profile}, pin)
+                if len(entry['release']) == 7:
+                    selector.select.return_value = current
+                    with self.rejected('BOOTSTRAP_NATIVE_BINDING'):
+                        b.profile_context(self.home, directory, selector, {'profile': 'gp'}, pin)
+                    for field in entry['release']:
+                        altered = copy.deepcopy(current)
+                        altered['binary_release'][field] = 'wrong'
+                        selector.select.return_value = altered
+                        with self.subTest(field=field), self.rejected('BOOTSTRAP_NATIVE_BINDING'):
+                            b.profile_context(self.home, directory, selector, {'profile': profile}, pin)
+        with self.rejected('BOOTSTRAP_NATIVE_BINDING'):
+            b.profile_context(self.home, directory, selector, {'profile': 'unknown'}, pin)
+
+    def test_profile_pin_duplicates_expansion_contract_and_v1_refuse(self):
+        _, _, pin = self.source()
+        mutations = [lambda p: p.update(schema='launcher-canonical-bootstrap/v1'),
+            lambda p: p['native_by_profile'].update(other=[]),
+            lambda p: p['native_by_profile']['kh'].append(copy.deepcopy(p['native_by_profile']['kh'][1])),
+            lambda p: p['native_by_profile']['kh'].__setitem__(1, copy.deepcopy(p['native_by_profile']['kh'][0])),
+            lambda p: p['native_by_profile'].__setitem__('gp', copy.deepcopy(p['native_by_profile']['kh'])),
+            lambda p: p['native_by_profile']['kh'][1]['release'].update(contract_id='unregistered/v1'),
+            lambda p: p['native_by_profile']['kh'][1].update(bytes=True)]
+        for mutate in mutations:
+            candidate = copy.deepcopy(pin)
+            mutate(candidate)
+            with self.assertRaises(b.BootstrapError):
+                b.validate_pin(candidate)
 
     def test_json_duplicates_constants_and_size_are_rejected(self):
         for raw in (b'{"a":1,"a":2}', b'{"nested":{"a":1,"a":2}}', b'{"x":NaN}', b'{"x":Infinity}'):

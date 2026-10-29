@@ -15,7 +15,8 @@ const INVENTORY = Object.freeze([
   'core/scripts/launcher_runtime_snapshot.py', 'core/scripts/omp_canonical_update.ts',
   'core/scripts/omp_canonical_update_lock.py',
 ]);
-const NATIVE = Object.freeze({ version: '18.11.3', source_revision: '96894a6147d8cc64b7e00ad3a7d7178fd93b9531', sha256: 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b', bytes: 194982944 });
+const NATIVE = Object.freeze({ release: { version: '18.11.3', source_revision: '96894a6147d8cc64b7e00ad3a7d7178fd93b9531' }, sha256: 'd518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b', bytes: 194982944 });
+const FORK = Object.freeze({ version: '18.11.3-kh-mcp.2', source_revision: '273a19ab5c2fddac54c28ffd05184bf2a4447c64', contract_id: 'kh-mcp-runtime-admission/v1', upstream_base_version: '18.11.3', upstream_base_revision: '96894a6147d8cc64b7e00ad3a7d7178fd93b9531', source_patch_sha256: 'ae318b194c48aafc23d0d1856adafc8fc625f7e2a76c3e2074b5827018ff3bde' });
 const fail = code => { throw new Error(code); };
 const need = (value, code = 'source_admission_failed') => { if (!value) fail(code); };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -105,9 +106,23 @@ function readJson(file, max = 131072) {
   return { bytes, value };
 }
 export function validatePin(pin) {
-  keys(pin, ['schema', 'revision', 'manifest_sha256', 'files', 'native']);
-  need(pin.schema === 'launcher-canonical-bootstrap/v1' && HEX40.test(pin.revision) && HEX64.test(pin.manifest_sha256));
-  need(canonical(pin.native) === canonical(NATIVE) && Array.isArray(pin.files) && pin.files.length === INVENTORY.length);
+  keys(pin, ['schema', 'revision', 'manifest_sha256', 'files', 'native_by_profile']);
+  need(pin.schema === 'launcher-canonical-bootstrap/v2' && HEX40.test(pin.revision) && HEX64.test(pin.manifest_sha256));
+  keys(pin.native_by_profile, ['kh', 'gp', 'gd']);
+  for (const [profile, entries] of Object.entries(pin.native_by_profile)) {
+    need(Array.isArray(entries) && entries.length === (profile === 'kh' ? 2 : 1));
+    need(new Set(entries.map(canonical)).size === entries.length);
+    need(entries.filter(e => canonical(e) === canonical(NATIVE)).length === 1);
+    for (const entry of entries) {
+      keys(entry, ['release', 'sha256', 'bytes']);
+      need(typeof entry.sha256 === 'string' && HEX64.test(entry.sha256) && Number.isSafeInteger(entry.bytes) && entry.bytes > 0);
+      if (canonical(entry) === canonical(NATIVE)) continue;
+      keys(entry.release, [...Object.keys(FORK), 'build_provenance_sha256']);
+      need(profile === 'kh' && Object.entries(FORK).every(([key, value]) => entry.release[key] === value)
+        && typeof entry.release.build_provenance_sha256 === 'string' && HEX64.test(entry.release.build_provenance_sha256));
+    }
+  }
+  need(Array.isArray(pin.files) && pin.files.length === INVENTORY.length);
   for (let i = 0; i < INVENTORY.length; i++) {
     const row = pin.files[i];
     keys(row, ['path', 'git_mode', 'bytes', 'sha256']);
@@ -239,6 +254,10 @@ function validateFrame(frame, source) {
     need(text(actor.executable) && Array.isArray(actor.argv) && actor.argv.length > 0 && actor.argv.every(text));
   }
   need(r.native.pid === process.pid && r.parent.pid === process.ppid);
+  need(Object.hasOwn(source.pin.native_by_profile, r.request.profile));
+  const nativeEntries = source.pin.native_by_profile[r.request.profile].filter(entry =>
+    r.native.executable === path.join(source.home, '.local/state/kilhyeonjun-harness/omp-bin', `${entry.release.version}-${entry.sha256.slice(0, 8)}`, 'bin/omp'));
+  need(nativeEntries.length === 1, 'source_admission_failed');
   const operation = path.join(source.home, '.local/state/kilhyeonjun-harness/launcher-runtimes/canonical-bootstrap/operations', frame.operation_id);
   for (const [name, leaf] of [['control', null], ['lease', 'lease']]) {
     keys(r[name], ['path', 'identity']);

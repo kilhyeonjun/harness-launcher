@@ -110,6 +110,44 @@ Kiro follows the same explicit-override pattern through `HARNESS_KIRO_BIN`, then
 
 This order matters on macOS because an app-bundled CLI or a version-manager shim can differ from the executable expected by the user. Verify binary selection from the same login shell that loads the launcher.
 
+## Reviewed KH native fork admission
+
+The KH-only `kh-mcp-runtime-admission/v1` distribution is a separately reviewed
+local build, not an official upstream release. Normal trusted configuration
+operations register an exact source-owned artifact and then separately select it
+through Publisher CAS into a fresh empty namespace. Registration alone changes
+no enrollment, selection, credentials or history. Upstream contribution and
+release are independent of this operating path.
+
+Preparation first reads the normal owned selected context and resolved profile.
+For the exact rich KH release only, the canonical compiler matches the complete
+release, binary digest and size to `core/config/omp-native-kh.json`. The resulting
+closed `native_distribution` declaration and unchanged sealed
+`native-fork-artifact.json` bind source inputs, full runtime version and binary
+provenance through required bundle preparation and bridge startup. The resolver
+profile is supplied at that boundary without changing the continuation context.
+Numeric stock does not require the new compiler helper or read a fork record.
+Old continuations retain their own binary, namespace and provenance; a suffix or
+mutable `.distribution.json` never expands admission.
+
+The paired `launcher-canonical-bootstrap/v2` descriptor has exact
+`native_by_profile` lists: unchanged stock for KH/GP/GD and one additional fixed
+KH fork. Full release/hash/size must match exactly once before deriving
+`omp-bin/<full-version>-<binary-sha8>/bin/omp`. Unknown, duplicate, expanded and
+cross-profile fork tuples refuse. No GP/GD source, state or credentials are read.
+The descriptor still binds the actual published private seven-file Git closure;
+never use a placeholder K, alter an immutable release or repair a sealed cache.
+Native once, exact scope/expiry, cancellation/drain, truthful not-applied/unknown
+receipts and canonical CAS/lock/verifier protocols remain unchanged.
+
+Source publication and artifact registration are not installed capability or
+activation. Before selection, the operator must confirm compatible installed
+producer and canonical compiler support; do not select an unsupported consumer
+over a working stock profile. MCP stays off until the fixed gateway, fresh-owner transport-only
+credentials, original tool identity, backend no-replay/typed unknown, per-write
+genuine human once even in bypass and installed acceptance gates are proven.
+No configuration approval is a native call's once grant.
+
 ## OMP entry and prepared namespace
 
 Before sourcing aliases or allocating a workspace, an exact OMP discriminator
