@@ -365,9 +365,13 @@ and executes the owner-managed current launcher's actual immutable snapshot.
 The selected operational release can remain older than the installed package.
 Profile, host, projection and native ownership checks run in that closure;
 metadata help does not establish model, required-policy, approval or restore
-acceptance. Reviewed KH local forks use the separate
-[exact native fork admission contract](docs/architecture.md#reviewed-kh-native-fork-admission),
+acceptance. Reviewed local forks use the separate
+[exact native fork admission contract](docs/architecture.md#reviewed-native-fork-admission),
 not a version suffix, global executable replacement or an upstream-release wait.
+Canonical bootstrap v3 binds a singular exact artifact content reference; the
+private artifact proves its actual owner. Valid registered stock retains its
+existing admission path. Exact binary registration is separate from selection,
+MCP activation and installed acceptance.
 
 By default, the explicit `ex omp` route starts a fresh Oh My Pi session using a separately
 prepared native home and a SHA-256-pinned executable. Configure

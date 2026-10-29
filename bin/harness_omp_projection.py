@@ -753,7 +753,7 @@ def required_preparation(source, consumer, workspace, binary, namespace, caller_
         distribution = None
         release = current['binary_release']
         if set(release) != {'version', 'source_revision'} or not re.fullmatch(r'\d+\.\d+\.\d+', release['version']):
-            require(profile.profile == 'kh' and callable(getattr(compiler, 'omp_native_distribution', None)), BINDING)
+            require(callable(getattr(compiler, 'omp_native_distribution', None)), BINDING)
             distribution = compiler.omp_native_distribution(source, profile.profile, dict(current, profile=profile.profile))
             require(distribution is not None, BINDING)
         selection = dict(schema=1, profile=profile.profile, runtime='omp',

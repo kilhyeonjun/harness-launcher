@@ -38,13 +38,12 @@ class ForkPreparation(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('fixture_fork_compiler', compiler)
         self.c = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.c)
-        binary = b'owned fixture executable'
-        release = dict(self.c.OMP_FORK_RELEASE, build_provenance_sha256=hashlib.sha256(b'owned provenance').hexdigest())
-        self.row = dict(schema='kh-omp-fork-artifact/v1', profile='kh', release=release,
-            reviewed_base_revision='3bd046f15173649e1b6176dd47874bc74aaa5e6c',
-            local_patch_sha256='16713058a5e49d1e39d0a775874fc3d52605dffa5f439d6d2ec894c49c070271',
-            binary=dict(sha256=hashlib.sha256(binary).hexdigest(), bytes=len(binary), platform='darwin-arm64'))
         self.record = self.root / self.c.OMP_FORK_RECORD
+        self.row = json.loads(self.record.read_bytes())
+        release = copy.deepcopy(self.row['release'])
+        binary = b'owned fixture executable'
+        self.row['binary'] = dict(self.row['binary'],
+            sha256=hashlib.sha256(binary).hexdigest(), bytes=len(binary))
         self.record.write_text(self.c.omp_json(self.row) + '\n')
         self.record.chmod(0o600)
         self.current = dict(binary_path='/fixture/bin/omp', namespace_path='/fixture/namespace',
@@ -54,7 +53,7 @@ class ForkPreparation(unittest.TestCase):
         self.consumer.parent.mkdir(mode=0o700)
         (self.consumer.parent / 'harness_profile_resolver.py').write_text(
             'from types import SimpleNamespace\n'
-            'def resolve(source, registry): return SimpleNamespace(profile="kh", harness_root=source)\n')
+            f'def resolve(source, registry): return SimpleNamespace(profile={self.row["profile"]!r}, harness_root=source)\n')
 
     def prepare(self, currents=None):
         if currents is None:
@@ -68,9 +67,10 @@ class ForkPreparation(unittest.TestCase):
         self.prepare()
         selections = list((self.root / '.harness/omp').glob('*/selection.json'))
         manifest = json.loads(selections[0].read_text())
-        self.assertEqual(manifest['runtime_version'], '18.11.3-kh-mcp.2')
+        self.assertEqual(manifest['runtime_version'], self.row['release']['version'])
         sealed = selections[0].parent / 'native-fork-artifact.json'
         changed = json.loads(sealed.read_text())
+        self.assertEqual(changed, self.row)
         changed['binary']['bytes'] += 1
         sealed.write_text(self.c.omp_json(changed) + '\n')
         with self.assertRaises(self.c.HarnessCompileError):
