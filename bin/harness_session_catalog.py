@@ -214,7 +214,11 @@ def _lease_state(directory):
         return 'unavailable'
 
 
-def _source_sessions(state, profile, source, problems):
+def _matches(item, identifier):
+    return identifier is None or identifier in (item.get('id'), item.get('native_id'), item.get('launcher_session_id'))
+
+
+def _source_sessions(state, profile, source, problems, identifier=None):
     sessions = state / 'sessions'
     worktrees = state / 'worktrees'
     if not sessions.is_dir() or sessions.is_symlink():
@@ -250,6 +254,8 @@ def _source_sessions(state, profile, source, problems):
                 continue
             if item and selected and item['native_id'].lower() != selected['native_id'].lower():
                 continue
+            if item and not _matches(item, identifier):
+                continue
             if item:
                 if len(records)>=MAX_SESSIONS:
                     _problem(problems,profile,'session_count_budget');return records
@@ -260,7 +266,7 @@ def _source_sessions(state, profile, source, problems):
     return records
 
 
-def _archives(state, profile, source, problems):
+def _archives(state, profile, source, problems, identifier=None):
     root = state / 'archives'
     if not root.is_dir() or root.is_symlink():
         return []
@@ -288,6 +294,8 @@ def _archives(state, profile, source, problems):
                 continue
             if item and selected and item['native_id'].lower() != selected['native_id'].lower():
                 continue
+            if item and not _matches(item, identifier):
+                continue
             if item:
                 if len(records)>=MAX_SESSIONS:
                     _problem(problems,profile,'session_count_budget');return records
@@ -295,10 +303,12 @@ def _archives(state, profile, source, problems):
     return records
 
 
-def _legacy(source, profile, problems):
+def _legacy(source, profile, problems, identifier=None):
     records = []
     for path in _transcripts(source / '.harness', problems, profile):
         item = _record(profile, None, source, source / '.harness' / 'codex', path, 'legacy')
+        if item and not _matches(item, identifier):
+            continue
         if item:
             if len(records)>=MAX_SESSIONS:
                 _problem(problems,profile,'session_count_budget');return records
@@ -383,7 +393,7 @@ def _provider_owners(state, source, problems, profile):
     return owners
 
 
-def _claude_records(profile, source, home, problems, owners, native_id=None):
+def _claude_records(profile, source, home, problems, owners, native_id=None, identifier=None):
     base = home / '.claude' / 'projects'
     records = []
     paths = _walk(base,problems,profile) if native_id is None else _exact_walk(base,native_id,problems,profile)
@@ -404,19 +414,25 @@ def _claude_records(profile, source, home, problems, owners, native_id=None):
             continue
         owner, status = (bindings[0][:2] if len(bindings) == 1 else (None, None))
         availability = 'legacy' if owner is None else ('active' if status == 'OPEN' else 'unavailable' if status=='UNAVAILABLE' else ('archived' if status in ('DELIVERED', 'DISCARDED') else 'ready'))
-        if len(records)>=MAX_SESSIONS:
-            _problem(problems,profile,'session_count_budget');return records
-        records.append({
+        item = {
             'id': _opaque(profile, 'claude', owner, home / '.claude', found_id, path), 'profile': profile,
             'runtime': 'claude', 'native_id': found_id, 'launcher_session_id': owner,
             'source_root': str(source), 'native_home': str(home / '.claude'), 'transcript_path': str(path),
             'archived': False, 'availability': 'unavailable' if len(bindings) > 1 else availability,
             'can_resume': len(bindings) <= 1 and availability in ('legacy', 'ready'), 'can_fork': len(bindings) <= 1 and availability in ('legacy','ready','archived'),
-        })
+        }
+        if not _matches(item, identifier):
+            continue
+        if len(records)>=MAX_SESSIONS:
+            _problem(problems,profile,'session_count_budget');return records
+        records.append(item)
     return records
 
 
-def catalog(state: Path, sources: Dict[str, Path], home: Path) -> dict:
+def catalog(state: Path, sources: Dict[str, Path], home: Path, identifier=None) -> dict:
+    if identifier is not None and (not isinstance(identifier, str) or not
+            (UUID.fullmatch(identifier) or re.fullmatch(r'[0-9a-f]{64}', identifier))):
+        raise ValueError('invalid_session_identifier')
     state = Path(state)
     items, problems = [], []
     for profile, raw_source in sorted(sources.items()):
@@ -442,21 +458,37 @@ def catalog(state: Path, sources: Dict[str, Path], home: Path) -> dict:
                 _problem(problems,profile,'profile_pool_unavailable');continue
         owners={}
         for pool in pools:
-            rows=[*_source_sessions(pool,profile,source,problems),*_archives(pool,profile,source,problems)]
+            rows=[*_source_sessions(pool,profile,source,problems,identifier),*_archives(pool,profile,source,problems,identifier)]
             for row in rows:row['state_root']=str(pool)
             items.extend(rows)
             for native,values in _provider_owners(pool,source,problems,profile).items():
                 owners.setdefault(native,[]).extend(values)
-        items.extend(_legacy(source, profile, problems))
-        items.extend(_claude_records(profile, source, Path(home), problems, owners))
+        items.extend(_legacy(source, profile, problems,identifier))
+        items.extend(_claude_records(profile, source, Path(home), problems, owners,identifier=identifier))
     if len(items)>MAX_SESSIONS:_problem(problems,None,'session_count_budget')
     items = sorted(items, key=lambda item: item['id'])[:MAX_SESSIONS]
     revision = hashlib.sha256(json.dumps(items, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return {'status': 'partial' if problems else 'ready', 'revision': revision, 'items': items, 'problems': problems}
 
 
+def lookup(state: Path, sources: Dict[str, Path], home: Path, identifier: str) -> dict:
+    """Exact lookup keeps listing limits away from unrelated records.
+
+    Invalid records remain excluded by the existing validators. An incomplete
+    traversal cannot establish uniqueness, even when one matching row is visible.
+    """
+    result = catalog(state, sources, home, identifier=identifier)
+    incomplete = {'transcript_scan_budget', 'transcript_depth_budget',
+                  'transcript_scan_failed', 'session_count_budget',
+                  'profile_pool_unavailable', 'source_missing'}
+    result['complete'] = not any(problem.get('code', problem.get('kind')) in incomplete
+                                 for problem in result['problems'])
+    if not result['complete']:
+        result['items'] = []
+    return result
+
+
 def resolve(state: Path, sources: Dict[str, Path], home: Path, opaque_id: str) -> Optional[dict]:
-    for item in catalog(state, sources, home)['items']:
-        if item['id'] == opaque_id:
-            return item
-    return None
+    result = lookup(state, sources, home, opaque_id)
+    matches = [item for item in result['items'] if item['id'] == opaque_id]
+    return matches[0] if len(matches) == 1 else None

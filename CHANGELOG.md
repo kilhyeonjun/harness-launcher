@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.82.2 — 2026-10-30
+
+- Resolve exact native, launcher and opaque session identifiers independently
+  of the catalog's display limit. Unrelated history no longer hides a valid
+  conversation after the first 1,000 displayed records.
+- Preserve all matching candidates until uniqueness is checked, and refuse
+  exact lookup when traversal cannot establish completeness. Existing source,
+  metadata, archive and active-owner checks remain in force.
+
 ## 0.82.1 — 2026-10-29
 
 - Validate the complete closed engine result before projecting only the public

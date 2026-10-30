@@ -38,6 +38,15 @@ rule, service or daemon.
 
 ## Internal interfaces
 
+The managed session catalog keeps its 1,000-row display limit. Call
+`harness_session_catalog.lookup(state, sources, home, identifier)` for an exact
+native UUID, launcher UUID or opaque ID; unrelated rows do not consume that
+query's result limit. `complete=false` means traversal could not establish
+uniqueness and returns no candidates. Invalid individual records remain
+excluded by the existing source, metadata and archive validators. Consumers
+must reject multiple matches before checking readiness. `resolve` uses the
+same exact query, and active owners remain unavailable for resume.
+
 `bin/codex-history.py` provides on-demand `snapshot`, `restore`, `verify`,
 `catalog`, `presence`, `content-kind` and `protect-pool` operations; it is not a new public executable.
 

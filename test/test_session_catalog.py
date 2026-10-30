@@ -14,6 +14,112 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
 
 
 class SessionCatalogTest(unittest.TestCase):
+    def test_resolve_owned_thread_after_a_thousand_other_threads(self):
+        from harness_session_catalog import catalog, resolve
+        owner = '11111111-1111-4111-8111-111111111111'
+        native = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+        with tempfile.TemporaryDirectory() as tmp:
+            state, source, home = Path(tmp, 'state'), Path(tmp, 'source'), Path(tmp, 'home')
+            source.mkdir()
+            root = state / 'worktrees' / owner
+            folder = root / '.harness/codex/sessions'
+            folder.mkdir(parents=True)
+            (folder / (native + '.jsonl')).write_text(json.dumps({'type':'session_meta','payload':{'id':native}})+'\n')
+            record = state / 'sessions' / owner
+            record.mkdir(parents=True)
+            (record / 'source-root').write_text(str(source.resolve())+'\n')
+            (record / 'session-root').write_text(str(root)+'\n')
+            (record / 'journal').write_text('state=CLOSED\n')
+            (record / 'runtime.lock').touch()
+            opaque = catalog(state, {'demo':source}, home)['items'][0]['id']
+            for index in range(1000):
+                other = f'00000000-0000-4000-8000-{index:012x}'
+                (folder / (other + '.jsonl')).write_text(json.dumps({'type':'session_meta','payload':{'id':other}})+'\n')
+            listing = catalog(state, {'demo':source}, home)
+            self.assertEqual(len(listing['items']), 1000)
+            self.assertNotIn(native, {row['native_id'] for row in listing['items']})
+            found = resolve(state, {'demo':source}, home, opaque)
+            self.assertIsNotNone(found, 'Exact resolution must not use the truncated listing')
+            self.assertEqual(found['native_id'], native)
+            self.assertEqual(found['availability'], 'ready')
+            from harness_session_catalog import lookup
+            exact = lookup(state, {'demo':source}, home, native)
+            self.assertTrue(exact['complete'])
+            self.assertEqual([row['native_id'] for row in exact['items']], [native])
+            (record / 'journal').write_text('state=OPEN\n')
+            active = lookup(state, {'demo':source}, home, native)['items']
+            self.assertEqual(len(active), 1)
+            self.assertEqual(active[0]['availability'], 'active')
+            self.assertFalse(active[0]['can_resume'])
+
+    def test_exact_lookup_refuses_incomplete_enumeration(self):
+        import harness_session_catalog as module
+        with tempfile.TemporaryDirectory() as tmp:
+            state, source, home = Path(tmp, 'state'), Path(tmp, 'source'), Path(tmp, 'home')
+            folder = source / '.harness/codex/sessions'
+            folder.mkdir(parents=True)
+            native = '00000000-0000-4000-8000-000000000000'
+            (folder / (native + '.jsonl')).write_text(json.dumps({'type':'session_meta','payload':{'id':native}})+'\n')
+            opaque = module.catalog(state, {'demo':source}, home)['items'][0]['id']
+            (folder / 'zz-irrelevant.jsonl').write_text('{}\n')
+            with mock.patch.object(module, 'MAX_NODES', 1):
+                result = module.lookup(state, {'demo':source}, home, native)
+                self.assertFalse(result['complete'])
+                self.assertEqual(result['items'], [])
+                self.assertIsNone(module.resolve(state, {'demo':source}, home, opaque))
+
+    def test_exact_queries_do_not_share_mixed_runtime_display_slots(self):
+        import harness_session_catalog as module
+        with tempfile.TemporaryDirectory() as tmp:
+            state, source, home = Path(tmp, 'state'), Path(tmp, 'source'), Path(tmp, 'home')
+            source.mkdir()
+            codex = source / '.harness/codex/sessions'
+            claude = home / '.claude/projects/fixture'
+            codex.mkdir(parents=True); claude.mkdir(parents=True)
+            fixtures = [('11111111-1111-4111-8111-111111111111','codex'),
+                        ('22222222-2222-4222-8222-222222222222','codex'),
+                        ('33333333-3333-4333-8333-333333333333','claude'),
+                        ('44444444-4444-4444-8444-444444444444','claude')]
+            for native, runtime in fixtures:
+                event = {'type':'session_meta','payload':{'id':native}} if runtime == 'codex' else {'sessionId':native,'cwd':str(source)}
+                ((codex if runtime == 'codex' else claude) / (native + '.jsonl')).write_text(json.dumps(event)+'\n')
+            with mock.patch.object(module, 'MAX_SESSIONS', 1):
+                self.assertEqual(len(module.catalog(state, {'demo':source}, home)['items']), 1)
+                for native, runtime in fixtures:
+                    result = module.lookup(state, {'demo':source}, home, native)
+                    self.assertTrue(result['complete'])
+                    self.assertEqual([(row['native_id'], row['runtime']) for row in result['items']], [(native,runtime)])
+                    opaque = result['items'][0]['id']
+                    self.assertEqual(module.resolve(state, {'demo':source}, home, opaque)['native_id'], native)
+
+    def test_owner_query_retains_active_and_ready_native_candidates(self):
+        from harness_session_catalog import lookup
+        owner = '11111111-1111-4111-8111-111111111111'
+        native = '22222222-2222-4222-8222-222222222222'
+        with tempfile.TemporaryDirectory() as tmp:
+            state, source, home = Path(tmp, 'state'), Path(tmp, 'source'), Path(tmp, 'home')
+            source.mkdir()
+            root = state / 'worktrees' / owner
+            raw = root / '.harness/codex/sessions' / (native + '.jsonl')
+            raw.parent.mkdir(parents=True)
+            raw.write_text(json.dumps({'type':'session_meta','payload':{'id':native}})+'\n')
+            record = state / 'sessions' / owner
+            record.mkdir(parents=True)
+            (record / 'source-root').write_text(str(source.resolve()))
+            (record / 'session-root').write_text(str(root))
+            (record / 'journal').write_text('state=CLOSED\n')
+            (record / 'runtime.lock').touch()
+            for identifier in (owner, native):
+                result = lookup(state, {'demo':source}, home, identifier)
+                self.assertTrue(result['complete'])
+                self.assertEqual(len(result['items']), 1)
+                self.assertEqual(result['items'][0]['launcher_session_id'], owner)
+            other = '33333333-3333-4333-8333-333333333333'
+            raw.with_name(other + '.jsonl').write_text(json.dumps({'type':'session_meta','payload':{'id':other}})+'\n')
+            self.assertEqual(len(lookup(state, {'demo':source}, home, owner)['items']), 2)
+            self.assertEqual(lookup(state, {'foreign':home}, home, native)['items'], [])
+
+
     def test_registered_profile_pool_and_old_shared_owner_are_both_visible(self):
         from harness_session_catalog import catalog
         from harness_session_pools import initialize_pool
