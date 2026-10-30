@@ -662,6 +662,44 @@ raise SystemExit(EXIT_CODE)
         self.assertEqual(self.record.read_bytes(), before)
         self.op('NEW_PREPARE')  # the full operate path accepts it too
 
+    def shift_projected_namespace(self, delta=1):
+        base = self.home/'.config/harness-launcher/omp-projection-v1'
+        state = json.loads((base/'state.json').read_bytes())
+        row = state['profiles']['ex']; row['native_home']['root_identity']['dev'] += delta
+        put(base/'state.json', state)
+        index = json.loads((base/'enrollment.json').read_bytes())
+        index['enrolled_profiles']['ex']['payload_row_sha256'] = self.projection.digest(self.projection.canonical(row))
+        put(base/'enrollment.json', index)
+
+    def test_D_reboot_renumbering_of_projection_and_origin_together_is_accepted(self):
+        # A reboot leaves every stored identity on the old device at once: the
+        # published namespace row and all three continuation origin identities.
+        self.kernel()
+        for field in self.ORIGIN_FIELDS: self.shift_origin(field)
+        self.shift_projected_namespace()
+        live = os.lstat(self.ns).st_dev
+        self.assertEqual(self.m.current_context(self.profile, self.consumer)['namespace_identity']['dev'], live)
+        before = self.record.read_bytes()
+        self.assertEqual(self.load()[1], before)
+        self.op('NEW_PREPARE')
+
+    def test_D_session_created_after_reboot_records_the_live_namespace_device(self):
+        self.kernel(); self.shift_projected_namespace()
+        row = self.m.initial_record(str(self.state), str(self.profile), self.w, str(self.consumer))
+        self.assertEqual(row['kernel_origin']['namespace_identity']['dev'], os.lstat(self.ns).st_dev)
+        put(self.record, row); self.load()
+
+    def test_D_record_from_stale_projection_context_still_loads(self):
+        # Shape recorded after a reboot by a launcher that passed on the stored
+        # namespace identity: only the namespace origin carries the old device.
+        self.kernel(); self.shift_projected_namespace(); self.shift_origin('namespace_identity')
+        self.load()
+
+    def test_D_reboot_renumbered_projection_still_refuses_a_replaced_namespace(self):
+        self.kernel(); self.shift_projected_namespace()
+        self.shift_origin('namespace_identity', 'ino')
+        self.refused_load()
+
     def test_D_each_origin_field_alone_accepts_dev_and_lock_times_refuses_ino_uid(self):
         self.kernel(); good = self.record.read_bytes()
         for field in self.ORIGIN_FIELDS:

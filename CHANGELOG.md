@@ -10,6 +10,13 @@ Notable changes are recorded here. This project follows semantic versioning for 
   after the active Node stopped providing Codex, previously re-executed forever
   and stalled every Codex launch silently. Preparation now warns with the
   resolved binary, omits context management, and continues.
+- Resume OMP continuations after a reboot. The continuation context now carries
+  the namespace's live identity, proven equal to the stored projection row,
+  instead of the stored row whose `st_dev` predates the reboot. Origin matching
+  compares all three identities through one device mapping, so the stale
+  namespace device refused every continuation with
+  `OMP_CONTINUATION_IDENTITY_CHANGED`. A replaced namespace, a mount boundary
+  and an inconsistent device mapping are still refused.
 
 ## 0.82.2 — 2026-10-30
 

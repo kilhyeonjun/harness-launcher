@@ -518,11 +518,18 @@ def select(name, root, consumer, *, continuation=False):
                                         stat.S_IMODE((companion / 'harness_omp_continuation.py').lstat().st_mode))
                 projection_sha, _ = file_sha(companion / 'harness_omp_projection.py',
                                             stat.S_IMODE((companion / 'harness_omp_projection.py').lstat().st_mode))
+                # Hand on the live namespace identity, proven equal to the stored
+                # row under this selection's device mapping. The stored row keeps
+                # its pre-reboot st_dev, while the continuation compares it with
+                # live workspace and lock identities through one shared mapping.
+                namespace = row['native_home']
+                namespace_identity = directory(namespace['path'], namespace['mode'])
+                require(devmap.match(namespace['root_identity'], namespace_identity, Path(namespace['path'])), BINDING)
                 result = {'schema': 'omp-continuation-context/v1',
                           'profile_binding_sha256': digest(canonical(row['profile_binding'])),
                           'host_binding_sha256': digest(canonical(index['host'])),
                           'namespace_path': row['native_home']['path'],
-                          'namespace_identity': dict(row['native_home']['root_identity'], mode=row['native_home']['mode']),
+                          'namespace_identity': dict(namespace_identity, mode=namespace['mode']),
                           'namespace_marker_sha256': row['native_home']['owner_marker']['sha256'],
                           'binary_path': row['binary']['path'],
                           'binary_sha256': row['binary']['sha256'],
