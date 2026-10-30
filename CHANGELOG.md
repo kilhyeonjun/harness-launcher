@@ -2,6 +2,10 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.82.4 — 2026-10-30
+
+- Advance the immutable canonical bootstrap descriptor to the published runtime-reader source. Pin the actual manifest digest and all seven source tuples, including the authority-aware surface diff and sealed compiler. The native artifact pin is unchanged. Publishing this descriptor does not install product APIs, update a local canonical checkout, or activate a cache owner.
+
 ## 0.82.3 — 2026-10-30
 
 - Bound the Codex home preparation `codex --version` probe with
