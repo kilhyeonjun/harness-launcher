@@ -485,7 +485,12 @@ owner's state pool from `harness_session_pools.find_owner` over the registered
 source's pools under `HARNESS_SESSION_POOL_BASE`, else
 `~/.local/state/kilhyeonjun-harness/launcher-runtimes/session-state`; an
 absent, foreign or ambiguous owner is `OMP_CONTINUATION_UNBOUND`. The installed Entry resumes a session with its
-bound runtime; `harness_omp_continuation.py --rebind-runtime <state> <source> W`,
+bound runtime. The continuation context carries the namespace's live identity,
+proven equal to the stored projection row under the selection's device mapping.
+The stored row keeps its pre-reboot `st_dev`, and origin matching compares the
+namespace with live workspace and lock identities through one shared mapping, so
+passing on the stored identity refused every continuation after a reboot with
+`OMP_CONTINUATION_IDENTITY_CHANGED`. `harness_omp_continuation.py --rebind-runtime <state> <source> W`,
 run from the current selected snapshot (verified via `current.json` and the
 manifest), rewrites `bindings/W.json` to that snapshot under the Entry's binding
 lock and the free workspace/native locks, for the same source only. A shell
