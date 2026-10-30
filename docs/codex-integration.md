@@ -221,6 +221,14 @@ cross-session `memories`. The launcher omits the nested setting for older
 clients because Codex 0.152.1 rejects it during bootstrap; API-key sessions,
 custom providers, and temporary structured threads remain excluded upstream.
 
+The client version comes from a bounded `codex --version` probe
+(`HARNESS_CODEX_VERSION_PROBE_TIMEOUT`, default `10` seconds). When the probe
+does not finish in time, preparation prints a warning naming the resolved
+binary, omits the setting, and continues. A common cause is a version-manager
+shim whose fallback `PATH` lookup resolves back to the shim itself, such as a
+`~/.local/bin/codex` link to a mise shim after the active Node no longer
+provides Codex.
+
 ## Launcher MCP surface policy
 
 The project-owned `config/launcher.env` is the sole opt-in authority for
