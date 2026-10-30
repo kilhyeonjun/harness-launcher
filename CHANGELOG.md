@@ -2,6 +2,15 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.82.3 — 2026-10-30
+
+- Bound the Codex home preparation `codex --version` probe with
+  `HARNESS_CODEX_VERSION_PROBE_TIMEOUT` (default 10 seconds). A self-referencing
+  version-manager shim, for example a `~/.local/bin/codex` link to a mise shim
+  after the active Node stopped providing Codex, previously re-executed forever
+  and stalled every Codex launch silently. Preparation now warns with the
+  resolved binary, omits context management, and continues.
+
 ## 0.82.2 — 2026-10-30
 
 - Resolve exact native, launcher and opaque session identifiers independently

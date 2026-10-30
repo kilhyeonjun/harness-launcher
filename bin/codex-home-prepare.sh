@@ -127,10 +127,27 @@ source "$SCRIPT_DIR/harness-common.sh"
 # cannot invalidate Codex hook approvals.
 SCRIPT_DIR="$(harness_launcher_stable_dir "$SCRIPT_DIR")"
 
+# The version probe is bounded: a version-manager shim whose fallback PATH lookup
+# resolves back to itself re-executes forever, and an unbounded probe stalls every
+# Codex launch here with no output. stdout goes to a file, not `$( )`, so a
+# lingering descendant holding the pipe cannot outlast the deadline.
 codex_context_management_supported() {
-  local codex_bin version major minor patch
+  local codex_bin version_file version major minor patch rc
+  local probe_timeout="${HARNESS_CODEX_VERSION_PROBE_TIMEOUT:-10}"
   codex_bin="$(harness_codex_bin_resolve)" || return 1
-  version="$("$codex_bin" --version 2>/dev/null)" || return 1
+  version_file="$(mktemp "${TMPDIR:-/tmp}/harness-codex-version.XXXXXX")" || return 1
+  harness_kiro_bounded_run "$probe_timeout" "$codex_bin" --version \
+    </dev/null >"$version_file" 2>/dev/null
+  rc=$?
+  if [[ "$rc" -eq 124 ]]; then
+    echo "WARN: codex --version did not finish within ${probe_timeout}s ($codex_bin); context management disabled. Check for a self-referencing version-manager shim." >&2
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    rm -f "$version_file"
+    return 1
+  fi
+  version="$(head -n 1 "$version_file")"
+  rm -f "$version_file"
   if [[ "$version" =~ ^codex-cli[[:space:]]+([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
     major="${BASH_REMATCH[1]}"
     minor="${BASH_REMATCH[2]}"

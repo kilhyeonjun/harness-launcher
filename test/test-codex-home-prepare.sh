@@ -1051,6 +1051,39 @@ assert config["features"]["context_management"] == {"experimental_mode": True}
 PY
 echo "PASS: context management follows the resolved Codex CLI 0.153.0 capability floor"
 
+# A version shim that re-executes itself forever (observed with a mise shim whose
+# fallback PATH lookup resolved back to the shim) must not stall the prepare step.
+cat > "$CODEX_BIN_STUB" <<'EOF'
+#!/usr/bin/env bash
+exec "$0" "$@"
+EOF
+chmod +x "$CODEX_BIN_STUB"
+probe_stderr="$TEST_TEMP/codex-version-probe.stderr"
+probe_started=$SECONDS
+HARNESS_CODEX_VERSION_PROBE_TIMEOUT=1 "$PREPARE" "$TEST_HARNESS3" 2>"$probe_stderr"
+probe_elapsed=$(( SECONDS - probe_started ))
+(( probe_elapsed < 30 )) || {
+  echo "FAIL: hanging codex --version stalled prepare for ${probe_elapsed}s"; exit 1;
+}
+grep -q 'codex --version did not finish within 1s' "$probe_stderr" || {
+  echo "FAIL: hanging codex --version should warn"; cat "$probe_stderr"; exit 1;
+}
+python3.13 - "$config3" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as stream:
+    config = tomllib.load(stream)
+
+assert "context_management" not in config["features"]
+PY
+cat > "$CODEX_BIN_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "codex-cli 0.153.0"
+EOF
+chmod +x "$CODEX_BIN_STUB"
+echo "PASS: a hanging codex --version probe is bounded and disables context management"
+
 for selection in 272k 500k 1m auto 500k 272k auto; do
   HARNESS_CODEX_CONTEXT="$selection" "$PREPARE" "$TEST_HARNESS3"
   python3.13 - "$config3" "$selection" <<'PYTEST'
