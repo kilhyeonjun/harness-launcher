@@ -2,6 +2,10 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## 0.82.5 — 2026-11-01
+
+- Bind the immutable canonical bootstrap to the typed declaration/session reader delivery and its exact seven-file source manifest. The sealed verifier uses captured Git publication-candidate bytes without importing freshly updated runtime readers; normal runtime reads retain typed authority routing. Native artifact pins and prior releases remain unchanged. Publication does not fast-forward a canonical checkout, install product APIs, upgrade Homebrew, or activate a runtime/cache owner.
+
 ## 0.82.4 — 2026-10-30
 
 - Advance the immutable canonical bootstrap descriptor to the published runtime-reader source. Pin the actual manifest digest and all seven source tuples, including the authority-aware surface diff and sealed compiler. The native artifact pin is unchanged. Publishing this descriptor does not install product APIs, update a local canonical checkout, or activate a cache owner.
