@@ -2,6 +2,13 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased — Queue observation
+
+- Recheck verifier process-group liveness after reading queue status in the
+  dead-broker integration test. Cleanup between observations no longer causes
+  a false failure; running/queued budget assertions still apply while the
+  original verifier group is alive. Queue execution behavior is unchanged.
+
 ## 0.82.6 — 2026-11-09
 
 - Keep slow herdr CLI calls, transcript reads and notifications outside the
