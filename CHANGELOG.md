@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — herdr plugin contention
+## 0.82.6 — 2026-11-09
 
 - Keep slow herdr CLI calls, transcript reads and notifications outside the
   plugin's shared state lock. One nonblocking presentation owner per session
