@@ -2,14 +2,12 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased — herdr watcher refresh
+## 0.82.7 — 2026-11-09
 
 - Skip timer-only watcher refreshes while another hook owns presentation.
   Repeated polling no longer keeps that hook draining empty requests. File
   changes, pane events, model refreshes and restart invalidations still queue,
   and delayed notifications retain their existing delivery.
-
-## Unreleased — Queue observation
 
 - Recheck verifier process-group liveness after reading queue status in the
   dead-broker integration test. Cleanup between observations no longer causes
