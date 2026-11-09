@@ -664,8 +664,14 @@ except (QueueError,FileNotFoundError):sys.exit(2)
             rows=self.run_command(['ps','-axo','pgid=,stat=']).stdout.splitlines()
             live=any(len(parts:=line.split())==2 and parts[0]==str(broker) and not parts[1].startswith('Z') for line in rows)
             if not live:break
-            self.assertEqual(self.status(job)['state'],'running')
-            self.assertEqual(self.status(later)['state'],'queued')
+            current=self.status(job)['state']; successor=self.status(later)['state']
+            # Cleanup can end the group between the first ps and either status CLI.
+            # Assert the budget invariant only while its live-group premise holds.
+            rows=self.run_command(['ps','-axo','pgid=,stat=']).stdout.splitlines()
+            live=any(len(parts:=line.split())==2 and parts[0]==str(broker) and not parts[1].startswith('Z') for line in rows)
+            if not live:break
+            self.assertEqual(current,'running')
+            self.assertEqual(successor,'queued')
             self.assertLess(time.monotonic(),deadline,'owned verifier group was not cleaned')
             time.sleep(.05)
         (self.base/'release').touch()
