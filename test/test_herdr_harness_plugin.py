@@ -5,6 +5,7 @@ HERDR_PLUGIN_EVENT(_JSON), HERDR_BIN_PATH and HERDR_PLUGIN_STATE_DIR. herdr,
 terminal-notifier, osascript, lsappinfo and ps are stubs on PATH.
 """
 
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
@@ -38,14 +39,21 @@ HOOKABLE = {
 }
 
 FAKE_HERDR = r'''#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 state_path = os.environ["FAKE_HERDR_STATE"]
 with open(os.environ["FAKE_HERDR_CALLS"], "a") as log:
     log.write(json.dumps(sys.argv[1:]) + "\n")
 with open(os.environ["FAKE_HERDR_CALLS"] + ".socket", "a") as log:
     log.write(os.environ.get("HERDR_SOCKET_PATH", "") + "\n")
-state = json.load(open(state_path))
 args = sys.argv[1:]
+gate = os.environ.get("FAKE_HERDR_GATE")
+gate_command = json.loads(os.environ.get("FAKE_HERDR_GATE_COMMAND", '["tab", "list"]'))
+if gate and args[:len(gate_command)] == gate_command:
+    with open(gate + ".entered", "w") as marker:
+        marker.write(str(os.getpid()))
+    while not os.path.exists(gate + ".release"):
+        time.sleep(0.01)
+state = json.load(open(state_path))
 def out(result):
     print(json.dumps({"id": "cli", "result": result}))
 if args[:2] == ["plugin", "config-dir"]:
@@ -1028,6 +1036,147 @@ class MetadataTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.assertEqual(len(self.h.reports()), 2)
 
 
+class GatedHooksMixin:
+    """Run isolated hook processes while a selected fake CLI command is held."""
+
+    def start_hook(self, event, payload=None, pane_id=None, **extra):
+        env = self.h.env(event, payload, pane_id)
+        env.update(extra)
+        proc = subprocess.Popen([TARGET_PYTHON, str(SCRIPT)], cwd=PLUGIN_DIR,
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True)
+        self.children.append(proc)
+        return proc
+
+    def finish_hook(self, proc, timeout=3):
+        stdout, stderr = proc.communicate(timeout=timeout)
+        self.assertEqual(proc.returncode, 0, stderr or stdout)
+
+    @contextmanager
+    def blocked_sync(self, event="pane.focused", payload=None, command=None, delay="0",
+                     cleanup_timeout=15):
+        gate = self.h.root / "slow-cli"
+        entered = gate.with_suffix(".entered")
+        release = gate.with_suffix(".release")
+        self.children = []
+        extra = {"FAKE_HERDR_GATE": str(gate), "HARNESS_HERDR_NOTIFY_DELAY_SECONDS": delay}
+        if command is not None:
+            extra["FAKE_HERDR_GATE_COMMAND"] = json.dumps(command)
+        owner = self.start_hook(event, payload, **extra)
+        try:
+            deadline = time.monotonic() + 5
+            while not entered.exists():
+                self.assertIsNone(owner.poll(), "sync exited before entering the CLI gate")
+                if time.monotonic() >= deadline:
+                    self.fail("fake CLI did not enter its gate")
+                time.sleep(0.01)
+            yield owner, release
+        finally:
+            # Release the fake CLI before reaping hooks, even when an assertion fails.
+            release.touch()
+            for proc in self.children:
+                try:
+                    proc.communicate(timeout=cleanup_timeout)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate(timeout=5)
+
+
+
+class SlowSyncTest(GatedHooksMixin, HerdrPluginTestCase, SessionRecordsMixin):
+    """Real hook processes share state while one isolated CLI waits on a file gate."""
+
+    def setUp(self):
+        super().setUp()
+        harness = self.codex_index([{"id": THREAD, "thread_name": "original title"}])
+        self.codex_turn("gpt-6.1-sol", "xhigh")
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)],
+                         [codex_agent("w5:p1", "w5:t1", harness)])
+        self.assertRan(self.h.run("startup"))
+
+    def working_payload(self):
+        state = self.h.state()
+        state["panes"][0]["agent_status"] = "working"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        return {"event": "pane_agent_status_changed",
+                "data": {"type": "pane_agent_status_changed", "pane_id": "w5:p1",
+                         "workspace_id": "w5", "agent_status": "working", "agent": "codex"}}
+
+    def saved_status(self):
+        state = json.loads((self.h.state_dir / "state.json").read_text())
+        key = hashlib.sha1(self.h.env("pane.focused")["HERDR_SOCKET_PATH"].encode()).hexdigest()[:12]
+        return state["sessions"][key]["panes"]["w5:p1"]["status"]
+
+    def test_blocked_tab_list_allows_focus_burst_and_preserves_working_status(self):
+        self.codex_index([{"id": THREAD, "thread_name": "updated title"}], append=True)
+        with self.blocked_sync() as (owner, release):
+            burst = [self.start_hook("pane.focused") for _ in range(8)]
+            for proc in burst:
+                self.finish_hook(proc)
+            status = self.start_hook("pane.agent_status_changed", self.working_payload(), "w5:p1")
+            self.finish_hook(status)
+            self.assertFalse(release.exists())
+            self.assertIsNone(owner.poll())
+            self.assertEqual(self.saved_status(), "working")
+            self.assertEqual(sum(call[:2] == ["tab", "list"] for call in self.h.calls()), 2)
+            release.touch()
+            self.finish_hook(owner, timeout=15)
+        self.assertEqual(self.saved_status(), "working")
+        self.assertEqual(self.h.state()["tabs"][0]["label"], "updated title")
+
+    def assert_queued_forget_replays_metadata(self, event, payload=None):
+        before = self.h.reports()
+        with self.blocked_sync() as (owner, release):
+            queued = self.start_hook(event, payload, "w5:p1")
+            self.finish_hook(queued)
+            self.assertFalse(release.exists())
+            self.assertIsNone(owner.poll())
+            release.touch()
+            self.finish_hook(owner, timeout=15)
+        self.assertEqual(self.h.reports(), before + before)
+
+    def test_agent_detected_while_sync_busy_replays_metadata(self):
+        detected = {"event": "pane_agent_detected",
+                    "data": {"type": "pane_agent_detected", "pane_id": "w5:p1", "agent": "codex"}}
+        self.assert_queued_forget_replays_metadata("pane.agent_detected", detected)
+
+    def test_startup_while_sync_busy_replays_metadata(self):
+        self.assert_queued_forget_replays_metadata("startup")
+
+    def test_status_while_sync_busy_refreshes_the_cached_model(self):
+        self.codex_turn("gpt-6.1-sol", "high", append=True)
+        with self.blocked_sync() as (owner, release):
+            queued = self.start_hook("pane.agent_status_changed", self.working_payload(), "w5:p1")
+            self.finish_hook(queued)
+            self.assertEqual(self.saved_status(), "working")
+            self.assertFalse(release.exists())
+            self.assertIsNone(owner.poll())
+            release.touch()
+            self.finish_hook(owner, timeout=15)
+        self.assertEqual(len(self.h.reports()), 2)
+        self.assertEqual(self.h.reports()[-1][-2:], ["--token", "model=6.1-sol high"])
+        self.assertEqual(self.saved_status(), "working")
+
+    def test_blocked_socket_sync_does_not_block_another_session(self):
+        other_state = self.h.root / "other-state.json"
+        other_state.write_text(json.dumps({"workspaces": [workspace("w1", "other")],
+                                           "tabs": [tab("w1:t1", 1)],
+                                           "panes": [pane("w1:p1", "w1:t1", title="independent")]}))
+        with self.blocked_sync() as (owner, release):
+            other = self.start_hook("pane.focused",
+                                    HERDR_SOCKET_PATH=str(self.h.root / "other.sock"),
+                                    FAKE_HERDR_STATE=str(other_state))
+            self.finish_hook(other)
+            self.assertFalse(release.exists())
+            self.assertIsNone(owner.poll())
+            self.assertEqual(json.loads(other_state.read_text())["tabs"][0]["label"], "independent")
+            release.touch()
+            self.finish_hook(owner, timeout=15)
+        self.assertEqual(self.h.state()["tabs"][0]["label"], "original title")
+        state = json.loads((self.h.state_dir / "state.json").read_text())
+        self.assertEqual(len(state["sessions"]), 2)
+
+
 class OmpSessionTest(HerdrPluginTestCase):
     """OMP panes: title, model and effort come from the session file herdr reports."""
 
@@ -1137,7 +1286,7 @@ class OmpSessionTest(HerdrPluginTestCase):
         self.assertEqual(self.h.renames(), [])
 
 
-class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
+class DecisionTest(GatedHooksMixin, HerdrPluginTestCase, SessionRecordsMixin):
     """A Claude turn whose last answer marks a recommendation waits for the user's choice."""
 
     SET = ["w5:p1", "--source", "harness.launcher", "--agent", "claude", "--token", "decision=결정 필요"]
@@ -1162,6 +1311,123 @@ class DecisionTest(HerdrPluginTestCase, SessionRecordsMixin):
 
     def decisions(self):
         return [report for report in self.h.reports() if report in (self.SET, self.CLEAR)]
+
+    def status_payload(self, status, pane_id="w5:p1", agent="claude"):
+        state = self.h.state()
+        for item in state["panes"]:
+            if item["pane_id"] == pane_id:
+                item["agent_status"] = status
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        return {"event": "pane_agent_status_changed",
+                "data": {"type": "pane_agent_status_changed", "pane_id": pane_id,
+                         "workspace_id": "w5", "agent_status": status, "agent": agent}}
+
+    def wait_for_owner(self, owner, predicate, message, timeout=5):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            self.assertIsNone(owner.poll(), message + ": owner exited")
+            if time.monotonic() >= deadline:
+                self.fail(message)
+            time.sleep(0.01)
+
+    def test_blocked_then_idle_while_sync_busy_clears_previous_choice(self):
+        self.turn("A ← 추천")
+        self.assertEqual(self.decisions(), [self.SET])
+        notices = len(self.h.notifications())
+        with self.blocked_sync() as (owner, release):
+            for status in ("blocked", "idle"):
+                hook = self.start_hook("pane.agent_status_changed", self.status_payload(status))
+                self.finish_hook(hook)
+            self.assertEqual(self.decisions(), [self.SET])
+            self.assertFalse(release.exists())
+            release.touch()
+            self.finish_hook(owner, timeout=15)
+        self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
+        self.assertEqual(len(self.h.notifications()), notices)
+
+    def test_new_work_clears_choice_without_waiting_for_delayed_notification(self):
+        state = self.h.state()
+        state["tabs"][0]["pane_count"] = 2
+        state["panes"].append(pane("w5:p2", "w5:t1", agent="codex", title="other task"))
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.status("w5:p1", "working"))
+        self.answer("A ← 추천")
+        payload = self.status_payload("idle")
+        with self.blocked_sync("pane.agent_status_changed", payload,
+                               command=["pane", "report-metadata"] + self.SET,
+                               delay="30", cleanup_timeout=3) as (owner, release):
+            release.touch()
+
+            def choice_is_waiting():
+                saved = json.loads((self.h.state_dir / "state.json").read_text())
+                entries = [entry for records in saved["sessions"].values()
+                           for entry in records["panes"].values()]
+                return any(entry.get("decision") and "settle" not in entry
+                           and entry.get("notify") for entry in entries)
+
+            # The choice report has completed, leaving only its long notification delay.
+            self.wait_for_owner(owner, choice_is_waiting, "choice did not reach its delayed notice")
+            self.assertEqual(self.h.notifications(), [])
+            attention = self.start_hook(
+                "pane.agent_status_changed", self.status_payload("blocked", "w5:p2", "codex"))
+            self.finish_hook(attention)
+            # A later pane's immediately due alert must precede the earlier pane's delay.
+            self.wait_for_owner(owner, lambda: bool(self.h.notifications()),
+                                "short input alert waited behind the 30-second choice notice")
+            self.assertEqual(flag(self.h.notifications()[0], "-title"), "⏳ codex 입력 필요")
+            working = self.start_hook("pane.agent_status_changed", self.status_payload("working"))
+            self.finish_hook(working)
+            deadline = time.monotonic() + 5
+            while self.CLEAR not in self.h.reports():
+                if time.monotonic() >= deadline:
+                    self.fail("new work did not clear the choice during the 30-second delay")
+                time.sleep(0.01)
+            self.finish_hook(owner, timeout=3)
+        self.assertEqual(self.decisions(), [self.SET, self.CLEAR])
+        self.assertEqual(len(self.h.notifications()), 1)
+        self.assertEqual(flag(self.h.notifications()[0], "-title"), "⏳ codex 입력 필요")
+
+    def assert_wait_observation_survives_token_expiry(self, initial=False):
+        if not initial:
+            self.assertRan(self.h.status("w5:p1", "working"))
+        self.answer("배포했습니다.")
+        state = self.h.state()
+        state["panes"][0]["tokens"] = {
+            "herdr_activity": "waiting", "herdr_activity_id": "background-deploy",
+        }
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        # Force a metadata refresh after pane list has captured the positive wait.
+        self.transcript([assistant("claude-opus-5-5", "high")], append=True)
+        event = "pane.agent_status_changed" if initial else "pane.agent_detected"
+        payload = self.status_payload("working") if initial else {
+            "data": {"pane_id": "w5:p1", "agent": "claude"}}
+        with self.blocked_sync(event, payload, command=["pane", "report-metadata"]) as (owner, release):
+            state = self.h.state()
+            state["panes"][0]["tokens"] = {}
+            self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+            idle = self.start_hook("pane.agent_status_changed", self.status_payload("idle"))
+            self.finish_hook(idle)
+            self.assertFalse(release.exists())
+            self.assertEqual(self.h.notifications(), [])
+            release.touch()
+            self.finish_hook(owner, timeout=15)
+        self.assertEqual(self.h.notifications(), [])
+        state = self.h.state()
+        state["panes"][0]["tokens"] = {
+            "herdr_activity": "settled", "herdr_activity_id": "background-deploy",
+        }
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+        self.assertEqual(flag(self.h.notifications()[0], "-title"), "✅ claude 응답 종료")
+        self.assertRan(self.h.run("pane.focused", pane_id="w5:p1"))
+        self.assertEqual(len(self.h.notifications()), 1)
+
+    def test_wait_observed_before_concurrent_idle_survives_token_expiry(self):
+        self.assert_wait_observation_survives_token_expiry()
+
+    def test_first_working_sync_wait_survives_concurrent_idle(self):
+        self.assert_wait_observation_survives_token_expiry(initial=True)
 
     def test_turn_ending_on_a_choice_shows_it_until_the_user_answers(self):
         self.turn("1. 새 worktree ← 추천\n2. 그대로 진행")

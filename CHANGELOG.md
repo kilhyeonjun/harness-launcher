@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
+## Unreleased — herdr plugin contention
+
+- Keep slow herdr CLI calls, transcript reads and notifications outside the
+  plugin's shared state lock. One nonblocking presentation owner per session
+  coalesces concurrent hooks while preserving status transitions, model refreshes,
+  metadata invalidations and delayed notifications. A slow session no longer
+  queues every hook or blocks another session's state updates.
+
 ## 0.82.5 — 2026-11-01
 
 - Bind the immutable canonical bootstrap to the typed declaration/session reader delivery and its exact seven-file source manifest. The sealed verifier uses captured Git publication-candidate bytes without importing freshly updated runtime readers; normal runtime reads retain typed authority routing. Native artifact pins and prior releases remain unchanged. Publication does not fast-forward a canonical checkout, install product APIs, upgrade Homebrew, or activate a runtime/cache owner.

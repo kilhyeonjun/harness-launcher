@@ -489,6 +489,15 @@ The package ships a herdr plugin in `share/harness-launcher/herdr-plugin`
 startup and on pane and tab events. It keeps session titles, tab labels and
 sidebar values current, and posts notifications.
 
+Concurrent hooks. The shared state lock covers only state snapshots and commits,
+not herdr CLI calls, transcript reads or notification delivery. A nonblocking
+presentation lock per session API socket admits one owner; other hooks save their
+status changes and coalesced refresh requests, then return instead of waiting for
+slow CLI calls. The owner drains queued work before releasing ownership, including
+model refreshes, startup/agent-detection invalidations, decision tokens and delayed
+notifications. Newer status sequences cancel obsolete notifications. The watcher
+also uses this path and retries pending work on its next sync after an error.
+
 Session titles. A rename reaches the agent's own records before its terminal
 title, so the plugin reads those first. For Codex that is the thread's latest
 name in `<CODEX_HOME>/session_index.jsonl`, because a running Codex never

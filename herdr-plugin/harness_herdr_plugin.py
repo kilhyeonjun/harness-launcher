@@ -37,6 +37,7 @@ own toasts do. Clicking the notification activates the host terminal app and
 focuses the agent pane.
 """
 
+import copy
 import fcntl
 import glob
 import hashlib
@@ -602,7 +603,7 @@ def sync_metadata(panes, titles, meta, refresh_model):
             continue
         same_agent = previous.get("agent") == agent
         model = previous.get("model", "") if same_agent else ""
-        if refresh_model == pane_id or not same_agent or "model" not in previous:
+        if pane_id in refresh_model or not same_agent or "model" not in previous:
             model = titles.model(pane) or model
         wanted = {"agent": agent, "title": display_title(titles.title(pane)), "model": model}
         if all(previous.get(key) == value for key, value in wanted.items()):
@@ -611,76 +612,143 @@ def sync_metadata(panes, titles, meta, refresh_model):
             meta[pane_id] = wanted
 
 
-def sync_tabs(refresh_model=None, forget=None):
-    """Sync tab labels and pane metadata; return (panes, {watched file: position}).
+def request_sync(records, refresh_model=None, forget=None):
+    """Coalesce presentation work, without dropping model refreshes or invalidations."""
+    request = records.setdefault("sync", {"refresh": [], "forget": []})
+    if refresh_model and refresh_model not in request["refresh"]:
+        request["refresh"].append(refresh_model)
+    if forget == "all":
+        request["forget"] = ["all"]
+    elif forget and "all" not in request["forget"] and forget not in request["forget"]:
+        request["forget"].append(forget)
 
-    `forget` drops the record of what was reported, for one pane id or "all", so
-    the next report goes out even when unchanged: herdr loses pane metadata when
-    its server restarts (pane ids repeat) and when an agent leaves a pane."""
-    # Read herdr's lists under the lock so a concurrent run cannot act on an older snapshot.
-    with locked_state() as state:
-        records = session(state)
-        for key, other in list(state["sessions"].items()):
-            if not isinstance(other, dict) or time.time() - other.get("seen", 0) > SESSION_KEEP_SECONDS:
-                del state["sessions"][key]  # a herdr session gone for a week
-        meta = records["meta"]
-        if forget == "all":
-            meta.clear()
-        elif forget:
-            meta.pop(forget, None)
-        tabs = herdr("tab", "list")["tabs"]
-        panes = herdr("pane", "list")["panes"]
-        panes_by_tab = {}
-        for pane in panes:
-            panes_by_tab.setdefault(pane.get("tab_id"), []).append(pane)
-        owned = records["tabs"]
-        live_tabs = {tab["tab_id"] for tab in tabs}
-        for tab_id in [tab_id for tab_id in owned if tab_id not in live_tabs]:
-            del owned[tab_id]
-        live_panes = {pane.get("pane_id") for pane in panes}
-        for kept in (records["panes"], meta):
-            for pane_id in [pane_id for pane_id in kept if pane_id not in live_panes]:
-                del kept[pane_id]
-        titles = Titles(records)
-        sync_metadata(panes, titles, meta, refresh_model)
-        # An unnamed tab shows its position in the workspace, not its `number`, which
-        # keeps counting after a tab closes.
-        positions, seen_in_workspace = {}, {}
-        for tab in tabs:
-            workspace_id = tab.get("workspace_id")
-            seen_in_workspace[workspace_id] = seen_in_workspace.get(workspace_id, 0) + 1
-            positions[tab["tab_id"]] = str(seen_in_workspace[workspace_id])
-        for tab in tabs:
-            tab_id = tab["tab_id"]
-            position = positions[tab_id]
-            current = tab.get("label") or ""
-            if current != position and current != owned.get(tab_id):
-                continue  # the user named this tab
-            members = panes_by_tab.get(tab_id, [])
-            wanted = ""
-            if tab.get("pane_count") == len(members):
-                # The first agent with a usable title names the tab; the other agents
-                # beside it are counted. Plain shells are not.
-                agents = [member for member in members if member.get("agent")]
-                for member in agents:
-                    wanted = tab_label(titles.title(member), len(agents) - 1)
-                    if wanted:
-                        break
-            if not wanted:
-                # No agent title any more (agent exited, thread-id title, or the tab was
-                # caught mid-change): hand the tab back its position label. herdr cannot
-                # clear a tab name, so the plugin keeps owning that label.
-                wanted = position
-            if wanted != current:
-                # Record first: if the rename fails the old label is still the plugin's
-                # or the position, so the next run retries.
-                owned[tab_id] = wanted
+
+def sync_tabs(refresh_model=None, forget=None):
+    """Queue a sync; one nonblocking owner per socket drains all queued work.
+
+    A busy owner returns None. Only state snapshots and commits hold state.lock;
+    herdr, transcript reads, decision reports and notifications never hold it.
+    Enqueue/acquire and empty/release share the short lock to avoid a lost wakeup.
+    """
+    path = os.path.join(state_dir(), "sync-%s.lock" % session_key())
+    with open(path, "a") as owner:
+        with locked_state() as state:
+            records = session(state)
+            request_sync(records, refresh_model, forget)
+            try:
+                fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None
+        request = None
+        try:
+            while True:
+                with locked_state() as state:
+                    records = session(state)
+                    request = records.pop("sync", {"refresh": [], "forget": []})
+                    snapshot = copy.deepcopy(records)
+                    statuses = copy.deepcopy(records["panes"])
+                    for key, other in list(state["sessions"].items()):
+                        if key != session_key() and (
+                                not isinstance(other, dict) or time.time() - other.get("seen", 0) > SESSION_KEEP_SECONDS):
+                            del state["sessions"][key]
                 try:
-                    herdr("tab", "rename", tab_id, wanted)
-                except Exception as error:  # noqa: BLE001 - one tab must not stop the rest
-                    log("rename %s: %s" % (tab_id, error))
-        titles.prune()
-        return panes, titles.watched
+                    result = apply_tabs(snapshot, request["refresh"], request["forget"])
+                finally:
+                    with locked_state() as state:
+                        records = session(state)
+                        # Presentation has one owner. Never overwrite concurrent statuses,
+                        # decision/notification requests, or another socket's records.
+                        for key in ("tabs", "meta", "scans", "paths"):
+                            records[key] = snapshot[key]
+                        for pane_id, previous in statuses.items():
+                            if pane_id not in snapshot["panes"] and records["panes"].get(pane_id) == previous:
+                                del records["panes"][pane_id]
+                request = None
+                for pending in reconcile_activity(result[0], expected=statuses):
+                    if still_current(pending):
+                        announce(pending)
+                while True:
+                    due = settle_requests()
+                    with locked_state() as state:
+                        if "sync" in session(state):
+                            break
+                        if due is None:
+                            fcntl.flock(owner, fcntl.LOCK_UN)
+                            return result
+                    # New events must clear decisions and refresh presentation during
+                    # a notification delay, not wait behind a potentially 30s sleep.
+                    time.sleep(min(0.1, max(0.0, due - time.time())))
+        except Exception:
+            with locked_state() as state:
+                records = session(state)
+                if request is not None:
+                    request_sync(records)
+                    for pane_id in request["refresh"]:
+                        request_sync(records, refresh_model=pane_id)
+                    for pane_id in request["forget"]:
+                        request_sync(records, forget=pane_id)
+                fcntl.flock(owner, fcntl.LOCK_UN)
+            raise
+
+
+def apply_tabs(records, refresh_model, forget):
+    """Apply one serialized presentation snapshot, outside the shared state lock."""
+    meta = records["meta"]
+    if "all" in forget:
+        meta.clear()
+    else:
+        for pane_id in forget:
+            meta.pop(pane_id, None)
+    tabs = herdr("tab", "list")["tabs"]
+    panes = herdr("pane", "list")["panes"]
+    panes_by_tab = {}
+    for pane in panes:
+        panes_by_tab.setdefault(pane.get("tab_id"), []).append(pane)
+    owned = records["tabs"]
+    live_tabs = {tab["tab_id"] for tab in tabs}
+    for tab_id in [tab_id for tab_id in owned if tab_id not in live_tabs]:
+        del owned[tab_id]
+    live_panes = {pane.get("pane_id") for pane in panes}
+    for kept in (records["panes"], meta):
+        for pane_id in [pane_id for pane_id in kept if pane_id not in live_panes]:
+            del kept[pane_id]
+    titles = Titles(records)
+    sync_metadata(panes, titles, meta, refresh_model)
+    # An unnamed tab shows its position in the workspace, not its `number`, which
+    # keeps counting after a tab closes.
+    positions, seen_in_workspace = {}, {}
+    for tab in tabs:
+        workspace_id = tab.get("workspace_id")
+        seen_in_workspace[workspace_id] = seen_in_workspace.get(workspace_id, 0) + 1
+        positions[tab["tab_id"]] = str(seen_in_workspace[workspace_id])
+    for tab in tabs:
+        tab_id = tab["tab_id"]
+        position = positions[tab_id]
+        current = tab.get("label") or ""
+        if current != position and current != owned.get(tab_id):
+            continue  # the user named this tab
+        members = panes_by_tab.get(tab_id, [])
+        wanted = ""
+        if tab.get("pane_count") == len(members):
+            # The first agent with a usable title names the tab; the other agents
+            # beside it are counted. Plain shells are not.
+            agents = [member for member in members if member.get("agent")]
+            for member in agents:
+                wanted = tab_label(titles.title(member), len(agents) - 1)
+                if wanted:
+                    break
+        if not wanted:
+            # No agent title any more: hand the tab back its position label.
+            wanted = position
+        if wanted != current:
+            # Record first: failed renames retain ownership for the next sync.
+            owned[tab_id] = wanted
+            try:
+                herdr("tab", "rename", tab_id, wanted)
+            except Exception as error:  # noqa: BLE001 - one tab must not stop the rest
+                log("rename %s: %s" % (tab_id, error))
+    titles.prune()
+    return panes, titles.watched
 
 
 def own_rename(payload):
@@ -709,15 +777,27 @@ def record_status(payload):
         entry = statuses.get(pane_id) or {}
         previous = entry.get("status")
         seq = int(entry.get("seq", 0)) + (not same_status(previous, status))
+        if status == "blocked" and previous != "blocked":
+            kind = "attention"
+        elif status in FINISHED and previous == "working":
+            kind = "finished"
+        else:
+            kind = None
+        pending = ({"kind": kind, "pane_id": pane_id, "seq": seq,
+                    "agent": data.get("agent") or "agent"} if kind else None)
+        if not same_status(previous, status):
+            entry.pop("notify", None)
+            entry.pop("settle", None)
         entry.update(status=status, seq=seq)
+        # Preserve a finished request across done -> idle, which is the same turn.
+        if status not in FINISHED or pending or previous not in FINISHED:
+            decision = pending or {"kind": "clear", "pane_id": pane_id, "seq": seq}
+            entry["settle"] = {"data": {"pane_id": pane_id, "agent_status": status},
+                               "pending": decision}
+        if pending:
+            entry["notify"] = dict(pending, at=time.time() + notify_delay())
         statuses[pane_id] = entry
-    if status == "blocked" and previous != "blocked":
-        kind = "attention"
-    elif status in FINISHED and previous == "working":
-        kind = "finished"
-    else:
-        return None
-    return {"kind": kind, "pane_id": pane_id, "seq": seq, "agent": data.get("agent") or "agent"}
+    return pending
 
 
 def settle_decision(payload, pending):
@@ -729,7 +809,7 @@ def settle_decision(payload, pending):
     pane_id = data.get("pane_id") or os.environ.get("HERDR_PANE_ID")
     status = data.get("agent_status")
     finished = bool(pending) and pending["kind"] == "finished"
-    if not pane_id or not status or (status in FINISHED and not finished):
+    if not pane_id or not status or (status in FINISHED and not pending):
         return
     wanted = False
     if finished and pending["agent"] == "claude":
@@ -742,18 +822,62 @@ def settle_decision(payload, pending):
     with locked_state() as state:
         entry = session(state)["panes"].get(pane_id)
         # Events run in separate processes: a newer status settles it instead.
-        if not entry or not same_status(entry.get("status"), status) or (finished and entry.get("seq") != pending["seq"]):
+        if not entry or not same_status(entry.get("status"), status) or (pending and entry.get("seq") != pending["seq"]):
             return
-        if bool(entry.get("decision")) != wanted:
-            argv = ["pane", "report-metadata", pane_id, "--source", METADATA_SOURCE]
-            # herdr drops a report guarded by an agent that has exited, so a set never
-            # lands on the shell left behind; a clear has no guard and always lands.
-            argv += (["--agent", "claude", "--token", "decision=" + DECISION_LABEL] if wanted
-                     else ["--clear-token", "decision"])
-            if herdr_ok(*argv):
+        changed = bool(entry.get("decision")) != wanted
+    if changed:
+        argv = ["pane", "report-metadata", pane_id, "--source", METADATA_SOURCE]
+        # A set is agent-guarded; a clear must also land on a shell left behind.
+        argv += (["--agent", "claude", "--token", "decision=" + DECISION_LABEL] if wanted
+                 else ["--clear-token", "decision"])
+        if not herdr_ok(*argv):
+            raise RuntimeError("decision report failed")
+        with locked_state() as state:
+            entry = session(state)["panes"].get(pane_id)
+            if entry is not None:
+                # Record the actual effect even if a newer status arrived during the
+                # CLI call: its queued request must now clear an obsolete set.
                 entry["decision"] = wanted
     if wanted:
         pending["decision"] = True
+
+
+def settle_requests():
+    """The presentation owner delivers queued decisions and delayed notifications."""
+    with locked_state() as state:
+        requests = [(pane_id, copy.deepcopy(entry["settle"]))
+                    for pane_id, entry in session(state)["panes"].items() if "settle" in entry]
+    for pane_id, request in requests:
+        try:
+            pending = copy.deepcopy(request["pending"])
+            settle_decision({"data": request["data"]}, pending)
+            with locked_state() as state:
+                entry = session(state)["panes"].get(pane_id) or {}
+                if entry.get("settle") == request:
+                    entry.pop("settle", None)
+                notice = entry.get("notify")
+                if pending and pending.get("decision") and notice and notice.get("seq") == pending["seq"]:
+                    notice["decision"] = True
+        except Exception as error:  # noqa: BLE001 - retry on the next event/watch sync
+            log("decision: %s" % error)
+    with locked_state() as state:
+        notices = [copy.deepcopy(entry["notify"])
+                   for entry in session(state)["panes"].values() if "notify" in entry]
+    due = None
+    for pending in sorted(notices, key=lambda notice: notice["at"]):
+        if pending["at"] > time.time():
+            due = pending["at"] if due is None else min(due, pending["at"])
+            continue
+        try:
+            if still_current(pending):
+                announce(pending)
+            with locked_state() as state:
+                entry = session(state)["panes"].get(pending["pane_id"]) or {}
+                if entry.get("notify") == pending:
+                    entry.pop("notify", None)
+        except Exception as error:  # noqa: BLE001 - leave the request for the next sync
+            log("notify: %s" % error)
+    return due
 
 
 def still_current(pending):
@@ -766,16 +890,28 @@ def activity_of(pane):
     return tokens.get("herdr_activity"), tokens.get("herdr_activity_id")
 
 
-def reconcile_activity(panes):
+def reconcile_activity(panes, expected=None):
     """Only a fresh explicit settle can release an observed background completion."""
     ready = []
     with locked_state() as state:
         records = session(state)["panes"]
         for pane in panes:
             pane_id = pane.get("pane_id")
-            entry = records.setdefault(pane_id, {})
             phase, identity = activity_of(pane)
             owner = (pane.get("agent"), session_of(pane, pane.get("agent") or ""), pane.get("terminal_id"))
+            if expected is not None and records.get(pane_id) != expected.get(pane_id):
+                previous = expected.get(pane_id) or {}
+                current = records.get(pane_id) or {}
+                # A positive unresolved observation remains relevant across this
+                # owner's working -> finished transition. Never use a stale snapshot
+                # to release a completion or to overwrite a newer turn/owner.
+                if (phase in ("waiting", "stalled") and identity
+                        and current.get("activity_owner") in (None, list(owner))
+                        and previous.get("status") == "working" and current.get("status") in FINISHED
+                        and current.get("seq") == previous.get("seq", 0) + 1):
+                    current.update(activity_owner=list(owner), activity_id=identity, activity_phase=phase)
+                continue
+            entry = records.setdefault(pane_id, {})
             if entry.get("activity_owner") != list(owner):
                 entry.pop("deferred", None)
                 entry.pop("activity_id", None)
@@ -1098,17 +1234,17 @@ class Watcher:
 
     def sync(self):
         try:
-            panes, watched = sync_tabs(forget=self.forget)
+            result = sync_tabs(forget=self.forget)
         except Exception as error:  # noqa: BLE001 - the loop keeps going
             log("watch sync: %s" % error)
             return False
         self.forget = None
+        if result is None:
+            return True  # another owner retained the queued invalidation
+        panes, watched = result
         # Start where the sync stopped reading, so nothing written in between is missed.
         self.files = {path: self.files.get(path) or position for path, position in watched.items()}
         self.keys = {pane.get("pane_id"): pane_key(pane) for pane in panes}
-        for pending in reconcile_activity(panes):
-            if still_current(pending):
-                announce(pending)
         return True
 
     def scan(self):
@@ -1223,10 +1359,9 @@ def main():
     except ValueError:
         payload = {}
     payload = payload if isinstance(payload, dict) else {}
-    pending = None
     if event == "pane.agent_status_changed":
         try:
-            pending = record_status(payload)
+            record_status(payload)
         except Exception as error:  # noqa: BLE001 - a hook must never fail
             log("status: %s" % error)
     try:
@@ -1238,29 +1373,14 @@ def main():
             if event == "startup":
                 with locked_state() as state:
                     session(state)["panes"].clear()
-            panes, _ = sync_tabs(refresh_model=pane_id if event == "pane.agent_status_changed" else None,
-                                 forget=forget)
-            for deferred in reconcile_activity(panes):
-                if still_current(deferred):
-                    announce(deferred)
+            sync_tabs(refresh_model=pane_id if event == "pane.agent_status_changed" else None,
+                      forget=forget)
     except Exception as error:  # noqa: BLE001
         log("tabs: %s" % error)
-    if event == "pane.agent_status_changed":
-        try:
-            settle_decision(payload, pending)
-        except Exception as error:  # noqa: BLE001
-            log("decision: %s" % error)
     try:
         ensure_watcher()
     except Exception as error:  # noqa: BLE001
         log("watch: %s" % error)
-    if pending:
-        try:
-            time.sleep(notify_delay())
-            if still_current(pending):
-                announce(pending)
-        except Exception as error:  # noqa: BLE001
-            log("notify: %s" % error)
     return 0
 
 
