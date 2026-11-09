@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning for published launcher packages.
 
-## Unreleased
+## Unreleased — Queue observation
 
 - Recheck verifier process-group liveness after reading queue status in the
   dead-broker integration test. Cleanup between observations no longer causes
