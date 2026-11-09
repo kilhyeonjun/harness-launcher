@@ -623,9 +623,10 @@ def request_sync(records, refresh_model=None, forget=None):
         request["forget"].append(forget)
 
 
-def sync_tabs(refresh_model=None, forget=None):
-    """Queue a sync; one nonblocking owner per socket drains all queued work.
+def sync_tabs(refresh_model=None, forget=None, *, periodic=False):
+    """Queue invalidations; one nonblocking owner per socket drains the work.
 
+    Pure periodic refreshes skip a busy owner instead of extending its drain.
     A busy owner returns None. Only state snapshots and commits hold state.lock;
     herdr, transcript reads, decision reports and notifications never hold it.
     Enqueue/acquire and empty/release share the short lock to avoid a lost wakeup.
@@ -634,11 +635,13 @@ def sync_tabs(refresh_model=None, forget=None):
     with open(path, "a") as owner:
         with locked_state() as state:
             records = session(state)
-            request_sync(records, refresh_model, forget)
             try:
                 fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
+                if not periodic or refresh_model or forget:
+                    request_sync(records, refresh_model, forget)
                 return None
+            request_sync(records, refresh_model, forget)
         request = None
         try:
             while True:
@@ -1218,9 +1221,10 @@ class Watcher:
                     return
                 trim_log(self.log_path)
             if self.dirty or now >= self.next_refresh:
+                periodic = not self.dirty and self.forget is None
                 self.dirty = False
                 self.next_refresh = now + self.refresh_every
-                if self.sync():
+                if self.sync(periodic=periodic):
                     self.failures = 0
                 else:
                     self.failures += 1
@@ -1232,15 +1236,15 @@ class Watcher:
             self.wait(self.poll)
             self.scan()
 
-    def sync(self):
+    def sync(self, *, periodic=False):
         try:
-            result = sync_tabs(forget=self.forget)
+            result = sync_tabs(forget=self.forget, periodic=periodic)
         except Exception as error:  # noqa: BLE001 - the loop keeps going
             log("watch sync: %s" % error)
             return False
         self.forget = None
         if result is None:
-            return True  # another owner retained the queued invalidation
+            return True  # busy refreshes need no extra pass; invalidations were queued
         panes, watched = result
         # Start where the sync stopped reading, so nothing written in between is missed.
         self.files = {path: self.files.get(path) or position for path, position in watched.items()}

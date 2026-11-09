@@ -567,6 +567,11 @@ to `watch-<id>.log` in herdr's plugin state directory. `HARNESS_HERDR_WATCH=0`
 in the herdr server environment keeps a new watcher from starting; disable the
 plugin to stop a running one.
 
+While another hook is applying tab labels and pane metadata, timer-only
+refreshes do not queue extra work behind it. File and pane changes and server
+restart invalidations still queue, so a busy hook drains genuine changes
+without being kept alive by the timer.
+
 A sidebar that uses these values:
 
 ```toml

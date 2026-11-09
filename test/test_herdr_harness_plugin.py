@@ -53,6 +53,9 @@ if gate and args[:len(gate_command)] == gate_command:
         marker.write(str(os.getpid()))
     while not os.path.exists(gate + ".release"):
         time.sleep(0.01)
+list_delay = os.environ.get("FAKE_HERDR_LIST_DELAY")
+if list_delay and len(args) > 1 and args[1] == "list":
+    time.sleep(float(list_delay))
 state = json.load(open(state_path))
 def out(result):
     print(json.dumps({"id": "cli", "result": result}))
@@ -1661,6 +1664,25 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
         self.procs.append(proc)
         return proc
 
+    @contextmanager
+    def blocked_hook(self, command=("tab", "list"), **extra):
+        """Hold a copied-plugin startup hook inside one fake CLI command."""
+        gate = self.h.root / "watch-hook-cli"
+        release = gate.with_suffix(".release")
+        env = self.watch_env(HERDR_PLUGIN_EVENT="startup", FAKE_HERDR_GATE=str(gate),
+                             FAKE_HERDR_GATE_COMMAND=json.dumps(command), **extra)
+        owner = subprocess.Popen([TARGET_PYTHON, str(self.script)], env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, start_new_session=True)
+        self.procs.append(owner)
+        try:
+            self.assertTrue(self.until(lambda: gate.with_suffix(".entered").exists(), timeout=5),
+                            "startup hook did not enter its CLI gate")
+            self.assertIsNone(owner.poll())
+            yield owner, release
+        finally:
+            release.touch()
+
     def stop_all(self):
         """Kill each watcher with the fake herdr it may be running, then let them finish."""
         import signal
@@ -1670,6 +1692,9 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
             except OSError:
                 pass  # its group is gone
             proc.wait(timeout=10)
+            for stream in (proc.stdout, proc.stderr):
+                if stream:
+                    stream.close()
         time.sleep(0.2)
 
     def until(self, predicate, timeout=10.0):
@@ -1727,6 +1752,65 @@ class WatcherTest(HerdrPluginTestCase, SessionRecordsMixin):
                 return now
             count = now
         self.fail("the watcher kept syncing for %.0f s" % timeout)
+
+    def test_periodic_refresh_does_not_extend_a_busy_hook(self):
+        self.h.set_state([workspace("w2", "alpha")], [tab("w2:t1", 1)],
+                         [pane("w2:p1", "w2:t1", title="original title")])
+        # Each of the owner's two list responses is slower than a watcher heartbeat.
+        # Only the owner is delayed; the real watcher must keep ticking independently.
+        with self.blocked_hook(FAKE_HERDR_LIST_DELAY="0.15") as (owner, release):
+            watcher = self.start(HARNESS_HERDR_WATCH_REFRESH_SECONDS="0.05",
+                                 HARNESS_HERDR_WATCH_POLL_SECONDS="0.02")
+            self.assertTrue(self.until(
+                lambda: self.h.calls().count(["plugin", "list", "--json"]) >= 3, timeout=5))
+            self.assertIsNone(watcher.poll())
+            release.touch()
+            stdout, stderr = owner.communicate(timeout=5)
+            self.assertEqual(owner.returncode, 0, stderr or stdout)
+            self.assertIsNone(watcher.poll(), "the hook must finish without stopping the watcher")
+
+        self.assertEqual(self.h.state()["tabs"][0]["label"], "original title")
+        self.assertEqual(flag(self.h.reports()[-1], "--title"), "original title")
+        state = self.h.state()
+        state["panes"][0]["terminal_title_stripped"] = "idle periodic title"
+        self.h.set_state(state["workspaces"], state["tabs"], state["panes"])
+        self.assertTrue(self.until(
+            lambda: self.h.renames()[-1] == ["w2:t1", "idle periodic title"]
+            and flag(self.h.reports()[-1], "--title") == "idle periodic title", timeout=5))
+        self.assertIsNone(watcher.poll())
+
+    def test_dirty_title_while_sync_busy_is_not_dropped(self):
+        harness = self.codex_index([{"id": THREAD, "thread_name": "original title"}])
+        self.h.set_state([workspace("w5", "beta")], [tab("w5:t1", 1)],
+                         [codex_agent("w5:p1", "w5:t1", harness)])
+        watcher = self.start()
+        self.assertTrue(self.until(lambda: ["w5:t1", "original title"] in self.h.renames()))
+        self.settled()  # the watcher has installed its codex-index file watch
+        key = hashlib.sha1(self.watch_env()["HERDR_SOCKET_PATH"].encode()).hexdigest()[:12]
+
+        def sync_is_pending():
+            state = json.loads((self.h.state_dir / "state.json").read_text())
+            return "sync" in state["sessions"][key]
+
+        # Startup's forget-all forces metadata reporting even for the unchanged title.
+        # At this gate the owner has already read the old codex title into its snapshot.
+        with self.blocked_hook(command=("pane", "report-metadata")) as (owner, release):
+            self.assertEqual(flag(self.h.reports()[-1], "--title"), "original title")
+            self.assertFalse(sync_is_pending())
+            self.codex_index([{"id": THREAD, "thread_name": "dirty title"}], append=True)
+            self.assertTrue(self.until(sync_is_pending, timeout=5),
+                            "the watcher's dirty scan did not queue behind the owner")
+            # No future periodic refresh can rescue a dropped request: only the
+            # already-running owner may deliver the queued title to the consumer.
+            watcher.terminate()
+            watcher.wait(timeout=5)
+            release.touch()
+            stdout, stderr = owner.communicate(timeout=5)
+            self.assertEqual(owner.returncode, 0, stderr or stdout)
+
+        self.assertEqual(self.h.state()["tabs"][0]["label"], "dirty title")
+        self.assertEqual(self.h.renames()[-1], ["w5:t1", "dirty title"])
+        self.assertEqual(flag(self.h.reports()[-1], "--title"), "dirty title")
 
     def test_terminal_title_event_syncs_and_a_blinking_marker_does_not(self):
         events, sock_path = self.events()
